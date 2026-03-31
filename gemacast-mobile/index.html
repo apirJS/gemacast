@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gema Cast</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="discovery">
+      <section class="device">
+        <span class="device__name">Device: Unknown</span>
+        <span class="device__ip">Ip: Unknown</span>
+      </section>
+
+      <section class="controls">
+        <div class="volume" id="volume-container">
+          <svg class="volume__icon" id="volume-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+          <input
+            type="range"
+            class="volume__slider"
+            id="volume-slider"
+            min="0"
+            max="100"
+            value="100"
+            disabled
+            aria-label="Volume"
+          />
+          <span class="volume__value" id="volume-value">100%</span>
+        </div>
+
+        <div class="controls__group">
+          <button class="btn btn--primary controls__btn-main" id="start-btn">Start</button>
+          <button class="btn btn--icon controls__btn-icon" id="play-btn" disabled aria-label="Play">
+            <svg class="btn__icon btn__icon--play" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" hidden>
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+            <svg class="btn__icon btn__icon--pause" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" >
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="info">
+        <span class="info__latency" id="info-latency" hidden>Latency: -- ms</span>
+        <span class="info__status">Status: Idle</span>
+        <div class="error" hidden>
+          <span class="error__message"></span>
+          <button class="error__expander" popovertarget="error-details-popover">
+            Click for error details
+          </button>
+
+          <div id="error-details-popover" class="error__popover" popover="auto">
+            <p class="error__popover-detailed-error"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

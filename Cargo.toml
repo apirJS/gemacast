@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+  "gemacast-core",
+  "gemacast-pc",
+  "gemacast-mobile/src-tauri"
+]

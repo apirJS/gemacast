@@ -1,0 +1,153 @@
+name: Release Android App
+
+on:
+  push:
+    tags:
+      - 'mobile-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: 29.0.13846066
+  API_LEVEL: 26
+
+jobs:
+  build-android:
+    name: Build Android APK / AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and build tools
+        run: |
+          sdkmanager --install \
+            "ndk;${{ env.NDK_VERSION }}" \
+            "platforms;android-${{ env.API_LEVEL }}" \
+            "build-tools;34.0.0"
+
+      # Explicitly set ANDROID_NDK_ROOT since some SDK setups only expose ANDROID_SDK_ROOT.
+      - name: Set ANDROID_NDK_ROOT
+        run: echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Install Rust stable + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            aarch64-linux-android
+            armv7-linux-androideabi
+            x86_64-linux-android
+            i686-linux-android
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        working-directory: mobile-app
+        run: bun install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      # The .cargo/config.toml linkers and CMake toolchain files contain hardcoded
+      # Windows local paths. Override them for Linux CI by:
+      #   1. Setting CARGO_TARGET_*_LINKER env vars (take priority over config.toml linker entries)
+      #   2. Writing fresh .cmake files that point to the CI Linux NDK location
+      - name: Configure Cargo for Android cross-compilation
+        run: |
+          BIN="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          # Linkers (override [target.*.linker] in .cargo/config.toml)
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${BIN}/aarch64-linux-android${{ env.API_LEVEL }}-clang"      >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=${BIN}/x86_64-linux-android${{ env.API_LEVEL }}-clang"       >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=${BIN}/armv7a-linux-androideabi${{ env.API_LEVEL }}-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_I686_LINUX_ANDROID_LINKER=${BIN}/i686-linux-android${{ env.API_LEVEL }}-clang"           >> "$GITHUB_ENV"
+
+          # Rewrite the cmake toolchain files using CMake's native Android support
+          # (CMAKE_SYSTEM_NAME=Android + CMAKE_ANDROID_NDK). This is the correct
+          # approach for CMake 3.21+ with NDK r23+: CMake knows it's cross-compiling
+          # for Android before it ever tests the compiler, so it won't apply Windows
+          # link flags to the NDK clang binary.
+          NDK="${ANDROID_NDK_ROOT}"
+          FMT='set(CMAKE_SYSTEM_NAME Android)\nset(CMAKE_SYSTEM_VERSION ${{ env.API_LEVEL }})\nset(CMAKE_ANDROID_ARCH_ABI %s)\nset(CMAKE_ANDROID_NDK "%s")\n'
+          printf "${FMT}" arm64-v8a   "${NDK}" > .cargo/android-aarch64-toolchain.cmake
+          printf "${FMT}" armeabi-v7a "${NDK}" > .cargo/android-armv7-toolchain.cmake
+          printf "${FMT}" x86_64      "${NDK}" > .cargo/android-x86_64-toolchain.cmake
+          printf "${FMT}" x86         "${NDK}" > .cargo/android-i686-toolchain.cmake
+
+      - name: Install Ninja
+        run: sudo apt-get install -y ninja-build
+
+      # --------------------------------------------------------------------------
+      # RELEASE SIGNING (uncomment to produce a signed APK/AAB)
+      #
+      # 1. Generate a keystore (one-time, on your machine):
+      #      keytool -genkey -v -keystore release.jks -alias gemacast \
+      #              -keyalg RSA -keysize 2048 -validity 10000
+      # 2. Base64-encode it:
+      #      base64 -w0 release.jks
+      # 3. Add the following secrets in GitHub → Settings → Secrets → Actions:
+      #      ANDROID_KEYSTORE           (base64-encoded .jks content)
+      #      ANDROID_KEY_ALIAS          (the alias you chose, e.g. "gemacast")
+      #      ANDROID_KEY_PASSWORD       (key password)
+      #      ANDROID_STORE_PASSWORD     (keystore password)
+      # --------------------------------------------------------------------------
+      # - name: Decode release keystore
+      #   run: |
+      #     echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > "${{ github.workspace }}/release.jks"
+      #     echo "ANDROID_SIGNING_STORE_FILE=${{ github.workspace }}/release.jks"    >> "$GITHUB_ENV"
+      #     echo "ANDROID_SIGNING_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}"        >> "$GITHUB_ENV"
+      #     echo "ANDROID_SIGNING_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}"  >> "$GITHUB_ENV"
+      #     echo "ANDROID_SIGNING_STORE_PASSWORD=${{ secrets.ANDROID_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build Android APK (debug)
+        working-directory: mobile-app
+        # Switch to: bun run tauri android build --aab
+        # once signing is configured above, for a Play Store release bundle.
+        run: bun run tauri android build --apk --debug
+
+      - name: Locate APK output
+        id: output
+        run: |
+          APK=$(find mobile-app/src-tauri/gen/android -name "*.apk" | head -1)
+          echo "apk=${APK}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemacast-android
+          path: ${{ steps.output.outputs.apk }}
+
+  release:
+    name: Publish GitHub Release
+    needs: build-android
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
