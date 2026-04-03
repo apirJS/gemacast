@@ -1,0 +1,54 @@
+.network-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background-color: var(--status-warn-bg);
+  border-bottom: 1px solid var(--status-warn-border);
+  color: var(--status-warn);
+  animation: banner-slide-in 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  padding: 0.6rem 1rem;
+  padding-top: calc(0.6rem + env(safe-area-inset-top));
+}
+
+.network-banner--lost {
+  background-color: var(--status-lost-bg);
+  border-color: var(--status-lost-border);
+  color: var(--status-lost);
+}
+
+.network-banner__inner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 36rem;
+  margin: 0 auto;
+}
+
+.network-banner__icon {
+  flex-shrink: 0;
+}
+
+.network-banner__message {
+  font-size: 0.875rem;
+  font-weight: 600;
+  flex: 1;
+}
+
+.network-banner__reconnect {
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.network-banner__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: spin 800ms linear infinite;
+}

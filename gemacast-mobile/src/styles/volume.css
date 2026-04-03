@@ -1,0 +1,115 @@
+.volume {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 18rem;
+  padding: 0 0.5rem;
+}
+
+.volume__icon {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  transition: color 200ms ease;
+  pointer-events: none;
+}
+
+.volume__mute-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+  padding: 0;
+}
+
+.volume__mute-btn:hover {
+  color: var(--foreground);
+  background-color: var(--accent);
+}
+
+.volume__mute-btn:active {
+  background-color: var(--border);
+}
+
+.volume__slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+  cursor: pointer;
+  transition: opacity 200ms ease;
+}
+
+.volume__slider:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* WebKit */
+.volume__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--foreground);
+  border: 2px solid var(--background);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.volume__slider:not(:disabled)::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+.volume__slider:not(:disabled):active::-webkit-slider-thumb {
+  transform: scale(1.1);
+}
+
+/* Firefox */
+.volume__slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.volume__slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--foreground);
+  border: 2px solid var(--background);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+  cursor: pointer;
+  transition: transform 150ms ease;
+}
+
+.volume__slider:not(:disabled)::-moz-range-thumb:hover {
+  transform: scale(1.2);
+}
+
+.volume__value {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  min-width: 2.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

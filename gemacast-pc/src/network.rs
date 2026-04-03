@@ -1,5 +1,8 @@
 use gemacast_core::network::{AudioSender, SenderCommand};
-use gemacast_core::network::DiscoveryListenerHandles;
+use gemacast_core::network::{
+    DiscoveryBroadcaster, DiscoveryListenerHandles, send_control_message,
+};
+use gemacast_core::types::{ControlMessage, DiscoveredDevice};
 use tao::event_loop::EventLoopProxy;
 
 use crate::{
@@ -30,12 +33,13 @@ pub fn spawn_background_engine(
             let engine = match AudioSender::new().await {
                 Ok(sender) => sender,
                 Err(e) => {
-                    let _ = proxy.send_event(DaemonEvent::FatalError(e.to_string()));
+                    let _ = proxy.send_event(DaemonEvent::FatalError(format!("{:?}", e)));
                     return;
                 }
             };
 
-            let (sender_command_tx, sender_command_rx) = tokio::sync::mpsc::channel::<SenderCommand>(32);
+            let (sender_command_tx, sender_command_rx) =
+                tokio::sync::mpsc::channel::<SenderCommand>(32);
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
             let proxy_for_discovery = proxy.clone();
@@ -52,70 +56,165 @@ pub fn spawn_background_engine(
                 }
             });
 
+            let proxy_for_dispatch = proxy.clone();
+            let sender_command_tx_for_dispatch = sender_command_tx.clone();
+            let state_for_dispatch = state.clone();
             tokio::spawn(async move {
+                let mut active_broadcaster_tx: Option<tokio::sync::oneshot::Sender<()>> = None;
                 let mut stop_tx_opt = Some(stop_tx);
+
                 while let Some(command) = stream_command_rx.recv().await {
                     match command {
-                        StreamCommand::AddTarget(target_addr) => {
-                            let _ = sender_command_tx.send(SenderCommand::AddTarget(target_addr)).await;
+                        StreamCommand::StartBroadcasting => {
+                            if active_broadcaster_tx.is_none() {
+                                if let Ok(handles) = DiscoveryBroadcaster::new().await {
+                                    active_broadcaster_tx = Some(handles.shutdown_tx);
+                                    let hostname = "Desktop PC".to_string();
+                                    let payload = ControlMessage::Presence {
+                                        sender_id: "PC_SENDER_1".to_string(),
+                                        sender_name: hostname,
+                                        is_offline: false,
+                                    };
+                                    tokio::spawn(async move {
+                                        let _ =
+                                            handles.broadcaster.broadcast_presence(payload).await;
+                                    });
+                                }
+                            }
                         }
-                        StreamCommand::RemoveTarget(target_addr) => {
-                            let _ = sender_command_tx.send(SenderCommand::RemoveTarget(target_addr)).await;
+                        StreamCommand::StopBroadcasting => {
+                            if let Some(tx) = active_broadcaster_tx.take() {
+                                let _ = tx.send(());
+                            }
+
+                            let mut devices_to_remove = Vec::new();
+                            if let Ok(mut map) = state_for_dispatch.lock() {
+                                for (device_id, device) in map.drain() {
+                                    devices_to_remove.push((device.addr, device_id.clone()));
+                                    let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id, device.addr));
+                                }
+                            }
+
+                            for (addr, device_id) in devices_to_remove {
+                                let _ = sender_command_tx
+                                    .send(SenderCommand::RemoveTarget(addr))
+                                    .await;
+                                let _ = send_control_message(
+                                    addr.ip(),
+                                    ControlMessage::Disconnect { device_id },
+                                )
+                                .await;
+                            }
+                        }
+                        StreamCommand::AddTarget(target_addr) => {
+                            let _ = sender_command_tx
+                                .send(SenderCommand::AddTarget(target_addr))
+                                .await;
+                        }
+                        StreamCommand::RemoveTarget(target_addr, device_id) => {
+                            let _ = sender_command_tx
+                                .send(SenderCommand::RemoveTarget(target_addr))
+                                .await;
+
+                            if let Ok(mut map) = state_for_dispatch.lock() {
+                                map.remove(&device_id);
+                            }
+
+                            let _ = send_control_message(
+                                target_addr.ip(),
+                                ControlMessage::Disconnect { device_id },
+                            )
+                            .await;
                         }
                         StreamCommand::StopStream => {
+                            active_broadcaster_tx.take();
                             if let Some(tx) = stop_tx_opt.take() {
                                 let _ = tx.send(());
                             }
-                        }
-                    }
-                }
-            });
 
-            let state_for_trimmer = state.clone();
-            let proxy_for_trimmer = proxy.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if let Ok(mut map) = state_for_trimmer.lock() {
-                        let now = std::time::Instant::now();
-                        let mut to_remove = Vec::new();
+                            let mut devices_to_remove = Vec::new();
+                            if let Ok(mut map) = state_for_dispatch.lock() {
+                                for (device_id, device) in map.drain() {
+                                    devices_to_remove.push((device_id, device.addr));
+                                }
+                            }
 
-                        for (id, dev) in map.iter() {
-                            if now.duration_since(dev.last_seen).as_secs() > 3 {
-                                to_remove.push((id.clone(), dev.addr));
+                            for (device_id, addr) in devices_to_remove {
+                                let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
+                                let _ = send_control_message(
+                                    addr.ip(),
+                                    ControlMessage::Disconnect { device_id },
+                                )
+                                .await;
                             }
                         }
-
-                        for (id, addr) in to_remove {
-                            map.remove(&id);
-                            let _ = proxy_for_trimmer.send_event(DaemonEvent::DeviceLost(id, addr));
-                        }
                     }
                 }
             });
 
-            while let Some(device) = discovery_rx.recv().await {
-                if device.is_offline {
-                    if let Ok(mut map) = state.lock() {
-                        if let Some(removed) = map.remove(&device.device_id) {
-                            let _ = proxy.send_event(DaemonEvent::DeviceLost(device.device_id, removed.addr));
+            while let Some((message, remote_addr)) = discovery_rx.recv().await {
+                let mut audio_addr = remote_addr;
+                audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
+
+                match message {
+                    ControlMessage::Connect {
+                        device_id,
+                        device_name,
+                    } => {
+                        let mut is_new = false;
+                        let mut ip_changed = false;
+                        let mut old_addr = None;
+                        if let Ok(mut map) = state.lock() {
+                            if let Some(existing) = map.get(&device_id) {
+                                if existing.addr != audio_addr {
+                                    ip_changed = true;
+                                    old_addr = Some(existing.addr);
+                                }
+                            } else {
+                                is_new = true;
+                            }
+                            
+                            let device = DiscoveredDevice::from_presence(
+                                device_id.clone(),
+                                device_name.clone(),
+                                false,
+                                audio_addr,
+                            );
+                            map.insert(device_id.clone(), device);
+                        }
+
+                        if ip_changed {
+                            if let Some(old) = old_addr {
+                                let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
+                                let _ = sender_command_tx_for_dispatch.send(SenderCommand::RemoveTarget(old)).await;
+                            }
+                            is_new = true; // Force UI re-add
+                        }
+
+                        if is_new {
+                            let _ = proxy.send_event(DaemonEvent::DiscoveredDevice {
+                                device_id,
+                                name: device_name,
+                                addr: audio_addr,
+                            });
+                        }
+                        
+                        let _ = sender_command_tx_for_dispatch
+                            .send(SenderCommand::AddTarget(audio_addr))
+                            .await;
+                    }
+                    ControlMessage::Disconnect { device_id } => {
+                        if let Ok(mut map) = state.lock() {
+                            if let Some(removed) = map.remove(&device_id) {
+                                let _ = proxy
+                                    .send_event(DaemonEvent::DeviceLost(device_id, removed.addr));
+                                let _ = sender_command_tx_for_dispatch
+                                    .send(SenderCommand::RemoveTarget(removed.addr))
+                                    .await;
+                            }
                         }
                     }
-                    continue;
-                }
-
-                let mut is_new = false;
-                if let Ok(mut map) = state.lock() {
-                    is_new = !map.contains_key(&device.device_id);
-                    map.insert(device.device_id.clone(), device.clone());
-                }
-
-                if is_new {
-                    let _ = proxy.send_event(DaemonEvent::DiscoveredDevice {
-                        device_id: device.device_id,
-                        name: device.device_name,
-                        addr: device.addr,
-                    });
+                    _ => {}
                 }
             }
         });

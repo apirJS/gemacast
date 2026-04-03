@@ -1,13 +1,15 @@
 use crate::audio::{
-    FrameAccumulator, MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE,
-    OPUS_SAMPLE_RATE, SEQ_NUM_SIZE, create_opus_encoder,
+    FrameAccumulator, MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE,
+    SEQ_NUM_SIZE, create_opus_encoder,
 };
 use crate::error::{AudioCaptureError, GemaCastError, NetworkError};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use ringbuf::{HeapCons, HeapRb, traits::*};
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 #[derive(Debug)]
 pub enum SenderCommand {
@@ -17,13 +19,18 @@ pub enum SenderCommand {
 
 pub struct AudioSender {
     audio_stream: cpal::Stream,
-    audio_rx: mpsc::Receiver<Vec<u8>>,
+    audio_consumer: HeapCons<f32>,
+    notify: Arc<Notify>,
     error_rx: mpsc::Receiver<cpal::StreamError>,
 }
 
 impl AudioSender {
     pub async fn new() -> Result<AudioSender, GemaCastError> {
-        let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(8);
+        let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
+        let (mut rb_producer, rb_consumer) = rb.split();
+        let notify = Arc::new(Notify::new());
+        let notify_clone = notify.clone();
+
         let (error_tx, error_rx) = mpsc::channel::<cpal::StreamError>(1);
 
         let host = cpal::default_host();
@@ -34,21 +41,19 @@ impl AudioSender {
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            buffer_size: cpal::BufferSize::Fixed(OPUS_FRAME_SIZE as u32),
+            buffer_size: cpal::BufferSize::Default,
         };
 
         let audio_stream = device
             .build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &_| {
-                    let mut byte_buffer: Vec<u8> = Vec::with_capacity(data.len() * 4);
-                    for &sample in data {
-                        byte_buffer.extend_from_slice(&sample.to_le_bytes());
+                    if rb_producer.vacant_len() >= data.len() {
+                        let _ = rb_producer.push_slice(data);
+                    } else {
+                        eprintln!("Dropped audio frame to prevent freezing!");
                     }
-
-                    if let Err(e) = audio_tx.try_send(byte_buffer) {
-                        eprintln!("Dropped audio frame to prevent freezing!: {e}");
-                    }
+                    notify_clone.notify_one();
                 },
                 move |e| {
                     let _ = error_tx.blocking_send(e);
@@ -58,7 +63,8 @@ impl AudioSender {
             .map_err(AudioCaptureError::FailedToBuildInputStream)?;
 
         Ok(AudioSender {
-            audio_rx,
+            audio_consumer: rb_consumer,
+            notify,
             error_rx,
             audio_stream,
         })
@@ -77,16 +83,15 @@ impl AudioSender {
                 source: e,
             })?;
         let mut encoder =
-            create_opus_encoder().map_err(|e| AudioCaptureError::OpusEncoderFailed(e))?;
+            create_opus_encoder().map_err(AudioCaptureError::OpusEncoderFailed)?;
         let mut frame_accumulator = FrameAccumulator::new(OPUS_FRAME_SAMPLES);
         let mut seq_num: u64 = 0;
         let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut targets: HashSet<SocketAddr> = HashSet::new();
 
-        let _ = self
-            .audio_stream
+        self.audio_stream
             .play()
-            .map_err(|e| AudioCaptureError::FailedToPlayInputStream(e))?;
+            .map_err(AudioCaptureError::FailedToPlayInputStream)?;
 
         loop {
             tokio::select! {
@@ -100,15 +105,21 @@ impl AudioSender {
                         }
                     }
                 },
-                Some(raw_bytes) = self.audio_rx.recv() => {
-                    if targets.is_empty() {
+                _ = self.notify.notified() => {
+                    let occupied = self.audio_consumer.occupied_len();
+                    if occupied == 0 {
                         continue;
                     }
 
-                    let samples: Vec<f32> = raw_bytes
-                        .chunks_exact(4)
-                        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                        .collect();
+                    if targets.is_empty() {
+                        while self.audio_consumer.try_pop().is_some() {}
+                        continue;
+                    }
+
+                    let mut samples = Vec::with_capacity(occupied);
+                    while let Some(s) = self.audio_consumer.try_pop() {
+                        samples.push(s);
+                    }
 
                     let frames = frame_accumulator.push(&samples);
                     for frame in frames {

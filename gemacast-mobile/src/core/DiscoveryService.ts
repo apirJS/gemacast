@@ -1,0 +1,65 @@
+import { invoke } from '@tauri-apps/api/core';
+import { Result, ok, err, DiscoveredSender, Status } from '../types';
+import { GemaCastError } from '../error';
+import { StateHandler } from './StateHandler';
+
+export class DiscoveryService {
+  constructor(
+    private stateHandler: StateHandler,
+    private autoReconnectCallback: (sender: DiscoveredSender) => void,
+  ) {}
+
+  public async startListening(): Promise<Result<true, GemaCastError>> {
+    this.stateHandler.setState({ isLoading: true });
+    try {
+      await invoke('start_listening_for_senders');
+      this.stateHandler.setState({
+        status: Status.Listening,
+        isLoading: false,
+      });
+      return ok(true);
+    } catch (e) {
+      const error = GemaCastError.failedToStartDiscovery(e);
+      this.stateHandler.setState({ error, isLoading: false });
+      return err(error);
+    }
+  }
+
+  public async stopListening(): Promise<Result<true, GemaCastError>> {
+    try {
+      await invoke('stop_listening_for_senders');
+      this.stateHandler.setState({ status: Status.Idle });
+      return ok(true);
+    } catch (e) {
+      const error = GemaCastError.failedToStopDiscovery(e);
+      this.stateHandler.displayError(error);
+      return err(error);
+    }
+  }
+
+  public updateDiscoveredSender(sender: DiscoveredSender) {
+    const currentState = this.stateHandler.getState();
+    const list = [...currentState.discoveredSenders];
+    const index = list.findIndex((s) => s.deviceId === sender.deviceId);
+
+    if (sender.isOffline) {
+      if (index >= 0) list.splice(index, 1);
+    } else {
+      if (index >= 0) {
+        list[index] = sender;
+      } else {
+        list.push(sender);
+      }
+    }
+    this.stateHandler.setState({ discoveredSenders: list });
+
+    // Inform connection service or auto-reconnect if needed
+    if (
+      !sender.isOffline &&
+      currentState.status === Status.Listening &&
+      currentState.lastConnectedSender?.deviceId === sender.deviceId
+    ) {
+      this.autoReconnectCallback(sender);
+    }
+  }
+}

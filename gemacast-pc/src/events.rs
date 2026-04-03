@@ -12,7 +12,10 @@ pub enum DaemonEvent {
 
 #[derive(Debug)]
 pub enum StreamCommand {
+    #[allow(dead_code)] // Used internally by the background engine dispatch path
     AddTarget(SocketAddr),
-    RemoveTarget(SocketAddr),
+    RemoveTarget(SocketAddr, String),
     StopStream,
+    StartBroadcasting,
+    StopBroadcasting,
 }
