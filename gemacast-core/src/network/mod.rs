@@ -21,7 +21,7 @@ pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
 pub fn get_broadcast_addr() -> std::net::Ipv4Addr {
     let local_ip = match std::net::UdpSocket::bind("0.0.0.0:0") {
         Ok(socket) => {
-            // Connect to a public IP (Google DNS) to force the OS to resolve the 
+            // Connect to a public IP (Google DNS) to force the OS to resolve the
             // outbound route and assign the correct local interface IP.
             if socket.connect("8.8.8.8:80").is_ok() {
                 if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {

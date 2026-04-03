@@ -20,6 +20,9 @@ pub enum ProtocolError {
 
 #[derive(ThisError, Debug)]
 pub enum AudioCaptureError {
+    #[error("Audio host is not available")]
+    HostUnavailable(#[source] cpal::HostUnavailable),
+
     #[error("no default output device available")]
     DefaultOutputDeviceUnavailable,
 

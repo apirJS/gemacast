@@ -35,7 +35,7 @@ impl AudioReceiver {
         let (error_tx, error_rx) = mpsc::channel::<StreamError>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 8);
+        let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 16);
         let (rb_producer, rb_consumer) = rb.split();
 
         let host = cpal::default_host();
@@ -57,6 +57,9 @@ impl AudioReceiver {
                 &stream_config,
                 {
                     let mut rb_consumer = rb_consumer;
+                    let mut prebuffering = true;
+                    let target_cushion = OPUS_FRAME_SAMPLES * 6;
+
                     move |data: &mut [f32], _: &_| {
                         if !is_playing_for_cpal.load(std::sync::atomic::Ordering::Relaxed) {
                             while rb_consumer.try_pop().is_some() {}
@@ -64,12 +67,33 @@ impl AudioReceiver {
                             for sample in data.iter_mut() {
                                 *sample = 0.0;
                             }
-
+                            prebuffering = true;
                             return;
                         }
 
+                        if prebuffering {
+                            if rb_consumer.occupied_len() >= target_cushion {
+                                prebuffering = false;
+                            } else {
+                                for sample in data.iter_mut() {
+                                    *sample = 0.0;
+                                }
+                                return;
+                            }
+                        }
+
+                        let mut underrun = false;
                         for sample in data.iter_mut() {
-                            *sample = rb_consumer.try_pop().unwrap_or(0.0);
+                            if let Some(s) = rb_consumer.try_pop() {
+                                *sample = s;
+                            } else {
+                                *sample = 0.0;
+                                underrun = true;
+                            }
+                        }
+
+                        if underrun {
+                            prebuffering = true;
                         }
                     }
                 },
@@ -138,6 +162,19 @@ impl AudioReceiver {
 
                     if seq_num <= highest_seq_num && highest_seq_num != 0 {
                         continue;
+                    }
+
+                    // --- Packet Loss Concealment ---
+                    if highest_seq_num != 0 && seq_num > highest_seq_num + 1 {
+                        let missing_frames = (seq_num - highest_seq_num - 1).min(3);
+                        for _ in 0..missing_frames {
+                            if let Ok(samples) = decoder.decode_float(&[] as &[u8], &mut pcm_output, false) {
+                                let total = samples * OPUS_CHANNELS as usize;
+                                if self.rb_producer.vacant_len() >= total {
+                                    self.rb_producer.push_slice(&pcm_output[..total]);
+                                }
+                            }
+                        }
                     }
 
                     highest_seq_num = seq_num;

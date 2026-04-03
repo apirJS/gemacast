@@ -1,5 +1,5 @@
-use gemacast_core::network::{AudioSender, SenderCommand};
 use gemacast_core::network::DiscoveryListenerHandles;
+use gemacast_core::network::{AudioSender, SenderCommand};
 use tao::event_loop::EventLoopProxy;
 
 use crate::{
@@ -30,12 +30,13 @@ pub fn spawn_background_engine(
             let engine = match AudioSender::new().await {
                 Ok(sender) => sender,
                 Err(e) => {
-                    let _ = proxy.send_event(DaemonEvent::FatalError(e.to_string()));
+                    let _ = proxy.send_event(DaemonEvent::FatalError(format!("{:?}", e)));
                     return;
                 }
             };
 
-            let (sender_command_tx, sender_command_rx) = tokio::sync::mpsc::channel::<SenderCommand>(32);
+            let (sender_command_tx, sender_command_rx) =
+                tokio::sync::mpsc::channel::<SenderCommand>(32);
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
             let proxy_for_discovery = proxy.clone();
@@ -57,10 +58,14 @@ pub fn spawn_background_engine(
                 while let Some(command) = stream_command_rx.recv().await {
                     match command {
                         StreamCommand::AddTarget(target_addr) => {
-                            let _ = sender_command_tx.send(SenderCommand::AddTarget(target_addr)).await;
+                            let _ = sender_command_tx
+                                .send(SenderCommand::AddTarget(target_addr))
+                                .await;
                         }
                         StreamCommand::RemoveTarget(target_addr) => {
-                            let _ = sender_command_tx.send(SenderCommand::RemoveTarget(target_addr)).await;
+                            let _ = sender_command_tx
+                                .send(SenderCommand::RemoveTarget(target_addr))
+                                .await;
                         }
                         StreamCommand::StopStream => {
                             if let Some(tx) = stop_tx_opt.take() {
@@ -98,7 +103,10 @@ pub fn spawn_background_engine(
                 if device.is_offline {
                     if let Ok(mut map) = state.lock() {
                         if let Some(removed) = map.remove(&device.device_id) {
-                            let _ = proxy.send_event(DaemonEvent::DeviceLost(device.device_id, removed.addr));
+                            let _ = proxy.send_event(DaemonEvent::DeviceLost(
+                                device.device_id,
+                                removed.addr,
+                            ));
                         }
                     }
                     continue;
