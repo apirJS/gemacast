@@ -56,6 +56,7 @@ pub fn spawn_background_engine(
                 }
             });
 
+            let proxy_for_dispatch = proxy.clone();
             let sender_command_tx_for_dispatch = sender_command_tx.clone();
             let state_for_dispatch = state.clone();
             tokio::spawn(async move {
@@ -84,6 +85,20 @@ pub fn spawn_background_engine(
                         StreamCommand::StopBroadcasting => {
                             if let Some(tx) = active_broadcaster_tx.take() {
                                 let _ = tx.send(());
+                            }
+
+                            let mut devices_to_remove = Vec::new();
+                            if let Ok(mut map) = state_for_dispatch.lock() {
+                                for (device_id, device) in map.drain() {
+                                    devices_to_remove.push((device.addr, device_id.clone()));
+                                    let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id, device.addr));
+                                }
+                            }
+
+                            for (addr, _device_id) in devices_to_remove {
+                                let _ = sender_command_tx
+                                    .send(SenderCommand::RemoveTarget(addr))
+                                    .await;
                             }
                         }
                         StreamCommand::AddTarget(target_addr) => {
@@ -126,8 +141,18 @@ pub fn spawn_background_engine(
                         device_name,
                     } => {
                         let mut is_new = false;
+                        let mut ip_changed = false;
+                        let mut old_addr = None;
                         if let Ok(mut map) = state.lock() {
-                            is_new = !map.contains_key(&device_id);
+                            if let Some(existing) = map.get(&device_id) {
+                                if existing.addr != audio_addr {
+                                    ip_changed = true;
+                                    old_addr = Some(existing.addr);
+                                }
+                            } else {
+                                is_new = true;
+                            }
+                            
                             let device = DiscoveredDevice::from_presence(
                                 device_id.clone(),
                                 device_name.clone(),
@@ -137,16 +162,25 @@ pub fn spawn_background_engine(
                             map.insert(device_id.clone(), device);
                         }
 
+                        if ip_changed {
+                            if let Some(old) = old_addr {
+                                let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
+                                let _ = sender_command_tx_for_dispatch.send(SenderCommand::RemoveTarget(old)).await;
+                            }
+                            is_new = true; // Force UI re-add
+                        }
+
                         if is_new {
                             let _ = proxy.send_event(DaemonEvent::DiscoveredDevice {
                                 device_id,
                                 name: device_name,
                                 addr: audio_addr,
                             });
-                            let _ = sender_command_tx_for_dispatch
-                                .send(SenderCommand::AddTarget(audio_addr))
-                                .await;
                         }
+                        
+                        let _ = sender_command_tx_for_dispatch
+                            .send(SenderCommand::AddTarget(audio_addr))
+                            .await;
                     }
                     ControlMessage::Disconnect { device_id } => {
                         if let Ok(mut map) = state.lock() {

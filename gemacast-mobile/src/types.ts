@@ -37,19 +37,41 @@ export type DiscoveredSender = {
 
 export enum Status {
   Idle = 'idle',
+  Listening = 'listening',
+  Connecting = 'connecting',
   Connected = 'connected',
   Playing = 'playing',
+  Reconnecting = 'reconnecting',
 }
+
+export type ConnectionHealth = 'ok' | 'degraded' | 'lost';
+
+export type LatencyStats = {
+  /** Current ring-buffer fill time in ms (also the effective buffer time). */
+  current: number | null;
+  /** Rolling average over last 50 measurements. */
+  avg: number | null;
+  /** Maximum seen since connection was established. */
+  max: number | null;
+  /** Minimum seen since connection was established. */
+  min: number | null;
+};
 
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
   discoveredSenders: DiscoveredSender[];
   connectedSender: DiscoveredSender | null;
+  /** Persisted across reconnects — used for auto-reconnect. Cleared on explicit user disconnect. */
+  lastConnectedSender: DiscoveredSender | null;
   error: GemaCastError | null;
   volume: number;
   isMuted: boolean;
+  connectionHealth: ConnectionHealth;
+  isNetworkAvailable: boolean;
+  isLoading: boolean;
+  reconnectAttempts: number;
+  latency: LatencyStats;
 };
-
 
 export type StateSubscriber = (state: AppState) => void;

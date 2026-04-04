@@ -3,8 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Gema Cast</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta
+      name="description"
+      content="GemaCast — low-latency audio streaming from PC to Android"
+    />
+    <title>GemaCast</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
@@ -12,12 +19,25 @@
     <main class="discovery">
       <section class="device">
         <span class="device__name">Device: Unknown</span>
-        <span class="device__ip">Ip: Unknown</span>
+        <span class="device__ip">IP: Unknown</span>
       </section>
 
       <section class="senders">
-        <ul id="sender-list" class="sender-list">
-        </ul>
+        <div class="sender-list__empty" id="sender-empty-state" hidden>
+          <div class="sender-list__empty-pulse" aria-hidden="true"></div>
+          <p class="sender-list__empty-text">
+            Scanning for PCs on your network…
+          </p>
+          <p class="sender-list__empty-hint">
+            Make sure GemaCast is running on your PC
+          </p>
+        </div>
+
+        <ul
+          id="sender-list"
+          class="sender-list"
+          aria-label="Discovered senders"
+        ></ul>
       </section>
 
       <section class="controls">
@@ -28,8 +48,19 @@
             aria-label="Toggle mute"
             title="Toggle mute"
           >
-            <svg class="volume__icon" id="volume-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            <svg
+              class="volume__icon"
+              id="volume-icon"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              width="20"
+              height="20"
+              aria-hidden="true"
+            >
+              <path
+                d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"
+              />
             </svg>
           </button>
           <input
@@ -46,16 +77,72 @@
       </section>
 
       <section class="info">
-        <span class="info__latency" id="info-latency" hidden>Latency: -- ms</span>
-        <span class="info__status">Status: Idle</span>
-        <div class="error" hidden>
-          <span class="error__message"></span>
+        <div
+          class="status-chip status-chip--idle"
+          id="status-chip"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="status-chip__dot" aria-hidden="true"></span>
+          <span class="status-chip__label" id="status-chip-label">Idle</span>
+        </div>
+
+        <div class="latency-stats" id="latency-stats" hidden>
+          <span
+            class="latency-stats__item"
+            id="latency-current"
+            title="Current buffer time"
+          >
+            <span class="latency-stats__label">Now</span>
+            <span class="latency-stats__value">-- ms</span>
+          </span>
+          <span class="latency-stats__sep" aria-hidden="true">·</span>
+          <span
+            class="latency-stats__item"
+            id="latency-avg"
+            title="Rolling average latency"
+          >
+            <span class="latency-stats__label">Avg</span>
+            <span class="latency-stats__value">-- ms</span>
+          </span>
+          <span class="latency-stats__sep" aria-hidden="true">·</span>
+          <span
+            class="latency-stats__item"
+            id="latency-max"
+            title="Peak latency"
+          >
+            <span class="latency-stats__label">Max</span>
+            <span class="latency-stats__value">-- ms</span>
+          </span>
+          <span class="latency-stats__sep" aria-hidden="true">·</span>
+          <span
+            class="latency-stats__item"
+            id="latency-min"
+            title="Minimum latency"
+          >
+            <span class="latency-stats__label">Min</span>
+            <span class="latency-stats__value">-- ms</span>
+          </span>
+        </div>
+
+        <div class="error" id="error-section" hidden>
+          <div class="error__body">
+            <span class="error__message" id="error-message"></span>
+            <button
+              class="error__dismiss"
+              id="error-dismiss-btn"
+              aria-label="Dismiss error"
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
           <button class="error__expander" popovertarget="error-details-popover">
-            Click for error details
+            Details
           </button>
 
           <div id="error-details-popover" class="error__popover" popover="auto">
-            <p class="error__popover-detailed-error"></p>
+            <p class="error__popover-detailed-error" id="error-detail-text"></p>
           </div>
         </div>
       </section>

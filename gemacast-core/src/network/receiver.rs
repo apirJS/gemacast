@@ -132,7 +132,7 @@ impl AudioReceiver {
     pub async fn start_audio_listener(
         &mut self,
         sender_ip_tx: Option<oneshot::Sender<String>>,
-        latency_tx: Option<mpsc::Sender<f32>>,
+        latency_tx: Option<mpsc::Sender<(f32, f32)>>,
     ) -> Result<(), GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, AUDIO_PORT);
         let socket = UdpSocket::bind(addr)
@@ -196,13 +196,19 @@ impl AudioReceiver {
                     let total_samples = decoded_samples * OPUS_CHANNELS as usize;
                     self.rb_producer.push_slice(&pcm_output[..total_samples]);
 
+                    let mut sum_squares = 0.0;
+                    for sample in &pcm_output[..total_samples] {
+                        sum_squares += sample * sample;
+                    }
+                    let rms = (sum_squares / total_samples as f32).sqrt();
+
                     if let Some(ref tx) = latency_tx {
                         if highest_seq_num % 50 == 0 {
                             let latency_ms = (self.rb_producer.occupied_len() as f32
                                 / OPUS_CHANNELS as f32
                                 / OPUS_SAMPLE_RATE as f32)
                                 * 1000.0;
-                            let _ = tx.try_send(latency_ms);
+                            let _ = tx.try_send((latency_ms, rms));
                         }
                     }
                 }

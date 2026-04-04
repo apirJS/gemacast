@@ -1,9 +1,14 @@
 use gemacast_core::network::AudioReceiver;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tauri::{Emitter, State};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 5;
+const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 2;
 
 struct AppState {
     discovery_handle: Mutex<Option<JoinHandle<()>>>,
@@ -44,7 +49,10 @@ fn stop_audio_playback_inner(state: &AppState) -> Result<(), String> {
 
 fn setup_event_forwarding(
     app_handle: tauri::AppHandle,
-) -> (oneshot::Sender<String>, tokio::sync::mpsc::Sender<f32>) {
+) -> (
+    oneshot::Sender<String>,
+    tokio::sync::mpsc::Sender<(f32, f32)>,
+) {
     let (sender_ip_tx, sender_ip_rx) = oneshot::channel::<String>();
     let handle_conn = app_handle.clone();
     tokio::spawn(async move {
@@ -53,11 +61,13 @@ fn setup_event_forwarding(
         }
     });
 
-    let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<f32>(10);
+    let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32)>(10);
     let handle_latency = app_handle.clone();
     tokio::spawn(async move {
-        while let Some(latency) = latency_rx.recv().await {
+        while let Some((latency, rms)) = latency_rx.recv().await {
             let _ = handle_latency.emit("latency-update", latency);
+            let is_active = rms > 0.0001;
+            let _ = handle_latency.emit("audio-active", is_active);
         }
     });
 
@@ -68,7 +78,7 @@ fn spawn_playback_task(
     mut receiver: AudioReceiver,
     app_handle: tauri::AppHandle,
     sender_ip_tx: oneshot::Sender<String>,
-    latency_tx: tokio::sync::mpsc::Sender<f32>,
+    latency_tx: tokio::sync::mpsc::Sender<(f32, f32)>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = receiver.start_audio_playback() {
@@ -102,6 +112,42 @@ fn spawn_discovery_listener(
             }
         });
 
+        let last_seen: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let last_seen_watcher = last_seen.clone();
+        let app_handle_watcher = app_handle.clone();
+        let watchdog_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                HEARTBEAT_CHECK_INTERVAL_SECS,
+            ));
+            loop {
+                interval.tick().await;
+
+                let stale: Vec<String> = {
+                    let map = last_seen_watcher.lock().unwrap();
+                    let now = Instant::now();
+                    map.iter()
+                        .filter(|(_, ts)| {
+                            now.duration_since(**ts).as_secs() >= SENDER_HEARTBEAT_TIMEOUT_SECS
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                };
+
+                for sender_id in &stale {
+                    eprintln!("Sender heartbeat timeout: {}", sender_id);
+                    let _ = app_handle_watcher.emit("sender-timeout", sender_id.clone());
+                }
+
+                if !stale.is_empty() {
+                    let mut map = last_seen_watcher.lock().unwrap();
+                    for id in &stale {
+                        map.remove(id);
+                    }
+                }
+            }
+        });
+
         while let Some((message, addr)) = discovery_rx.recv().await {
             match message {
                 gemacast_core::types::ControlMessage::Presence {
@@ -109,6 +155,15 @@ fn spawn_discovery_listener(
                     sender_name,
                     is_offline,
                 } => {
+                    if is_offline {
+                        last_seen.lock().unwrap().remove(&sender_id);
+                    } else {
+                        last_seen
+                            .lock()
+                            .unwrap()
+                            .insert(sender_id.clone(), Instant::now());
+                    }
+
                     let mut audio_addr = addr;
                     audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
                     let device = gemacast_core::types::DiscoveredDevice::from_presence(
@@ -125,7 +180,9 @@ fn spawn_discovery_listener(
                 _ => {}
             }
         }
+
         listener_handle.abort();
+        watchdog_handle.abort();
     })
 }
 

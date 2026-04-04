@@ -2,6 +2,9 @@ export enum ErrorCode {
   NETWORK_FAILED_TO_START_DISCOVERY = 'NETWORK_FAILED_TO_START_DISCOVERY',
   NETWORK_FAILED_TO_STOP_DISCOVERY = 'NETWORK_FAILED_TO_STOP_DISCOVERY',
   NETWORK_DISCOVERY_ERROR = 'NETWORK_DISCOVERY_ERROR',
+  NETWORK_WIFI_DISCONNECTED = 'NETWORK_WIFI_DISCONNECTED',
+  NETWORK_SENDER_TIMEOUT = 'NETWORK_SENDER_TIMEOUT',
+  NETWORK_RECONNECT_FAILED = 'NETWORK_RECONNECT_FAILED',
   AUDIO_PLAYBACK_ERROR = 'AUDIO_PLAYBACK_ERROR',
   AUDIO_FAILED_TO_START_PLAYBACK = 'AUDIO_FAILED_TO_START_PLAYBACK',
   AUDIO_FAILED_TO_STOP_PLAYBACK = 'AUDIO_FAILED_TO_STOP_PLAYBACK',
@@ -15,14 +18,16 @@ export type ErrorOptions = {
 };
 
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
-  [ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY]:
-    'failed to start udp discovery',
-  [ErrorCode.NETWORK_FAILED_TO_STOP_DISCOVERY]: 'failed to stop udp discovery',
-  [ErrorCode.NETWORK_DISCOVERY_ERROR]: 'an error occurred during background discovery',
-  [ErrorCode.AUDIO_PLAYBACK_ERROR]: 'an error occurred during audio playback',
-  [ErrorCode.AUDIO_FAILED_TO_START_PLAYBACK]: 'failed to start audio playback',
-  [ErrorCode.AUDIO_FAILED_TO_STOP_PLAYBACK]: 'failed to stop audio playback',
-  [ErrorCode.UNKNOWN_ERROR]: 'unknown error occured',
+  [ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY]: 'Failed to start UDP discovery',
+  [ErrorCode.NETWORK_FAILED_TO_STOP_DISCOVERY]: 'Failed to stop UDP discovery',
+  [ErrorCode.NETWORK_DISCOVERY_ERROR]: 'An error occurred during background discovery',
+  [ErrorCode.NETWORK_WIFI_DISCONNECTED]: 'Wi-Fi disconnected — waiting for network',
+  [ErrorCode.NETWORK_SENDER_TIMEOUT]: 'PC sender stopped responding — attempting to reconnect',
+  [ErrorCode.NETWORK_RECONNECT_FAILED]: 'Could not reconnect after several attempts',
+  [ErrorCode.AUDIO_PLAYBACK_ERROR]: 'An error occurred during audio playback',
+  [ErrorCode.AUDIO_FAILED_TO_START_PLAYBACK]: 'Failed to start audio playback',
+  [ErrorCode.AUDIO_FAILED_TO_STOP_PLAYBACK]: 'Failed to stop audio playback',
+  [ErrorCode.UNKNOWN_ERROR]: 'An unknown error occurred',
 };
 
 export class GemaCastError extends Error {
@@ -84,6 +89,24 @@ export class GemaCastError extends Error {
       code: ErrorCode.AUDIO_FAILED_TO_STOP_PLAYBACK,
       message: ERROR_MESSAGES[ErrorCode.AUDIO_FAILED_TO_STOP_PLAYBACK],
       cause: error,
+    });
+  }
+
+  public static senderTimeout() {
+    return new GemaCastError({
+      code: ErrorCode.NETWORK_SENDER_TIMEOUT,
+    });
+  }
+
+  public static wifiDisconnected() {
+    return new GemaCastError({
+      code: ErrorCode.NETWORK_WIFI_DISCONNECTED,
+    });
+  }
+
+  public static reconnectFailed() {
+    return new GemaCastError({
+      code: ErrorCode.NETWORK_RECONNECT_FAILED,
     });
   }
 

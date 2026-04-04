@@ -1,0 +1,84 @@
+.device__name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--foreground);
+}
+
+.device__ip {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  transition:
+    background-color 300ms ease,
+    color 300ms ease,
+    border-color 300ms ease;
+}
+
+.status-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: currentColor;
+  flex-shrink: 0;
+}
+
+.status-chip--idle {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+
+.status-chip--listening {
+  background-color: var(--status-connecting-bg);
+  color: var(--status-connecting);
+  border-color: var(--status-connecting-border);
+}
+.status-chip--listening .status-chip__dot {
+  animation: status-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.status-chip--connecting {
+  background-color: var(--status-connecting-bg);
+  color: var(--status-connecting);
+  border-color: var(--status-connecting-border);
+}
+.status-chip--connecting .status-chip__dot {
+  animation: status-dot-pulse 800ms ease-in-out infinite;
+}
+
+.status-chip--connected {
+  background-color: var(--status-warn-bg);
+  color: var(--status-warn);
+  border-color: var(--status-warn-border);
+}
+
+.status-chip--playing {
+  background-color: var(--status-ok-bg);
+  color: var(--status-ok);
+  border-color: var(--status-ok-border);
+}
+.status-chip--playing .status-chip__dot {
+  animation: status-dot-pulse 1s ease-in-out infinite;
+}
+
+.status-chip--reconnecting {
+  background-color: var(--status-warn-bg);
+  color: var(--status-warn);
+  border-color: var(--status-warn-border);
+}
+.status-chip--reconnecting .status-chip__dot {
+  animation: status-dot-pulse 600ms ease-in-out infinite;
+}

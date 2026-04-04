@@ -92,6 +92,7 @@ pub fn run() {
 
                     if menu_event.id() == tray_manager.quit_item.id() {
                         let _ = stream_command_tx.try_send(StreamCommand::StopStream);
+                        std::thread::sleep(std::time::Duration::from_millis(150));
                         *control_flow = ControlFlow::Exit;
                     }
                 }
