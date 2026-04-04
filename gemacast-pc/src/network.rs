@@ -95,10 +95,15 @@ pub fn spawn_background_engine(
                                 }
                             }
 
-                            for (addr, _device_id) in devices_to_remove {
+                            for (addr, device_id) in devices_to_remove {
                                 let _ = sender_command_tx
                                     .send(SenderCommand::RemoveTarget(addr))
                                     .await;
+                                let _ = send_control_message(
+                                    addr.ip(),
+                                    ControlMessage::Disconnect { device_id },
+                                )
+                                .await;
                             }
                         }
                         StreamCommand::AddTarget(target_addr) => {
@@ -125,6 +130,22 @@ pub fn spawn_background_engine(
                             active_broadcaster_tx.take();
                             if let Some(tx) = stop_tx_opt.take() {
                                 let _ = tx.send(());
+                            }
+
+                            let mut devices_to_remove = Vec::new();
+                            if let Ok(mut map) = state_for_dispatch.lock() {
+                                for (device_id, device) in map.drain() {
+                                    devices_to_remove.push((device_id, device.addr));
+                                }
+                            }
+
+                            for (device_id, addr) in devices_to_remove {
+                                let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
+                                let _ = send_control_message(
+                                    addr.ip(),
+                                    ControlMessage::Disconnect { device_id },
+                                )
+                                .await;
                             }
                         }
                     }

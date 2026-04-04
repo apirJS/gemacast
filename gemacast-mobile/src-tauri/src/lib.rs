@@ -7,8 +7,8 @@ use tauri::{Emitter, State};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 5;
-const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 2;
+const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 3;
+const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 
 struct AppState {
     discovery_handle: Mutex<Option<JoinHandle<()>>>,

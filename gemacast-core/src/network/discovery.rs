@@ -6,7 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
-use super::{DISCOVERY_PORT, get_broadcast_addr};
+use super::DISCOVERY_PORT;
 
 pub struct DiscoveryListener {
     discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
@@ -114,17 +114,19 @@ impl DiscoveryBroadcaster {
         mut self,
         mut payload: ControlMessage,
     ) -> Result<(), NetworkError> {
-        let broadcast_addr_subnet = SocketAddrV4::new(get_broadcast_addr(), DISCOVERY_PORT);
+        let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
+            .into_iter()
+            .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
+            .collect();
         let broadcast_addr_global =
             SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), DISCOVERY_PORT);
         let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
 
         loop {
             let json_bytes = serde_json::to_vec(&payload)?;
-            let _ = self
-                .socket
-                .send_to(&json_bytes, broadcast_addr_subnet)
-                .await;
+            for addr in &broadcast_addrs {
+                let _ = self.socket.send_to(&json_bytes, *addr).await;
+            }
             let _ = self
                 .socket
                 .send_to(&json_bytes, broadcast_addr_global)
@@ -139,7 +141,9 @@ impl DiscoveryBroadcaster {
                     }
                     if let Ok(offline_bytes) = serde_json::to_vec(&payload) {
                         for _ in 0..3 {
-                            let _ = self.socket.send_to(&offline_bytes, broadcast_addr_subnet).await;
+                            for addr in &broadcast_addrs {
+                                let _ = self.socket.send_to(&offline_bytes, *addr).await;
+                            }
                             let _ = self.socket.send_to(&offline_bytes, broadcast_addr_global).await;
                             let _ = self.socket.send_to(&offline_bytes, multicast_addr).await;
                         }

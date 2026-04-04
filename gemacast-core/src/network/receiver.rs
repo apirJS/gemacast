@@ -51,6 +51,7 @@ impl AudioReceiver {
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
+            // buffer_size: cpal::BufferSize::Fixed(512),
             buffer_size: cpal::BufferSize::Default,
         };
 

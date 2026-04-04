@@ -11,15 +11,13 @@ pub use sender::{AudioSender, SenderCommand};
 pub const DISCOVERY_PORT: u16 = 55555;
 pub const AUDIO_PORT: u16 = 55556;
 
-// --- Low Latency Config ---
-
 /// The specific buffer size (in samples) handed to CPAL. 
 /// 480 samples = 10ms at 48kHz. Set to a lower number for faster audio loop triggers.
-pub const CPAL_BUFFER_SIZE: u32 = 480;
+pub const CPAL_BUFFER_SIZE: u32 = 512;
 
 /// The number of Opus frames (typically 10ms each) to buffer over the network before starting playback.
 /// A lower number decreases playback latency but increases the chance of stutters under Wi-Fi jitter.
-pub const TARGET_CUSHION_FRAMES: usize = 4;
+pub const TARGET_CUSHION_FRAMES: usize = 2;
 
 pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
     local_ip_address::local_ip()
@@ -28,29 +26,41 @@ pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
 /// Computes the subnet-directed broadcast address using a routing hack.
 /// On Android API 30+, `local_ip_address` often fails or returns localhost
 /// due to strict permission models hiding network interfaces (`getifaddrs` restricted).
-pub fn get_broadcast_addr() -> std::net::Ipv4Addr {
-    let local_ip = match std::net::UdpSocket::bind("0.0.0.0:0") {
-        Ok(socket) => {
-            // Connect to a public IP (Google DNS) to force the OS to resolve the
-            // outbound route and assign the correct local interface IP.
-            if socket.connect("8.8.8.8:80").is_ok() {
-                if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {
-                    Some(*addr.ip())
-                } else {
-                    None
+pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
+    let mut addrs = Vec::new();
+
+    if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
+        for (_, ip) in interfaces {
+            if let std::net::IpAddr::V4(ipv4) = ip {
+                if !ipv4.is_loopback() {
+                    let octets = ipv4.octets();
+                    let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+                    if !addrs.contains(&bcast) {
+                        addrs.push(bcast);
+                    }
                 }
-            } else {
-                None
             }
         }
-        _ => None,
-    };
+    }
 
-    let Some(ip) = local_ip else {
-        return std::net::Ipv4Addr::BROADCAST;
-    };
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {
+                let ipv4 = addr.ip();
+                if !ipv4.is_loopback() {
+                    let octets = ipv4.octets();
+                    let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+                    if !addrs.contains(&bcast) {
+                        addrs.push(bcast);
+                    }
+                }
+            }
+        }
+    }
 
-    // We assume a standard /24 subnet (which covers 99% of home Wi-Fi networks).
-    let octets = ip.octets();
-    std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)
+    if addrs.is_empty() {
+        addrs.push(std::net::Ipv4Addr::BROADCAST);
+    }
+
+    addrs
 }
