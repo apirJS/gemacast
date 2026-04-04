@@ -10,19 +10,23 @@ pub struct TrayManager {
     pub device_buttons: HashMap<String, CheckMenuItem>,
     pub devices_submenu: Submenu,
     pub scanning_placeholder: MenuItem,
+    pub broadcast_toggle: CheckMenuItem,
     pub quit_item: MenuItem,
-    pub active_devices: std::collections::HashSet<String>,
 }
 
 impl TrayManager {
     pub fn new() -> Self {
         let tray_menu = Menu::new();
 
-        let devices_submenu = Submenu::new("Available Phones", true);
-        let scanning_placeholder = MenuItem::new("Scanning for devices...", false, None);
+        let broadcast_toggle = CheckMenuItem::new("Broadcast Presence", true, true, None);
+        let devices_submenu = Submenu::new("Connected Phones", true);
+        let scanning_placeholder = MenuItem::new("No devices connected yet", false, None);
         let quit_item = MenuItem::new("quit", true, None);
 
         let _ = devices_submenu.append(&scanning_placeholder);
+
+        let _ = tray_menu.append(&broadcast_toggle);
+        let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&devices_submenu);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&quit_item);
@@ -31,15 +35,15 @@ impl TrayManager {
             .with_menu(Box::new(tray_menu))
             .with_tooltip("Gemacast")
             .build()
-            .unwrap();
+            .expect("failed to build tray icon");
 
         Self {
             _tray_icon: tray_icon,
             device_buttons: HashMap::new(),
             scanning_placeholder,
             devices_submenu,
+            broadcast_toggle,
             quit_item,
-            active_devices: std::collections::HashSet::new(),
         }
     }
 
@@ -59,32 +63,19 @@ impl TrayManager {
         self.device_buttons.insert(device_id, new_device);
     }
 
+    pub fn set_device_connected(&self, device_id: &str, connected: bool) {
+        if let Some(item) = self.device_buttons.get(device_id) {
+            item.set_checked(connected);
+        }
+    }
+
     pub fn remove_device(&mut self, device_id: &str) {
         if let Some(device) = self.device_buttons.remove(device_id) {
             let _ = self.devices_submenu.remove(&device);
         }
 
-        self.active_devices.remove(device_id);
-
         if self.device_buttons.is_empty() {
             let _ = self.devices_submenu.append(&self.scanning_placeholder);
-        }
-    }
-    pub fn toggle_active_device(&mut self, clicked_device_id: &str) -> bool {
-        let is_turning_off = self.active_devices.contains(clicked_device_id);
-
-        if is_turning_off {
-            self.active_devices.remove(clicked_device_id);
-            if let Some(item) = self.device_buttons.get(clicked_device_id) {
-                item.set_checked(false);
-            }
-            false
-        } else {
-            self.active_devices.insert(clicked_device_id.to_string());
-            if let Some(item) = self.device_buttons.get(clicked_device_id) {
-                item.set_checked(true);
-            }
-            true
         }
     }
 }

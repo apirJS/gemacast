@@ -1,6 +1,6 @@
 use crate::audio::{
-    FrameAccumulator, MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE,
-    OPUS_SAMPLE_RATE, SEQ_NUM_SIZE, create_opus_encoder,
+    FrameAccumulator, MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE,
+    SEQ_NUM_SIZE, create_opus_encoder,
 };
 use crate::error::{AudioCaptureError, GemaCastError, NetworkError};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -41,7 +41,7 @@ impl AudioSender {
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            buffer_size: cpal::BufferSize::Fixed(OPUS_FRAME_SIZE as u32),
+            buffer_size: cpal::BufferSize::Default,
         };
 
         let audio_stream = device

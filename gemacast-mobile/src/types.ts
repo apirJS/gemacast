@@ -28,9 +28,15 @@ export const deviceInfoSchema = z.object({
 
 export type DeviceInfo = z.infer<typeof deviceInfoSchema>;
 
+export type DiscoveredSender = {
+  deviceId: string;
+  deviceName: string;
+  addr: string;
+  isOffline: boolean;
+};
+
 export enum Status {
   Idle = 'idle',
-  Listening = 'listening',
   Connected = 'connected',
   Playing = 'playing',
 }
@@ -38,9 +44,12 @@ export enum Status {
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
-  senderIp: string | null;
+  discoveredSenders: DiscoveredSender[];
+  connectedSender: DiscoveredSender | null;
   error: GemaCastError | null;
   volume: number;
+  isMuted: boolean;
 };
+
 
 export type StateSubscriber = (state: AppState) => void;

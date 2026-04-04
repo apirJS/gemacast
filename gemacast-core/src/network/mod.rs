@@ -3,13 +3,23 @@ pub mod receiver;
 pub mod sender;
 
 pub use discovery::{
-    DiscoveryBroadcaster, DiscoveryBroadcasterHandles, DiscoveryListener, DiscoveryListenerHandles,
+    DiscoveryBroadcaster, DiscoveryBroadcasterHandles, DiscoveryListener, DiscoveryListenerHandles, send_control_message
 };
 pub use receiver::{AudioReceiver, AudioReceiverHandles};
 pub use sender::{AudioSender, SenderCommand};
 
 pub const DISCOVERY_PORT: u16 = 55555;
 pub const AUDIO_PORT: u16 = 55556;
+
+// --- Low Latency Config ---
+
+/// The specific buffer size (in samples) handed to CPAL. 
+/// 480 samples = 10ms at 48kHz. Set to a lower number for faster audio loop triggers.
+pub const CPAL_BUFFER_SIZE: u32 = 480;
+
+/// The number of Opus frames (typically 10ms each) to buffer over the network before starting playback.
+/// A lower number decreases playback latency but increases the chance of stutters under Wi-Fi jitter.
+pub const TARGET_CUSHION_FRAMES: usize = 4;
 
 pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
     local_ip_address::local_ip()

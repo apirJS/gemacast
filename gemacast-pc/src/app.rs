@@ -15,8 +15,7 @@ fn display_error_dialog(message: String) {
 pub fn run() {
     let state = crate::state::create_shared_state();
     let event_loop = EventLoopBuilder::<DaemonEvent>::with_user_event().build();
-    let (stream_command_tx, stream_command_rx) =
-        tokio::sync::mpsc::channel::<StreamCommand>(32);
+    let (stream_command_tx, stream_command_rx) = tokio::sync::mpsc::channel::<StreamCommand>(32);
     let state_for_bg = state.clone();
 
     crate::network::spawn_background_engine(
@@ -25,9 +24,12 @@ pub fn run() {
         stream_command_rx,
     );
 
+    let _ = stream_command_tx.try_send(StreamCommand::StartBroadcasting);
+
     let mut tray_manager = TrayManager::new();
     let state_for_tao = state.clone();
 
+    let proxy_for_main = event_loop.create_proxy();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -38,53 +40,59 @@ pub fn run() {
                     name,
                     addr,
                 } => {
-                    tray_manager.add_device(device_id, &name, addr);
+                    tray_manager.add_device(device_id.clone(), &name, addr);
+                    tray_manager.set_device_connected(&device_id, true);
                 }
-                DaemonEvent::DeviceLost(device_id, addr) => {
-                    let was_active = tray_manager.active_devices.contains(&device_id);
+                DaemonEvent::DeviceLost(device_id, _addr) => {
+                    tray_manager.set_device_connected(&device_id, false);
                     tray_manager.remove_device(&device_id);
-
-                    if was_active {
-                        if let Err(e) = stream_command_tx.try_send(StreamCommand::RemoveTarget(addr)) {
-                            display_error_dialog(e.to_string());
-                        }
-                    }
                 }
                 DaemonEvent::FatalError(error_msg) => {
                     display_error_dialog(error_msg);
-
                     *control_flow = ControlFlow::Exit;
                 }
             },
             Event::MainEventsCleared => {
                 if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-                    let mut clicked_id = None;
+                    let mut clicked_device_id = None;
                     for (device_id, menu_item) in &tray_manager.device_buttons {
                         if menu_item.id() == menu_event.id() {
-                            clicked_id = Some(device_id.clone());
+                            clicked_device_id = Some(device_id.clone());
                             break;
                         }
                     }
 
-                    if let Some(device_id) = clicked_id {
-                        let map = state_for_tao.lock().unwrap();
-                        if let Some(device) = map.get(&device_id) {
-                            let is_now_active = tray_manager.toggle_active_device(&device_id);
-                            let command = if is_now_active {
-                                StreamCommand::AddTarget(device.addr)
-                            } else {
-                                StreamCommand::RemoveTarget(device.addr)
-                            };
-                            
-                            if let Err(e) = stream_command_tx.try_send(command) {
+                    if menu_event.id() == tray_manager.broadcast_toggle.id() {
+                        let is_broadcasting = tray_manager.broadcast_toggle.is_checked();
+                        let command = if is_broadcasting {
+                            StreamCommand::StartBroadcasting
+                        } else {
+                            StreamCommand::StopBroadcasting
+                        };
+                        if let Err(e) = stream_command_tx.try_send(command) {
+                            display_error_dialog(e.to_string());
+                        }
+                    }
+
+                    if let Some(device_id) = clicked_device_id {
+                        let addr_opt = state_for_tao.lock().ok().and_then(|map| {
+                            map.get(&device_id).map(|d| (d.device_id.clone(), d.addr))
+                        });
+
+                        if let Some((dev_id, addr)) = addr_opt {
+                            if let Err(e) = stream_command_tx
+                                .try_send(StreamCommand::RemoveTarget(addr, dev_id.clone()))
+                            {
                                 display_error_dialog(e.to_string());
                             }
+                            let _ =
+                                proxy_for_main.send_event(DaemonEvent::DeviceLost(dev_id, addr));
                         }
                     }
 
                     if menu_event.id() == tray_manager.quit_item.id() {
                         let _ = stream_command_tx.try_send(StreamCommand::StopStream);
-                        *control_flow = ControlFlow::Exit
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
             }

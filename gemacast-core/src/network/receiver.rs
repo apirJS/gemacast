@@ -1,16 +1,19 @@
 use crate::{
     audio::{
-        MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE,
-        SEQ_NUM_SIZE, create_opus_decoder,
+        MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE, SEQ_NUM_SIZE,
+        create_opus_decoder,
     },
     error::{AudioCaptureError, GemaCastError, NetworkError},
-    network::AUDIO_PORT,
+    network::{AUDIO_PORT, TARGET_CUSHION_FRAMES},
 };
 use cpal::{StreamError, traits::*};
 use ringbuf::{HeapProd, HeapRb, traits::*};
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 use tokio::{
     net::UdpSocket,
@@ -21,6 +24,8 @@ pub struct AudioReceiverHandles {
     pub receiver: AudioReceiver,
     pub shutdown_tx: oneshot::Sender<()>,
     pub is_playing: Arc<AtomicBool>,
+    /// Volume as f32 bits stored in a u32 (range 0.0–1.0).
+    pub volume: Arc<AtomicU32>,
 }
 
 pub struct AudioReceiver {
@@ -46,11 +51,13 @@ impl AudioReceiver {
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            buffer_size: cpal::BufferSize::Fixed(OPUS_FRAME_SIZE as u32),
+            buffer_size: cpal::BufferSize::Default,
         };
 
-        let is_playing = Arc::new(AtomicBool::new(false));
+        let is_playing = Arc::new(AtomicBool::new(true));
         let is_playing_for_cpal = is_playing.clone();
+        let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let volume_for_cpal = volume.clone();
 
         let playback_stream = device
             .build_output_stream(
@@ -58,12 +65,12 @@ impl AudioReceiver {
                 {
                     let mut rb_consumer = rb_consumer;
                     let mut prebuffering = true;
-                    let target_cushion = OPUS_FRAME_SAMPLES * 6;
+                    let target_cushion = OPUS_FRAME_SAMPLES * TARGET_CUSHION_FRAMES;
 
                     move |data: &mut [f32], _: &_| {
-                        if !is_playing_for_cpal.load(std::sync::atomic::Ordering::Relaxed) {
+                        let vol = f32::from_bits(volume_for_cpal.load(Ordering::Relaxed));
+                        if !is_playing_for_cpal.load(Ordering::Relaxed) {
                             while rb_consumer.try_pop().is_some() {}
-
                             for sample in data.iter_mut() {
                                 *sample = 0.0;
                             }
@@ -85,7 +92,7 @@ impl AudioReceiver {
                         let mut underrun = false;
                         for sample in data.iter_mut() {
                             if let Some(s) = rb_consumer.try_pop() {
-                                *sample = s;
+                                *sample = s * vol;
                             } else {
                                 *sample = 0.0;
                                 underrun = true;
@@ -118,6 +125,7 @@ impl AudioReceiver {
             receiver,
             shutdown_tx,
             is_playing,
+            volume,
         })
     }
 
