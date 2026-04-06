@@ -4,7 +4,8 @@ use crate::{
         create_opus_decoder,
     },
     error::{AudioCaptureError, GemaCastError, NetworkError},
-    network::{AUDIO_PORT, TARGET_CUSHION_FRAMES},
+    jitter::{JitterBufferManager, RawPacket},
+    network::AUDIO_PORT,
 };
 use cpal::{StreamError, traits::*};
 use ringbuf::{HeapProd, HeapRb, traits::*};
@@ -14,11 +15,17 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
+    time::Instant,
 };
 use tokio::{
     net::UdpSocket,
     sync::{mpsc, oneshot},
 };
+
+/// Capacity of the lock-free SPSC channel carrying raw packets
+/// from the network thread to the cpal audio callback.
+/// 256 slots × ~300 bytes avg = ~75KB — generous headroom for bursts.
+const PACKET_CHANNEL_CAPACITY: usize = 256;
 
 pub struct AudioReceiverHandles {
     pub receiver: AudioReceiver,
@@ -29,7 +36,9 @@ pub struct AudioReceiverHandles {
 }
 
 pub struct AudioReceiver {
-    rb_producer: HeapProd<f32>,
+    /// Producer side of the raw packet SPSC channel.
+    /// The network thread pushes undecoded Opus packets here.
+    packet_producer: HeapProd<RawPacket>,
     playback_stream: cpal::Stream,
     error_rx: mpsc::Receiver<StreamError>,
     shutdown_rx: oneshot::Receiver<()>,
@@ -40,18 +49,22 @@ impl AudioReceiver {
         let (error_tx, error_rx) = mpsc::channel::<StreamError>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 16);
-        let (rb_producer, rb_consumer) = rb.split();
+        // SPSC channel for raw Opus packets: network thread → cpal callback.
+        let packet_rb = HeapRb::<RawPacket>::new(PACKET_CHANNEL_CAPACITY);
+        let (packet_producer, packet_consumer) = packet_rb.split();
+
+        // The Opus decoder lives inside the cpal callback (required for PLC to work).
+        let decoder =
+            create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
 
         let host = cpal::default_host();
         let device = host
             .default_output_device()
-            .ok_or_else(|| AudioCaptureError::DefaultOutputDeviceUnavailable)?;
+            .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
 
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            // buffer_size: cpal::BufferSize::Fixed(512),
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -64,45 +77,30 @@ impl AudioReceiver {
             .build_output_stream(
                 &stream_config,
                 {
-                    let mut rb_consumer = rb_consumer;
-                    let mut prebuffering = true;
-                    let target_cushion = OPUS_FRAME_SAMPLES * TARGET_CUSHION_FRAMES;
+                    let mut packet_consumer = packet_consumer;
+                    let mut jitter_manager = JitterBufferManager::new(decoder);
 
                     move |data: &mut [f32], _: &_| {
                         let vol = f32::from_bits(volume_for_cpal.load(Ordering::Relaxed));
+
                         if !is_playing_for_cpal.load(Ordering::Relaxed) {
-                            while rb_consumer.try_pop().is_some() {}
+                            // Paused: drain incoming packets and output silence.
+                            while packet_consumer.try_pop().is_some() {}
                             for sample in data.iter_mut() {
                                 *sample = 0.0;
                             }
-                            prebuffering = true;
+                            jitter_manager.reset();
                             return;
                         }
 
-                        if prebuffering {
-                            if rb_consumer.occupied_len() >= target_cushion {
-                                prebuffering = false;
-                            } else {
-                                for sample in data.iter_mut() {
-                                    *sample = 0.0;
-                                }
-                                return;
-                            }
-                        }
+                        // Step 1: Drain all raw packets from the network thread
+                        //         into the jitter buffer's ordered slot array.
+                        jitter_manager.ingest_packets(&mut packet_consumer);
 
-                        let mut underrun = false;
-                        for sample in data.iter_mut() {
-                            if let Some(s) = rb_consumer.try_pop() {
-                                *sample = s * vol;
-                            } else {
-                                *sample = 0.0;
-                                underrun = true;
-                            }
-                        }
-
-                        if underrun {
-                            prebuffering = true;
-                        }
+                        // Step 2: Fill the output buffer with jitter-compensated audio.
+                        //         The manager handles decode, PLC, and prebuffering
+                        //         internally — the cpal DAC clock drives everything.
+                        jitter_manager.fill_output(data, vol);
                     }
                 },
                 {
@@ -113,10 +111,10 @@ impl AudioReceiver {
                 },
                 None,
             )
-            .map_err(|e| AudioCaptureError::FailedToBuildOutputStream(e))?;
+            .map_err(AudioCaptureError::FailedToBuildOutputStream)?;
 
         let receiver = AudioReceiver {
-            rb_producer,
+            packet_producer,
             playback_stream,
             error_rx,
             shutdown_rx,
@@ -143,12 +141,14 @@ impl AudioReceiver {
                 source,
             })?;
 
-        let mut highest_seq_num: u64 = 0;
-        let mut decoder =
-            create_opus_decoder().map_err(|e| AudioCaptureError::OpusDecoderFailed(e))?;
         let mut recv_buff = vec![0u8; SEQ_NUM_SIZE + MAX_OPUS_PACKET_SIZE];
-        let mut pcm_output = vec![0f32; OPUS_FRAME_SAMPLES];
         let mut sender_ip_tx = sender_ip_tx;
+
+        // Temporary decode buffer for RMS calculation only.
+        // The actual decoding now happens inside the cpal callback.
+        let mut rms_decoder =
+            create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
+        let mut rms_pcm = vec![0f32; OPUS_FRAME_SAMPLES];
 
         loop {
             tokio::select! {
@@ -169,48 +169,38 @@ impl AudioReceiver {
                     let seq_bytes: [u8; 8] = recv_buff[..SEQ_NUM_SIZE].try_into().unwrap();
                     let seq_num = u64::from_be_bytes(seq_bytes);
 
-                    if seq_num <= highest_seq_num && highest_seq_num != 0 {
-                        continue;
-                    }
+                    // FIX: Do NOT filter out-of-order packets here!
+                    // The jitter buffer handles reordering — that's its entire purpose.
+                    // The old `highest_seq_num` check was killing any late-arriving
+                    // packets before they could reach the buffer for reordering.
 
-                    // --- Packet Loss Concealment ---
-                    if highest_seq_num != 0 && seq_num > highest_seq_num + 1 {
-                        let missing_frames = (seq_num - highest_seq_num - 1).min(3);
-                        for _ in 0..missing_frames {
-                            if let Ok(samples) = decoder.decode_float(&[] as &[u8], &mut pcm_output, false) {
-                                let total = samples * OPUS_CHANNELS as usize;
-                                if self.rb_producer.vacant_len() >= total {
-                                    self.rb_producer.push_slice(&pcm_output[..total]);
-                                }
-                            }
-                        }
-                    }
+                    let opus_data = recv_buff[SEQ_NUM_SIZE..len].to_vec();
 
-                    highest_seq_num = seq_num;
-
-                    let opus_data = &recv_buff[SEQ_NUM_SIZE..len];
-                    let decoded_samples = match decoder.decode_float(opus_data, &mut pcm_output, false) {
-                        Ok(len) => len,
-                        Err(_) => continue,
+                    // Push the raw packet into the SPSC channel for the cpal callback.
+                    // If the channel is full, drop the packet (real-time priority: never block).
+                    let packet = RawPacket {
+                        seq_num,
+                        opus_data,
+                        arrival_time: Instant::now(),
                     };
+                    let _ = self.packet_producer.try_push(packet);
 
-                    let total_samples = decoded_samples * OPUS_CHANNELS as usize;
-                    self.rb_producer.push_slice(&pcm_output[..total_samples]);
-
-                    let mut sum_squares = 0.0;
-                    for sample in &pcm_output[..total_samples] {
-                        sum_squares += sample * sample;
-                    }
-                    let rms = (sum_squares / total_samples as f32).sqrt();
-
-                    if let Some(ref tx) = latency_tx {
-                        if highest_seq_num % 50 == 0 {
-                            let latency_ms = (self.rb_producer.occupied_len() as f32
-                                / OPUS_CHANNELS as f32
-                                / OPUS_SAMPLE_RATE as f32)
-                                * 1000.0;
-                            let _ = tx.try_send((latency_ms, rms));
+                    // Latency / RMS reporting (every 50 packets, ~500ms).
+                    if let Some(ref tx) = latency_tx
+                        && seq_num.is_multiple_of(50)
+                    {
+                        let rms_data = &recv_buff[SEQ_NUM_SIZE..len];
+                        let mut rms = 0.0f32;
+                        if let Ok(samples) = rms_decoder.decode_float(rms_data, &mut rms_pcm, false) {
+                            let total = samples * OPUS_CHANNELS as usize;
+                            let sum_sq: f32 = rms_pcm[..total].iter().map(|s| s * s).sum();
+                            rms = (sum_sq / total as f32).sqrt();
                         }
+
+                        // Estimate latency from the packet channel occupancy.
+                        let buffered_packets = self.packet_producer.occupied_len();
+                        let latency_ms = (buffered_packets as f32) * 10.0; // 10ms per packet
+                        let _ = tx.try_send((latency_ms, rms));
                     }
                 }
                 Some(stream_err) = self.error_rx.recv() => {
@@ -228,7 +218,7 @@ impl AudioReceiver {
     pub fn start_audio_playback(&self) -> Result<(), GemaCastError> {
         self.playback_stream
             .play()
-            .map_err(|e| AudioCaptureError::FailedToPlayOutputStream(e))?;
+            .map_err(AudioCaptureError::FailedToPlayOutputStream)?;
 
         Ok(())
     }

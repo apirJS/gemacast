@@ -41,7 +41,6 @@ impl AudioSender {
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            // buffer_size: cpal::BufferSize::Fixed(64),
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -84,16 +83,15 @@ impl AudioSender {
                 source: e,
             })?;
         let mut encoder =
-            create_opus_encoder().map_err(|e| AudioCaptureError::OpusEncoderFailed(e))?;
+            create_opus_encoder().map_err(AudioCaptureError::OpusEncoderFailed)?;
         let mut frame_accumulator = FrameAccumulator::new(OPUS_FRAME_SAMPLES);
         let mut seq_num: u64 = 0;
         let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut targets: HashSet<SocketAddr> = HashSet::new();
 
-        let _ = self
-            .audio_stream
+        self.audio_stream
             .play()
-            .map_err(|e| AudioCaptureError::FailedToPlayInputStream(e))?;
+            .map_err(AudioCaptureError::FailedToPlayInputStream)?;
 
         loop {
             tokio::select! {

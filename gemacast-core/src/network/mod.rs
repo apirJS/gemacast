@@ -15,10 +15,6 @@ pub const AUDIO_PORT: u16 = 55556;
 /// 480 samples = 10ms at 48kHz. Set to a lower number for faster audio loop triggers.
 pub const CPAL_BUFFER_SIZE: u32 = 512;
 
-/// The number of Opus frames (typically 10ms each) to buffer over the network before starting playback.
-/// A lower number decreases playback latency but increases the chance of stutters under Wi-Fi jitter.
-pub const TARGET_CUSHION_FRAMES: usize = 2;
-
 pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
     local_ip_address::local_ip()
 }
@@ -31,29 +27,28 @@ pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
         for (_, ip) in interfaces {
-            if let std::net::IpAddr::V4(ipv4) = ip {
-                if !ipv4.is_loopback() {
-                    let octets = ipv4.octets();
-                    let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
-                    if !addrs.contains(&bcast) {
-                        addrs.push(bcast);
-                    }
+            if let std::net::IpAddr::V4(ipv4) = ip
+                && !ipv4.is_loopback()
+            {
+                let octets = ipv4.octets();
+                let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+                if !addrs.contains(&bcast) {
+                    addrs.push(bcast);
                 }
             }
         }
     }
 
-    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {
-                let ipv4 = addr.ip();
-                if !ipv4.is_loopback() {
-                    let octets = ipv4.octets();
-                    let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
-                    if !addrs.contains(&bcast) {
-                        addrs.push(bcast);
-                    }
-                }
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0")
+        && socket.connect("8.8.8.8:80").is_ok()
+        && let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr()
+    {
+        let ipv4 = addr.ip();
+        if !ipv4.is_loopback() {
+            let octets = ipv4.octets();
+            let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+            if !addrs.contains(&bcast) {
+                addrs.push(bcast);
             }
         }
     }

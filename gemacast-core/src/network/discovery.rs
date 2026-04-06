@@ -18,6 +18,7 @@ pub struct DiscoveryListenerHandles {
 }
 
 impl DiscoveryListener {
+    #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
     pub fn new() -> DiscoveryListenerHandles {
         let (discovery_tx, discovery_rx) = mpsc::channel::<(ControlMessage, std::net::SocketAddr)>(8);
 
@@ -86,6 +87,7 @@ pub struct DiscoveryBroadcasterHandles {
 }
 
 impl DiscoveryBroadcaster {
+    #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
     pub async fn new() -> Result<DiscoveryBroadcasterHandles, GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
         let socket = UdpSocket::bind(addr)
@@ -97,7 +99,7 @@ impl DiscoveryBroadcaster {
 
         socket
             .set_broadcast(true)
-            .map_err(|e| NetworkError::EnableBroadcastFailed(e))?;
+            .map_err(NetworkError::EnableBroadcastFailed)?;
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
