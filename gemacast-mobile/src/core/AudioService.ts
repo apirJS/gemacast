@@ -44,21 +44,52 @@ export class AudioService {
     }
   }
 
-  public async setVolume(level: number): Promise<void> {
-    this.stateHandler.setVolumeValue(level);
+  public async setRemoteVolume(level: number): Promise<void> {
+    const { connectedSender } = this.stateHandler.getState();
+    if (!connectedSender) return;
+
+    const clamped = Math.max(0, Math.min(1, level));
+
+    this.stateHandler.setState({
+      connectedSender: {
+        ...connectedSender,
+        volume: clamped,
+        isMuted: clamped === 0,
+      },
+    });
+
     try {
-      await invoke('set_volume', { level: Math.max(0, Math.min(1, level)) });
+      await invoke('set_remote_system_volume', {
+        ip: connectedSender.addr.split(':')[0],
+        deviceId: connectedSender.deviceId,
+        level: clamped,
+      });
     } catch (e) {
-      console.warn('set_volume IPC failed:', e);
+      console.warn('set_remote_system_volume IPC failed:', e);
     }
   }
 
-  public async toggleMute(): Promise<void> {
-    const level = this.stateHandler.toggleMuteValue();
+  public async toggleRemoteMute(): Promise<void> {
+    const { connectedSender } = this.stateHandler.getState();
+    if (!connectedSender) return;
+
+    const newMuted = !(connectedSender.isMuted ?? false);
+
+    this.stateHandler.setState({
+      connectedSender: {
+        ...connectedSender,
+        isMuted: newMuted,
+      },
+    });
+
     try {
-      await invoke('set_volume', { level });
+      await invoke('set_remote_system_mute', {
+        ip: connectedSender.addr.split(':')[0],
+        deviceId: connectedSender.deviceId,
+        muted: newMuted,
+      });
     } catch (e) {
-      console.warn('set_volume IPC failed:', e);
+      console.warn('set_remote_system_mute IPC failed:', e);
     }
   }
 }

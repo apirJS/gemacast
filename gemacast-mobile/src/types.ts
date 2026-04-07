@@ -33,6 +33,8 @@ export type DiscoveredSender = {
   deviceName: string;
   addr: string;
   isOffline: boolean;
+  volume?: number;
+  isMuted?: boolean;
 };
 
 export enum Status {
@@ -65,8 +67,6 @@ export type AppState = {
   /** Persisted across reconnects — used for auto-reconnect. Cleared on explicit user disconnect. */
   lastConnectedSender: DiscoveredSender | null;
   error: GemaCastError | null;
-  volume: number;
-  isMuted: boolean;
   connectionHealth: ConnectionHealth;
   isNetworkAvailable: boolean;
   isLoading: boolean;

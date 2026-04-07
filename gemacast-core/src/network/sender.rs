@@ -98,10 +98,22 @@ impl AudioSender {
                 Some(command) = command_rx.recv() => {
                     match command {
                         SenderCommand::AddTarget(target_addr) => {
-                            targets.insert(target_addr);
+                            let is_new = targets.insert(target_addr);
+                            if is_new {
+                                // Ensure the Opus encoder has a clean state for any newly connected listener
+                                let _ = encoder.reset_state();
+                                frame_accumulator.buffer.clear();
+                            }
                         }
                         SenderCommand::RemoveTarget(target_addr) => {
                             targets.remove(&target_addr);
+                            if targets.is_empty() {
+                                // Wipe the Opus prediction engine so it doesn't artificially extrapolate
+                                // new audio onto old 5-second-ago audio upon reconnection.
+                                let _ = encoder.reset_state();
+                                // Dump any partially captured PCM samples.
+                                frame_accumulator.buffer.clear();
+                            }
                         }
                     }
                 },
@@ -137,8 +149,15 @@ impl AudioSender {
                         packet.extend_from_slice(&opus_output[..encoded_len]);
 
                         for target_addr in &targets {
-                            if let Err(e) = audio_socket.send_to(&packet, *target_addr).await {
-                                eprintln!("UDP send failed: {}", e);
+                            match audio_socket.try_send_to(&packet, *target_addr) {
+                                Ok(_) => {}
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // The OS UDP buffer is full due to Wi-Fi contention. 
+                                    // Silently drop the packet to avoid blocking the encoder thread!
+                                }
+                                Err(e) => {
+                                    eprintln!("UDP send failed: {}", e);
+                                }
                             }
                         }
 
