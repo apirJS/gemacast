@@ -8,7 +8,6 @@ import {
 } from '../types';
 import { GemaCastError } from '../error';
 
-const LS_VOLUME = 'gemacast_volume';
 const LS_LAST_SENDER = 'gemacast_last_sender';
 
 export class StateHandler {
@@ -16,7 +15,6 @@ export class StateHandler {
   private subscribers: StateSubscriber[] = [];
 
   constructor(deviceInfo: DeviceInfo) {
-    const savedVolume = parseFloat(localStorage.getItem(LS_VOLUME) ?? '1.0');
     const lastConnectedSender = StateHandler.loadLastSender();
 
     this.state = {
@@ -26,8 +24,6 @@ export class StateHandler {
       connectedSender: null,
       lastConnectedSender,
       error: null,
-      volume: isNaN(savedVolume) ? 1.0 : Math.max(0, Math.min(1, savedVolume)),
-      isMuted: false,
       connectionHealth: 'ok',
       isNetworkAvailable: navigator.onLine,
       isLoading: false,
@@ -66,23 +62,6 @@ export class StateHandler {
 
   public setConnectionHealth(health: ConnectionHealth) {
     this.setState({ connectionHealth: health });
-  }
-
-  public getVolume(): number {
-    return this.state.volume;
-  }
-
-  public setVolumeValue(level: number): void {
-    const clamped = Math.max(0, Math.min(1, level));
-    this.setState({ volume: clamped, isMuted: clamped === 0 });
-    localStorage.setItem(LS_VOLUME, String(clamped));
-  }
-
-  public toggleMuteValue(): number {
-    const newMuted = !this.state.isMuted;
-    const level = newMuted ? 0 : this.state.volume;
-    this.setState({ isMuted: newMuted });
-    return level;
   }
 
   public updateLatencyInfo(

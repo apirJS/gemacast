@@ -42,6 +42,7 @@ export class DiscoveryService {
     const list = [...currentState.discoveredSenders];
     const index = list.findIndex((s) => s.deviceId === sender.deviceId);
 
+    let connectedSender = currentState.connectedSender;
     if (sender.isOffline) {
       if (index >= 0) list.splice(index, 1);
     } else {
@@ -50,10 +51,16 @@ export class DiscoveryService {
       } else {
         list.push(sender);
       }
+      if (connectedSender?.deviceId === sender.deviceId) {
+        connectedSender = sender;
+      }
     }
-    this.stateHandler.setState({ discoveredSenders: list });
+    
+    this.stateHandler.setState({ 
+      discoveredSenders: list,
+      connectedSender
+    });
 
-    // Inform connection service or auto-reconnect if needed
     if (
       !sender.isOffline &&
       currentState.status === Status.Listening &&

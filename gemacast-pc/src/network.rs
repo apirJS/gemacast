@@ -66,20 +66,27 @@ pub fn spawn_background_engine(
                 while let Some(command) = stream_command_rx.recv().await {
                     match command {
                         StreamCommand::StartBroadcasting => {
-                            if active_broadcaster_tx.is_none() {
-                                if let Ok(handles) = DiscoveryBroadcaster::new().await {
-                                    active_broadcaster_tx = Some(handles.shutdown_tx);
-                                    let hostname = "Desktop PC".to_string();
-                                    let payload = ControlMessage::Presence {
-                                        sender_id: "PC_SENDER_1".to_string(),
-                                        sender_name: hostname,
-                                        is_offline: false,
+                            if active_broadcaster_tx.is_none()
+                                && let Ok(handles) = DiscoveryBroadcaster::new().await
+                            {
+                                active_broadcaster_tx = Some(handles.shutdown_tx);
+                                tokio::spawn(async move {
+                                    let sys_vol = crate::volume::default_volume_controller();
+                                    let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
+                                    let device_id = format!("PC_{}", device_name.to_uppercase());
+                                    let factory = move || {
+                                        let vol = sys_vol.get_volume().ok();
+                                        let muted = sys_vol.get_mute().ok();
+                                        ControlMessage::Presence {
+                                            sender_id: device_id.clone(),
+                                            sender_name: device_name.clone(),
+                                            is_offline: false,
+                                            volume: vol,
+                                            is_muted: muted,
+                                        }
                                     };
-                                    tokio::spawn(async move {
-                                        let _ =
-                                            handles.broadcaster.broadcast_presence(payload).await;
-                                    });
-                                }
+                                    let _ = handles.broadcaster.broadcast_presence(factory).await;
+                                });
                             }
                         }
                         StreamCommand::StopBroadcasting => {
@@ -91,7 +98,10 @@ pub fn spawn_background_engine(
                             if let Ok(mut map) = state_for_dispatch.lock() {
                                 for (device_id, device) in map.drain() {
                                     devices_to_remove.push((device.addr, device_id.clone()));
-                                    let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id, device.addr));
+                                    let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(
+                                        device_id,
+                                        device.addr,
+                                    ));
                                 }
                             }
 
@@ -140,7 +150,8 @@ pub fn spawn_background_engine(
                             }
 
                             for (device_id, addr) in devices_to_remove {
-                                let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
+                                let _ = proxy_for_dispatch
+                                    .send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
                                 let _ = send_control_message(
                                     addr.ip(),
                                     ControlMessage::Disconnect { device_id },
@@ -173,20 +184,25 @@ pub fn spawn_background_engine(
                             } else {
                                 is_new = true;
                             }
-                            
+
                             let device = DiscoveredDevice::from_presence(
                                 device_id.clone(),
                                 device_name.clone(),
                                 false,
                                 audio_addr,
+                                None,
+                                None,
                             );
                             map.insert(device_id.clone(), device);
                         }
 
                         if ip_changed {
                             if let Some(old) = old_addr {
-                                let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
-                                let _ = sender_command_tx_for_dispatch.send(SenderCommand::RemoveTarget(old)).await;
+                                let _ = proxy
+                                    .send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
+                                let _ = sender_command_tx_for_dispatch
+                                    .send(SenderCommand::RemoveTarget(old))
+                                    .await;
                             }
                             is_new = true; // Force UI re-add
                         }
@@ -198,21 +214,32 @@ pub fn spawn_background_engine(
                                 addr: audio_addr,
                             });
                         }
-                        
+
                         let _ = sender_command_tx_for_dispatch
                             .send(SenderCommand::AddTarget(audio_addr))
                             .await;
                     }
                     ControlMessage::Disconnect { device_id } => {
-                        if let Ok(mut map) = state.lock() {
-                            if let Some(removed) = map.remove(&device_id) {
-                                let _ = proxy
-                                    .send_event(DaemonEvent::DeviceLost(device_id, removed.addr));
-                                let _ = sender_command_tx_for_dispatch
-                                    .send(SenderCommand::RemoveTarget(removed.addr))
-                                    .await;
-                            }
+                        let mut removed_addr = None;
+                        if let Ok(mut map) = state.lock()
+                            && let Some(removed) = map.remove(&device_id)
+                        {
+                            removed_addr = Some(removed.addr);
                         }
+                        if let Some(addr) = removed_addr {
+                            let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id, addr));
+                            let _ = sender_command_tx_for_dispatch
+                                .send(SenderCommand::RemoveTarget(addr))
+                                .await;
+                        }
+                    }
+                    ControlMessage::SetSystemVolume { level, .. } => {
+                        let sys_vol = crate::volume::default_volume_controller();
+                        let _ = sys_vol.set_volume(level);
+                    }
+                    ControlMessage::SetSystemMute { muted, .. } => {
+                        let sys_vol = crate::volume::default_volume_controller();
+                        let _ = sys_vol.set_mute(muted);
                     }
                     _ => {}
                 }

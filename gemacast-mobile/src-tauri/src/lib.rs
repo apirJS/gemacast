@@ -1,13 +1,13 @@
 use gemacast_core::network::AudioReceiver;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{Emitter, State};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 3;
+const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 10;
 const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 
 struct AppState {
@@ -15,7 +15,6 @@ struct AppState {
     playback_handle: Mutex<Option<JoinHandle<()>>>,
     shutdown_playback_tx: Mutex<Option<oneshot::Sender<()>>>,
     is_playing: Mutex<Option<Arc<AtomicBool>>>,
-    volume: Mutex<Option<Arc<AtomicU32>>>,
 }
 
 #[tauri::command]
@@ -25,25 +24,10 @@ fn get_local_ip() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn stop_audio_playback_inner(state: &AppState) -> Result<(), String> {
-    if let Some(tx) = state
-        .shutdown_playback_tx
-        .lock()
-        .map_err(|e| e.to_string())?
-        .take()
-    {
-        let _ = tx.send(());
+async fn stop_audio_playback_inner(state: &AppState) -> Result<(), String> {
+    if let Some(is_playing) = state.is_playing.lock().map_err(|e| e.to_string())?.as_ref() {
+        is_playing.store(false, Ordering::Relaxed);
     }
-    if let Some(handle) = state
-        .playback_handle
-        .lock()
-        .map_err(|e| e.to_string())?
-        .take()
-    {
-        handle.abort();
-    }
-    let _ = state.is_playing.lock().map_err(|e| e.to_string())?.take();
-    let _ = state.volume.lock().map_err(|e| e.to_string())?.take();
     Ok(())
 }
 
@@ -154,6 +138,8 @@ fn spawn_discovery_listener(
                     sender_id,
                     sender_name,
                     is_offline,
+                    volume,
+                    is_muted,
                 } => {
                     if is_offline {
                         last_seen.lock().unwrap().remove(&sender_id);
@@ -171,6 +157,8 @@ fn spawn_discovery_listener(
                         sender_name,
                         is_offline,
                         audio_addr,
+                        volume,
+                        is_muted,
                     );
                     let _ = app_handle.emit("sender-discovered", device);
                 }
@@ -242,20 +230,27 @@ async fn connect_to_sender(
     .await
     .map_err(|e| e.to_string())?;
 
-    stop_audio_playback_inner(&state)?;
+    stop_audio_playback_inner(&state).await?;
 
-    let audio_handles = AudioReceiver::create().await.map_err(|e| e.to_string())?;
-    *state
-        .shutdown_playback_tx
-        .lock()
-        .map_err(|e| e.to_string())? = Some(audio_handles.shutdown_tx);
-    *state.is_playing.lock().map_err(|e| e.to_string())? = Some(audio_handles.is_playing);
-    *state.volume.lock().map_err(|e| e.to_string())? = Some(audio_handles.volume);
+    let is_initialized = state.playback_handle.lock().map_err(|e| e.to_string())?.is_some();
+    
+    if !is_initialized {
+        let audio_handles = AudioReceiver::create().await.map_err(|e| e.to_string())?;
+        *state
+            .shutdown_playback_tx
+            .lock()
+            .map_err(|e| e.to_string())? = Some(audio_handles.shutdown_tx);
+        *state.is_playing.lock().map_err(|e| e.to_string())? = Some(audio_handles.is_playing);
 
-    let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
-    let playback_task =
-        spawn_playback_task(audio_handles.receiver, app_handle, sender_ip_tx, latency_tx);
-    *state.playback_handle.lock().map_err(|e| e.to_string())? = Some(playback_task);
+        let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
+        let playback_task =
+            spawn_playback_task(audio_handles.receiver, app_handle, sender_ip_tx, latency_tx);
+        *state.playback_handle.lock().map_err(|e| e.to_string())? = Some(playback_task);
+    }
+
+    if let Some(is_playing) = state.is_playing.lock().map_err(|e| e.to_string())?.as_ref() {
+        is_playing.store(true, Ordering::Relaxed);
+    }
 
     Ok(())
 }
@@ -273,7 +268,7 @@ async fn disconnect_from_sender(
     )
     .await;
 
-    stop_audio_playback_inner(&state)?;
+    stop_audio_playback_inner(&state).await?;
     Ok(())
 }
 
@@ -296,12 +291,34 @@ async fn start_audio_playback(state: State<'_, AppState>) -> Result<(), String> 
 }
 
 #[tauri::command]
-async fn set_volume(level: f32, state: State<'_, AppState>) -> Result<(), String> {
-    let clamped = level.clamp(0.0, 1.0);
-    let vol_lock = state.volume.lock().map_err(|e| e.to_string())?;
-    if let Some(vol) = vol_lock.as_ref() {
-        vol.store(f32::to_bits(clamped), Ordering::Relaxed);
-    }
+async fn set_remote_system_volume(
+    ip: String,
+    device_id: String,
+    level: f32,
+) -> Result<(), String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    gemacast_core::network::send_control_message(
+        ip_addr,
+        gemacast_core::types::ControlMessage::SetSystemVolume { device_id, level },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_remote_system_mute(
+    ip: String,
+    device_id: String,
+    muted: bool,
+) -> Result<(), String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    gemacast_core::network::send_control_message(
+        ip_addr,
+        gemacast_core::types::ControlMessage::SetSystemMute { device_id, muted },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -313,7 +330,6 @@ pub fn run() {
             playback_handle: Mutex::new(None),
             shutdown_playback_tx: Mutex::new(None),
             is_playing: Mutex::new(None),
-            volume: Mutex::new(None),
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_device_info::init())
@@ -325,7 +341,8 @@ pub fn run() {
             get_local_ip,
             start_audio_playback,
             stop_audio_playback,
-            set_volume
+            set_remote_system_volume,
+            set_remote_system_mute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

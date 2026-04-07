@@ -112,10 +112,13 @@ impl DiscoveryBroadcaster {
         })
     }
 
-    pub async fn broadcast_presence(
+    pub async fn broadcast_presence<F>(
         mut self,
-        mut payload: ControlMessage,
-    ) -> Result<(), NetworkError> {
+        mut payload_factory: F,
+    ) -> Result<(), NetworkError>
+    where
+        F: FnMut() -> ControlMessage + Send,
+    {
         let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
             .into_iter()
             .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
@@ -125,6 +128,7 @@ impl DiscoveryBroadcaster {
         let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
 
         loop {
+            let mut payload = payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
             for addr in &broadcast_addrs {
                 let _ = self.socket.send_to(&json_bytes, *addr).await;
@@ -163,7 +167,7 @@ pub async fn send_control_message(
     target_ip: std::net::IpAddr,
     message: ControlMessage,
 ) -> Result<(), NetworkError> {
-    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+    let addr: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(addr)
         .await
         .map_err(|e| NetworkError::BindFailed {
