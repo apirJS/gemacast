@@ -18,6 +18,12 @@ pub struct JitterBuffer {
     initialized: bool,
 }
 
+impl Default for JitterBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JitterBuffer {
     pub fn new() -> Self {
         let slots = (0..BUFFER_CAPACITY).map(|_| None).collect();

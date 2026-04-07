@@ -4,7 +4,7 @@ pub const OPUS_CHANNELS: u16 = 2;
 pub const OPUS_SAMPLE_RATE: u32 = 48_000;
 
 pub const OPUS_BITRATE: usize = 128_000;
-pub const OPUS_FRAME_SIZE: usize = 480;
+pub const OPUS_FRAME_SIZE: usize = 960;
 pub const OPUS_FRAME_SAMPLES: usize = OPUS_FRAME_SIZE * OPUS_CHANNELS as usize;
 
 /// Maximum possible Opus packet size (spec says 1275 * 3 + 7, but 4000 is safe)
@@ -52,5 +52,36 @@ impl FrameAccumulator {
         }
 
         frames
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::audio::FrameAccumulator;
+
+    #[test]
+    fn buffer_drained_correctly() {
+        let frame_size: usize = 1024;
+        let mut frame_acc = FrameAccumulator::new(frame_size);
+
+        let samples_a = vec![1.0; frame_size + 1];
+        let frames_a = frame_acc.push(&samples_a);
+
+        assert_eq!(frames_a.len(), 1);
+        assert_eq!(frames_a[0].len(), frame_size);
+        assert_eq!(frame_acc.buffer.len(), 1);
+
+        let samples_b = vec![1.0; 1];
+        let frames_b = frame_acc.push(&samples_b);
+
+        assert_eq!(frames_b.len(), 0);
+        assert_eq!(frame_acc.buffer.len(), 2);
+
+        let samples_c = vec![1.0; frame_size - 2];
+        let frames_c = frame_acc.push(&samples_c);
+
+        assert_eq!(frames_c.len(), 1);
+        assert_eq!(frames_c[0].len(), frame_size);
+        assert_eq!(frame_acc.buffer.len(), 0);
     }
 }

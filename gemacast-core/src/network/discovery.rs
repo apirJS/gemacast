@@ -1,6 +1,7 @@
 use crate::error::{GemaCastError, NetworkError};
 use crate::types::ControlMessage;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
@@ -9,6 +10,7 @@ use tokio::time::sleep;
 use super::DISCOVERY_PORT;
 
 pub struct DiscoveryListener {
+    pub socket: Arc<UdpSocket>,
     discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
 }
 
@@ -19,30 +21,30 @@ pub struct DiscoveryListenerHandles {
 
 impl DiscoveryListener {
     #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
-    pub fn new() -> DiscoveryListenerHandles {
+    pub async fn new() -> Result<DiscoveryListenerHandles, GemaCastError> {
         let (discovery_tx, discovery_rx) = mpsc::channel::<(ControlMessage, std::net::SocketAddr)>(8);
 
-        DiscoveryListenerHandles {
-            listener: DiscoveryListener { discovery_tx },
+        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
+        let socket = UdpSocket::bind(addr)
+            .await
+            .map_err(|e| NetworkError::BindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
+        let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
+        let _ = socket.join_multicast_v4(multicast_ip, Ipv4Addr::UNSPECIFIED);
+
+        Ok(DiscoveryListenerHandles {
+            listener: DiscoveryListener { discovery_tx, socket: Arc::new(socket) },
             discovery_rx,
-        }
+        })
     }
 
     pub async fn start(&self) -> Result<(), GemaCastError> {
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
-        let discovery_socket =
-            UdpSocket::bind(addr)
-                .await
-                .map_err(|e| NetworkError::BindFailed {
-                    addr: addr.to_string(),
-                    source: e,
-                })?;
-        let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
-        let _ = discovery_socket.join_multicast_v4(multicast_ip, Ipv4Addr::UNSPECIFIED);
         let mut buff = vec![0u8; 2048];
 
         loop {
-            let (len, remote_addr) = match discovery_socket.recv_from(&mut buff).await {
+            let (len, remote_addr) = match self.socket.recv_from(&mut buff).await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!(
@@ -112,10 +114,13 @@ impl DiscoveryBroadcaster {
         })
     }
 
-    pub async fn broadcast_presence(
+    pub async fn broadcast_presence<F>(
         mut self,
-        mut payload: ControlMessage,
-    ) -> Result<(), NetworkError> {
+        mut payload_factory: F,
+    ) -> Result<(), NetworkError>
+    where
+        F: FnMut() -> ControlMessage + Send,
+    {
         let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
             .into_iter()
             .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
@@ -125,6 +130,7 @@ impl DiscoveryBroadcaster {
         let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
 
         loop {
+            let mut payload = payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
             for addr in &broadcast_addrs {
                 let _ = self.socket.send_to(&json_bytes, *addr).await;
@@ -163,7 +169,7 @@ pub async fn send_control_message(
     target_ip: std::net::IpAddr,
     message: ControlMessage,
 ) -> Result<(), NetworkError> {
-    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+    let addr: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(addr)
         .await
         .map_err(|e| NetworkError::BindFailed {

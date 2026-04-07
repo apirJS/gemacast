@@ -12,7 +12,8 @@ export class DiscoveryService {
   public async startListening(): Promise<Result<true, GemaCastError>> {
     this.stateHandler.setState({ isLoading: true });
     try {
-      await invoke('start_listening_for_senders');
+      const state = this.stateHandler.getState();
+      await invoke('start_listening_for_senders', { deviceId: state.deviceInfo.deviceId });
       this.stateHandler.setState({
         status: Status.Listening,
         isLoading: false,
@@ -42,22 +43,46 @@ export class DiscoveryService {
     const list = [...currentState.discoveredSenders];
     const index = list.findIndex((s) => s.deviceId === sender.deviceId);
 
+    let connectedSender = currentState.connectedSender;
     if (sender.isOffline) {
       if (index >= 0) list.splice(index, 1);
+
+      // If we are actively connected/playing to this sender and it went offline,
+      // clear the connection state. The PC may have intentionally stopped broadcasting.
+      // We rely on `handleSenderTimeout` for re-connect logic on unintentional drops.
+      if (currentState.connectedSender?.deviceId === sender.deviceId) {
+        connectedSender = null;
+        this.stateHandler.setState({
+          discoveredSenders: list,
+          connectedSender: null,
+          status: Status.Listening,
+          connectionHealth: 'ok',
+          reconnectAttempts: 0,
+        });
+        this.stateHandler.updateLatencyInfo(null, null, null, null);
+        return;
+      }
     } else {
       if (index >= 0) {
         list[index] = sender;
       } else {
         list.push(sender);
       }
+      if (connectedSender?.deviceId === sender.deviceId) {
+        connectedSender = sender;
+      }
     }
-    this.stateHandler.setState({ discoveredSenders: list });
 
-    // Inform connection service or auto-reconnect if needed
+    this.stateHandler.setState({
+      discoveredSenders: list,
+      connectedSender
+    });
+
     if (
       !sender.isOffline &&
       currentState.status === Status.Listening &&
-      currentState.lastConnectedSender?.deviceId === sender.deviceId
+      currentState.lastConnectedSender?.deviceId === sender.deviceId &&
+      !currentState.isSuspended
     ) {
       this.autoReconnectCallback(sender);
     }

@@ -38,10 +38,26 @@ impl AudioSender {
             .default_output_device()
             .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
 
+        let mut buffer_size = cpal::BufferSize::Default;
+
+        let rate = OPUS_SAMPLE_RATE;
+        if let Ok(mut supported_configs) = device.supported_input_configs()
+            && let Some(config) = supported_configs.find(|c| {
+                c.channels() == OPUS_CHANNELS
+                    && c.min_sample_rate() <= rate
+                    && c.max_sample_rate() >= rate
+            })
+        {
+            if let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
+                let desired = OPUS_FRAME_SAMPLES as u32;
+                buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
+            }
+        }
+
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
-            buffer_size: cpal::BufferSize::Default,
+            buffer_size,
         };
 
         let audio_stream = device
@@ -98,10 +114,22 @@ impl AudioSender {
                 Some(command) = command_rx.recv() => {
                     match command {
                         SenderCommand::AddTarget(target_addr) => {
-                            targets.insert(target_addr);
+                            let is_new = targets.insert(target_addr);
+                            if is_new {
+                                // Ensure the Opus encoder has a clean state for any newly connected listener
+                                let _ = encoder.reset_state();
+                                frame_accumulator.buffer.clear();
+                            }
                         }
                         SenderCommand::RemoveTarget(target_addr) => {
                             targets.remove(&target_addr);
+                            if targets.is_empty() {
+                                // Wipe the Opus prediction engine so it doesn't artificially extrapolate
+                                // new audio onto old 5-second-ago audio upon reconnection.
+                                let _ = encoder.reset_state();
+                                // Dump any partially captured PCM samples.
+                                frame_accumulator.buffer.clear();
+                            }
                         }
                     }
                 },
@@ -137,8 +165,15 @@ impl AudioSender {
                         packet.extend_from_slice(&opus_output[..encoded_len]);
 
                         for target_addr in &targets {
-                            if let Err(e) = audio_socket.send_to(&packet, *target_addr).await {
-                                eprintln!("UDP send failed: {}", e);
+                            match audio_socket.try_send_to(&packet, *target_addr) {
+                                Ok(_) => {}
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // The OS UDP buffer is full due to Wi-Fi contention. 
+                                    // Silently drop the packet to avoid blocking the encoder thread!
+                                }
+                                Err(e) => {
+                                    eprintln!("UDP send failed: {}", e);
+                                }
                             }
                         }
 

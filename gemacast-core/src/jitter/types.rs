@@ -15,17 +15,4 @@ pub struct RawPacket {
     pub arrival_time: Instant,
 }
 
-/// Commands the jitter controller issues to the DSP pipeline each frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DspCommand {
-    /// Play the frame at normal speed (1.0× stretch factor).
-    Normal,
-    /// Speed up playback to drain excess buffer depth.
-    /// `factor` is < 1.0 (e.g., 0.95 = 5% faster).
-    Accelerate { factor: f32 },
-    /// Slow down playback to build up buffer depth.
-    /// `factor` is > 1.0 (e.g., 1.05 = 5% slower).
-    Expand { factor: f32 },
-    /// No packet available — use Opus PLC to hallucinate audio.
-    Conceal,
-}
+

@@ -1,3 +1,19 @@
+.volume-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.volume__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .volume {
   display: flex;
   align-items: center;
@@ -39,6 +55,43 @@
 
 .volume__mute-btn:active {
   background-color: var(--border);
+}
+
+.volume__step-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+  padding: 0;
+  font-size: 1.25rem;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1;
+}
+
+.volume__step-btn:hover {
+  color: var(--foreground);
+  background-color: var(--accent);
+}
+
+.volume__step-btn:active {
+  background-color: var(--border);
+}
+
+.volume__step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .volume__slider {

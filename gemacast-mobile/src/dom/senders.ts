@@ -51,12 +51,26 @@ export function setupSenderList(app: App) {
       );
       svg.appendChild(path);
 
+      const infoBlock = document.createElement('div');
+      infoBlock.className = 'sender-list__info';
+
       const nameSpan = document.createElement('span');
       nameSpan.className = 'sender-list__name';
-      nameSpan.textContent = `${sender.deviceName} — ${sender.addr.split(':')[0]}`;
+      nameSpan.textContent = sender.deviceName;
+
+      const ipWrap = document.createElement('div');
+      ipWrap.className = 'sender-list__ip-wrap';
+
+      const ipSpan = document.createElement('span');
+      ipSpan.className = 'sender-list__ip';
+      ipSpan.textContent = sender.addr.split(':')[0];
+
+      ipWrap.appendChild(ipSpan);
+      infoBlock.appendChild(nameSpan);
+      infoBlock.appendChild(ipWrap);
 
       iconInfo.appendChild(svg);
-      iconInfo.appendChild(nameSpan);
+      iconInfo.appendChild(infoBlock);
       li.appendChild(iconInfo);
 
       const btn = document.createElement('button');
