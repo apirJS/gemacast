@@ -70,6 +70,7 @@ export type AppState = {
   connectionHealth: ConnectionHealth;
   isNetworkAvailable: boolean;
   isLoading: boolean;
+  isSuspended: boolean;
   reconnectAttempts: number;
   latency: LatencyStats;
 };

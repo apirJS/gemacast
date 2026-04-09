@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 cpal = { version = "0.17.3", features = ["asio"] }
-local-ip-address = "0.6.10"
+netdev = "0.41.0"
 opus = "0.3.1"
 ringbuf = "0.4.8"
 rubato = "1.0.1"

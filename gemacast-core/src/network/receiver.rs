@@ -62,6 +62,24 @@ impl AudioReceiver {
             .default_output_device()
             .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
 
+        // let mut buffer_size = cpal::BufferSize::Default;
+
+        // if let Ok(mut supported_configs) = device.supported_input_configs() {
+        //     if let Some(config) = supported_configs.find(|c| {
+        //         c.channels() == OPUS_CHANNELS
+        //             && c.min_sample_rate() <= OPUS_SAMPLE_RATE.into()
+        //             && c.max_sample_rate() >= OPUS_SAMPLE_RATE.into()
+        //     }) {
+        //         match config.buffer_size() {
+        //             cpal::SupportedBufferSize::Range { min, max } => {
+        //                 let desired = OPUS_FRAME_SAMPLES as u32;
+        //                 buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
+        //             }
+        //             cpal::SupportedBufferSize::Unknown => {}
+        //         }
+        //     }
+        // }
+
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
             sample_rate: OPUS_SAMPLE_RATE,
@@ -132,6 +150,7 @@ impl AudioReceiver {
         &mut self,
         sender_ip_tx: Option<oneshot::Sender<String>>,
         latency_tx: Option<mpsc::Sender<(f32, f32)>>,
+        target_ip: Option<std::net::IpAddr>,
     ) -> Result<(), GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, AUDIO_PORT);
         let socket = UdpSocket::bind(addr)
@@ -140,6 +159,12 @@ impl AudioReceiver {
                 addr: addr.to_string(),
                 source,
             })?;
+
+        if let Some(target) = target_ip {
+            let target_addr = std::net::SocketAddr::new(target, AUDIO_PORT);
+            let _ = socket.send_to(&[0u8], target_addr).await;
+            let _ = socket.send_to(&[0u8], target_addr).await;
+        }
 
         let mut recv_buff = vec![0u8; SEQ_NUM_SIZE + MAX_OPUS_PACKET_SIZE];
         let mut sender_ip_tx = sender_ip_tx;

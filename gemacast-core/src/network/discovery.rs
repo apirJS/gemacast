@@ -1,6 +1,7 @@
 use crate::error::{GemaCastError, NetworkError};
 use crate::types::ControlMessage;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
@@ -9,6 +10,7 @@ use tokio::time::sleep;
 use super::DISCOVERY_PORT;
 
 pub struct DiscoveryListener {
+    pub socket: Arc<UdpSocket>,
     discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
 }
 
@@ -19,30 +21,30 @@ pub struct DiscoveryListenerHandles {
 
 impl DiscoveryListener {
     #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
-    pub fn new() -> DiscoveryListenerHandles {
+    pub async fn new() -> Result<DiscoveryListenerHandles, GemaCastError> {
         let (discovery_tx, discovery_rx) = mpsc::channel::<(ControlMessage, std::net::SocketAddr)>(8);
 
-        DiscoveryListenerHandles {
-            listener: DiscoveryListener { discovery_tx },
+        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
+        let socket = UdpSocket::bind(addr)
+            .await
+            .map_err(|e| NetworkError::BindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
+        let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
+        let _ = socket.join_multicast_v4(multicast_ip, Ipv4Addr::UNSPECIFIED);
+
+        Ok(DiscoveryListenerHandles {
+            listener: DiscoveryListener { discovery_tx, socket: Arc::new(socket) },
             discovery_rx,
-        }
+        })
     }
 
     pub async fn start(&self) -> Result<(), GemaCastError> {
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
-        let discovery_socket =
-            UdpSocket::bind(addr)
-                .await
-                .map_err(|e| NetworkError::BindFailed {
-                    addr: addr.to_string(),
-                    source: e,
-                })?;
-        let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
-        let _ = discovery_socket.join_multicast_v4(multicast_ip, Ipv4Addr::UNSPECIFIED);
         let mut buff = vec![0u8; 2048];
 
         loop {
-            let (len, remote_addr) = match discovery_socket.recv_from(&mut buff).await {
+            let (len, remote_addr) = match self.socket.recv_from(&mut buff).await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!(

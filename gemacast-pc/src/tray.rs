@@ -56,7 +56,12 @@ impl TrayManager {
             let _ = self.devices_submenu.remove(&self.scanning_placeholder);
         }
 
-        let display_text = format!("{} ({})", device_name, addr.ip());
+        let connection_type = if gemacast_core::network::is_usb_tether_ip(&addr.ip()) {
+            "USB"
+        } else {
+            "WIFI"
+        };
+        let display_text = format!("{} ({}) [{}]", device_name, addr.ip(), connection_type);
         let new_device = CheckMenuItem::new(display_text, true, false, None);
 
         let _ = self.devices_submenu.append(&new_device);

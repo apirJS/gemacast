@@ -12,7 +12,8 @@ export class DiscoveryService {
   public async startListening(): Promise<Result<true, GemaCastError>> {
     this.stateHandler.setState({ isLoading: true });
     try {
-      await invoke('start_listening_for_senders');
+      const state = this.stateHandler.getState();
+      await invoke('start_listening_for_senders', { deviceId: state.deviceInfo.deviceId });
       this.stateHandler.setState({
         status: Status.Listening,
         isLoading: false,
@@ -64,7 +65,8 @@ export class DiscoveryService {
     if (
       !sender.isOffline &&
       currentState.status === Status.Listening &&
-      currentState.lastConnectedSender?.deviceId === sender.deviceId
+      currentState.lastConnectedSender?.deviceId === sender.deviceId &&
+      !currentState.isSuspended
     ) {
       this.autoReconnectCallback(sender);
     }
