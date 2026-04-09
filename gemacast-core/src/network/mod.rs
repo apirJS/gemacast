@@ -3,7 +3,8 @@ pub mod receiver;
 pub mod sender;
 
 pub use discovery::{
-    DiscoveryBroadcaster, DiscoveryBroadcasterHandles, DiscoveryListener, DiscoveryListenerHandles, send_control_message
+    DiscoveryBroadcaster, DiscoveryBroadcasterHandles, DiscoveryListener, DiscoveryListenerHandles,
+    send_control_message,
 };
 pub use receiver::{AudioReceiver, AudioReceiverHandles};
 pub use sender::{AudioSender, SenderCommand};
@@ -11,25 +12,24 @@ pub use sender::{AudioSender, SenderCommand};
 pub const DISCOVERY_PORT: u16 = 55555;
 pub const AUDIO_PORT: u16 = 55556;
 
-/// The specific buffer size (in samples) handed to CPAL. 
+/// The specific buffer size (in samples) handed to CPAL.
 /// 480 samples = 10ms at 48kHz. Set to a lower number for faster audio loop triggers.
 pub const CPAL_BUFFER_SIZE: u32 = 512;
 
-pub fn get_local_ip() -> Result<std::net::IpAddr, local_ip_address::Error> {
-    local_ip_address::local_ip()
+pub fn get_local_ip() -> Result<std::net::IpAddr, String> {
+    let iface = netdev::get_default_interface().map_err(|e| e.to_string())?;
+    let _ = iface.ipv4[0];
+    Ok(std::net::IpAddr::V4(iface.ipv4[0].addr()))
 }
 
-/// Computes the subnet-directed broadcast address using a routing hack.
-/// On Android API 30+, `local_ip_address` often fails or returns localhost
-/// due to strict permission models hiding network interfaces (`getifaddrs` restricted).
 pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
     let mut addrs = Vec::new();
 
-    if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
-        for (_, ip) in interfaces {
-            if let std::net::IpAddr::V4(ipv4) = ip
-                && !ipv4.is_loopback()
-            {
+    let interfaces = netdev::get_interfaces();
+    for interface in interfaces {
+        for ip_net in interface.ipv4 {
+            let ipv4 = ip_net.addr();
+            if !ipv4.is_loopback() {
                 let octets = ipv4.octets();
                 let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
                 if !addrs.contains(&bcast) {
@@ -58,4 +58,38 @@ pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
     }
 
     addrs
+}
+
+pub fn is_usb_tether_ip(ip: &std::net::IpAddr) -> bool {
+    if let std::net::IpAddr::V4(ipv4) = ip {
+        let octets = ipv4.octets();
+
+        if octets[0] == 192 && octets[1] == 168 && (octets[2] == 42 || octets[2] == 43) {
+            return true;
+        }
+
+        let interfaces = netdev::get_interfaces();
+        for interface in interfaces {
+            let name_lower = interface.name.to_lowercase();
+            if name_lower.contains("rndis")
+                || (!name_lower.contains("wlan")
+                    && !name_lower.contains("lo")
+                    && !name_lower.contains("swlan")
+                    && !name_lower.contains("p2p")
+                    && !name_lower.contains("dummy")
+                    && !name_lower.contains("tun"))
+            {
+                for ip_net in interface.ipv4 {
+                    let local_octets = ip_net.addr().octets();
+                    if octets[0] == local_octets[0]
+                        && octets[1] == local_octets[1]
+                        && octets[2] == local_octets[2]
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }

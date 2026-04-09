@@ -30,6 +30,27 @@ export class App {
     });
 
     this.latency = new LatencyTracker(this.stateHandler);
+
+    this.startIpPolling();
+  }
+
+  private startIpPolling() {
+    setInterval(async () => {
+      try {
+        const localIp = await invoke<string>('get_local_ip');
+        const currentState = this.stateHandler.getState();
+        if (currentState.deviceInfo.ip !== localIp) {
+          this.stateHandler.setState({
+            deviceInfo: {
+              ...currentState.deviceInfo,
+              ip: localIp,
+            },
+          });
+        }
+      } catch (e) {
+        // Silently ignore errors during polling 
+      }
+    }, 5000);
   }
 
   private static generateUuid(): string {

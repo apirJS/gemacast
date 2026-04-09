@@ -27,6 +27,7 @@ export class StateHandler {
       connectionHealth: 'ok',
       isNetworkAvailable: navigator.onLine,
       isLoading: false,
+      isSuspended: false,
       reconnectAttempts: 0,
       latency: { current: null, avg: null, max: null, min: null },
     };

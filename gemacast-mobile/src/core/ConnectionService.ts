@@ -131,7 +131,9 @@ export class ConnectionService {
         });
 
         await this.audioResumer();
-        this.stateHandler.setState({ status: Status.Playing });
+        if (this.stateHandler.getState().connectedSender) {
+          this.stateHandler.setState({ status: Status.Playing });
+        }
       } catch {
         this.startReconnectLoop();
       }
@@ -149,7 +151,7 @@ export class ConnectionService {
     sender: DiscoveredSender,
   ): Promise<Result<true, GemaCastError>> {
     this.clearReconnectTimer();
-    this.stateHandler.setState({ isLoading: true, status: Status.Connecting });
+    this.stateHandler.setState({ isLoading: true, status: Status.Connecting, isSuspended: false });
     try {
       const state = this.stateHandler.getState();
       const ip = sender.addr.split(':')[0];
@@ -182,24 +184,28 @@ export class ConnectionService {
     }
   }
 
-  public async disconnect(): Promise<Result<true, GemaCastError>> {
+  public async disconnect(forgetSender: boolean = true): Promise<Result<true, GemaCastError>> {
     const state = this.stateHandler.getState();
     const sender = state.connectedSender;
     this.clearReconnectTimer();
 
-    StateHandler.saveLastSender(null);
+    if (forgetSender) {
+      StateHandler.saveLastSender(null);
+    }
     this.stateHandler.setState({ isLoading: true });
 
     if (!sender) {
       this.stateHandler.setState({
         connectedSender: null,
-        lastConnectedSender: null,
+        lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
         status: Status.Listening,
         connectionHealth: 'ok',
         reconnectAttempts: 0,
         isLoading: false,
+        isSuspended: !forgetSender,
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
+      await invoke('notify_streaming_stopped').catch(console.warn);
       return ok(true);
     }
 
@@ -215,11 +221,12 @@ export class ConnectionService {
 
     this.stateHandler.setState({
       connectedSender: null,
-      lastConnectedSender: null,
+      lastConnectedSender: forgetSender ? null : sender,
       status: Status.Listening,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
       isLoading: false,
+      isSuspended: !forgetSender,
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
     return ok(true);
@@ -237,7 +244,9 @@ export class ConnectionService {
       status: Status.Listening,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
+      isSuspended: !forgetSender,
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
+    invoke('notify_streaming_stopped').catch(console.warn);
   }
 }

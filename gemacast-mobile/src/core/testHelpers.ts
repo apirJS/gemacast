@@ -86,6 +86,7 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     connectionHealth: 'ok',
     isNetworkAvailable: true,
     isLoading: false,
+    isSuspended: false,
     reconnectAttempts: 0,
     latency: { current: null, avg: null, max: null, min: null },
     ...overrides,

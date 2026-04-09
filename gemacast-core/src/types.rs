@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ControlMessage {
+    Probe {
+        #[serde(default)]
+        device_id: Option<String>,
+    },
     Presence {
         sender_id: String,
         sender_name: String,
