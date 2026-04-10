@@ -70,9 +70,22 @@ pub fn is_usb_tether_ip(ip: &std::net::IpAddr) -> bool {
 
         let interfaces = netdev::get_interfaces();
         for interface in interfaces {
-            let name_lower = interface.name.to_lowercase();
+            let mut name_lower = interface.name.to_lowercase();
+            if let Some(ref friendly) = interface.friendly_name {
+                name_lower.push_str(" ");
+                name_lower.push_str(&friendly.to_lowercase());
+            }
+            if let Some(ref desc) = interface.description {
+                name_lower.push_str(" ");
+                name_lower.push_str(&desc.to_lowercase());
+            }
+
             if name_lower.contains("rndis")
+                || name_lower.contains("ndis")
                 || (!name_lower.contains("wlan")
+                    && !name_lower.contains("wi-fi")
+                    && !name_lower.contains("wifi")
+                    && !name_lower.contains("wireless")
                     && !name_lower.contains("lo")
                     && !name_lower.contains("swlan")
                     && !name_lower.contains("p2p")
