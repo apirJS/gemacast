@@ -1,6 +1,10 @@
 use gemacast_core::network::{AudioSender, SenderCommand};
 use gemacast_core::network::{DiscoveryBroadcaster, send_control_message};
 use gemacast_core::types::{ControlMessage, DiscoveredDevice};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tao::event_loop::EventLoopProxy;
 
 use crate::{
@@ -62,6 +66,12 @@ pub fn spawn_background_engine(
             let sender_command_tx_for_dispatch = sender_command_tx.clone();
             let state_for_dispatch = state.clone();
 
+            // Shared flag: true when the broadcaster is running, false when stopped.
+            // The Probe handler reads this to decide whether to respond as online or offline.
+            let is_broadcasting = Arc::new(AtomicBool::new(true));
+            let is_broadcasting_for_dispatch = is_broadcasting.clone();
+            let is_broadcasting_for_probe = is_broadcasting.clone();
+
             let state_for_watchdog = state.clone();
             let proxy_for_watchdog = proxy.clone();
             let sender_command_tx_for_watchdog = sender_command_tx.clone();
@@ -84,7 +94,9 @@ pub fn spawn_background_engine(
 
                     for (id, addr) in timed_out {
                         let _ = proxy_for_watchdog.send_event(DaemonEvent::DeviceLost(id, addr));
-                        let _ = sender_command_tx_for_watchdog.send(SenderCommand::RemoveTarget(addr)).await;
+                        let _ = sender_command_tx_for_watchdog
+                            .send(SenderCommand::RemoveTarget(addr))
+                            .await;
                     }
                 }
             });
@@ -99,6 +111,8 @@ pub fn spawn_background_engine(
                             if active_broadcaster_tx.is_none()
                                 && let Ok(handles) = DiscoveryBroadcaster::new().await
                             {
+                                // Only flip the flag once we have a confirmed broadcaster running.
+                                is_broadcasting_for_dispatch.store(true, Ordering::Relaxed);
                                 active_broadcaster_tx = Some(handles.shutdown_tx);
                                 tokio::spawn(async move {
                                     let sys_vol = crate::volume::default_volume_controller();
@@ -121,6 +135,7 @@ pub fn spawn_background_engine(
                             }
                         }
                         StreamCommand::StopBroadcasting => {
+                            is_broadcasting_for_dispatch.store(false, Ordering::Relaxed);
                             if let Some(tx) = active_broadcaster_tx.take() {
                                 let _ = tx.send(());
                             }
@@ -199,27 +214,37 @@ pub fn spawn_background_engine(
                 audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
 
                 match message {
-                    ControlMessage::Probe { device_id: incoming_id } => {
+                    ControlMessage::Probe {
+                        device_id: incoming_id,
+                    } => {
                         if let Some(id) = incoming_id
                             && let Ok(mut map) = state.lock()
                             && let Some(device) = map.get_mut(&id)
                         {
                             device.last_seen = std::time::Instant::now();
                         }
-                        
-                        let sys_vol = crate::volume::default_volume_controller();
-                        let vol = sys_vol.get_volume().ok();
-                        let muted = sys_vol.get_mute().ok();
+
+                        let broadcasting = is_broadcasting_for_probe.load(Ordering::Relaxed);
                         let device_name =
                             whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
                         let device_id = format!("PC_{}", device_name.to_uppercase());
+
+                        // When broadcasting is paused, reply with is_offline=true so the mobile's
+                        // probe task removes this sender from its discovered list immediately,
+                        // rather than re-adding it right after the offline broadcast burst.
+                        let (vol, muted, is_offline) = if broadcasting {
+                            let sys_vol = crate::volume::default_volume_controller();
+                            (sys_vol.get_volume().ok(), sys_vol.get_mute().ok(), false)
+                        } else {
+                            (None, None, true)
+                        };
 
                         let _ = send_control_message(
                             remote_addr.ip(),
                             ControlMessage::Presence {
                                 sender_id: device_id,
                                 sender_name: device_name,
-                                is_offline: false,
+                                is_offline,
                                 volume: vol,
                                 is_muted: muted,
                             },
@@ -230,6 +255,24 @@ pub fn spawn_background_engine(
                         device_id,
                         device_name,
                     } => {
+                        if !is_broadcasting_for_probe.load(Ordering::Relaxed) {
+                            let dev_name =
+                                whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
+                            let dev_id = format!("PC_{}", dev_name.to_uppercase());
+                            let _ = send_control_message(
+                                remote_addr.ip(),
+                                ControlMessage::Presence {
+                                    sender_id: dev_id,
+                                    sender_name: dev_name,
+                                    is_offline: true,
+                                    volume: None,
+                                    is_muted: None,
+                                },
+                            )
+                            .await;
+                            continue;
+                        }
+
                         let mut is_new = false;
                         let mut ip_changed = false;
                         let mut old_addr = None;

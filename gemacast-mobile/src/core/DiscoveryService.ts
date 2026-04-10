@@ -46,6 +46,22 @@ export class DiscoveryService {
     let connectedSender = currentState.connectedSender;
     if (sender.isOffline) {
       if (index >= 0) list.splice(index, 1);
+
+      // If we are actively connected/playing to this sender and it went offline,
+      // clear the connection state. The PC may have intentionally stopped broadcasting.
+      // We rely on `handleSenderTimeout` for re-connect logic on unintentional drops.
+      if (currentState.connectedSender?.deviceId === sender.deviceId) {
+        connectedSender = null;
+        this.stateHandler.setState({
+          discoveredSenders: list,
+          connectedSender: null,
+          status: Status.Listening,
+          connectionHealth: 'ok',
+          reconnectAttempts: 0,
+        });
+        this.stateHandler.updateLatencyInfo(null, null, null, null);
+        return;
+      }
     } else {
       if (index >= 0) {
         list[index] = sender;
@@ -56,8 +72,8 @@ export class DiscoveryService {
         connectedSender = sender;
       }
     }
-    
-    this.stateHandler.setState({ 
+
+    this.stateHandler.setState({
       discoveredSenders: list,
       connectedSender
     });
