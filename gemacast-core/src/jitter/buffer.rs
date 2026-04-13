@@ -1,8 +1,8 @@
 use super::types::RawPacket;
 
 /// Number of packet slots in the jitter buffer.
-/// 128 slots × 10ms/frame = 1.28s of maximum buffering headroom.
-const BUFFER_CAPACITY: u64 = 128;
+/// 512 slots × 10ms/frame = 5.12s of maximum buffering headroom.
+const BUFFER_CAPACITY: u64 = 512;
 
 /// A fixed-capacity circular buffer that reorders UDP packets by sequence number.
 ///
@@ -48,7 +48,15 @@ impl JitterBuffer {
 
         // Reject packets we've already played past.
         if packet.seq_num < self.next_play_seq {
-            return false;
+            // If it's outrageously in the past (e.g. sequence went from 500 to 0) 
+            // It strongly implies the sender process crashed and restarted completely natively.
+            if self.next_play_seq.saturating_sub(packet.seq_num) > self.capacity {
+                self.reset();
+                self.next_play_seq = packet.seq_num;
+                self.initialized = true;
+            } else {
+                return false;
+            }
         }
 
         // If the packet is impossibly far ahead, we likely lost a burst of packets.
@@ -96,6 +104,14 @@ impl JitterBuffer {
                 None
             }
         }
+    }
+
+    /// Count how many physical packets are in the buffer regardless of sequence gaps.
+    pub fn occupied_count(&self) -> u32 {
+        if !self.initialized {
+            return 0;
+        }
+        self.slots.iter().filter(|s| s.is_some()).count() as u32
     }
 
     /// Check if the next expected packet is present without consuming it.
@@ -152,6 +168,31 @@ impl JitterBuffer {
         self.next_play_seq = 0;
         self.initialized = false;
     }
+
+    /// Read the sequence number the buffer expects to play next.
+    pub fn next_play_seq(&self) -> u64 {
+        self.next_play_seq
+    }
+
+    /// Find the lowest sequence number currently residing in the buffer slots.
+    pub fn lowest_available_seq(&self) -> Option<u64> {
+        let mut min_seq = None;
+        for slot in &self.slots {
+            if let Some(pkt) = slot {
+                min_seq = match min_seq {
+                    None => Some(pkt.seq_num),
+                    Some(m) => Some(std::cmp::min(m, pkt.seq_num)),
+                };
+            }
+        }
+        min_seq
+    }
+
+    /// Fast-forwards the expected playback sequence, instantly dropping any theoretical 
+    /// packets between the old sequence and the new sequence.
+    pub fn fast_forward(&mut self, next_seq: u64) {
+        self.next_play_seq = next_seq;
+    }
 }
 
 #[cfg(test)]
@@ -162,8 +203,9 @@ mod tests {
     fn make_packet(seq: u64) -> RawPacket {
         RawPacket {
             seq_num: seq,
-            opus_data: vec![0u8; 100],
+            payload_data: vec![0u8; 100],
             arrival_time: Instant::now(),
+            is_uncompressed: false,
         }
     }
 

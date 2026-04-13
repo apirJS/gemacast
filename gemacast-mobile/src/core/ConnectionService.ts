@@ -105,17 +105,17 @@ export class ConnectionService {
       const currentState = this.stateHandler.getState();
       if (!currentState.isNetworkAvailable) return;
 
-      const isDiscovered = currentState.discoveredSenders.some(
+      const discoveredTarget = currentState.discoveredSenders.find(
         (s) => s.deviceId === sender.deviceId,
       );
 
-      if (!isDiscovered) {
+      if (!discoveredTarget) {
         this.startReconnectLoop();
         return;
       }
 
       try {
-        const ip = sender.addr.split(':')[0];
+        const ip = discoveredTarget.addr.split(':')[0];
         await invoke('connect_to_sender', {
           ip,
           deviceId: currentState.deviceInfo.deviceId,
@@ -123,7 +123,7 @@ export class ConnectionService {
         });
 
         this.stateHandler.setState({
-          connectedSender: sender,
+          connectedSender: discoveredTarget,
           status: Status.Connected,
           connectionHealth: 'ok',
           reconnectAttempts: 0,

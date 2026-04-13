@@ -8,9 +8,17 @@ use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
 use super::buffer::JitterBuffer;
 use super::types::RawPacket;
 
-const TARGET_DEPTH: u32 = 6;
-const MAX_DEPTH: u32 = 20;
-const MAX_MISSING: u32 = 5;
+const MIN_DEPTH: u32 = 6;
+const MAX_BUFFER_DEPTH: u32 = 25;
+const MAX_MISSING: u32 = 100;
+
+// AJB EMA Constants
+const ALPHA_EXPAND: f32 = 0.2; // Fast expansion on spike
+const ALPHA_SHRINK: f32 = 0.05; // Slow shrink on stable network
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 /// Coordinates the full jitter buffer pipeline.
 ///
@@ -39,10 +47,18 @@ pub struct JitterBufferManager {
 
     is_prebuffering: bool,
     missing_count: u32,
+    starvation_count: u32,
+
+    ema_jitter_ms: f32,
+    last_arrival: Option<Instant>,
+    last_seq: Option<u64>,
+
+    /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
+    latency_metric: Arc<AtomicU32>,
 }
 
 impl JitterBufferManager {
-    pub fn new(decoder: Decoder) -> Self {
+    pub fn new(decoder: Decoder, latency_metric: Arc<AtomicU32>) -> Self {
         Self {
             decoder,
             buffer: JitterBuffer::new(),
@@ -51,6 +67,11 @@ impl JitterBufferManager {
             decode_len: 0,
             is_prebuffering: true,
             missing_count: 0,
+            starvation_count: 0,
+            ema_jitter_ms: 0.0,
+            last_arrival: None,
+            last_seq: None,
+            latency_metric,
         }
     }
 
@@ -60,6 +81,26 @@ impl JitterBufferManager {
     /// side of the lock-free ring buffer shared with the network thread.
     pub fn ingest_packets(&mut self, consumer: &mut HeapCons<RawPacket>) {
         while let Some(pkt) = consumer.try_pop() {
+            if let (Some(last_arr), Some(last_s)) = (self.last_arrival, self.last_seq) {
+                // Ignore severe out-of-order or restarts for jitter calc to prevent bad EMA spikes
+                if pkt.seq_num > last_s && (pkt.seq_num - last_s) < 1000 {
+                    let elapsed = pkt.arrival_time.duration_since(last_arr).as_millis() as f32;
+                    let seq_delta = (pkt.seq_num - last_s) as f32;
+                    let expected = seq_delta * 20.0; // 20ms per Opus frame (48kHz/960samples)
+
+                    let variance = (elapsed - expected).abs();
+                    let alpha = if variance > self.ema_jitter_ms {
+                        ALPHA_EXPAND
+                    } else {
+                        ALPHA_SHRINK
+                    };
+                    self.ema_jitter_ms += alpha * (variance - self.ema_jitter_ms);
+                }
+            }
+
+            self.last_arrival = Some(pkt.arrival_time);
+            self.last_seq = Some(pkt.seq_num);
+
             self.buffer.insert(pkt);
         }
     }
@@ -84,8 +125,12 @@ impl JitterBufferManager {
 
     /// Process one Opus frame from the jitter buffer into the playback buffer.
     fn process_next_frame(&mut self) {
+        // Exit prebuffering as soon as we have MIN_DEPTH frames.
+        // Using the EMA-inflated target here caused 5 GHz latency to balloon
+        // because ema_jitter_ms never fully decays to zero — even small variances
+        // keep target_depth well above MIN_DEPTH indefinitely.
         if self.is_prebuffering {
-            if self.buffer.contiguous_depth() >= TARGET_DEPTH {
+            if self.buffer.occupied_count() >= MIN_DEPTH {
                 self.is_prebuffering = false;
             } else {
                 self.playback_buf
@@ -96,27 +141,80 @@ impl JitterBufferManager {
 
         let depth = self.buffer.contiguous_depth();
 
-        // Bufferbloat protection: Network surged and dumped massive stale queue.
-        if depth > MAX_DEPTH {
-            self.trigger_reset();
-            self.playback_buf
-                .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+        if depth > MAX_BUFFER_DEPTH + 5 {
+            let catchup_target =
+                self.buffer.next_play_seq() + depth.saturating_sub(MAX_BUFFER_DEPTH) as u64;
+            self.buffer.fast_forward(catchup_target);
+            self.generate_plc();
+            return;
+        }
+
+        // pop_next() always advances next_play_seq even on a miss.
+        // If we advance during a 2.4 GHz stall, burst packets arrive
+        // with seq < next_play_seq and are silently rejected as stale.
+        // We prevent that by short-circuiting here when the buffer is empty.
+        if self.buffer.occupied_count() == 0 {
+            self.missing_count += 1;
+            self.starvation_count += 1;
+
+            if self.missing_count > MAX_MISSING {
+                self.trigger_reset();
+                self.playback_buf
+                    .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+                return;
+            }
+
+            // After 3 empty frames (~60ms), enter prebuffering to build cushion
+            if self.starvation_count > 2 {
+                self.is_prebuffering = true;
+                self.starvation_count = 0;
+                let _ = self.decoder.reset_state();
+                self.playback_buf
+                    .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+                return;
+            }
+
+            self.generate_plc();
             return;
         }
 
         if let Some(pkt) = self.buffer.pop_next() {
             self.missing_count = 0;
-            self.decode_and_buffer(&pkt.opus_data);
+            self.starvation_count = 0;
+            let delay_ms = Instant::now().duration_since(pkt.arrival_time).as_millis() as u32;
+            self.latency_metric.store(delay_ms, Ordering::Relaxed);
+
+            if pkt.is_uncompressed {
+                self.buffer_uncompressed(&pkt.payload_data);
+            } else {
+                self.decode_and_buffer(&pkt.payload_data);
+            }
         } else {
+            // pop_next returned None but buffer IS occupied — a future packet exists,
+            // meaning the current slot is a permanent UDP drop.
             self.missing_count += 1;
+            self.starvation_count = 0;
+
+            // Fast-forward past large gaps (> 3 frames) to reach available data
+            if let Some(lowest) = self.buffer.lowest_available_seq() {
+                let distance = lowest.saturating_sub(self.buffer.next_play_seq());
+                if distance > 3 {
+                    self.buffer.fast_forward(lowest);
+                    let _ = self.decoder.reset_state();
+                    self.playback_buf
+                        .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+                    return;
+                }
+            }
+
             if self.missing_count > MAX_MISSING {
-                // Severe packet loss: network disconnect or massive interference.
                 self.trigger_reset();
                 self.playback_buf
                     .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
-            } else {
-                self.generate_plc();
+                return;
             }
+
+            self.generate_plc();
         }
     }
 
@@ -124,6 +222,10 @@ impl JitterBufferManager {
         self.buffer.reset();
         self.is_prebuffering = true;
         self.missing_count = 0;
+        self.starvation_count = 0;
+        self.ema_jitter_ms = 0.0;
+        self.last_arrival = None;
+        self.last_seq = None;
         self.playback_buf.clear();
         self.decode_buf.fill(0.0);
         self.decode_len = 0;
@@ -138,6 +240,22 @@ impl JitterBufferManager {
         } else {
             self.generate_plc();
         }
+    }
+
+    /// Directly append raw uncompressed PCM data into the playback buffer.
+    fn buffer_uncompressed(&mut self, pcm_bytes: &[u8]) {
+        let f32_len = pcm_bytes.len() / std::mem::size_of::<f32>();
+        if f32_len == 0 {
+            self.generate_plc();
+            return;
+        }
+
+        for chunk in pcm_bytes.chunks_exact(4) {
+            let f = f32::from_ne_bytes(chunk.try_into().unwrap());
+            self.playback_buf.push_back(f);
+        }
+
+        let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
     }
 
     /// Decode an Opus packet into `self.decode_buf`.
@@ -191,37 +309,48 @@ impl JitterBufferManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
-    use opus::{Encoder, Decoder, Channels, Application};
+    use crate::audio::{OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+    use opus::{Application, Channels, Decoder, Encoder};
     use ringbuf::HeapRb;
-    use crate::audio::{OPUS_SAMPLE_RATE, OPUS_FRAME_SAMPLES};
+    use std::time::Instant;
 
-    fn setup_env() -> (JitterBufferManager, Encoder, ringbuf::HeapProd<RawPacket>, ringbuf::HeapCons<RawPacket>) {
+    fn setup_env() -> (
+        JitterBufferManager,
+        Encoder,
+        ringbuf::HeapProd<RawPacket>,
+        ringbuf::HeapCons<RawPacket>,
+    ) {
         let decoder = Decoder::new(OPUS_SAMPLE_RATE, Channels::Stereo).unwrap();
         let encoder = Encoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
-        let manager = JitterBufferManager::new(decoder);
-        let rb = HeapRb::<RawPacket>::new(100);
+        let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let manager = JitterBufferManager::new(decoder, atomic);
+        let rb = HeapRb::<RawPacket>::new(1000);
         let (prod, cons) = rb.split();
         (manager, encoder, prod, cons)
     }
 
-    fn make_packet(encoder: &mut Encoder, seq: u64) -> RawPacket {
+    fn make_packet(encoder: &mut Encoder, seq: u64, base_time: Instant) -> RawPacket {
         let pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let opus_data = encoder.encode_vec_float(&pcm, 1500).unwrap();
         RawPacket {
             seq_num: seq,
-            opus_data,
-            arrival_time: Instant::now(),
+            payload_data: opus_data,
+            arrival_time: base_time + std::time::Duration::from_millis(seq * 20),
+            is_uncompressed: false,
         }
     }
 
     #[test]
     fn test_prebuffering_outputs_silence_until_target_depth() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
 
-        for i in 1..=5 {
-            assert!(prod.try_push(make_packet(&mut encoder, i)).is_ok());
-
+        // Push MIN_DEPTH - 1 packets: should still be prebuffering.
+        for i in 1..MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
         }
         manager.ingest_packets(&mut cons);
 
@@ -229,11 +358,15 @@ mod tests {
         manager.fill_output(&mut output, 1.0);
 
         for &sample in &output {
-            assert_eq!(sample, 0.0);
+            assert_eq!(sample, 0.0, "Expected silence while prebuffering");
         }
         assert!(manager.is_prebuffering);
 
-        assert!(prod.try_push(make_packet(&mut encoder, 6)).is_ok());
+        // Push the final packet to reach MIN_DEPTH: should exit prebuffering.
+        assert!(
+            prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64, base_time))
+                .is_ok()
+        );
         manager.ingest_packets(&mut cons);
 
         manager.fill_output(&mut output, 1.0);
@@ -243,10 +376,14 @@ mod tests {
     #[test]
     fn test_packet_loss_triggers_plc() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
 
-        for i in 1..=6 {
-            assert!(prod.try_push(make_packet(&mut encoder, i)).is_ok());
-
+        // Fill to exactly MIN_DEPTH to exit prebuffering.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
         }
         manager.ingest_packets(&mut cons);
 
@@ -254,58 +391,339 @@ mod tests {
         manager.fill_output(&mut output, 1.0);
         assert!(!manager.is_prebuffering);
 
-        assert!(prod.try_push(make_packet(&mut encoder, 8)).is_ok());
+        // Push a packet with a gap (skip one seq num) to simulate packet loss.
+        let gap_seq = (MIN_DEPTH + 2) as u64;
+        assert!(
+            prod.try_push(make_packet(&mut encoder, gap_seq, base_time))
+                .is_ok()
+        );
         manager.ingest_packets(&mut cons);
 
-        for _ in 2..=6 {
+        // Drain the remaining valid packets.
+        for _ in 2..=MIN_DEPTH {
             manager.fill_output(&mut output, 1.0);
         }
 
+        // The missing packet in the gap triggers PLC.
         manager.fill_output(&mut output, 1.0);
         assert_eq!(manager.missing_count, 1);
         assert!(!manager.is_prebuffering);
     }
 
     #[test]
-    fn test_excessive_packet_loss_triggers_reset() {
+    fn test_starvation_triggers_rebuffering() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
 
-        for i in 1..=6 {
-            assert!(prod.try_push(make_packet(&mut encoder, i)).is_ok());
-
+        // Fill enough to exit prebuffering.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
         }
         manager.ingest_packets(&mut cons);
 
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        for _ in 1..=6 {
+        for _ in 1..=MIN_DEPTH {
             manager.fill_output(&mut output, 1.0);
         }
         assert!(!manager.is_prebuffering);
 
-        for i in 1..=5 {
+        // Frame 1 empty -> PLC
+        manager.fill_output(&mut output, 1.0);
+        assert_eq!(manager.starvation_count, 1);
+        assert!(!manager.is_prebuffering);
+
+        // Frame 2 empty -> PLC
+        manager.fill_output(&mut output, 1.0);
+        assert_eq!(manager.starvation_count, 2);
+        assert!(!manager.is_prebuffering);
+
+        // Frame 3 empty -> Triggers Rebuffering margin!
+        manager.fill_output(&mut output, 1.0);
+        // Starvation count resets to 0 when it arms is_prebuffering
+        assert_eq!(manager.starvation_count, 0);
+        assert!(manager.is_prebuffering);
+    }
+
+    #[test]
+    fn test_fast_forward_udp_holes() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Fill base tracking
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
             manager.fill_output(&mut output, 1.0);
-            assert_eq!(manager.missing_count, i);
-            assert!(!manager.is_prebuffering);
         }
 
+        // Simulate a massive 10 packet UDP loss! We inject sequence 15 into the buffer,
+        // while the playhead is currently looking for sequence (MIN_DEPTH + 1).
+        let future_seq = MIN_DEPTH as u64 + 10;
+        assert!(
+            prod.try_push(make_packet(&mut encoder, future_seq, base_time))
+                .is_ok()
+        );
+        manager.ingest_packets(&mut cons);
+
+        // 1st missing frame hits Fast-Forward logic!
         manager.fill_output(&mut output, 1.0);
-        assert!(manager.is_prebuffering);
+
+        // The playhead should instantly snap to 15!
+        assert_eq!(manager.buffer.next_play_seq(), future_seq);
+
+        // Fast forwarding doesn't reset the timeline anchor natively, just catches up
+        assert!(!manager.is_prebuffering);
     }
 
     #[test]
     fn test_bufferbloat_protection() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
 
-        for i in 1..=25 {
-            assert!(prod.try_push(make_packet(&mut encoder, i)).is_ok());
-
+        // Push well above MAX_BUFFER_DEPTH to trigger the Catch-Up slice.
+        let end_seq = MAX_BUFFER_DEPTH + 160;
+        for i in 1..=end_seq {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
         }
         manager.ingest_packets(&mut cons);
 
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
         manager.fill_output(&mut output, 1.0);
 
+        // CatchUp constraint fires unconditionally: manager seamlessly jumps its internal sequence pointer
+        // to `occupied - MIN_DEPTH`, entirely dropping the huge lag segment!
+        assert!(!manager.is_prebuffering);
+        let distance_jumped = manager.buffer.next_play_seq().saturating_sub(1);
+        assert!(
+            distance_jumped > 30,
+            "AJB Failed to fast-forward on massive backlog"
+        );
+    }
+
+    #[test]
+    fn test_ajb_hysteresis() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Simulate 5 packets arriving at exactly the same time (burst jitter)
+        for i in 1..=5 {
+            let pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
+            let opus_data = encoder.encode_vec_float(&pcm, 1500).unwrap();
+            let pkt = RawPacket {
+                seq_num: i as u64,
+                payload_data: opus_data,
+                arrival_time: base_time, // All arrived immediately
+                is_uncompressed: false,
+            };
+            assert!(prod.try_push(pkt).is_ok());
+        }
+        manager.ingest_packets(&mut cons);
+
+        // ema_jitter_ms should have spiked way up due to calculated variance vs expected times
+        assert!(
+            manager.ema_jitter_ms > 10.0,
+            "AJB ema_jitter_ms did not scale on burst"
+        );
+        let dynamic_target = (MIN_DEPTH as f32 + (manager.ema_jitter_ms / 20.0)).ceil() as u32;
+        assert!(
+            dynamic_target > MIN_DEPTH,
+            "AJB dynamic target did not expand buffer capacity"
+        );
+    }
+
+    #[test]
+    fn test_continuous_micro_jitter() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Fill enough to exit prebuffering
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // At this point buffer is empty. Sequence is missing!
+        // Frame 1 empty -> PLC
+        manager.fill_output(&mut output, 1.0);
+        assert_eq!(manager.starvation_count, 1);
+
+        // Now packet 3 and 4 arrive (simulating 5GHz micro jitter delay batch arrival)
+        assert!(
+            prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64 + 1, base_time))
+                .is_ok()
+        );
+        assert!(
+            prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64 + 2, base_time))
+                .is_ok()
+        );
+        manager.ingest_packets(&mut cons);
+
+        // Frame 2 pop! We have packets in the buffer now!
+        manager.fill_output(&mut output, 1.0);
+        // Starvation count MUST reset because it was successfully mitigated!
+        assert_eq!(manager.starvation_count, 0);
+        // And is_prebuffering must NOT have triggered! Smooth streaming preserved!
+        assert!(!manager.is_prebuffering);
+    }
+
+    #[test]
+    fn test_extreme_macro_delay_three_seconds() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // 1. Initial network fill
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // 2. The 3 second Network Drop
+        // We simulate 150 frames (3 seconds) of empty calls
+        for _ in 1..=150 {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // The manager must be heavily in prebuffering mode, waiting out the extreme lag
         assert!(manager.is_prebuffering);
-        assert_eq!(manager.buffer.contiguous_depth(), 0);
+
+        // 3. The 3 second Backlog finally hits the socket!
+        // The sender generated 150 frames, we receive frames 100 to 150
+        // (assuming the OS UDP kernel buffer dropped the oldest 50 frames during the 3 second lag).
+        let batch_start = MIN_DEPTH as u64 + 100;
+        let batch_end = MIN_DEPTH as u64 + 150;
+        for seq in batch_start..=batch_end {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // 4. We output the next frame. The massive backlog physically fills the Jitter Buffer!
+        manager.fill_output(&mut output, 1.0);
+
+        // At this point, the mathematical target_depth is satisfied.
+        // Prebuffering smoothly disengages natively!
+        assert!(!manager.is_prebuffering);
+
+        // And the playhead Fast-Forwards natively across the huge UDP hole, jumping to 102!
+        assert_eq!(manager.buffer.next_play_seq(), batch_start);
+    }
+
+    #[test]
+    fn test_sender_crash_recovery() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // 1. Initial network fill (e.g. sequence 1000..1005)
+        let early_seq = 1000;
+        for i in 0..MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, early_seq + i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 0..MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Assert we are playing around the 1000 mark!
+        assert!(manager.buffer.next_play_seq() > 999);
+
+        // 2. Android App force-crash and instantly restarts!
+        // It starts sending sequence 0, 1, 2 again!
+        for i in 0..MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // The buffer physically detects that sequence 0 is > 128 packets BEHIND sequence 202.
+        // It violently flushes its own timeline and re-anchors to 0!
+        manager.fill_output(&mut output, 1.0);
+
+        // The playhead must instantly snap back to 1!
+        assert_eq!(manager.buffer.next_play_seq(), 1);
+    }
+
+    #[test]
+    fn test_three_second_massive_jitter_burst() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // 3 seconds (300 frames) of pure silence due to massive Wi-Fi delay
+        for _ in 1..=300 {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        assert!(manager.is_prebuffering);
+
+        // Network unstalls! All 300 packets arrive instantly in a single UDP flood!
+        let batch_start = MIN_DEPTH as u64 + 1;
+        let batch_end = MIN_DEPTH as u64 + 300;
+        for seq in batch_start..=batch_end {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Process the first frame of the massive burst
+        manager.fill_output(&mut output, 1.0);
+
+        // 1. Bufferbloat Slice logic perfectly triggers, snapping the UI forward
+        assert!(!manager.is_prebuffering);
+
+        // 2. Playhead slices through the backlog to catch up with 500ms bounds natively!
+        // The playhead jumps straight to the live boundary!
+        assert!(manager.buffer.next_play_seq() > batch_start + 250);
     }
 }
