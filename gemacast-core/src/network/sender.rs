@@ -1,10 +1,11 @@
 use crate::audio::{
-    FrameAccumulator, MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE,
-    SEQ_NUM_SIZE, create_opus_encoder,
+    MAX_OPUS_PACKET_SIZE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE, SEQ_NUM_SIZE,
+    create_opus_encoder,
 };
 use crate::error::{AudioCaptureError, GemaCastError, NetworkError};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::{HeapCons, HeapRb, traits::*};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use tokio::sync::{Notify, mpsc};
 pub enum SenderCommand {
     AddTarget(SocketAddr),
     RemoveTarget(SocketAddr),
+    ChangeBitrate(Option<i32>),
 }
 
 pub struct AudioSender {
@@ -41,7 +43,7 @@ impl AudioSender {
         let mut buffer_size = cpal::BufferSize::Default;
 
         let rate = OPUS_SAMPLE_RATE;
-        if let Ok(mut supported_configs) = device.supported_input_configs()
+        if let Ok(mut supported_configs) = device.supported_output_configs()
             && let Some(config) = supported_configs.find(|c| {
                 c.channels() == OPUS_CHANNELS
                     && c.min_sample_rate() <= rate
@@ -92,18 +94,45 @@ impl AudioSender {
         mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(), GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-        let audio_socket = UdpSocket::bind(addr)
-            .await
+
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| {
+            NetworkError::BindFailed {
+                addr: addr.to_string(),
+                source: e,
+            }
+        })?;
+
+        let _ = socket.set_tos(0xB8); // Guarantee WMM AC_VO (DSCP 46 / EF) to bypass router policing
+
+        socket
+            .bind(&addr.into())
             .map_err(|e| NetworkError::BindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
-        let mut encoder =
-            create_opus_encoder().map_err(AudioCaptureError::OpusEncoderFailed)?;
-        let mut frame_accumulator = FrameAccumulator::new(OPUS_FRAME_SAMPLES);
+
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| NetworkError::BindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
+
+        let audio_socket =
+            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::BindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
+        let mut current_bitrate = Some(128_000);
+        let mut encoder = create_opus_encoder().map_err(AudioCaptureError::OpusEncoderFailed)?;
         let mut seq_num: u64 = 0;
+        let mut frame_buf = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
+        let mut packet_buf: Vec<u8> = Vec::with_capacity(
+            SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE,
+        );
         let mut targets: HashSet<SocketAddr> = HashSet::new();
+        let mut sample_buf = Vec::<f32>::with_capacity(OPUS_FRAME_SAMPLES * 2);
 
         self.audio_stream
             .play()
@@ -118,17 +147,20 @@ impl AudioSender {
                             if is_new {
                                 // Ensure the Opus encoder has a clean state for any newly connected listener
                                 let _ = encoder.reset_state();
-                                frame_accumulator.buffer.clear();
+                                sample_buf.clear();
                             }
                         }
                         SenderCommand::RemoveTarget(target_addr) => {
                             targets.remove(&target_addr);
                             if targets.is_empty() {
-                                // Wipe the Opus prediction engine so it doesn't artificially extrapolate
-                                // new audio onto old 5-second-ago audio upon reconnection.
                                 let _ = encoder.reset_state();
-                                // Dump any partially captured PCM samples.
-                                frame_accumulator.buffer.clear();
+                                sample_buf.clear();
+                            }
+                        }
+                        SenderCommand::ChangeBitrate(bitrate_opt) => {
+                            current_bitrate = bitrate_opt;
+                            if let Some(b) = current_bitrate {
+                                let _ = encoder.set_bitrate(opus::Bitrate::Bits(b));
                             }
                         }
                     }
@@ -144,32 +176,52 @@ impl AudioSender {
                         continue;
                     }
 
-                    let mut samples = Vec::with_capacity(occupied);
-                    while let Some(s) = self.audio_consumer.try_pop() {
-                        samples.push(s);
-                    }
+                    let prev_len = sample_buf.len();
+                    sample_buf.resize(prev_len + occupied, 0.0);
+                    let actually_read = self.audio_consumer.pop_slice(&mut sample_buf[prev_len..]);
+                    sample_buf.truncate(prev_len + actually_read);
 
-                    let frames = frame_accumulator.push(&samples);
-                    for frame in frames {
-                        let encoded_len = match encoder.encode_float(&frame, &mut opus_output) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                eprintln!("Opus encoder failed: {}", e);
-                                continue;
-                            }
+                    while sample_buf.len() >= OPUS_FRAME_SAMPLES {
+                        frame_buf.copy_from_slice(&sample_buf[..OPUS_FRAME_SAMPLES]);
+                        sample_buf.drain(..OPUS_FRAME_SAMPLES);
+
+                        let is_uncompressed = current_bitrate.is_none();
+                        let format_flag = if is_uncompressed {
+                            crate::audio::FORMAT_UNCOMPRESSED
+                        } else {
+                            crate::audio::FORMAT_OPUS
                         };
 
-                        let mut packet = Vec::with_capacity(SEQ_NUM_SIZE + encoded_len);
+                        let payload_bytes: &[u8] = if is_uncompressed {
+                            // Safety: frame_buf is properly aligned Vec<f32>.
+                            unsafe {
+                                std::slice::from_raw_parts(
+                                    frame_buf.as_ptr() as *const u8,
+                                    OPUS_FRAME_SAMPLES * std::mem::size_of::<f32>(),
+                                )
+                            }
+                        } else {
+                            let encoded_len = match encoder.encode_float(&frame_buf, &mut opus_output) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    eprintln!("Opus encoder failed: {}", e);
+                                    continue;
+                                }
+                            };
+                            &opus_output[..encoded_len]
+                        };
 
-                        packet.extend_from_slice(&seq_num.to_be_bytes());
-                        packet.extend_from_slice(&opus_output[..encoded_len]);
+                        // Reuse packet_buf — clears but does NOT deallocate.
+                        packet_buf.clear();
+                        packet_buf.extend_from_slice(&seq_num.to_be_bytes());
+                        packet_buf.push(format_flag);
+                        packet_buf.extend_from_slice(payload_bytes);
 
                         for target_addr in &targets {
-                            match audio_socket.try_send_to(&packet, *target_addr) {
+                            match audio_socket.try_send_to(&packet_buf, *target_addr) {
                                 Ok(_) => {}
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                    // The OS UDP buffer is full due to Wi-Fi contention. 
-                                    // Silently drop the packet to avoid blocking the encoder thread!
+                                    // OS UDP buffer full — drop this packet rather than block.
                                 }
                                 Err(e) => {
                                     eprintln!("UDP send failed: {}", e);

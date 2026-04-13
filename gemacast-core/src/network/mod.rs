@@ -18,8 +18,13 @@ pub const CPAL_BUFFER_SIZE: u32 = 512;
 
 pub fn get_local_ip() -> Result<std::net::IpAddr, String> {
     let iface = netdev::get_default_interface().map_err(|e| e.to_string())?;
-    let _ = iface.ipv4[0];
-    Ok(std::net::IpAddr::V4(iface.ipv4[0].addr()))
+    if let Some(ip) = iface.ipv4.first() {
+        Ok(std::net::IpAddr::V4(ip.addr()))
+    } else if let Some(ip) = iface.ipv6.first() {
+        Ok(std::net::IpAddr::V6(ip.addr()))
+    } else {
+        Err("No IPs assigned to default interface".to_string())
+    }
 }
 
 pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {

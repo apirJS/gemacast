@@ -121,15 +121,15 @@ impl DiscoveryBroadcaster {
     where
         F: FnMut() -> ControlMessage + Send,
     {
-        let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
-            .into_iter()
-            .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
-            .collect();
-        let broadcast_addr_global =
-            SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), DISCOVERY_PORT);
-        let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
-
         loop {
+            let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
+                .into_iter()
+                .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
+                .collect();
+            let broadcast_addr_global =
+                SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), DISCOVERY_PORT);
+            let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
+
             let mut payload = payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
             for addr in &broadcast_addrs {

@@ -18,7 +18,15 @@ pub fn spawn_background_engine(
     mut stream_command_rx: tokio::sync::mpsc::Receiver<StreamCommand>,
 ) {
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(|| {
+                if let Err(e) = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
+                    eprintln!("Failed to promote Tokio worker thread to Max priority: {:?}", e);
+                }
+            })
+            .build()
+        {
             Ok(r) => r,
             Err(e) => {
                 let _ = proxy.send_event(DaemonEvent::FatalError(e.to_string()));
@@ -182,8 +190,15 @@ pub fn spawn_background_engine(
                             )
                             .await;
                         }
+                        StreamCommand::ChangeBitrate(bitrate) => {
+                            let _ = sender_command_tx
+                                .send(SenderCommand::ChangeBitrate(bitrate))
+                                .await;
+                        }
                         StreamCommand::StopStream => {
-                            active_broadcaster_tx.take();
+                            if let Some(tx) = active_broadcaster_tx.take() {
+                                let _ = tx.send(());
+                            }
                             if let Some(tx) = stop_tx_opt.take() {
                                 let _ = tx.send(());
                             }

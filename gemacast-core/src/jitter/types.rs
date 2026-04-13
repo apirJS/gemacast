@@ -8,11 +8,13 @@ use std::time::Instant;
 pub struct RawPacket {
     /// Sender's monotonic sequence number (u64, big-endian over the wire).
     pub seq_num: u64,
-    /// The raw Opus-encoded bytes (typically 50–300 bytes per 10ms frame).
-    pub opus_data: Vec<u8>,
+    /// The payload bytes (Opus encoded or raw PCM).
+    pub payload_data: Vec<u8>,
     /// Wall-clock time this packet arrived on the network thread.
     /// Used by the jitter controller to build the inter-arrival delay histogram.
     pub arrival_time: Instant,
+    /// True if the payload_data is raw f32 PCM float bytes, False if Opus.
+    pub is_uncompressed: bool,
 }
 
 

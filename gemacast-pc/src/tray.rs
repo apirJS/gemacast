@@ -9,6 +9,7 @@ pub struct TrayManager {
     _tray_icon: TrayIcon,
     pub device_buttons: HashMap<String, CheckMenuItem>,
     pub devices_submenu: Submenu,
+    pub quality_buttons: Vec<(Option<i32>, CheckMenuItem)>,
     pub scanning_placeholder: MenuItem,
     pub broadcast_toggle: CheckMenuItem,
     pub quit_item: MenuItem,
@@ -25,8 +26,39 @@ impl TrayManager {
 
         let _ = devices_submenu.append(&scanning_placeholder);
 
+        let qualities = vec![
+            (10, "VoIP"),
+            (24, "VoIP"),
+            (32, "VoIP"),
+            (64, "Standard"),
+            (96, "Standard"),
+            (128, "High (Default)"),
+            (256, "High"),
+            (450, "Very High"),
+            (512, "Very High"),
+            (-1, "Raw PCM"),
+        ];
+
+        let quality_submenu = Submenu::new("Audio Quality", true);
+        let mut quality_buttons = Vec::new();
+        for (kbps, category) in qualities {
+            let label = if kbps == -1 {
+                format!("Uncompressed - {}", category)
+            } else {
+                format!("{} Kb/s - {}", kbps, category)
+            };
+            
+            let is_checked = kbps == 128;
+            let item = CheckMenuItem::new(label, true, is_checked, None);
+            
+            let bitrate_val = if kbps == -1 { None } else { Some(kbps * 1000) };
+            let _ = quality_submenu.append(&item);
+            quality_buttons.push((bitrate_val, item));
+        }
+
         let _ = tray_menu.append(&broadcast_toggle);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
+        let _ = tray_menu.append(&quality_submenu);
         let _ = tray_menu.append(&devices_submenu);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&quit_item);
@@ -40,6 +72,7 @@ impl TrayManager {
         Self {
             _tray_icon: tray_icon,
             device_buttons: HashMap::new(),
+            quality_buttons,
             scanning_placeholder,
             devices_submenu,
             broadcast_toggle,

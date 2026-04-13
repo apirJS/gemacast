@@ -18,4 +18,5 @@ pub enum StreamCommand {
     StopStream,
     StartBroadcasting,
     StopBroadcasting,
+    ChangeBitrate(Option<i32>),
 }
