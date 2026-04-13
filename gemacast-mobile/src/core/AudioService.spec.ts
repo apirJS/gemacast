@@ -25,6 +25,7 @@ beforeEach(() => {
 describe('AudioService — startAudioPlayback', () => {
   it('sets isLoading then Playing on success', async () => {
     const { sh, audio } = setup({ start_audio_playback: undefined });
+    sh.setState({ connectedSender: makeDiscoveredSender() });
     const result = await audio.startAudioPlayback();
     expect(result.ok).toBe(true);
     expect(sh.getState().status).toBe(Status.Playing);

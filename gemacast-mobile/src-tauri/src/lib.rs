@@ -6,12 +6,11 @@ mod state;
 use state::AppState;
 
 /// Seconds after which a sender with no heartbeat is considered offline.
-pub(crate) const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 10;
+pub(crate) const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
 
 /// Interval between watchdog sweeps that check for stale senders.
 pub(crate) const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 
-/// Initialises and runs the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -24,6 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_device_info::init())
         .invoke_handler(tauri::generate_handler![
             commands::discovery::get_local_ip,
+            commands::discovery::get_network_identifier,
+            commands::discovery::get_connection_status,
             commands::discovery::start_listening_for_senders,
             commands::discovery::stop_listening_for_senders,
             commands::playback::connect_to_sender,
@@ -31,6 +32,8 @@ pub fn run() {
             commands::playback::start_audio_playback,
             commands::playback::stop_audio_playback,
             commands::playback::notify_streaming_stopped,
+            commands::playback::kill_playback,
+            commands::playback::update_jitter_config,
             commands::volume::set_remote_system_volume,
             commands::volume::set_remote_system_mute,
         ])

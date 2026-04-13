@@ -72,6 +72,21 @@ pub enum NetworkError {
     #[error("failed to receive UDP packet")]
     RecvFailed(#[source] std::io::Error),
 
+    #[error("failed to configure socket reuse address")]
+    SetReuseAddressFailed(#[source] std::io::Error),
+
+    #[error("failed to configure socket reuse port")]
+    SetReusePortFailed(#[source] std::io::Error),
+
+    #[error("failed to configure socket type of service (TOS)")]
+    SetTosFailed(#[source] std::io::Error),
+
+    #[error("failed to set socket read timeout")]
+    SetReadTimeoutFailed(#[source] std::io::Error),
+
+    #[error("failed to clone socket")]
+    SocketCloneFailed(#[source] std::io::Error),
+
     #[error("failed to enable broadcast feature")]
     EnableBroadcastFailed(#[source] std::io::Error),
 

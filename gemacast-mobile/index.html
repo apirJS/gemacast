@@ -16,6 +16,122 @@
   </head>
 
   <body>
+    <button class="settings-btn" id="settings-open-btn" aria-label="Open Settings">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" class="settings-btn__icon">
+        <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+    <dialog class="drawer" id="settings-drawer">
+      <div class="drawer__header">
+        <button class="drawer__close-btn" id="settings-close-btn" aria-label="Close Settings">✕</button>
+        <button class="theme-toggle" id="theme-toggle-btn" aria-label="Toggle Theme">
+          <span class="theme-toggle__icon mode-light">☼</span>
+          <span class="theme-toggle__icon mode-dark">☾</span>
+        </button>
+      </div>
+      <div class="drawer__content">
+        <div class="setting-group">
+          <label class="setting-group__label">
+            Buffer Preset <button class="help-btn" data-help="buffer-preset">?</button>
+          </label>
+          <div class="custom-select" id="setting-preset">
+            <div class="custom-select__header" id="custom-preset-header">
+              <span id="custom-preset-value">Balanced</span>
+              <span class="custom-select__arrow">▼</span>
+            </div>
+            <div class="custom-select__dropdown" id="custom-preset-dropdown" hidden>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group" id="custom-jitter-config" hidden>
+          <div class="custom-inputs">
+            <div class="custom-inputs__row">
+              <label>Min Depth <button class="help-btn" data-help="min-depth">?</button></label>
+              <div><input type="number" id="setting-min-depth" class="setting-input"> ms</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Comfort Cap <button class="help-btn" data-help="comfort-cap">?</button></label>
+              <div><input type="number" id="setting-comfort-cap" class="setting-input"> ms</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Bounce Multiplier <button class="help-btn" data-help="bounce">?</button></label>
+              <div><input type="number" step="0.1" id="setting-bounce" class="setting-input"> x</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Resume Threshold <button class="help-btn" data-help="resume">?</button></label>
+              <div><input type="number" step="0.01" id="setting-resume" class="setting-input"> %</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>WSOLA Max Skip <button class="help-btn" data-help="wsola">?</button></label>
+              <div><input type="number" id="setting-wsola" class="setting-input"> frames</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Initial Comfort <button class="help-btn" data-help="initial-comfort">?</button></label>
+              <div><input type="number" id="setting-initial-comfort" class="setting-input"> ms</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Fast Settle Speed <button class="help-btn" data-help="fast-settle-speed">?</button></label>
+              <div><input type="number" step="0.1" id="setting-fast-settle-mult" class="setting-input"> x</div>
+            </div>
+            <div class="custom-inputs__row">
+              <label>Fast Settle Duration <button class="help-btn" data-help="fast-settle-duration">?</button></label>
+              <div><input type="number" id="setting-fast-settle-frames" class="setting-input"> frames</div>
+            </div>
+            <div class="custom-inputs__actions">
+              <button id="custom-reset-btn" class="custom-inputs__reset" type="button">Reset</button>
+              <button id="custom-apply-btn" class="custom-inputs__apply" type="button">Apply</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group setting-group--row">
+          <span class="setting-group__label">
+            Exclusive Mode <button class="help-btn" data-help="exclusive-mode">?</button>
+          </span>
+          <label class="toggle-switch">
+             <input type="checkbox" id="setting-exclusive-mode">
+             <div class="toggle-switch__slider">
+               <span class="toggle-switch__label--off">OFF</span>
+               <span class="toggle-switch__label--on">ON</span>
+             </div>
+          </label>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-group__label">
+            Mode <button class="help-btn" data-help="connection-mode">?</button>
+          </label>
+          <div class="segmented-control">
+             <input type="radio" name="conn-mode" id="conn-mode-wifi" value="wifi" checked>
+             <label for="conn-mode-wifi">Wifi</label>
+
+             <input type="radio" name="conn-mode" id="conn-mode-usb" value="usb" disabled>
+             <label for="conn-mode-usb">USB</label>
+
+             <input type="radio" name="conn-mode" id="conn-mode-adb" value="adb" disabled>
+             <label for="conn-mode-adb">ADB</label>
+          </div>
+        </div>
+
+        <div class="about-section">
+          <p class="about-section__text about-section__text--dim">
+            Latency depends on your Wi-Fi quality. 5 GHz band recommended for lowest latency.
+            Use <em>Buffer Presets</em> above to trade off between latency and stability.
+          </p>
+          <a class="about-section__link" href="https://github.com/apirJS/gemacast" target="_blank">GitHub — apirJS/gemacast</a>
+          <p class="about-section__footer">v0.1.0 · 2026 ApirJS</p>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="help-modal" id="help-modal">
+        <button class="help-modal__close" id="help-close-btn" aria-label="Close help">✕</button>
+        <h2 class="help-modal__title" id="help-title">Help</h2>
+        <div class="help-modal__body" id="help-body"></div>
+    </dialog>
+
     <main class="discovery">
       <section class="device">
         <span class="device__name">Device: Unknown</span>

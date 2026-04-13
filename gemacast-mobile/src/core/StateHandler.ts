@@ -5,10 +5,30 @@ import {
   DeviceInfo,
   ConnectionHealth,
   DiscoveredSender,
+  ConnectionMode,
+  AppSettings,
 } from '../types';
 import { GemaCastError } from '../error';
 
 const LS_LAST_SENDER = 'gemacast_last_sender';
+const LS_SETTINGS = 'gemacast_settings';
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'dark',
+  mode: ConnectionMode.Wifi,
+  exclusiveMode: false,
+  bufferPreset: 5,
+  customJitterConfig: {
+    minDepthMs: 20,
+    comfortCapMs: 400,
+    bounceMultiplier: 1.5,
+    resumeThresholdPct: 0.75,
+    wsolaMaxSkip: 2,
+    initialComfortMs: 50,
+    fastSettleMultiplier: 2.5,
+    fastSettleFrames: 200,
+  },
+};
 
 export class StateHandler {
   private state: AppState;
@@ -16,6 +36,7 @@ export class StateHandler {
 
   constructor(deviceInfo: DeviceInfo) {
     const lastConnectedSender = StateHandler.loadLastSender();
+    const settings = StateHandler.loadSettings();
 
     this.state = {
       deviceInfo,
@@ -30,6 +51,8 @@ export class StateHandler {
       isSuspended: false,
       reconnectAttempts: 0,
       latency: { current: null, avg: null, max: null, min: null },
+      settings,
+      availableModes: { wifi: true, usb: false, adb: false },
     };
   }
 
@@ -48,6 +71,9 @@ export class StateHandler {
 
   public setState(partial: Partial<AppState>) {
     this.state = { ...this.state, ...partial };
+    if (partial.settings) {
+      StateHandler.saveSettings(partial.settings);
+    }
     this.subscribers.forEach((cb) => cb(this.state));
   }
 
@@ -91,5 +117,19 @@ export class StateHandler {
     } else {
       localStorage.removeItem(LS_LAST_SENDER);
     }
+  }
+
+  public static loadSettings(): AppSettings {
+    try {
+      const raw = localStorage.getItem(LS_SETTINGS);
+      if (raw) {
+        return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      }
+    } catch {}
+    return DEFAULT_SETTINGS;
+  }
+
+  public static saveSettings(settings: AppSettings) {
+    localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }
 }

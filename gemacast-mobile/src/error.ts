@@ -2,7 +2,6 @@ export enum ErrorCode {
   NETWORK_FAILED_TO_START_DISCOVERY = 'NETWORK_FAILED_TO_START_DISCOVERY',
   NETWORK_FAILED_TO_STOP_DISCOVERY = 'NETWORK_FAILED_TO_STOP_DISCOVERY',
   NETWORK_DISCOVERY_ERROR = 'NETWORK_DISCOVERY_ERROR',
-  NETWORK_WIFI_DISCONNECTED = 'NETWORK_WIFI_DISCONNECTED',
   NETWORK_SENDER_TIMEOUT = 'NETWORK_SENDER_TIMEOUT',
   NETWORK_RECONNECT_FAILED = 'NETWORK_RECONNECT_FAILED',
   AUDIO_PLAYBACK_ERROR = 'AUDIO_PLAYBACK_ERROR',
@@ -21,7 +20,6 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY]: 'Failed to start UDP discovery',
   [ErrorCode.NETWORK_FAILED_TO_STOP_DISCOVERY]: 'Failed to stop UDP discovery',
   [ErrorCode.NETWORK_DISCOVERY_ERROR]: 'An error occurred during background discovery',
-  [ErrorCode.NETWORK_WIFI_DISCONNECTED]: 'Wi-Fi disconnected — waiting for network',
   [ErrorCode.NETWORK_SENDER_TIMEOUT]: 'PC sender stopped responding — attempting to reconnect',
   [ErrorCode.NETWORK_RECONNECT_FAILED]: 'Could not reconnect after several attempts',
   [ErrorCode.AUDIO_PLAYBACK_ERROR]: 'An error occurred during audio playback',
@@ -95,12 +93,6 @@ export class GemaCastError extends Error {
   public static senderTimeout() {
     return new GemaCastError({
       code: ErrorCode.NETWORK_SENDER_TIMEOUT,
-    });
-  }
-
-  public static wifiDisconnected() {
-    return new GemaCastError({
-      code: ErrorCode.NETWORK_WIFI_DISCONNECTED,
     });
   }
 

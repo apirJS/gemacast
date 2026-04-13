@@ -59,6 +59,31 @@ export type LatencyStats = {
   min: number | null;
 };
 
+export enum ConnectionMode {
+  Wifi = 'wifi',
+  Usb = 'usb',
+  Adb = 'adb',
+}
+
+export type JitterConfig = {
+  minDepthMs: number;
+  comfortCapMs: number;
+  bounceMultiplier: number;
+  resumeThresholdPct: number;
+  wsolaMaxSkip: number;
+  initialComfortMs: number;
+  fastSettleMultiplier: number;
+  fastSettleFrames: number;
+};
+
+export type AppSettings = {
+  theme: 'light' | 'dark';
+  mode: ConnectionMode;
+  exclusiveMode: boolean;
+  bufferPreset: number; // 0-9 for 1-10 levels, 10 for custom
+  customJitterConfig: JitterConfig;
+};
+
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
@@ -73,6 +98,8 @@ export type AppState = {
   isSuspended: boolean;
   reconnectAttempts: number;
   latency: LatencyStats;
+  settings: AppSettings;
+  availableModes: { wifi: boolean; usb: boolean; adb: boolean };
 };
 
 export type StateSubscriber = (state: AppState) => void;

@@ -66,6 +66,9 @@ async fn handle_resume(app_handle: &tauri::AppHandle) {
             gemacast_core::types::ControlMessage::Connect {
                 device_id,
                 device_name,
+                mode: gemacast_core::types::ConnectionMode::default(),
+                exclusive_mode: false,
+                jitter_config: gemacast_core::types::JitterConfig::default(),
             },
         )
         .await;

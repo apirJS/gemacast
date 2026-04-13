@@ -8,7 +8,7 @@ import {
 } from './testHelpers';
 import { StateHandler } from './StateHandler';
 import { DiscoveryService } from './DiscoveryService';
-import { Status } from '../types';
+import { Status, ConnectionMode } from '../types';
 import type { DiscoveredSender } from '../types';
 import { GemaCastError } from '../error';
 
@@ -27,14 +27,14 @@ beforeEach(() => {
 describe('DiscoveryService — startListening', () => {
   it('transitions to Listening on success', async () => {
     const { sh, discovery } = setup({ start_listening_for_senders: undefined });
-    const result = await discovery.startListening();
+    const result = await discovery.startListening(ConnectionMode.Wifi);
     expect(result.ok).toBe(true);
     expect(sh.getState().status).toBe(Status.Listening);
   });
 
   it('invokes start_listening_for_senders', async () => {
     const { discovery } = setup({ start_listening_for_senders: undefined });
-    await discovery.startListening();
+    await discovery.startListening(ConnectionMode.Wifi);
     expect(invokeCalls[0]?.cmd).toBe('start_listening_for_senders');
   });
 
@@ -49,7 +49,7 @@ describe('DiscoveryService — startListening', () => {
       sh,
       mock(() => {}),
     );
-    const result = await discovery.startListening();
+    const result = await discovery.startListening(ConnectionMode.Wifi);
     expect(result.ok).toBe(false);
     expect(sh.getState().error).toBeInstanceOf(GemaCastError);
     expect(sh.getState().isLoading).toBe(false);

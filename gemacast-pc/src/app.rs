@@ -62,6 +62,23 @@ pub fn run() {
                         }
                     }
 
+                    let mut clicked_quality = None;
+                    for (bitrate_opt, menu_item) in &tray_manager.quality_buttons {
+                        if menu_item.id() == menu_event.id() {
+                            clicked_quality = Some(*bitrate_opt);
+                            break;
+                        }
+                    }
+
+                    if let Some(new_bitrate) = clicked_quality {
+                        for (bitrate_opt, menu_item) in &tray_manager.quality_buttons {
+                            menu_item.set_checked(*bitrate_opt == new_bitrate);
+                        }
+                        if let Err(e) = stream_command_tx.try_send(StreamCommand::ChangeBitrate(new_bitrate)) {
+                            display_error_dialog(e.to_string());
+                        }
+                    }
+
                     if menu_event.id() == tray_manager.broadcast_toggle.id() {
                         let is_broadcasting = tray_manager.broadcast_toggle.is_checked();
                         let command = if is_broadcasting {
@@ -96,6 +113,10 @@ pub fn run() {
                         *control_flow = ControlFlow::Exit;
                     }
                 }
+            }
+            Event::LoopDestroyed => {
+                let _ = stream_command_tx.try_send(StreamCommand::StopStream);
+                std::thread::sleep(std::time::Duration::from_millis(150));
             }
             _ => {}
         }
