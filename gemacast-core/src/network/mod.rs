@@ -77,11 +77,11 @@ pub fn is_usb_tether_ip(ip: &std::net::IpAddr) -> bool {
         for interface in interfaces {
             let mut name_lower = interface.name.to_lowercase();
             if let Some(ref friendly) = interface.friendly_name {
-                name_lower.push_str(" ");
+                name_lower.push(' ');
                 name_lower.push_str(&friendly.to_lowercase());
             }
             if let Some(ref desc) = interface.description {
-                name_lower.push_str(" ");
+                name_lower.push(' ');
                 name_lower.push_str(&desc.to_lowercase());
             }
 

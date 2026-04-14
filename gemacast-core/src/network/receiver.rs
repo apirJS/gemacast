@@ -7,8 +7,16 @@ use crate::{
     jitter::{JitterBufferManager, RawPacket},
     network::AUDIO_PORT,
 };
-use cpal::{StreamError, traits::*};
+use cpal::StreamError;
+#[cfg(not(target_os = "android"))]
+use cpal::traits::*;
 use ringbuf::{HeapProd, HeapRb, traits::*};
+#[cfg(target_os = "android")]
+use oboe::{
+    AudioOutputCallback, AudioStreamBuilder,
+    PerformanceMode, SharingMode, DataCallbackResult, AudioStreamSafe,
+    AudioOutputStreamSafe, AudioStream
+};
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
@@ -27,6 +35,12 @@ use tokio::{
 /// 1024 slots.
 const PACKET_CHANNEL_CAPACITY: usize = 1024;
 
+#[cfg(not(target_os = "android"))]
+pub type PlaybackStream = cpal::Stream;
+
+#[cfg(target_os = "android")]
+pub type PlaybackStream = oboe::AudioStreamAsync<oboe::Output, OboeCallback>;
+
 pub struct AudioReceiverHandles {
     pub receiver: AudioReceiver,
     pub shutdown_tx: oneshot::Sender<()>,
@@ -39,14 +53,58 @@ pub struct AudioReceiver {
     /// Producer side of the raw packet SPSC channel.
     /// The network thread pushes undecoded Opus packets here.
     packet_producer: HeapProd<RawPacket>,
-    playback_stream: cpal::Stream,
+    playback_stream: PlaybackStream,
     error_rx: mpsc::Receiver<StreamError>,
     shutdown_rx: oneshot::Receiver<()>,
     latency_metric: Arc<AtomicU32>,
 }
 
+#[cfg(target_os = "android")]
+pub struct OboeCallback {
+    jitter_manager: JitterBufferManager,
+    packet_consumer: ringbuf::HeapCons<RawPacket>,
+    volume: Arc<AtomicU32>,
+    is_playing: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "android")]
+impl AudioOutputCallback for OboeCallback {
+    type FrameType = (f32, oboe::Stereo);
+
+    fn on_audio_ready(
+        &mut self,
+        _stream: &mut dyn AudioOutputStreamSafe,
+        audio_data: &mut [(f32, f32)],
+    ) -> DataCallbackResult {
+        let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
+
+        // Safely cast &mut [(f32, f32)] to &mut [f32] for the jitter manager
+        let float_slice = unsafe {
+            std::slice::from_raw_parts_mut(
+                audio_data.as_mut_ptr() as *mut f32,
+                audio_data.len() * 2,
+            )
+        };
+
+        if !self.is_playing.load(Ordering::Relaxed) {
+            while self.packet_consumer.try_pop().is_some() {}
+            for sample in float_slice.iter_mut() {
+                *sample = 0.0;
+            }
+            self.jitter_manager.reset();
+            return DataCallbackResult::Continue;
+        }
+
+        self.jitter_manager.ingest_packets(&mut self.packet_consumer);
+        self.jitter_manager.fill_output(float_slice, vol);
+
+        DataCallbackResult::Continue
+    }
+}
+
 impl AudioReceiver {
     pub async fn create() -> Result<AudioReceiverHandles, GemaCastError> {
+        #[allow(unused_variables)]
         let (error_tx, error_rx) = mpsc::channel::<StreamError>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -57,36 +115,7 @@ impl AudioReceiver {
         // The Opus decoder lives inside the cpal callback (required for PLC to work).
         let decoder = create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
 
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
-
-        let mut buffer_size = cpal::BufferSize::Default;
-
-        if let Ok(mut supported_configs) = device.supported_output_configs() {
-            if let Some(config) = supported_configs.find(|c| {
-                c.channels() == OPUS_CHANNELS
-                    && c.min_sample_rate() <= OPUS_SAMPLE_RATE.into()
-                    && c.max_sample_rate() >= OPUS_SAMPLE_RATE.into()
-            }) {
-                match config.buffer_size() {
-                    cpal::SupportedBufferSize::Range { min, max } => {
-                        let desired = OPUS_FRAME_SAMPLES as u32;
-                        buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
-                    }
-                    cpal::SupportedBufferSize::Unknown => {}
-                }
-            }
-        }
-
-        let stream_config = cpal::StreamConfig {
-            channels: OPUS_CHANNELS,
-            sample_rate: OPUS_SAMPLE_RATE,
-            buffer_size,
-            // buffer_size: cpal::BufferSize::Default,
-        };
-
+        let _host = cpal::default_host();
         let is_playing = Arc::new(AtomicBool::new(true));
         let is_playing_for_cpal = is_playing.clone();
         let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
@@ -95,46 +124,94 @@ impl AudioReceiver {
         let latency_metric = Arc::new(AtomicU32::new(0));
         let latency_metric_clone = latency_metric.clone();
 
-        let playback_stream = device
-            .build_output_stream(
-                &stream_config,
-                {
-                    let mut packet_consumer = packet_consumer;
-                    let mut jitter_manager =
-                        JitterBufferManager::new(decoder, latency_metric_clone);
+        #[cfg(not(target_os = "android"))]
+        let playback_stream = {
+            let host = cpal::default_host();
+            let device = host
+                .default_output_device()
+                .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
 
-                    move |data: &mut [f32], _: &_| {
-                        let vol = f32::from_bits(volume_for_cpal.load(Ordering::Relaxed));
+            let mut buffer_size = cpal::BufferSize::Default;
 
-                        if !is_playing_for_cpal.load(Ordering::Relaxed) {
-                            // Paused: drain incoming packets and output silence.
-                            while packet_consumer.try_pop().is_some() {}
-                            for sample in data.iter_mut() {
-                                *sample = 0.0;
-                            }
-                            jitter_manager.reset();
-                            return;
+            if let Ok(mut supported_configs) = device.supported_output_configs()
+                && let Some(config) = supported_configs.find(|c| {
+                    c.channels() == OPUS_CHANNELS
+                        && c.min_sample_rate() <= OPUS_SAMPLE_RATE
+                        && c.max_sample_rate() >= OPUS_SAMPLE_RATE
+                }) {
+                    match config.buffer_size() {
+                        cpal::SupportedBufferSize::Range { min, max } => {
+                            let desired = OPUS_FRAME_SAMPLES as u32;
+                            buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
                         }
-
-                        // Step 1: Drain all raw packets from the network thread
-                        //         into the jitter buffer's ordered slot array.
-                        jitter_manager.ingest_packets(&mut packet_consumer);
-
-                        // Step 2: Fill the output buffer with jitter-compensated audio.
-                        //         The manager handles decode, PLC, and prebuffering
-                        //         internally — the cpal DAC clock drives everything.
-                        jitter_manager.fill_output(data, vol);
+                        cpal::SupportedBufferSize::Unknown => {}
                     }
-                },
-                {
-                    let error_tx = error_tx.clone();
-                    move |e| {
-                        let _ = error_tx.blocking_send(e);
-                    }
-                },
-                None,
-            )
-            .map_err(AudioCaptureError::FailedToBuildOutputStream)?;
+                }
+
+            let stream_config = cpal::StreamConfig {
+                channels: OPUS_CHANNELS,
+                sample_rate: OPUS_SAMPLE_RATE,
+                buffer_size,
+            };
+
+            device
+                .build_output_stream(
+                    &stream_config,
+                    {
+                        let mut packet_consumer = packet_consumer;
+                        let mut jitter_manager =
+                            JitterBufferManager::new(decoder, latency_metric_clone);
+
+                        move |data: &mut [f32], _: &_| {
+                            let vol = f32::from_bits(volume_for_cpal.load(Ordering::Relaxed));
+
+                            if !is_playing_for_cpal.load(Ordering::Relaxed) {
+                                // Paused: drain incoming packets and output silence.
+                                while packet_consumer.try_pop().is_some() {}
+                                for sample in data.iter_mut() {
+                                    *sample = 0.0;
+                                }
+                                jitter_manager.reset();
+                                return;
+                            }
+
+                            jitter_manager.ingest_packets(&mut packet_consumer);
+                            jitter_manager.fill_output(data, vol);
+                        }
+                    },
+                    {
+                        let error_tx = error_tx.clone();
+                        move |e| {
+                            let _ = error_tx.blocking_send(e);
+                        }
+                    },
+                    None,
+                )
+                .map_err(AudioCaptureError::FailedToBuildOutputStream)?
+        };
+
+        #[cfg(target_os = "android")]
+        let playback_stream = {
+            let callback = OboeCallback {
+                jitter_manager: JitterBufferManager::new(decoder, latency_metric_clone),
+                packet_consumer,
+                volume: volume_for_cpal,
+                is_playing: is_playing_for_cpal,
+            };
+
+            let builder = AudioStreamBuilder::default()
+                   .set_direction::<oboe::Output>()
+                   .set_performance_mode(PerformanceMode::LowLatency)
+                   .set_sharing_mode(SharingMode::Shared)
+                   .set_format::<f32>()
+                   .set_channel_count::<oboe::Stereo>()
+                   .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+                   .set_callback(callback);
+
+            let stream = builder.open_stream()
+                .map_err(|_| AudioCaptureError::FailedToBuildOutputStream(cpal::BuildStreamError::DeviceNotAvailable))?;
+            stream
+        };
 
         let receiver = AudioReceiver {
             packet_producer,
@@ -243,10 +320,9 @@ impl AudioReceiver {
                         }
 
                         let jitter_delay_ms = self.latency_metric.load(Ordering::Relaxed) as f32;
-                        let buffered_packets = self.packet_producer.occupied_len();
-                        let spsc_delay_ms = (buffered_packets as f32) * ms_per_frame;
-
-                        let total_latency_ms = jitter_delay_ms + spsc_delay_ms;
+                        // jitter_delay_ms holds the EXACT time elapsed since the packet hit the network socket 
+                        // until it was played. This ALREADY includes SPSC queue time!
+                        let total_latency_ms = jitter_delay_ms;
                         let _ = tx.try_send((total_latency_ms, rms));
                     }
                 }
@@ -262,11 +338,23 @@ impl AudioReceiver {
         Ok(())
     }
 
-    pub fn start_audio_playback(&self) -> Result<(), GemaCastError> {
+    pub fn start_audio_playback(&mut self) -> Result<(), GemaCastError> {
+        #[cfg(not(target_os = "android"))]
         self.playback_stream
             .play()
             .map_err(AudioCaptureError::FailedToPlayOutputStream)?;
 
+        #[cfg(target_os = "android")]
+        {
+            self.playback_stream
+                .start()
+                .map_err(|_| AudioCaptureError::FailedToPlayOutputStream(cpal::PlayStreamError::DeviceNotAvailable))?;
+                
+            // Crucial Android Low-Latency tuning: force the hardware mixer buffer down
+            // to a double-buffer of its smallest supported burst size.
+            let burst = self.playback_stream.get_frames_per_burst();
+            let _ = self.playback_stream.set_buffer_size_in_frames(burst * 2);
+        }
         Ok(())
     }
 }

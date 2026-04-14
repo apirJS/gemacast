@@ -4,7 +4,10 @@ pub const OPUS_CHANNELS: u16 = 2;
 pub const OPUS_SAMPLE_RATE: u32 = 48_000;
 
 pub const OPUS_BITRATE: usize = 128_000;
-pub const OPUS_FRAME_SIZE: usize = 960;
+/// 480 samples @ 48 kHz = 10ms per frame.
+/// AudioRelay and other low-latency streamers use 10ms frames to halve
+/// the effective Wi-Fi burst aggregation latency vs. the 20ms default.
+pub const OPUS_FRAME_SIZE: usize = 480;
 pub const OPUS_FRAME_SAMPLES: usize = OPUS_FRAME_SIZE * OPUS_CHANNELS as usize;
 
 /// Safe bounds for largest possible packet.
