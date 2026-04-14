@@ -49,12 +49,10 @@ impl AudioSender {
                     && c.min_sample_rate() <= rate
                     && c.max_sample_rate() >= rate
             })
-        {
-            if let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
+            && let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
                 let desired = OPUS_FRAME_SAMPLES as u32;
                 buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
             }
-        }
 
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
