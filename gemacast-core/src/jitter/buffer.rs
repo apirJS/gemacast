@@ -107,7 +107,10 @@ impl JitterBuffer {
 
     pub fn advance_one(&mut self) {
         let index = (self.next_play_seq % self.capacity) as usize;
-        if self.slots[index].as_ref().is_some_and(|p| p.seq_num == self.next_play_seq) {
+        if self.slots[index]
+            .as_ref()
+            .is_some_and(|p| p.seq_num == self.next_play_seq)
+        {
             self.slots[index] = None;
             self.occupied = self.occupied.saturating_sub(1);
         }
@@ -133,24 +136,18 @@ impl JitterBuffer {
             .is_some_and(|pkt| pkt.seq_num == self.next_play_seq)
     }
 
-    /// Count how many sequential packets are available starting from `next_play_seq`.
+    /// Represents the total buffer occupancy depth to prevent prebuffer deadlocking on dropped packets.
     pub fn contiguous_depth(&self) -> u32 {
         if !self.initialized {
             return 0;
         }
         let mut count = 0u32;
-        let mut seq = self.next_play_seq;
-        loop {
-            let index = (seq % self.capacity) as usize;
-            match &self.slots[index] {
-                Some(pkt) if pkt.seq_num == seq => {
-                    count += 1;
-                    seq += 1;
-                    if count >= self.capacity as u32 {
-                        break;
-                    }
+        for i in 0..self.capacity {
+            let index = ((self.next_play_seq + i) % self.capacity) as usize;
+            if let Some(pkt) = &self.slots[index] {
+                if pkt.seq_num >= self.next_play_seq {
+                    count += 1; // Pure occupancy count
                 }
-                _ => break,
             }
         }
         count

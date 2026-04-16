@@ -10,13 +10,12 @@ use crate::{
 use cpal::StreamError;
 #[cfg(not(target_os = "android"))]
 use cpal::traits::*;
-use ringbuf::{HeapProd, HeapRb, traits::*};
 #[cfg(target_os = "android")]
 use oboe::{
-    AudioOutputCallback, AudioStreamBuilder,
-    PerformanceMode, SharingMode, DataCallbackResult, AudioStreamSafe,
-    AudioOutputStreamSafe, AudioStream
+    AudioOutputCallback, AudioOutputStreamSafe, AudioStream, AudioStreamBuilder, AudioStreamSafe,
+    DataCallbackResult, PerformanceMode, SharingMode,
 };
+use ringbuf::{HeapProd, HeapRb, traits::*};
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
@@ -95,7 +94,8 @@ impl AudioOutputCallback for OboeCallback {
             return DataCallbackResult::Continue;
         }
 
-        self.jitter_manager.ingest_packets(&mut self.packet_consumer);
+        self.jitter_manager
+            .ingest_packets(&mut self.packet_consumer);
         self.jitter_manager.fill_output(float_slice, vol);
 
         DataCallbackResult::Continue
@@ -138,15 +138,16 @@ impl AudioReceiver {
                     c.channels() == OPUS_CHANNELS
                         && c.min_sample_rate() <= OPUS_SAMPLE_RATE
                         && c.max_sample_rate() >= OPUS_SAMPLE_RATE
-                }) {
-                    match config.buffer_size() {
-                        cpal::SupportedBufferSize::Range { min, max } => {
-                            let desired = OPUS_FRAME_SAMPLES as u32;
-                            buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
-                        }
-                        cpal::SupportedBufferSize::Unknown => {}
+                })
+            {
+                match config.buffer_size() {
+                    cpal::SupportedBufferSize::Range { min, max } => {
+                        let desired = OPUS_FRAME_SAMPLES as u32;
+                        buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
                     }
+                    cpal::SupportedBufferSize::Unknown => {}
                 }
+            }
 
             let stream_config = cpal::StreamConfig {
                 channels: OPUS_CHANNELS,
@@ -200,16 +201,19 @@ impl AudioReceiver {
             };
 
             let builder = AudioStreamBuilder::default()
-                   .set_direction::<oboe::Output>()
-                   .set_performance_mode(PerformanceMode::LowLatency)
-                   .set_sharing_mode(SharingMode::Shared)
-                   .set_format::<f32>()
-                   .set_channel_count::<oboe::Stereo>()
-                   .set_sample_rate(OPUS_SAMPLE_RATE as i32)
-                   .set_callback(callback);
+                .set_direction::<oboe::Output>()
+                .set_performance_mode(PerformanceMode::LowLatency)
+                .set_sharing_mode(SharingMode::Shared)
+                .set_format::<f32>()
+                .set_channel_count::<oboe::Stereo>()
+                .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+                .set_callback(callback);
 
-            let stream = builder.open_stream()
-                .map_err(|_| AudioCaptureError::FailedToBuildOutputStream(cpal::BuildStreamError::DeviceNotAvailable))?;
+            let stream = builder.open_stream().map_err(|_| {
+                AudioCaptureError::FailedToBuildOutputStream(
+                    cpal::BuildStreamError::DeviceNotAvailable,
+                )
+            })?;
             stream
         };
 
@@ -249,8 +253,31 @@ impl AudioReceiver {
             let _ = socket.send_to(&[0u8], target_addr).await;
         }
 
-        let mut recv_buff = vec![0u8; SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE];
+        let mut recv_buff =
+            vec![0u8; SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE];
         let mut sender_ip_tx = sender_ip_tx;
+
+        let heartbeat_active = Arc::new(AtomicBool::new(true));
+        let hb_active_clone = heartbeat_active.clone();
+
+        let mut heartbeat_thread = target_ip.map(|target| {
+            let target_addr = std::net::SocketAddr::new(target, AUDIO_PORT);
+            std::thread::spawn(move || {
+                #[cfg(target_os = "android")]
+                unsafe {
+                    // Elevate to THREAD_PRIORITY_URGENT_AUDIO (-19) to bypass MIUI aggressive CPU throttling.
+                    // This physically guarantees the 20ms sleep is honored, forcing Wi-Fi awake.
+                    libc::setpriority(libc::PRIO_PROCESS, 0, -19);
+                }
+                
+                if let Ok(hb_socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                    while hb_active_clone.load(Ordering::Relaxed) {
+                        let _ = hb_socket.send_to(&[0u8], target_addr);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            })
+        });
 
         loop {
             tokio::select! {
@@ -288,7 +315,7 @@ impl AudioReceiver {
 
                     // Latency / RMS reporting (every 50 packets, ~500ms / ~1s depending on frame size).
                     if let Some(ref tx) = latency_tx
-                        && seq_num.is_multiple_of(50)
+                        && seq_num.is_multiple_of(100)
                     {
                         let sample_rate = OPUS_SAMPLE_RATE as f32;
                         let frame_samples = OPUS_FRAME_SAMPLES as f32;
@@ -320,16 +347,29 @@ impl AudioReceiver {
                         }
 
                         let jitter_delay_ms = self.latency_metric.load(Ordering::Relaxed) as f32;
-                        // jitter_delay_ms holds the EXACT time elapsed since the packet hit the network socket 
+                        // jitter_delay_ms holds the EXACT time elapsed since the packet hit the network socket
                         // until it was played. This ALREADY includes SPSC queue time!
                         let total_latency_ms = jitter_delay_ms;
                         let _ = tx.try_send((total_latency_ms, rms));
+
+                        eprintln!(
+                            "GemaCastLatencyLog | Seq: {}, Latency: {}ms, RMS: {:.4}",
+                            seq_num, total_latency_ms, rms
+                        );
                     }
                 }
                 Some(stream_err) = self.error_rx.recv() => {
+                    heartbeat_active.store(false, Ordering::Relaxed);
+                    if let Some(handle) = heartbeat_thread.take() {
+                        let _ = handle.join();
+                    }
                     return Err(AudioCaptureError::StreamError(stream_err).into());
                 }
                 _ = &mut self.shutdown_rx => {
+                    heartbeat_active.store(false, Ordering::Relaxed);
+                    if let Some(handle) = heartbeat_thread.take() {
+                        let _ = handle.join();
+                    }
                     break;
                 }
             }
@@ -346,10 +386,12 @@ impl AudioReceiver {
 
         #[cfg(target_os = "android")]
         {
-            self.playback_stream
-                .start()
-                .map_err(|_| AudioCaptureError::FailedToPlayOutputStream(cpal::PlayStreamError::DeviceNotAvailable))?;
-                
+            self.playback_stream.start().map_err(|_| {
+                AudioCaptureError::FailedToPlayOutputStream(
+                    cpal::PlayStreamError::DeviceNotAvailable,
+                )
+            })?;
+
             // Crucial Android Low-Latency tuning: force the hardware mixer buffer down
             // to a double-buffer of its smallest supported burst size.
             let burst = self.playback_stream.get_frames_per_burst();
