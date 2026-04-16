@@ -164,6 +164,10 @@ impl AudioSender {
                     }
                 },
                 _ = self.notify.notified() => {
+                    // Drain incoming UDP buffer (e.g. Android heartbeat ticks) so it doesn't eventually block or throw WSAEMSGSIZE
+                    let mut drain_buf = [0u8; 1];
+                    while audio_socket.try_recv(&mut drain_buf).is_ok() {}
+
                     let occupied = self.audio_consumer.occupied_len();
                     if occupied == 0 {
                         continue;

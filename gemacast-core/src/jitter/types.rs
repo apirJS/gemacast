@@ -16,5 +16,3 @@ pub struct RawPacket {
     /// True if the payload_data is raw f32 PCM float bytes, False if Opus.
     pub is_uncompressed: bool,
 }
-
-

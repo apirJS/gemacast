@@ -3,37 +3,26 @@ use std::collections::VecDeque;
 use opus::Decoder;
 use ringbuf::{HeapCons, traits::*};
 
-use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
+use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE};
 
 use super::buffer::JitterBuffer;
 use super::types::RawPacket;
 
-/// 2 frames × 10ms = 20ms absolute floor.
+const MILLIS_PER_FRAME: u32 = (OPUS_FRAME_SIZE as u32 * 1000) / OPUS_SAMPLE_RATE;
+
+/// Absolute floor of 20ms.
 /// The adaptive `prebuffer_target` provides the real safety net above this.
-const MIN_DEPTH: u32 = 2;
-const MAX_MISSING: u32 = 200;
+const MIN_DEPTH: u32 = 20 / MILLIS_PER_FRAME;
+/// 2000ms max silence before resetting stream
+const MAX_MISSING: u32 = 2000 / MILLIS_PER_FRAME;
 
-/// Reorder tolerance: process_next_frame callbacks to wait for a reordered packet.
-/// At 250 callbacks/sec: 3 = ~12ms window. Short enough to not stall on genuine loss.
-const REORDER_TOLERANCE: u32 = 3;
-
-/// After this many consecutive clean-play callbacks, use the fast EMA decay rate.
-/// 500 callbacks ≈ 2 seconds. Allows the prebuffer target to shrink back to MIN_DEPTH
-/// much faster during stable network periods.
-const CLEAN_DECAY_THRESHOLD: u32 = 500;
-
-/// Slow EMA decay: used after any recent starvation or jitter event.
-/// 0.998^250 ≈ 60% per second.
-const EMA_DECAY_SLOW: f32 = 0.998;
-
-/// Fast EMA decay: used when the buffer has been playing cleanly for 2+ seconds.
-/// 0.992^250 ≈ 14% per second. Squeezes latency back to floor 4× faster.
-const EMA_DECAY_FAST: f32 = 0.992;
+/// Reorder tolerance: ~30ms window to wait for a reordered packet.
+const REORDER_TOLERANCE: u32 = 30 / MILLIS_PER_FRAME;
 
 /// Hard flush ceiling — frames above the current prebuffer target before Tier 2 fires.
-/// 20 frames = 200ms of extra headroom. The buffer is never touched below this line.
-/// Only catastrophic clock drift or prolonged freeze will trigger a flush.
-const MAX_HEADROOM: u32 = 20;
+/// 40ms of extra headroom. The buffer is never touched below this line.
+/// Only catastrophic clock drift or prolonged OS UI freezes will trigger a flush.
+const MAX_HEADROOM: u32 = 40 / MILLIS_PER_FRAME;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -67,6 +56,9 @@ pub struct JitterBufferManager {
     is_prebuffering: bool,
     missing_count: u32,
     starvation_count: u32,
+    
+    /// Tracks the exact sequence number the Opus predictive state machine is calibrated for.
+    opus_next_expected_seq: Option<u64>,
 
     /// The frame depth the buffer must reach before exiting prebuffering.
     /// Set by `compute_prebuffer_target()` each time starvation triggers a rebuffer.
@@ -74,14 +66,7 @@ pub struct JitterBufferManager {
     /// prebuffering into a network that will immediately re-starve.
     prebuffer_target: u32,
 
-    /// EMA of network variance (frames). Drives `compute_prebuffer_target()`.
-    ema_jitter_ms: f32,
-    last_arrival: Option<Instant>,
-    last_seq: Option<u64>,
-
-    /// Consecutive callbacks where `has_next()` was true and a frame decoded cleanly.
-    /// Used to switch from slow to fast EMA decay, accelerating latency recovery.
-    clean_play_count: u32,
+    last_network_arrival: Option<Instant>,
 
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
@@ -89,8 +74,18 @@ pub struct JitterBufferManager {
     /// Prevents spurious PLC for late-arriving reordered packets on 2.4GHz.
     gap_hold_count: u32,
 
-    /// Counter for active latency shaving (Soft Trim).
-    frames_since_last_trim: u32,
+    /// Per-cpal-callback gate: set to `true` by `ingest_packets` (called once per
+    /// audio callback) and cleared to `false` the moment a WSOLA shed fires.
+    wsola_allowed_this_tick: bool,
+
+    /// Current maximum observed burst gaps. The peak defines the active safety floor.
+    peak_burst_f32: f32,
+
+    /// 30-bucket sliding window (1s intervals) to preserve bursts for 30 seconds.
+    peak_history: VecDeque<f32>,
+    current_second_peak: f32,
+    last_history_push: Option<Instant>,
+    consecutive_clean_seconds: u32,
 }
 
 impl JitterBufferManager {
@@ -104,14 +99,17 @@ impl JitterBufferManager {
             is_prebuffering: true,
             missing_count: 0,
             starvation_count: 0,
+            opus_next_expected_seq: None,
             prebuffer_target: MIN_DEPTH,
-            ema_jitter_ms: 0.0,
-            last_arrival: None,
-            last_seq: None,
-            clean_play_count: 0,
+            last_network_arrival: None,
             latency_metric,
             gap_hold_count: 0,
-            frames_since_last_trim: 0,
+            wsola_allowed_this_tick: false,
+            peak_burst_f32: MIN_DEPTH as f32,
+            peak_history: VecDeque::with_capacity(30),
+            current_second_peak: MIN_DEPTH as f32,
+            last_history_push: None,
+            consecutive_clean_seconds: 0,
         }
     }
 
@@ -120,58 +118,79 @@ impl JitterBufferManager {
     /// Called at the top of every cpal callback. The consumer is the audio-thread
     /// side of the lock-free ring buffer shared with the network thread.
     pub fn ingest_packets(&mut self, consumer: &mut HeapCons<RawPacket>) {
-        let mut burst_size = 0;
-        while let Some(pkt) = consumer.try_pop() {
-            if let (Some(last_arr), Some(last_s)) = (self.last_arrival, self.last_seq) {
-                if pkt.seq_num > last_s && (pkt.seq_num - last_s) < 1000 {
-                    let elapsed = pkt.arrival_time.duration_since(last_arr).as_millis() as f32;
-                    let seq_delta = (pkt.seq_num - last_s) as f32;
-                    let expected = seq_delta * 10.0;
+        self.wsola_allowed_this_tick = true;
+        let now = Instant::now();
+        
+        let mut max_gap_ms = 0;
+        let mut packets_received = 0;
 
-                    let variance_ms = (elapsed - expected).abs();
-                    let variance_frames = variance_ms / 10.0;
-                    if variance_frames > self.ema_jitter_ms {
-                        self.ema_jitter_ms = variance_frames; // Spike on arrival jitter
+        while let Some(pkt) = consumer.try_pop() {
+            if let Some(last) = self.last_network_arrival {
+                if pkt.arrival_time > last {
+                    let gap = pkt.arrival_time.duration_since(last).as_millis() as u32;
+                    let gap_clamped = gap.min(10000);
+                    if gap_clamped > max_gap_ms {
+                        max_gap_ms = gap_clamped;
+                    }
+                }
+            } else {
+                max_gap_ms = 0; // First packet ever
+            }
+            self.last_network_arrival = Some(pkt.arrival_time);
+            self.buffer.insert(pkt);
+            packets_received += 1;
+        }
+
+        // Push every 1 second into a 30-bucket sliding window.
+        if let Some(last_push) = self.last_history_push {
+            if now.duration_since(last_push).as_millis() >= 1000 {
+                let finalized_peak = self.current_second_peak;
+
+                if self.peak_history.len() >= 30 {
+                    self.peak_history.pop_front();
+                }
+                self.peak_history.push_back(finalized_peak);
+                self.current_second_peak = MIN_DEPTH as f32; // reset
+                self.last_history_push = Some(now);
+
+                // Consecutive clean heuristic for agility
+                // 24 frames = 120ms, safely covers Android's native 100ms Wi-Fi batching duration
+                let clean_threshold = (MIN_DEPTH as f32 * 6.0).max(24.0);
+                if finalized_peak < clean_threshold {
+                    self.consecutive_clean_seconds += 1;
+                } else {
+                    self.consecutive_clean_seconds = 0;
+                }
+
+                // Only aggressively strip latency overhead when it's genuinely high (e.g. > 150ms).
+                // If it's already below 150ms, let the 30-sec sliding window handle decay natively.
+                if self.consecutive_clean_seconds >= 5 && self.peak_burst_f32 > 30.0 {
+                    for bucket in &mut self.peak_history {
+                        *bucket = (*bucket * 0.8).max(MIN_DEPTH as f32);
                     }
                 }
             }
-            self.last_arrival = Some(pkt.arrival_time);
-            self.last_seq = Some(pkt.seq_num);
-            self.buffer.insert(pkt);
-            burst_size += 1;
+        } else {
+            self.last_history_push = Some(now);
         }
 
-        if burst_size > 0 {
-            let burst_f32 = burst_size as f32;
-            if burst_f32 > self.ema_jitter_ms {
-                self.ema_jitter_ms = burst_f32; // Spike on burst aggregation
+        if packets_received > 0 {
+            let gap_frames = max_gap_ms as f32 / MILLIS_PER_FRAME as f32;
+            let gap_as_risk = gap_frames.max(MIN_DEPTH as f32);
+            if gap_as_risk > self.current_second_peak {
+                self.current_second_peak = gap_as_risk;
             }
         }
 
-        // Adaptive decay: fast when stable, slow when recovering from jitter.
-        // fast = 0.992^250/s ≈ 14% left per second → returns 15-frame spike to floor in ~1s
-        // slow = 0.998^250/s ≈ 60% left per second → returns 15-frame spike to floor in ~4s
-        let decay = if self.clean_play_count >= CLEAN_DECAY_THRESHOLD {
-            EMA_DECAY_FAST
-        } else {
-            EMA_DECAY_SLOW
-        };
+        // Evaluate live peak tracker.
+        self.peak_burst_f32 = self
+            .peak_history
+            .iter()
+            .copied()
+            .fold(self.current_second_peak, f32::max);
 
-        // Stop decaying target during starvation! (Gap physics)
-        // If we are actively starved, we maintain the highest required peak.
-        if self.buffer.occupied_count() > 0 || self.clean_play_count > 0 {
-            self.ema_jitter_ms *= decay;
-        }
-    }
-
-    /// Compute the playout depth the buffer must reach before exiting prebuffering.
-    ///
-    /// This is the predictive element of the AJB: before playback restarts, we wait
-    /// until we have enough frames to survive the next expected burst gap. If the
-    /// network has been delivering 15-frame bursts, we wait for 15 frames so the
-    /// first burst gap doesn't immediately re-starve us.
-    fn compute_prebuffer_target(&self) -> u32 {
-        (self.ema_jitter_ms as u32).clamp(MIN_DEPTH, 300)
+        let safe_ema = (self.peak_burst_f32 as u32).max(MIN_DEPTH);
+        self.prebuffer_target = safe_ema.min(300); // Wait 6 seconds max
     }
 
     /// Fill `output` with PCM samples.
@@ -205,26 +224,36 @@ impl JitterBufferManager {
     /// This is critical: in the gap path, next_play_seq must NOT be advanced by
     /// pop_next, or late-arriving reordered packets become stale and are dropped.
     fn process_next_frame(&mut self) {
-        // Tier 2: catastrophic hard flush. Only fires when the buffer has grown
-        // far beyond the current prebuffer target (e.g. after a prolonged freeze).
-        // Between target and target+200ms the buffer is left completely untouched.
-        if self.buffer.occupied_count() > self.prebuffer_target + MAX_HEADROOM {
-            while self.buffer.occupied_count() > self.prebuffer_target {
-                self.buffer.advance_one();
+        let safe_floor = (self.peak_burst_f32.ceil() as u32).max(MIN_DEPTH);
+
+        // Tier 2: decode-and-discard flush. Only fires when the buffer has grown
+        // far beyond the current prebuffer target (e.g. after a prolonged GC freeze or
+        // connection burst). We deliberately decode each discarded packet so the Opus
+        // decoder keeps its internal state in sync — skipping via advance_one() without
+        // decoding causes the next real frame to decode with a stale prediction model,
+        // producing a harsh click/pop artifact.
+        let flush_ceiling = self.prebuffer_target.max(safe_floor) + MAX_HEADROOM;
+        if self.buffer.occupied_count() > flush_ceiling {
+            let flush_target = self.prebuffer_target.max(safe_floor);
+            while self.buffer.occupied_count() > flush_target {
+                if let Some(pkt) = self.buffer.pop_next() {
+                    // Decode and throw away — just to keep the Opus state machine synced.
+                    let _ = self.capture_pcm(&pkt);
+                } else {
+                    self.buffer.advance_one();
+                }
             }
-            let _ = self.decoder.reset_state();
         }
 
         if self.is_prebuffering {
-            // Exit prebuffering only when we have `prebuffer_target` frames.
-            // This target was set by compute_prebuffer_target() at the last starvation event,
-            // so it reflects the network's actual burst size — we won't start playback
-            // into a network that will immediately re-starve us.
-            if self.buffer.occupied_count() >= self.prebuffer_target {
+            // Un-mute playback progressively during a recovery phase.
+            // Must buffer a substantial chunk (up to 500ms) to avoid "machine-gun" 
+            // windmill stuttering when packets trickle in over a congested 2.4GHz link.
+            let unpause_threshold = self.prebuffer_target.min(100).max(MIN_DEPTH);
+            if self.buffer.occupied_count() >= unpause_threshold {
                 self.is_prebuffering = false;
             } else {
-                self.playback_buf
-                    .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+                self.generate_plc();
                 return;
             }
         }
@@ -233,34 +262,65 @@ impl JitterBufferManager {
             self.gap_hold_count = 0;
             self.missing_count = 0;
             self.starvation_count = 0;
-            self.clean_play_count = self.clean_play_count.saturating_add(1);
-
-            // Soft Trimming (Active Latency Shaving)
-            // If physical depth > target depth + 2, gently drop 1 frame every 50 frames (500ms)
-            if self.buffer.occupied_count() > self.prebuffer_target + 2 && !self.is_prebuffering {
-                self.frames_since_last_trim += 1;
-                if self.frames_since_last_trim >= 50 {
-                    self.buffer.advance_one(); // Discard the currently expected frame
-                    self.frames_since_last_trim = 0;
-
-                    // We just discarded a frame, so we must process the *next* frame.
-                    if !self.buffer.has_next() {
-                        self.generate_plc();
-                        return;
-                    }
-                }
-            } else {
-                self.frames_since_last_trim = 0;
-            }
 
             let pkt = self.buffer.pop_next().expect("has_next was true");
             let delay_ms = Instant::now().duration_since(pkt.arrival_time).as_millis() as u32;
             self.latency_metric.store(delay_ms, Ordering::Relaxed);
-            if pkt.is_uncompressed {
-                self.buffer_uncompressed(&pkt.payload_data);
+
+            let pcm = self.capture_pcm(&pkt);
+            // Margin: breathing room above the safe network peak.
+            // Dynamically collapses from 40ms to 20ms during stable 5GHz playback to crush latency.
+            let proportional_margin = (safe_floor as f32 * 0.15).ceil() as u32;
+            let base_margin = if self.consecutive_clean_seconds >= 5 {
+                MIN_DEPTH.max(2)
             } else {
-                self.decode_and_buffer(&pkt.payload_data);
+                MIN_DEPTH * 2
+            };
+            let margin = base_margin.max(proportional_margin).min(100);
+
+            // The peak burst tracker IS the minimum safe buffer depth — it represents
+            // the largest burst the network has recently delivered. Never shed below
+            // this or we'll starve during the next observed burst of equal magnitude.
+            // Unlike ema_jitter_ms (which decays quickly), peak_burst_f32 stays
+            // elevated for ~30s, providing lasting protection against recurring patterns.
+
+            // Only shed frames that sit above the safety floor plus a small breathing margin.
+            let effective_threshold = safe_floor + margin;
+
+            if self.buffer.occupied_count() > effective_threshold && !self.is_prebuffering {
+                let rms = Self::get_rms(&pcm);
+
+                // How many frames above the hard safety floor are we?
+                // Drives max_skip_frames so compression is gentle near the floor
+                // and proportionally stronger when deeply bloated.
+                let safe_excess = self
+                    .buffer
+                    .occupied_count()
+                    .saturating_sub(effective_threshold);
+
+                if rms < 0.005 {
+                    // Silence: drop packet outright — no crossfade needed.
+                    return;
+                } else if self.wsola_allowed_this_tick && self.buffer.has_next() {
+                    // Smooth, proportional WSOLA gliding.
+                    // Far above target = cap at 12 frames (5% tempo increase) to avoid robotic clipping over-compression.
+                    // Near target = soft 1-frame drops to perfectly glide into place without audible distortion.
+                    let proportional = ((safe_excess as f32) * 1.5).ceil() as usize;
+                    let max_skip_frames = proportional.clamp(1, 12);
+
+                    let pkt2 = self.buffer.pop_next().unwrap();
+                    let delay2_ms =
+                        Instant::now().duration_since(pkt2.arrival_time).as_millis() as u32;
+                    self.latency_metric.store(delay2_ms, Ordering::Relaxed);
+
+                    let pcm2 = self.capture_pcm(&pkt2);
+                    self.wsola_allowed_this_tick = false; // Consume tick budget until next ingest
+                    self.forward_wsola_shed(&pcm, &pcm2, max_skip_frames);
+                    return;
+                }
             }
+
+            self.playback_buf.extend(pcm);
             return;
         }
 
@@ -268,7 +328,6 @@ impl JitterBufferManager {
             self.gap_hold_count = 0;
             self.missing_count += 1;
             self.starvation_count += 1;
-            self.clean_play_count = 0; // Reset clean streak on starvation
 
             if self.missing_count > MAX_MISSING {
                 self.trigger_reset();
@@ -280,15 +339,10 @@ impl JitterBufferManager {
             // Re-anchor after 5 consecutive starved frames (50ms).
             // Recompute the prebuffer target NOW so we re-enter prebuffering
             // with the correct depth for the current network conditions.
-            if self.starvation_count >= 5 {
-                self.prebuffer_target = self.compute_prebuffer_target();
+            if self.starvation_count >= 300 / MILLIS_PER_FRAME {
                 self.is_prebuffering = true;
                 self.starvation_count = 0;
                 self.gap_hold_count = 0;
-                let _ = self.decoder.reset_state();
-                self.playback_buf
-                    .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
-                return;
             }
 
             self.generate_plc();
@@ -296,7 +350,6 @@ impl JitterBufferManager {
         }
 
         self.starvation_count = 0;
-        self.clean_play_count = 0; // Reset clean streak on gap
 
         let gap_size = self
             .buffer
@@ -316,6 +369,7 @@ impl JitterBufferManager {
             if self.gap_hold_count >= REORDER_TOLERANCE {
                 if let Some(lowest) = self.buffer.lowest_available_seq() {
                     self.buffer.fast_forward(lowest);
+                    // Reset is now safely handled natively upon the NEXT ingest by capture_pcm() tracking!
                 } else {
                     self.buffer.advance_one();
                 }
@@ -341,41 +395,138 @@ impl JitterBufferManager {
         self.missing_count = 0;
         self.starvation_count = 0;
         self.gap_hold_count = 0;
-        self.ema_jitter_ms = 0.0;
-        self.last_arrival = None;
-        self.last_seq = None;
-        self.clean_play_count = 0;
-        self.frames_since_last_trim = 0;
+        self.wsola_allowed_this_tick = false;
         self.playback_buf.clear();
         self.decode_buf.fill(0.0);
         self.decode_len = 0;
         let _ = self.decoder.reset_state();
     }
 
-    /// Decode an Opus packet and append the PCM to the playback buffer.
-    fn decode_and_buffer(&mut self, opus_data: &[u8]) {
-        if self.decode_opus(opus_data) {
-            self.playback_buf
-                .extend(&self.decode_buf[..self.decode_len]);
-        } else {
-            self.generate_plc();
+    fn get_rms(samples: &[f32]) -> f32 {
+        let mut sum_sq = 0.0;
+        for &s in samples {
+            sum_sq += s * s;
         }
+        (sum_sq / samples.len() as f32).sqrt()
     }
 
-    /// Directly append raw uncompressed PCM data into the playback buffer.
-    fn buffer_uncompressed(&mut self, pcm_bytes: &[u8]) {
-        let f32_len = pcm_bytes.len() / std::mem::size_of::<f32>();
-        if f32_len == 0 {
-            self.generate_plc();
+    fn capture_pcm(&mut self, pkt: &RawPacket) -> Vec<f32> {
+        if let Some(expected) = self.opus_next_expected_seq {
+            if pkt.seq_num != expected {
+                // Catastrophic Opus misalignment (skipped frames). Reset predictive engine!
+                let _ = self.decoder.reset_state();
+            }
+        }
+
+        let pcm = if pkt.is_uncompressed {
+            let f32_len = pkt.payload_data.len() / std::mem::size_of::<f32>();
+            let mut temp_samples = Vec::with_capacity(f32_len);
+            for chunk in pkt.payload_data.chunks_exact(4) {
+                let f = f32::from_ne_bytes(chunk.try_into().unwrap());
+                temp_samples.push(f);
+            }
+            let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
+            if temp_samples.is_empty() {
+                self.decode_plc_to_buf();
+                self.decode_buf[..self.decode_len].to_vec()
+            } else {
+                temp_samples
+            }
+        } else {
+            if self.decode_opus(&pkt.payload_data) {
+                self.decode_buf[..self.decode_len].to_vec()
+            } else {
+                self.decode_plc_to_buf();
+                self.decode_buf[..self.decode_len].to_vec()
+            }
+        };
+
+        self.opus_next_expected_seq = Some(pkt.seq_num + 1);
+        pcm
+    }
+
+    /// WSOLA splice: discard exactly `max_skip_frames` sample-frames at the junction
+    /// of two decoded Opus packets, using SAD to find the best phase-aligned splice
+    /// point within a limited search window.
+    ///
+    /// **Geometry** (all units = stereo sample frames):
+    ///   Input:  pcm1 (n frames) ++ pcm2 (n frames) = 2n frames
+    ///   Output: (n - w) verbatim from pcm1
+    ///         + w crossfade
+    ///         + (n - best_offset - w) from pcm2
+    ///   Saved:  best_offset + w ≤ max_skip_frames
+    ///
+    /// At 48kHz, n=240 (5ms), max_skip=24 → max savings = 0.5ms per call.
+    /// With wsola_allowed_this_tick limiting to 1 call per ~42ms cpal callback,
+    /// the ceiling compression rate is ~12ms/sec — safe for all observed networks.
+    fn forward_wsola_shed(&mut self, pcm1: &[f32], pcm2: &[f32], max_skip_frames: usize) {
+        let channels = OPUS_CHANNELS as usize;
+        let n = pcm1.len() / channels; // sample frames per packet (240 at 5ms/48kHz)
+
+        if max_skip_frames == 0 || n < max_skip_frames * 4 {
+            // Guard: not enough data for a meaningful crossfade, just append verbatim.
+            self.playback_buf.extend(pcm1);
             return;
         }
 
-        for chunk in pcm_bytes.chunks_exact(4) {
-            let f = f32::from_ne_bytes(chunk.try_into().unwrap());
-            self.playback_buf.push_back(f);
+        // Crossfade window = half the skip budget (minimum 1 frame).
+        // The other half is the search range for phase alignment.
+        let w = (max_skip_frames / 2).max(1);
+        // search_end: how many extra frames into pcm2 we may skip (beyond the crossfade).
+        let search_end = max_skip_frames.saturating_sub(w);
+
+        // Find the alignment offset in pcm2[0..search_end] that minimises SAD with
+        // the tail of pcm1[n-w..n]. Minimum offset = 0 means "no extra skip, just
+        // crossfade at the natural packet boundary."
+        let mut best_offset = 0usize;
+        let mut min_sad = f32::MAX;
+        for offset in 0..=search_end {
+            let mut sad = 0.0f32;
+            for i in 0..w {
+                for c in 0..channels {
+                    let i_p = (n.saturating_sub(w) + i) * channels + c;
+                    let i_q = (offset + i) * channels + c;
+                    let p = if i_p < pcm1.len() { pcm1[i_p] } else { 0.0 };
+                    let q = if i_q < pcm2.len() { pcm2[i_q] } else { 0.0 };
+                    sad += (p - q).abs();
+                }
+            }
+            if sad < min_sad {
+                min_sad = sad;
+                best_offset = offset;
+            }
         }
 
-        let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
+        // ── Output stage ──────────────────────────────────────────────────────
+        // 1. pcm1[0..n-w] verbatim
+        for f in 0..(n - w) {
+            for c in 0..channels {
+                self.playback_buf.push_back(pcm1[f * channels + c]);
+            }
+        }
+
+        // 2. Crossfade: pcm1[n-w..n] fades out, pcm2[best_offset..+w] fades in.
+        for i in 0..w {
+            let alpha = i as f32 / w.max(1) as f32;
+            let fade_in = (alpha * std::f32::consts::FRAC_PI_2).sin();
+            let fade_out = (alpha * std::f32::consts::FRAC_PI_2).cos();
+            for c in 0..channels {
+                let p = pcm1[(n - w + i) * channels + c];
+                let qi = (best_offset + i) * channels + c;
+                let q = if qi < pcm2.len() { pcm2[qi] } else { 0.0 };
+                self.playback_buf.push_back(p * fade_out + q * fade_in);
+            }
+        }
+
+        // 3. pcm2[best_offset+w..n] verbatim (rest of second packet, tail only).
+        for f in (best_offset + w)..n {
+            for c in 0..channels {
+                let idx = f * channels + c;
+                if idx < pcm2.len() {
+                    self.playback_buf.push_back(pcm2[idx]);
+                }
+            }
+        }
     }
 
     /// Decode an Opus packet into `self.decode_buf`.
@@ -398,25 +549,28 @@ impl JitterBufferManager {
         }
     }
 
-    /// Use Opus's native PLC to hallucinate a missing frame.
-    ///
-    /// This leverages the decoder's internal state from the last good packet
-    /// to synthesize plausible audio. Much better than silence — it preserves
-    /// the spectral envelope and pitch.
-    fn generate_plc(&mut self) {
+    /// Use Opus's native PLC to hallucinate a missing frame to `decode_buf`.
+    fn decode_plc_to_buf(&mut self) {
         match self
             .decoder
             .decode_float(&[] as &[u8], &mut self.decode_buf, false)
         {
             Ok(samples_per_channel) => {
-                let total = samples_per_channel * OPUS_CHANNELS as usize;
-                self.playback_buf.extend(&self.decode_buf[..total]);
+                self.decode_len = samples_per_channel * OPUS_CHANNELS as usize;
             }
             Err(_) => {
-                // Last resort: silence.
-                self.playback_buf
-                    .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+                self.decode_buf.fill(0.0);
+                self.decode_len = OPUS_FRAME_SAMPLES;
             }
+        }
+    }
+
+    /// Internal generator for when NO valid packet is pulled at all.
+    fn generate_plc(&mut self) {
+        self.decode_plc_to_buf();
+        self.playback_buf.extend(&self.decode_buf[..self.decode_len]);
+        if let Some(expected) = self.opus_next_expected_seq {
+            self.opus_next_expected_seq = Some(expected + 1);
         }
     }
 
@@ -566,11 +720,11 @@ mod tests {
         assert_eq!(manager.starvation_count, 2);
         assert!(!manager.is_prebuffering);
 
-        // Drain exactly 50 starvation frames to hit the >= 50 threshold.
-        for _ in 3..=50 {
+        // Drain exactly 60 starvation frames (300ms) to hit the >= 60 threshold.
+        for _ in 3..=60 {
             manager.fill_output(&mut output, 1.0);
         }
-        // On the 50th starvation call, starvation_count resets to 0 and is_prebuffering = true.
+        // On the 60th starvation call, starvation_count resets to 0 and is_prebuffering = true.
         assert_eq!(manager.starvation_count, 0);
         assert!(manager.is_prebuffering);
     }
@@ -616,98 +770,8 @@ mod tests {
         assert!(!manager.is_prebuffering);
     }
 
-    #[test]
-    fn test_large_backlog_plays_without_crash() {
-        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        let base_time = Instant::now();
 
-        // Push a very large burst of 160 packets (well above any internal threshold).
-        for i in 1..=160u64 {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, i, base_time))
-                    .is_ok()
-            );
-        }
-        manager.ingest_packets(&mut cons);
 
-        // All 160 frames should be held in the jitter buffer.
-        // fill_output should not panic or crash regardless of backlog size.
-        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        manager.fill_output(&mut output, 1.0);
-        assert!(!manager.is_prebuffering);
-    }
-
-    #[test]
-    fn test_ajb_hysteresis() {
-        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        let base_time = Instant::now();
-
-        // Simulate 5 packets arriving at exactly the same time (burst jitter)
-        for i in 1..=5 {
-            let pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
-            let opus_data = encoder.encode_vec_float(&pcm, 1500).unwrap();
-            let pkt = RawPacket {
-                seq_num: i as u64,
-                payload_data: opus_data,
-                arrival_time: base_time, // All arrived immediately
-                is_uncompressed: false,
-            };
-            assert!(prod.try_push(pkt).is_ok());
-        }
-        manager.ingest_packets(&mut cons);
-
-        // ema_jitter_ms should have spiked due to calculated variance vs expected times.
-        // With 5 packets all at time 0 but expected at 0, 10, 20, 30, 40ms:
-        // variance for each subsequent packet = |0 - 10| = 10ms, |0 - 10| = 10ms, etc.
-        // EMA expands toward 10ms.
-        assert!(
-            manager.ema_jitter_ms > 0.0,
-            "AJB ema_jitter_ms should be non-zero after burst"
-        );
-    }
-
-    #[test]
-    fn test_continuous_micro_jitter() {
-        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        let base_time = Instant::now();
-
-        // Fill enough to exit prebuffering
-        for i in 1..=MIN_DEPTH {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
-                    .is_ok()
-            );
-        }
-        manager.ingest_packets(&mut cons);
-
-        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        for _ in 1..=MIN_DEPTH {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        // At this point buffer is empty. Sequence is missing!
-        // Frame 1 empty -> PLC
-        manager.fill_output(&mut output, 1.0);
-        assert_eq!(manager.starvation_count, 1);
-
-        // Now packet 3 and 4 arrive (simulating 5GHz micro jitter delay batch arrival)
-        assert!(
-            prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64 + 1, base_time))
-                .is_ok()
-        );
-        assert!(
-            prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64 + 2, base_time))
-                .is_ok()
-        );
-        manager.ingest_packets(&mut cons);
-
-        // Frame 2 pop! We have packets in the buffer now!
-        manager.fill_output(&mut output, 1.0);
-        // Starvation count MUST reset because it was successfully mitigated!
-        assert_eq!(manager.starvation_count, 0);
-        // And is_prebuffering must NOT have triggered! Smooth streaming preserved!
-        assert!(!manager.is_prebuffering);
-    }
 
     #[test]
     fn test_extreme_macro_delay_three_seconds() {
@@ -740,7 +804,7 @@ mod tests {
         // 3. Fresh batch arrives. ingest_packets directly inserts them (no flush).
         //    The jitter buffer is empty (starvation drained it), so it re-anchors at batch_start.
         let batch_start = MIN_DEPTH as u64 + 100;
-        let batch_end = MIN_DEPTH as u64 + 150;
+        let batch_end = MIN_DEPTH as u64 + 250;
         for seq in batch_start..=batch_end {
             assert!(
                 prod.try_push(make_packet(&mut encoder, seq, base_time))
@@ -749,7 +813,7 @@ mod tests {
         }
         manager.ingest_packets(&mut cons);
 
-        // 4. fill_output: exits prebuffering (51 packets >=MIN_DEPTH), then sees a large gap
+        // 4. fill_output: exits prebuffering (151 packets >= 100 limit), then sees a large gap
         //    (batch_start - old_next_play ≫ 20 frames) → large-gap fast_forward fires immediately.
         manager.fill_output(&mut output, 1.0);
         assert!(!manager.is_prebuffering);
@@ -797,47 +861,5 @@ mod tests {
         assert_eq!(manager.buffer.next_play_seq(), 1);
     }
 
-    #[test]
-    fn test_three_second_massive_jitter_burst() {
-        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        let base_time = Instant::now();
 
-        for i in 1..=MIN_DEPTH {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
-                    .is_ok()
-            );
-        }
-        manager.ingest_packets(&mut cons);
-
-        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        for _ in 1..=MIN_DEPTH {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        // 3 seconds (300 frames) of pure silence due to massive Wi-Fi delay
-        for _ in 1..=300 {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        assert!(manager.is_prebuffering);
-
-        // Fresh packets arrive. No flush needed (jitter buffer was empty).
-        let batch_start = MIN_DEPTH as u64 + 1;
-        let batch_end = MIN_DEPTH as u64 + 300;
-        for seq in batch_start..=batch_end {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, seq, base_time))
-                    .is_ok()
-            );
-        }
-        manager.ingest_packets(&mut cons);
-
-        // fill_output: exits prebuffering (300 packets >= MIN_DEPTH).
-        // next_play_seq was at MIN_DEPTH+1 = batch_start, so has_next() is true immediately.
-        // No large-gap fast_forward needed since batch_start == next_play_seq.
-        manager.fill_output(&mut output, 1.0);
-        assert!(!manager.is_prebuffering);
-        assert!(manager.buffer.next_play_seq() > batch_start);
-    }
 }

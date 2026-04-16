@@ -1520,6 +1520,7 @@ name = "gemacast-core"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "libc",
  "netdev",
  "oboe",
  "opus",

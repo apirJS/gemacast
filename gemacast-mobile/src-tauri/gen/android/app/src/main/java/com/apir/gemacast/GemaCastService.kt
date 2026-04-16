@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import android.content.Context
+import android.net.wifi.WifiManager
 
 class GemaCastService : Service() {
     companion object {
@@ -43,6 +45,8 @@ class GemaCastService : Service() {
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var highPerfWifiLock: WifiManager.WifiLock? = null
+    private var lowLatencyWifiLock: WifiManager.WifiLock? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
     private var isPlayingState = true
@@ -109,6 +113,19 @@ class GemaCastService : Service() {
             "GemaCast::StreamingWakeLock"
         ).also {
             it.acquire(4 * 60 * 60 * 1000L) // 4 hours max
+        }
+        
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        
+        @Suppress("DEPRECATION")
+        highPerfWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GemaCast::StreamingHighPerfWifiLock").also {
+            it.acquire()
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            lowLatencyWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "GemaCast::StreamingLowLatencyWifiLock").also {
+                it.acquire()
+            }
         }
     }
 
@@ -274,6 +291,10 @@ class GemaCastService : Service() {
         isRunning = false
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+        highPerfWifiLock?.let { if (it.isHeld) it.release() }
+        highPerfWifiLock = null
+        lowLatencyWifiLock?.let { if (it.isHeld) it.release() }
+        lowLatencyWifiLock = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         } else {
