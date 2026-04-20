@@ -18,6 +18,7 @@ pub const FORMAT_FLAG_SIZE: usize = 1;
 
 pub const FORMAT_OPUS: u8 = 0;
 pub const FORMAT_UNCOMPRESSED: u8 = 1;
+pub const FORMAT_SILENCE: u8 = 2;
 
 pub fn create_opus_encoder() -> Result<Encoder, opus::Error> {
     let mut encoder = Encoder::new(

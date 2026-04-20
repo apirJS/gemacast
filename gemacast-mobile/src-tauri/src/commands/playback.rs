@@ -34,10 +34,14 @@ pub fn notify_streaming_stopped(app_handle: tauri::AppHandle) -> Result<(), Stri
 /// 2. Initialises the [`AudioReceiver`] (only on the first call).
 /// 3. Sets the `is_playing` atomic flag to `true`.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_to_sender(
     ip: String,
     device_id: String,
     device_name: String,
+    mode: gemacast_core::types::ConnectionMode,
+    exclusive_mode: bool,
+    jitter_config: gemacast_core::types::JitterConfig,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -48,6 +52,9 @@ pub async fn connect_to_sender(
         gemacast_core::types::ControlMessage::Connect {
             device_id: device_id.clone(),
             device_name: device_name.clone(),
+            mode,
+            exclusive_mode,
+            jitter_config: jitter_config.clone(),
         },
     )
     .await
@@ -62,9 +69,12 @@ pub async fn connect_to_sender(
     let is_initialized = lock(&state.playback_handle)?.is_some();
 
     if !is_initialized {
-        let audio_handles = AudioReceiver::create().await.map_err(|e| e.to_string())?;
+        let audio_handles = AudioReceiver::create(jitter_config.clone(), exclusive_mode)
+            .await
+            .map_err(|e| e.to_string())?;
         *lock(&state.shutdown_playback_tx)? = Some(audio_handles.shutdown_tx);
         *lock(&state.is_playing)? = Some(audio_handles.is_playing);
+        *lock(&state.config_ref)? = Some(audio_handles.config_ref);
 
         let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
         let playback_task = spawn_playback_task(
@@ -75,6 +85,10 @@ pub async fn connect_to_sender(
             Some(ip_addr),
         );
         *lock(&state.playback_handle)? = Some(playback_task);
+    } else if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
+        if let Ok(mut guard) = config_ref.write() {
+            *guard = jitter_config.clone();
+        }
     }
 
     set_playing_flag(&state, true)?;
@@ -104,9 +118,6 @@ pub async fn disconnect_from_sender(
     Ok(())
 }
 
-/// Pauses audio by clearing the `is_playing` flag.
-///
-/// Optionally sends a `Disconnect` message if `ip` and `device_id` are given.
 #[tauri::command]
 pub async fn stop_audio_playback(
     ip: Option<String>,
@@ -123,6 +134,30 @@ pub async fn stop_audio_playback(
         }
     }
     stop_playback_flag(&state)
+}
+
+/// Forcefully terminates the playback task and clears all state.
+#[tauri::command]
+pub async fn kill_playback(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    if let Some(tx) = lock(&state.shutdown_playback_tx)?.take() {
+        let _ = tx.send(());
+    }
+
+    if let Some(handle) = lock(&state.playback_handle)?.take() {
+        handle.abort();
+    }
+
+    *lock(&state.is_playing)? = None;
+    *lock(&state.config_ref)? = None;
+    *lock(&state.connected_ip)? = None;
+
+    set_streaming_flag(&app_handle, false);
+
+    eprintln!("[kill_playback] Playback task killed and state cleared.");
+    Ok(())
 }
 
 /// Resumes audio by setting the `is_playing` flag to `true`.
@@ -142,6 +177,9 @@ pub async fn start_audio_playback(
                 gemacast_core::types::ControlMessage::Connect {
                     device_id: did,
                     device_name: dname,
+                    mode: gemacast_core::types::ConnectionMode::default(),
+                    exclusive_mode: false,
+                    jitter_config: gemacast_core::types::JitterConfig::default(),
                 },
             )
             .await;
@@ -220,4 +258,28 @@ fn spawn_playback_task(
             let _ = app_handle.emit("playback-error", e.to_string());
         }
     })
+}
+
+/// Dynamically updates the jitter buffer configuration in real-time.
+#[tauri::command]
+pub async fn update_jitter_config(
+    jitter_config: gemacast_core::types::JitterConfig,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    eprintln!("[update_jitter_config] Received: min_depth={}ms comfort_cap={}ms bounce={} resume={} wsola={}",
+        jitter_config.min_depth_ms,
+        jitter_config.comfort_cap_ms,
+        jitter_config.bounce_multiplier,
+        jitter_config.resume_threshold_pct,
+        jitter_config.wsola_max_skip,
+    );
+    let has_ref = lock(&state.config_ref)?.is_some();
+    eprintln!("[update_jitter_config] config_ref exists: {}", has_ref);
+    if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
+        if let Ok(mut guard) = config_ref.write() {
+            *guard = jitter_config;
+            eprintln!("[update_jitter_config] Config written successfully");
+        }
+    }
+    Ok(())
 }

@@ -28,7 +28,13 @@ impl Default for JitterBuffer {
 
 impl JitterBuffer {
     pub fn new() -> Self {
-        let slots = (0..BUFFER_CAPACITY).map(|_| None).collect();
+        // We use an explicit manual layout because we can't use vec![None; CAPACITY] 
+        // without making the inner type Clone, and we don't want RawPacket to be Clone 
+        // to prevent accidental array duplications.
+        let mut slots = Vec::with_capacity(BUFFER_CAPACITY as usize);
+        for _ in 0..BUFFER_CAPACITY {
+            slots.push(None);
+        }
         Self {
             slots,
             capacity: BUFFER_CAPACITY,
@@ -144,10 +150,10 @@ impl JitterBuffer {
         let mut count = 0u32;
         for i in 0..self.capacity {
             let index = ((self.next_play_seq + i) % self.capacity) as usize;
-            if let Some(pkt) = &self.slots[index] {
-                if pkt.seq_num >= self.next_play_seq {
-                    count += 1; // Pure occupancy count
-                }
+            if let Some(pkt) = &self.slots[index]
+                && pkt.seq_num >= self.next_play_seq
+            {
+                count += 1; // Pure occupancy count
             }
         }
         count
@@ -214,8 +220,10 @@ mod tests {
         RawPacket {
             seq_num: seq,
             payload_data: vec![0u8; 100],
+            payload_len: 100,
             arrival_time: Instant::now(),
             is_uncompressed: false,
+            is_silence: false,
         }
     }
 

@@ -89,6 +89,8 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     isSuspended: false,
     reconnectAttempts: 0,
     latency: { current: null, avg: null, max: null, min: null },
+    settings: require('./StateHandler').DEFAULT_SETTINGS,
+    availableModes: { wifi: true, usb: false, adb: false },
     ...overrides,
   };
 }

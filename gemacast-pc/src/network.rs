@@ -122,6 +122,7 @@ pub fn spawn_background_engine(
                                 // Only flip the flag once we have a confirmed broadcaster running.
                                 is_broadcasting_for_dispatch.store(true, Ordering::Relaxed);
                                 active_broadcaster_tx = Some(handles.shutdown_tx);
+                                let state_for_closure = state_for_dispatch.clone();
                                 tokio::spawn(async move {
                                     let sys_vol = crate::volume::default_volume_controller();
                                     let device_name = whoami::devicename()
@@ -138,7 +139,22 @@ pub fn spawn_background_engine(
                                             is_muted: muted,
                                         }
                                     };
-                                    let _ = handles.broadcaster.broadcast_presence(factory).await;
+                                    let target_ips = move || {
+                                        if let Ok(map) = state_for_closure.lock() {
+                                            map.values()
+                                                .filter_map(|d| {
+                                                    if let std::net::SocketAddr::V4(v4) = d.addr {
+                                                        Some(std::net::SocketAddrV4::new(*v4.ip(), gemacast_core::network::DISCOVERY_PORT))
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    };
+                                    let _ = handles.broadcaster.broadcast_presence(factory, target_ips).await;
                                 });
                             }
                         }
@@ -269,6 +285,7 @@ pub fn spawn_background_engine(
                     ControlMessage::Connect {
                         device_id,
                         device_name,
+                        ..
                     } => {
                         if !is_broadcasting_for_probe.load(Ordering::Relaxed) {
                             let dev_name =

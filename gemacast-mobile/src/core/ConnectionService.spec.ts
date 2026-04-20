@@ -35,7 +35,7 @@ describe('ConnectionService — connectToSender', () => {
     const sender = makeDiscoveredSender();
     const result = await conn.connectToSender(sender);
     expect(result.ok).toBe(true);
-    expect(sh.getState().status).toBe(Status.Connected);
+    expect(sh.getState().status).toBe(Status.Playing);
     expect(sh.getState().connectedSender?.deviceId).toBe(sender.deviceId);
     expect(sh.getState().isLoading).toBe(false);
   });
@@ -155,17 +155,20 @@ describe('ConnectionService — handleSenderTimeout', () => {
     expect(sh.getState().discoveredSenders).toHaveLength(0);
   });
 
-  it('enters Reconnecting status when timeout is the connected sender', () => {
+  it('enters Listening status and retains lastConnectedSender when timeout is the connected sender', () => {
     const { sh, conn } = setup();
     const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
     sh.setState({
       connectedSender: sender,
+      lastConnectedSender: sender,
       discoveredSenders: [sender],
       status: Status.Connected,
     });
     conn.handleSenderTimeout('pc-1');
-    expect(sh.getState().status).toBe(Status.Reconnecting);
+    expect(sh.getState().status).toBe(Status.Listening);
     expect(sh.getState().connectedSender).toBeNull();
+    // lastConnectedSender should be retained for auto-reconnect
+    expect(sh.getState().lastConnectedSender?.deviceId).toBe('pc-1');
   });
 
   it('sets a senderTimeout error', () => {

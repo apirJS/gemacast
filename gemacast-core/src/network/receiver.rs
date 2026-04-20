@@ -6,6 +6,7 @@ use crate::{
     error::{AudioCaptureError, GemaCastError, NetworkError},
     jitter::{JitterBufferManager, RawPacket},
     network::AUDIO_PORT,
+    types::JitterConfig,
 };
 use cpal::StreamError;
 #[cfg(not(target_os = "android"))]
@@ -24,10 +25,7 @@ use std::{
     },
     time::Instant,
 };
-use tokio::{
-    net::UdpSocket,
-    sync::{mpsc, oneshot},
-};
+use tokio::sync::{mpsc, oneshot};
 
 /// Capacity of the lock-free SPSC channel carrying raw packets
 /// from the network thread to the cpal audio callback.
@@ -46,6 +44,8 @@ pub struct AudioReceiverHandles {
     pub is_playing: Arc<AtomicBool>,
     /// Volume as f32 bits stored in a u32 (range 0.0–1.0).
     pub volume: Arc<AtomicU32>,
+    /// Thread-safe active jitter config.
+    pub config_ref: Arc<std::sync::RwLock<JitterConfig>>,
 }
 
 pub struct AudioReceiver {
@@ -103,7 +103,10 @@ impl AudioOutputCallback for OboeCallback {
 }
 
 impl AudioReceiver {
-    pub async fn create() -> Result<AudioReceiverHandles, GemaCastError> {
+    pub async fn create(
+        config: JitterConfig,
+        #[allow(unused_variables)] exclusive_mode: bool,
+    ) -> Result<AudioReceiverHandles, GemaCastError> {
         #[allow(unused_variables)]
         let (error_tx, error_rx) = mpsc::channel::<StreamError>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -111,6 +114,8 @@ impl AudioReceiver {
         // SPSC channel for raw Opus packets: network thread → cpal callback.
         let packet_rb = HeapRb::<RawPacket>::new(PACKET_CHANNEL_CAPACITY);
         let (packet_producer, packet_consumer) = packet_rb.split();
+
+        let config_ref = Arc::new(std::sync::RwLock::new(config));
 
         // The Opus decoder lives inside the cpal callback (required for PLC to work).
         let decoder = create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
@@ -160,8 +165,12 @@ impl AudioReceiver {
                     &stream_config,
                     {
                         let mut packet_consumer = packet_consumer;
-                        let mut jitter_manager =
-                            JitterBufferManager::new(decoder, latency_metric_clone);
+                        let config_ref_clone = config_ref.clone();
+                        let mut jitter_manager = JitterBufferManager::new(
+                            decoder,
+                            latency_metric_clone,
+                            config_ref_clone,
+                        );
 
                         move |data: &mut [f32], _: &_| {
                             let vol = f32::from_bits(volume_for_cpal.load(Ordering::Relaxed));
@@ -194,7 +203,11 @@ impl AudioReceiver {
         #[cfg(target_os = "android")]
         let playback_stream = {
             let callback = OboeCallback {
-                jitter_manager: JitterBufferManager::new(decoder, latency_metric_clone),
+                jitter_manager: JitterBufferManager::new(
+                    decoder,
+                    latency_metric_clone,
+                    config_ref.clone(),
+                ),
                 packet_consumer,
                 volume: volume_for_cpal,
                 is_playing: is_playing_for_cpal,
@@ -203,7 +216,11 @@ impl AudioReceiver {
             let builder = AudioStreamBuilder::default()
                 .set_direction::<oboe::Output>()
                 .set_performance_mode(PerformanceMode::LowLatency)
-                .set_sharing_mode(SharingMode::Shared)
+                .set_sharing_mode(if exclusive_mode {
+                    SharingMode::Exclusive
+                } else {
+                    SharingMode::Shared
+                })
                 .set_format::<f32>()
                 .set_channel_count::<oboe::Stereo>()
                 .set_sample_rate(OPUS_SAMPLE_RATE as i32)
@@ -230,27 +247,65 @@ impl AudioReceiver {
             shutdown_tx,
             is_playing,
             volume,
+            config_ref,
         })
     }
 
     pub async fn start_audio_listener(
-        &mut self,
+        mut self,
         sender_ip_tx: Option<oneshot::Sender<String>>,
         latency_tx: Option<mpsc::Sender<(f32, f32)>>,
         target_ip: Option<std::net::IpAddr>,
     ) -> Result<(), GemaCastError> {
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, AUDIO_PORT);
-        let socket = UdpSocket::bind(addr)
-            .await
+        let addr = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, AUDIO_PORT));
+
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .map_err(|e| NetworkError::BindFailed {
+            addr: addr.to_string(),
+            source: e,
+        })?;
+
+        // Crucial for rapid network transitions: allow immediate port reclamation
+        socket
+            .set_reuse_address(true)
+            .map_err(NetworkError::SetReuseAddressFailed)?;
+        #[cfg(not(windows))]
+        socket
+            .set_reuse_port(true)
+            .map_err(NetworkError::SetReusePortFailed)?;
+
+        socket
+            .bind(&addr.into())
             .map_err(|source| NetworkError::BindFailed {
                 addr: addr.to_string(),
                 source,
             })?;
 
+        let std_socket: std::net::UdpSocket = socket.into();
+
+        let cloned_for_tos = std_socket
+            .try_clone()
+            .map_err(NetworkError::SocketCloneFailed)?;
+        socket2::Socket::from(cloned_for_tos)
+            .set_tos(0xB8)
+            .map_err(NetworkError::SetTosFailed)?;
+
+        std_socket
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .map_err(NetworkError::SetReadTimeoutFailed)?;
+
         if let Some(target) = target_ip {
             let target_addr = std::net::SocketAddr::new(target, AUDIO_PORT);
-            let _ = socket.send_to(&[0u8], target_addr).await;
-            let _ = socket.send_to(&[0u8], target_addr).await;
+            std_socket
+                .send_to(&[0u8], target_addr)
+                .map_err(NetworkError::SendFailed)?;
+            std_socket
+                .send_to(&[0u8], target_addr)
+                .map_err(NetworkError::SendFailed)?;
         }
 
         let mut recv_buff =
@@ -260,119 +315,185 @@ impl AudioReceiver {
         let heartbeat_active = Arc::new(AtomicBool::new(true));
         let hb_active_clone = heartbeat_active.clone();
 
-        let mut heartbeat_thread = target_ip.map(|target| {
-            let target_addr = std::net::SocketAddr::new(target, AUDIO_PORT);
-            std::thread::spawn(move || {
-                #[cfg(target_os = "android")]
-                unsafe {
-                    // Elevate to THREAD_PRIORITY_URGENT_AUDIO (-19) to bypass MIUI aggressive CPU throttling.
-                    // This physically guarantees the 20ms sleep is honored, forcing Wi-Fi awake.
-                    libc::setpriority(libc::PRIO_PROCESS, 0, -19);
-                }
+        let sender_port = Arc::new(std::sync::atomic::AtomicU16::new(AUDIO_PORT));
+        let sp_clone = sender_port.clone();
+
+        let heartbeat_thread = match target_ip {
+            Some(target) => {
+                let hb_socket = std_socket
+                    .try_clone()
+                    .map_err(NetworkError::SocketCloneFailed)?;
                 
-                if let Ok(hb_socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                Some(std::thread::spawn(move || {
+                    #[cfg(target_os = "android")]
+                    unsafe {
+                        // Elevate to THREAD_PRIORITY_URGENT_AUDIO (-19)
+                        libc::setpriority(libc::PRIO_PROCESS, 0, -19);
+                        // Critical: Defeat Android's TimerSlack mechanism.
+                        // When the screen is off, Linux batches `nanosleep` wakeups by up to 200ms!
+                        // This forces the timer slack to 1 nanosecond for this specific heartbeat thread.
+                        libc::prctl(29, 1); // 29 = PR_SET_TIMERSLACK
+                    }
+
                     while hb_active_clone.load(Ordering::Relaxed) {
+                        let port = sp_clone.load(Ordering::Relaxed);
+                        let target_addr = std::net::SocketAddr::new(target, port);
+
+                        // We log or ignore the error safely here since it's a daemon thread sending tiny heartbeats.
                         let _ = hb_socket.send_to(&[0u8], target_addr);
-                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
-                }
-            })
-        });
+                }))
+            }
+            None => None,
+        };
 
-        loop {
-            tokio::select! {
-                result = socket.recv_from(&mut recv_buff) => {
-                    let (len, sender_addr) = match result {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
+        let mut packet_producer = self.packet_producer;
+        let latency_metric = self.latency_metric.clone();
 
-                    if let Some(tx) = sender_ip_tx.take() {
-                        let _ = tx.send(sender_addr.ip().to_string());
-                    }
+        // Ensure playback stream stays alive by shadowing it into scope
+        let _playback_stream = self.playback_stream;
 
-                    if len <= SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE {
+        let receiver_active = Arc::new(AtomicBool::new(true));
+        let rx_active_clone = receiver_active.clone();
+
+        let receiver_thread = std::thread::spawn(move || {
+            #[cfg(target_os = "android")]
+            unsafe {
+                // Elevate to THREAD_PRIORITY_URGENT_AUDIO (-19)
+                libc::setpriority(libc::PRIO_PROCESS, 0, -19);
+                // Force timer slack to 1 ns to prioritize network interrupts
+                libc::prctl(29, 1);
+            }
+
+            while rx_active_clone.load(Ordering::Relaxed) {
+                let result = std_socket.recv_from(&mut recv_buff);
+                let (len, sender_addr) = match result {
+                    Ok(r) => r,
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
                     }
+                };
 
-                    let seq_bytes: [u8; 8] = recv_buff[..SEQ_NUM_SIZE].try_into().unwrap();
-                    let seq_num = u64::from_be_bytes(seq_bytes);
+                sender_port.store(sender_addr.port(), Ordering::Relaxed);
 
-                    let format_flag = recv_buff[SEQ_NUM_SIZE];
-                    let is_uncompressed = format_flag == crate::audio::FORMAT_UNCOMPRESSED;
+                if let Some(tx) = sender_ip_tx.take() {
+                    let _ = tx.send(sender_addr.ip().to_string());
+                }
 
-                    let payload_data = recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len].to_vec();
+                if len <= SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE {
+                    continue;
+                }
 
-                    // Push the raw packet into the SPSC channel for the cpal callback.
-                    // If the channel is full, drop the packet (real-time priority: never block).
-                    let packet = RawPacket {
-                        seq_num,
-                        payload_data,
-                        arrival_time: Instant::now(),
-                        is_uncompressed,
-                    };
-                    let _ = self.packet_producer.try_push(packet);
+                let seq_bytes: [u8; 8] = recv_buff[..SEQ_NUM_SIZE].try_into().unwrap();
+                let seq_num = u64::from_be_bytes(seq_bytes);
 
-                    // Latency / RMS reporting (every 50 packets, ~500ms / ~1s depending on frame size).
-                    if let Some(ref tx) = latency_tx
-                        && seq_num.is_multiple_of(100)
-                    {
-                        let sample_rate = OPUS_SAMPLE_RATE as f32;
-                        let frame_samples = OPUS_FRAME_SAMPLES as f32;
-                        let channels = OPUS_CHANNELS as f32;
-                        let ms_per_frame = (frame_samples / channels / sample_rate) * 1000.0;
+                let format_flag = recv_buff[SEQ_NUM_SIZE];
+                let is_uncompressed = format_flag == crate::audio::FORMAT_UNCOMPRESSED;
+                let is_silence = format_flag == crate::audio::FORMAT_SILENCE;
 
-                        let rms_data = &recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len];
-                        let mut rms = 0.0f32;
+                let payload_len = len - (SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE);
+                let payload_data = if payload_len > 0 {
+                    recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len].to_vec()
+                } else {
+                    Vec::new()
+                };
 
-                        if is_uncompressed {
-                            // rms_data is not guaranteed to be 4-byte aligned (offset is 9).
-                            // We must safely parse chunks to avoid ARM SIGABRT.
-                            let mut sum_sq = 0.0f32;
-                            let mut count = 0;
-                            for chunk in rms_data.chunks_exact(4) {
-                                let f = f32::from_ne_bytes(chunk.try_into().unwrap());
-                                sum_sq += f * f;
-                                count += 1;
-                            }
-                            if count > 0 {
-                                rms = (sum_sq / count as f32).sqrt();
-                            }
-                        } else {
-                            // Packet-size heuristic: larger Opus packets carry more energy.
-                            // Normalize against the typical max size (bitrate-aware).
-                            let bitrate_bytes_per_sec = crate::audio::OPUS_BITRATE as f32 / 8.0;
-                            let typical_max = bitrate_bytes_per_sec * ms_per_frame / 1000.0;
-                            rms = (rms_data.len() as f32 / typical_max).min(1.0).sqrt();
+                // Push the raw packet into the SPSC channel for the cpal callback.
+                // If the channel is full, drop the packet (real-time priority: never block).
+                let packet = RawPacket {
+                    seq_num,
+                    payload_data,
+                    payload_len,
+                    arrival_time: Instant::now(),
+                    is_uncompressed,
+                    is_silence,
+                };
+                let _ = packet_producer.try_push(packet);
+
+                // Latency / RMS reporting (every 100 packets, depending on frame size).
+                if let Some(ref tx) = latency_tx
+                    && seq_num.is_multiple_of(100)
+                {
+                    let sample_rate = OPUS_SAMPLE_RATE as f32;
+                    let frame_samples = OPUS_FRAME_SAMPLES as f32;
+                    let channels = OPUS_CHANNELS as f32;
+                    let ms_per_frame = (frame_samples / channels / sample_rate) * 1000.0;
+
+                    let rms_data = &recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len];
+                    let mut rms = 0.0f32;
+
+                    if is_silence {
+                        rms = 0.0;
+                    } else if is_uncompressed {
+                        // rms_data is not guaranteed to be 4-byte aligned (offset is 9).
+                        // We must safely parse chunks to avoid ARM SIGABRT.
+                        let mut sum_sq = 0.0f32;
+                        let mut count = 0;
+                        for chunk in rms_data.chunks_exact(4) {
+                            let f = f32::from_ne_bytes(chunk.try_into().unwrap());
+                            sum_sq += f * f;
+                            count += 1;
                         }
+                        if count > 0 {
+                            rms = (sum_sq / count as f32).sqrt();
+                        }
+                    } else {
+                        // Packet-size heuristic: larger Opus packets carry more energy.
+                        // Normalize against the typical max size (bitrate-aware).
+                        let bitrate_bytes_per_sec = crate::audio::OPUS_BITRATE as f32 / 8.0;
+                        let typical_max = bitrate_bytes_per_sec * ms_per_frame / 1000.0;
+                        rms = (rms_data.len() as f32 / typical_max).min(1.0).sqrt();
+                    }
 
-                        let jitter_delay_ms = self.latency_metric.load(Ordering::Relaxed) as f32;
-                        // jitter_delay_ms holds the EXACT time elapsed since the packet hit the network socket
-                        // until it was played. This ALREADY includes SPSC queue time!
-                        let total_latency_ms = jitter_delay_ms;
-                        let _ = tx.try_send((total_latency_ms, rms));
+                    let jitter_delay_ms = latency_metric.load(Ordering::Relaxed) as f32;
+                    // jitter_delay_ms holds the EXACT time elapsed since the packet hit the network socket
+                    // until it was played. This ALREADY includes SPSC queue time!
+                    let total_latency_ms = jitter_delay_ms;
+                    let _ = tx.try_send((total_latency_ms, rms));
 
-                        eprintln!(
-                            "GemaCastLatencyLog | Seq: {}, Latency: {}ms, RMS: {:.4}",
-                            seq_num, total_latency_ms, rms
-                        );
-                    }
-                }
-                Some(stream_err) = self.error_rx.recv() => {
-                    heartbeat_active.store(false, Ordering::Relaxed);
-                    if let Some(handle) = heartbeat_thread.take() {
-                        let _ = handle.join();
-                    }
-                    return Err(AudioCaptureError::StreamError(stream_err).into());
-                }
-                _ = &mut self.shutdown_rx => {
-                    heartbeat_active.store(false, Ordering::Relaxed);
-                    if let Some(handle) = heartbeat_thread.take() {
-                        let _ = handle.join();
-                    }
-                    break;
+                    eprintln!(
+                        "GemaCastLatencyLog | Seq: {}, Latency: {}ms, RMS: {:.4}",
+                        seq_num, total_latency_ms, rms
+                    );
                 }
             }
+        });
+
+        struct ScopeGuard {
+            heartbeat_active: Arc<AtomicBool>,
+            receiver_active: Arc<AtomicBool>,
+            heartbeat_thread: Option<std::thread::JoinHandle<()>>,
+            receiver_thread: Option<std::thread::JoinHandle<()>>,
+        }
+
+        impl Drop for ScopeGuard {
+            fn drop(&mut self) {
+                self.heartbeat_active.store(false, Ordering::Relaxed);
+                self.receiver_active.store(false, Ordering::Relaxed);
+                if let Some(handle) = self.heartbeat_thread.take() {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = self.receiver_thread.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+
+        let mut _guard = ScopeGuard {
+            heartbeat_active,
+            receiver_active,
+            heartbeat_thread,
+            receiver_thread: Some(receiver_thread),
+        };
+
+        // The async listener simply awaits cancellation tasks, leaving the OS threads totally clean to blast forward
+        tokio::select! {
+            Some(stream_err) = self.error_rx.recv() => {
+                return Err(AudioCaptureError::StreamError(stream_err).into());
+            }
+            _ = &mut self.shutdown_rx => {}
         }
 
         Ok(())

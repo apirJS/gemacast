@@ -7,6 +7,16 @@ use tokio::task::JoinHandle;
 use crate::HEARTBEAT_CHECK_INTERVAL_SECS;
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionMode {
+    Wifi,
+    Usb,
+    Adb,
+}
+
 /// Spawns the full discovery pipeline as a single managed task.
 ///
 /// Internally manages three child tasks:
@@ -23,6 +33,7 @@ pub fn spawn_discovery_listener(
     )>,
     app_handle: tauri::AppHandle,
     device_id: String,
+    mode: ConnectionMode,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let socket = listener.socket.clone();
@@ -99,7 +110,7 @@ pub fn spawn_discovery_listener(
         });
 
         while let Some((message, addr)) = discovery_rx.recv().await {
-            dispatch_message(message, addr, &last_seen, &active_usb_ips, &app_handle);
+            dispatch_message(message, addr, &last_seen, &active_usb_ips, &app_handle, mode);
         }
 
         listener_handle.abort();
@@ -135,6 +146,7 @@ fn dispatch_message(
     last_seen: &Arc<Mutex<HashMap<String, Instant>>>,
     active_usb_ips: &Arc<Mutex<HashMap<String, Instant>>>,
     app_handle: &tauri::AppHandle,
+    mode: ConnectionMode,
 ) {
     match message {
         gemacast_core::types::ControlMessage::Presence {
@@ -154,6 +166,7 @@ fn dispatch_message(
                 last_seen,
                 active_usb_ips,
                 app_handle,
+                mode,
             );
         }
         gemacast_core::types::ControlMessage::Disconnect { .. } => {
@@ -176,6 +189,7 @@ fn handle_presence(
     last_seen: &Arc<Mutex<HashMap<String, Instant>>>,
     active_usb_ips: &Arc<Mutex<HashMap<String, Instant>>>,
     app_handle: &tauri::AppHandle,
+    mode: ConnectionMode,
 ) {
     if is_offline {
         last_seen.lock().unwrap().remove(&sender_id);
@@ -191,6 +205,18 @@ fn handle_presence(
     audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
 
     let is_usb = gemacast_core::network::is_usb_tether_ip(&audio_addr.ip());
+
+    match mode {
+        ConnectionMode::Wifi => {
+            if is_usb { return; }
+        }
+        ConnectionMode::Usb => {
+            if !is_usb { return; }
+        }
+        ConnectionMode::Adb => {
+            if !audio_addr.ip().is_loopback() { return; }
+        }
+    }
 
     if !is_offline {
         if is_usb {
