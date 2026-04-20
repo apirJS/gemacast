@@ -8,11 +8,15 @@ use std::time::Instant;
 pub struct RawPacket {
     /// Sender's monotonic sequence number (u64, big-endian over the wire).
     pub seq_num: u64,
-    /// The payload bytes (Opus encoded or raw PCM).
+    /// Payload bytes (Opus encoded or raw PCM). Vec<u8> ensures 0-copy moves across thread channels.
     pub payload_data: Vec<u8>,
+    /// Actual length of valid data in the payload buffer
+    pub payload_len: usize,
     /// Wall-clock time this packet arrived on the network thread.
     /// Used by the jitter controller to build the inter-arrival delay histogram.
     pub arrival_time: Instant,
     /// True if the payload_data is raw f32 PCM float bytes, False if Opus.
     pub is_uncompressed: bool,
+    /// True if this represents a 100% silent frame (Opus encoder bypassed). `payload_data` will be empty.
+    pub is_silence: bool,
 }

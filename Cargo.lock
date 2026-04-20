@@ -1538,6 +1538,7 @@ name = "gemacast-mobile"
 version = "0.1.0"
 dependencies = [
  "gemacast-core",
+ "jni",
  "netdev",
  "serde",
  "serde_json",

@@ -102,6 +102,10 @@ impl AudioSender {
 
         let _ = socket.set_tos(0xB8); // Guarantee WMM AC_VO (DSCP 46 / EF) to bypass router policing
 
+        // Minimize OS-level send buffering.
+        // 4KB (~40 packets) is enough to absorb encoding jitter without accumulating.
+        let _ = socket.set_send_buffer_size(4096);
+
         socket
             .bind(&addr.into())
             .map_err(|e| NetworkError::BindFailed {
@@ -187,14 +191,27 @@ impl AudioSender {
                         frame_buf.copy_from_slice(&sample_buf[..OPUS_FRAME_SAMPLES]);
                         sample_buf.drain(..OPUS_FRAME_SAMPLES);
 
+                        // Calculate True RMS of the audio frame before encoding
+                        let mut sum_sq = 0.0f32;
+                        for sample in &frame_buf {
+                            sum_sq += sample * sample;
+                        }
+                        let rms = (sum_sq / OPUS_FRAME_SAMPLES as f32).sqrt();
+                        
+                        let is_silence = rms < 0.0001;
                         let is_uncompressed = current_bitrate.is_none();
-                        let format_flag = if is_uncompressed {
+                        
+                        let format_flag = if is_silence {
+                            crate::audio::FORMAT_SILENCE
+                        } else if is_uncompressed {
                             crate::audio::FORMAT_UNCOMPRESSED
                         } else {
                             crate::audio::FORMAT_OPUS
                         };
 
-                        let payload_bytes: &[u8] = if is_uncompressed {
+                        let payload_bytes: &[u8] = if is_silence {
+                            &[] // Empty payload for perfect silence
+                        } else if is_uncompressed {
                             // Safety: frame_buf is properly aligned Vec<f32>.
                             unsafe {
                                 std::slice::from_raw_parts(

@@ -2,12 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { Result, ok, err, DiscoveredSender, Status } from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
-
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
+import { getPresetConfig } from './presets';
 
 export class ConnectionService {
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private audioResumer: () => Promise<void>;
 
   constructor(
@@ -24,16 +21,17 @@ export class ConnectionService {
   }
 
   private handleNetworkOffline() {
+    const state = this.stateHandler.getState();
+
     this.stateHandler.setState({
       isNetworkAvailable: false,
       connectionHealth: 'lost',
-      error: GemaCastError.wifiDisconnected(),
+      discoveredSenders: [], // Instantaneously clear the sender list
     });
 
-    const state = this.stateHandler.getState();
-    if (state.connectedSender) {
+    if (state.connectedSender || state.status === Status.Playing) {
       this.stateHandler.setState({
-        status: Status.Reconnecting,
+        status: Status.Listening, // Immediately jump to Scanning
         connectedSender: null,
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
@@ -41,124 +39,61 @@ export class ConnectionService {
   }
 
   private handleNetworkOnline() {
-    const state = this.stateHandler.getState();
-    const isWifiError = state.error?.code === 'NETWORK_WIFI_DISCONNECTED';
-
     this.stateHandler.setState({
       isNetworkAvailable: true,
-      error: isWifiError ? null : state.error,
+      error: null, // Clear network errors
     });
-
-    if (state.status === Status.Reconnecting && state.lastConnectedSender) {
-      this.startReconnectLoop();
-    }
   }
 
   public handleSenderTimeout(senderId: string) {
-    const list = this.stateHandler
-      .getState()
-      .discoveredSenders.filter((s) => s.deviceId !== senderId);
+    const currentState = this.stateHandler.getState();
+
+    // Remove the stale sender from discovery list
+    const list = currentState.discoveredSenders.filter(
+      (s) => s.deviceId !== senderId,
+    );
     this.stateHandler.setState({ discoveredSenders: list });
 
-    const state = this.stateHandler.getState();
-    if (state.connectedSender?.deviceId !== senderId) return;
-
-    this.stateHandler.setState({
-      connectionHealth: 'lost',
-      status: Status.Reconnecting,
-      connectedSender: null,
-      lastConnectedSender: state.connectedSender,
-      error: GemaCastError.senderTimeout(),
-    });
-    this.stateHandler.updateLatencyInfo(null, null, null, null);
-    this.startReconnectLoop();
-  }
-
-  private startReconnectLoop() {
-    this.clearReconnectTimer();
-
-    const state = this.stateHandler.getState();
-    const sender = state.lastConnectedSender;
-    if (!sender) return;
-
-    const attempt = state.reconnectAttempts;
-
-    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+    // If it was our connected sender, purge connection and go to Scanning
+    if (currentState.connectedSender?.deviceId === senderId) {
       this.stateHandler.setState({
+        connectionHealth: 'lost',
         status: Status.Listening,
-        reconnectAttempts: 0,
-        connectionHealth: 'ok',
-        error: GemaCastError.reconnectFailed(),
+        connectedSender: null,
+        error: GemaCastError.senderTimeout(),
       });
-      return;
-    }
-
-    const delayMs =
-      RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
-
-    this.stateHandler.setState({
-      status: Status.Reconnecting,
-      reconnectAttempts: attempt + 1,
-    });
-
-    this.reconnectTimer = setTimeout(async () => {
-      const currentState = this.stateHandler.getState();
-      if (!currentState.isNetworkAvailable) return;
-
-      const discoveredTarget = currentState.discoveredSenders.find(
-        (s) => s.deviceId === sender.deviceId,
-      );
-
-      if (!discoveredTarget) {
-        this.startReconnectLoop();
-        return;
-      }
-
-      try {
-        const ip = discoveredTarget.addr.split(':')[0];
-        await invoke('connect_to_sender', {
-          ip,
-          deviceId: currentState.deviceInfo.deviceId,
-          deviceName: currentState.deviceInfo.deviceName,
-        });
-
-        this.stateHandler.setState({
-          connectedSender: discoveredTarget,
-          status: Status.Connected,
-          connectionHealth: 'ok',
-          reconnectAttempts: 0,
-          error: null,
-        });
-
-        await this.audioResumer();
-        if (this.stateHandler.getState().connectedSender) {
-          this.stateHandler.setState({ status: Status.Playing });
-        }
-      } catch {
-        this.startReconnectLoop();
-      }
-    }, delayMs);
-  }
-
-  private clearReconnectTimer() {
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+      this.stateHandler.updateLatencyInfo(null, null, null, null);
+      
+      // Stop the backend task since the connection is deemed dead
+      this.killPlayback().catch(console.warn);
     }
   }
 
   public async connectToSender(
     sender: DiscoveredSender,
   ): Promise<Result<true, GemaCastError>> {
-    this.clearReconnectTimer();
-    this.stateHandler.setState({ isLoading: true, status: Status.Connecting, isSuspended: false });
+    this.stateHandler.setState({
+      isLoading: true,
+      status: Status.Connecting,
+      isSuspended: false,
+    });
     try {
       const state = this.stateHandler.getState();
       const ip = sender.addr.split(':')[0];
+
+      const settings = state.settings;
+      const config = getPresetConfig(
+        settings.bufferPreset,
+        settings.customJitterConfig,
+      );
+
       await invoke('connect_to_sender', {
         ip,
         deviceId: state.deviceInfo.deviceId,
         deviceName: state.deviceInfo.deviceName,
+        mode: settings.mode,
+        exclusiveMode: settings.exclusiveMode,
+        jitterConfig: config,
       });
 
       StateHandler.saveLastSender(sender);
@@ -172,6 +107,12 @@ export class ConnectionService {
         error: null,
         isLoading: false,
       });
+
+      await this.audioResumer();
+      if (this.stateHandler.getState().connectedSender) {
+        this.stateHandler.setState({ status: Status.Playing });
+      }
+
       return ok(true);
     } catch (e) {
       const error = GemaCastError.failedToStartPlayback(e);
@@ -184,10 +125,11 @@ export class ConnectionService {
     }
   }
 
-  public async disconnect(forgetSender: boolean = true): Promise<Result<true, GemaCastError>> {
+  public async disconnect(
+    forgetSender: boolean = true,
+  ): Promise<Result<true, GemaCastError>> {
     const state = this.stateHandler.getState();
     const sender = state.connectedSender;
-    this.clearReconnectTimer();
 
     if (forgetSender) {
       StateHandler.saveLastSender(null);
@@ -215,8 +157,10 @@ export class ConnectionService {
         ip,
         deviceId: state.deviceInfo.deviceId,
       });
+      this.killPlayback().catch(console.warn);
     } catch (e) {
       console.warn('disconnect_from_sender IPC failed:', e);
+      this.killPlayback().catch(console.warn);
     }
 
     this.stateHandler.setState({
@@ -233,7 +177,6 @@ export class ConnectionService {
   }
 
   public handleForceDisconnect(forgetSender: boolean = true) {
-    this.clearReconnectTimer();
     if (forgetSender) {
       StateHandler.saveLastSender(null);
     }
@@ -248,5 +191,19 @@ export class ConnectionService {
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
     invoke('notify_streaming_stopped').catch(console.warn);
+    
+    // Stop the backend task on forced disconnects
+    this.killPlayback().catch(console.warn);
+  }
+
+  /**
+   * Forcefully kills the backend playback task.
+   */
+  public async killPlayback(): Promise<void> {
+    try {
+      await invoke('kill_playback');
+    } catch (e) {
+      console.warn('kill_playback IPC failed:', e);
+    }
   }
 }

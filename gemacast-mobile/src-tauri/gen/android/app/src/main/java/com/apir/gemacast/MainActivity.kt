@@ -12,6 +12,9 @@ import android.os.IBinder
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import androidx.annotation.Keep
 import java.io.File
 
 class MainActivity : TauriActivity() {
@@ -33,6 +36,26 @@ class MainActivity : TauriActivity() {
 
     private fun isStreamingActive(): Boolean {
         return File(cacheDir, ".streaming_active").exists()
+    }
+
+    @Keep
+    fun getTransportType(): String {
+        return try {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val activeNetwork = connectivityManager.activeNetwork ?: return "NONE"
+
+            val caps = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return "NONE"
+
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+                else -> "OTHER"
+            }
+        } catch (e: Exception) {
+            "ERROR: ${e.message}"
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

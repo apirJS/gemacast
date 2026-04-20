@@ -31,6 +31,9 @@ pub struct AppState {
 
     /// Human-readable device name sent in control messages.
     pub device_name: Mutex<Option<String>>,
+
+    /// Shared JitterConfig reference capable of dynamic runtime updates.
+    pub config_ref: Mutex<Option<Arc<std::sync::RwLock<gemacast_core::types::JitterConfig>>>>,
 }
 
 impl AppState {
@@ -43,6 +46,7 @@ impl AppState {
             connected_ip: Mutex::new(None),
             device_id: Mutex::new(None),
             device_name: Mutex::new(None),
+            config_ref: Mutex::new(None),
         }
     }
 }
