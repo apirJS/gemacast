@@ -8,7 +8,6 @@
 @import './styles/device.css';
 @import './styles/latency.css';
 @import './styles/senders.css';
-@import './styles/volume.css';
 @import './styles/error.css';
 
 :root {
@@ -45,6 +44,7 @@
 
   --destructive: hsl(0, 84.2%, 60.2%);
   --destructive-foreground: hsl(210, 40%, 98%);
+  --destructive-muted: hsla(0, 84.2%, 60.2%, 0.1);
 
   --border: hsl(214.3, 31.8%, 91.4%);
   --input: hsl(214.3, 31.8%, 91.4%);
@@ -98,6 +98,7 @@
 
     --destructive: hsl(0, 62.8%, 50%);
     --destructive-foreground: hsl(210, 40%, 98%);
+    --destructive-muted: hsla(0, 62.8%, 50%, 0.15);
 
     --border: hsl(217.2, 32.6%, 17.5%);
     --input: hsl(217.2, 32.6%, 17.5%);
@@ -141,6 +142,7 @@
 
     --destructive: hsl(0, 62.8%, 50%);
     --destructive-foreground: hsl(210, 40%, 98%);
+    --destructive-muted: hsla(0, 62.8%, 50%, 0.15);
 
     --border: hsl(217.2, 32.6%, 17.5%);
     --input: hsl(217.2, 32.6%, 17.5%);

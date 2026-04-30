@@ -92,4 +92,25 @@ pub enum NetworkError {
 
     #[error("Failed to serialize discovery payload")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("failed to connect TCP stream to {addr}")]
+    TcpConnectFailed {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to bind TCP discovery spigot on {addr}")]
+    TcpSpigotBindFailed {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to bind TCP audio framer on {addr}")]
+    TcpFramerBindFailed {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
 }

@@ -16,16 +16,42 @@
   </head>
 
   <body>
-    <button class="settings-btn" id="settings-open-btn" aria-label="Open Settings">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" class="settings-btn__icon">
-        <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <button
+      class="settings-btn"
+      id="settings-open-btn"
+      aria-label="Open Settings"
+    >
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        class="settings-btn__icon"
+      >
+        <path
+          d="M4 6H20M4 12H20M4 18H20"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </svg>
     </button>
 
     <dialog class="drawer" id="settings-drawer">
       <div class="drawer__header">
-        <button class="drawer__close-btn" id="settings-close-btn" aria-label="Close Settings">✕</button>
-        <button class="theme-toggle" id="theme-toggle-btn" aria-label="Toggle Theme">
+        <button
+          class="drawer__close-btn"
+          id="settings-close-btn"
+          aria-label="Close Settings"
+        >
+          ✕
+        </button>
+        <button
+          class="theme-toggle"
+          id="theme-toggle-btn"
+          aria-label="Toggle Theme"
+        >
           <span class="theme-toggle__icon mode-light">☼</span>
           <span class="theme-toggle__icon mode-dark">☾</span>
         </button>
@@ -33,69 +59,201 @@
       <div class="drawer__content">
         <div class="setting-group">
           <label class="setting-group__label">
-            Buffer Preset <button class="help-btn" data-help="buffer-preset">?</button>
+            Buffer Preset
+            <button class="help-btn" data-help="buffer-preset">?</button>
           </label>
           <div class="custom-select" id="setting-preset">
             <div class="custom-select__header" id="custom-preset-header">
               <span id="custom-preset-value">Balanced</span>
               <span class="custom-select__arrow">▼</span>
             </div>
-            <div class="custom-select__dropdown" id="custom-preset-dropdown" hidden>
-            </div>
+            <div
+              class="custom-select__dropdown"
+              id="custom-preset-dropdown"
+              hidden
+            ></div>
           </div>
         </div>
 
         <div class="setting-group" id="custom-jitter-config" hidden>
           <div class="custom-inputs">
             <div class="custom-inputs__row">
-              <label>Min Depth <button class="help-btn" data-help="min-depth">?</button></label>
-              <div><input type="number" id="setting-min-depth" class="setting-input"> ms</div>
+              <label>Preset Name</label>
+              <div>
+                <input
+                  type="text"
+                  id="setting-preset-name"
+                  class="setting-input setting-input--wide"
+                  placeholder="My Preset"
+                  maxlength="30"
+                />
+              </div>
             </div>
             <div class="custom-inputs__row">
-              <label>Comfort Cap <button class="help-btn" data-help="comfort-cap">?</button></label>
-              <div><input type="number" id="setting-comfort-cap" class="setting-input"> ms</div>
+              <label>
+                Buffer Mode
+                <button class="help-btn" data-help="buffer-mode">?</button>
+              </label>
+              <div class="segmented-control segmented-control--mini">
+                <input
+                  type="radio"
+                  name="buffer-mode"
+                  id="buffer-mode-static"
+                  value="static"
+                  checked
+                />
+                <label for="buffer-mode-static">Static</label>
+                <input
+                  type="radio"
+                  name="buffer-mode"
+                  id="buffer-mode-adaptive"
+                  value="adaptive"
+                />
+                <label for="buffer-mode-adaptive">Adaptive</label>
+              </div>
             </div>
-            <div class="custom-inputs__row">
-              <label>Bounce Multiplier <button class="help-btn" data-help="bounce">?</button></label>
-              <div><input type="number" step="0.1" id="setting-bounce" class="setting-input"> x</div>
+
+            <!-- Static-only field -->
+            <div class="custom-inputs__row" id="static-fields">
+              <label
+                >Buffer Depth
+                <button class="help-btn" data-help="static-depth">
+                  ?
+                </button></label
+              >
+              <div>
+                <input
+                  type="number"
+                  id="setting-static-depth"
+                  class="setting-input"
+                  value="60"
+                />
+                ms
+              </div>
             </div>
-            <div class="custom-inputs__row">
-              <label>Resume Threshold <button class="help-btn" data-help="resume">?</button></label>
-              <div><input type="number" step="0.01" id="setting-resume" class="setting-input"> %</div>
+
+            <!-- Adaptive-only fields -->
+            <div id="adaptive-fields" class="custom-inputs__adaptive" hidden>
+              <div class="custom-inputs__row">
+                <label
+                  >Min Depth
+                  <button class="help-btn" data-help="min-depth">
+                    ?
+                  </button></label
+                >
+                <div>
+                  <input
+                    type="number"
+                    id="setting-min-depth"
+                    class="setting-input"
+                  />
+                  ms
+                </div>
+              </div>
+              <div class="custom-inputs__row">
+                <label
+                  >Comfort Cap
+                  <button class="help-btn" data-help="comfort-cap">
+                    ?
+                  </button></label
+                >
+                <div>
+                  <input
+                    type="number"
+                    id="setting-comfort-cap"
+                    class="setting-input"
+                  />
+                  ms
+                </div>
+              </div>
+              <div class="custom-inputs__row">
+                <label
+                  >Peak Decay Half-life
+                  <button class="help-btn" data-help="bounce">?</button></label
+                >
+                <div>
+                  <input
+                    type="number"
+                    step="0.1"
+                    id="setting-bounce"
+                    class="setting-input"
+                  />
+                  ms
+                </div>
+              </div>
+              <div class="custom-inputs__row">
+                <label
+                  >Resume Threshold
+                  <button class="help-btn" data-help="resume">?</button></label
+                >
+                <div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    id="setting-resume"
+                    class="setting-input"
+                  />
+                  %
+                </div>
+              </div>
             </div>
-            <div class="custom-inputs__row">
-              <label>WSOLA Max Skip <button class="help-btn" data-help="wsola">?</button></label>
-              <div><input type="number" id="setting-wsola" class="setting-input"> frames</div>
-            </div>
-            <div class="custom-inputs__row">
-              <label>Initial Comfort <button class="help-btn" data-help="initial-comfort">?</button></label>
-              <div><input type="number" id="setting-initial-comfort" class="setting-input"> ms</div>
-            </div>
-            <div class="custom-inputs__row">
-              <label>Fast Settle Speed <button class="help-btn" data-help="fast-settle-speed">?</button></label>
-              <div><input type="number" step="0.1" id="setting-fast-settle-mult" class="setting-input"> x</div>
-            </div>
-            <div class="custom-inputs__row">
-              <label>Fast Settle Duration <button class="help-btn" data-help="fast-settle-duration">?</button></label>
-              <div><input type="number" id="setting-fast-settle-frames" class="setting-input"> frames</div>
-            </div>
+
             <div class="custom-inputs__actions">
-              <button id="custom-reset-btn" class="custom-inputs__reset" type="button">Reset</button>
-              <button id="custom-apply-btn" class="custom-inputs__apply" type="button">Apply</button>
+              <button
+                id="custom-reset-btn"
+                class="custom-inputs__reset"
+                type="button"
+              >
+                Reset
+              </button>
+              <button
+                id="custom-apply-btn"
+                class="custom-inputs__apply"
+                type="button"
+                disabled
+              >
+                Save Preset
+              </button>
             </div>
+
+            <!-- Delete saved preset button (only visible when editing a saved preset) -->
+            <button
+              id="custom-delete-btn"
+              class="custom-inputs__delete"
+              type="button"
+              hidden
+            >
+              Delete Preset
+            </button>
           </div>
         </div>
 
+        <!-- Delete confirmation dialog -->
+        <dialog class="confirm-dialog" id="delete-confirm-dialog">
+          <p class="confirm-dialog__message" id="delete-confirm-msg">
+            Delete this preset?
+          </p>
+          <div class="confirm-dialog__actions">
+            <button id="delete-confirm-cancel" class="confirm-dialog__cancel">
+              Cancel
+            </button>
+            <button id="delete-confirm-ok" class="confirm-dialog__ok">
+              Delete
+            </button>
+          </div>
+        </dialog>
+
         <div class="setting-group setting-group--row">
           <span class="setting-group__label">
-            Exclusive Mode <button class="help-btn" data-help="exclusive-mode">?</button>
+            Exclusive Mode
+            <button class="help-btn" data-help="exclusive-mode">?</button>
           </span>
           <label class="toggle-switch">
-             <input type="checkbox" id="setting-exclusive-mode">
-             <div class="toggle-switch__slider">
-               <span class="toggle-switch__label--off">OFF</span>
-               <span class="toggle-switch__label--on">ON</span>
-             </div>
+            <input type="checkbox" id="setting-exclusive-mode" />
+            <div class="toggle-switch__slider">
+              <span class="toggle-switch__label--off">OFF</span>
+              <span class="toggle-switch__label--on">ON</span>
+            </div>
           </label>
         </div>
 
@@ -104,32 +262,62 @@
             Mode <button class="help-btn" data-help="connection-mode">?</button>
           </label>
           <div class="segmented-control">
-             <input type="radio" name="conn-mode" id="conn-mode-wifi" value="wifi" checked>
-             <label for="conn-mode-wifi">Wifi</label>
+            <input
+              type="radio"
+              name="conn-mode"
+              id="conn-mode-wifi"
+              value="wifi"
+              checked
+            />
+            <label for="conn-mode-wifi">Wifi</label>
 
-             <input type="radio" name="conn-mode" id="conn-mode-usb" value="usb" disabled>
-             <label for="conn-mode-usb">USB</label>
+            <input
+              type="radio"
+              name="conn-mode"
+              id="conn-mode-usb"
+              value="usb"
+              disabled
+            />
+            <label for="conn-mode-usb">USB</label>
 
-             <input type="radio" name="conn-mode" id="conn-mode-adb" value="adb" disabled>
-             <label for="conn-mode-adb">ADB</label>
+            <input
+              type="radio"
+              name="conn-mode"
+              id="conn-mode-adb"
+              value="adb"
+              disabled
+            />
+            <label for="conn-mode-adb">ADB</label>
           </div>
         </div>
 
         <div class="about-section">
           <p class="about-section__text about-section__text--dim">
-            Latency depends on your Wi-Fi quality. 5 GHz band recommended for lowest latency.
-            Use <em>Buffer Presets</em> above to trade off between latency and stability.
+            Latency depends on your Wi-Fi quality. 5 GHz band recommended for
+            lowest latency. Use <em>Buffer Presets</em> above to trade off
+            between latency and stability.
           </p>
-          <a class="about-section__link" href="https://github.com/apirJS/gemacast" target="_blank">GitHub — apirJS/gemacast</a>
+          <a
+            class="about-section__link"
+            href="https://github.com/apirJS/gemacast"
+            target="_blank"
+            >GitHub — apirJS/gemacast</a
+          >
           <p class="about-section__footer">v0.1.0 · 2026 ApirJS</p>
         </div>
       </div>
     </dialog>
 
     <dialog class="help-modal" id="help-modal">
-        <button class="help-modal__close" id="help-close-btn" aria-label="Close help">✕</button>
-        <h2 class="help-modal__title" id="help-title">Help</h2>
-        <div class="help-modal__body" id="help-body"></div>
+      <button
+        class="help-modal__close"
+        id="help-close-btn"
+        aria-label="Close help"
+      >
+        ✕
+      </button>
+      <h2 class="help-modal__title" id="help-title">Help</h2>
+      <div class="help-modal__body" id="help-body"></div>
     </dialog>
 
     <main class="discovery">
@@ -154,64 +342,6 @@
           class="sender-list"
           aria-label="Discovered senders"
         ></ul>
-      </section>
-
-      <section class="controls">
-        <div class="volume-wrapper">
-          <label for="volume-slider" class="volume__label"
-            >Host PC Volume</label
-          >
-          <div class="volume" id="volume-container">
-            <button
-              class="volume__mute-btn"
-              id="mute-btn"
-              aria-label="Toggle mute"
-              title="Toggle mute"
-            >
-              <svg
-                class="volume__icon"
-                id="volume-icon"
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                width="20"
-                height="20"
-                aria-hidden="true"
-              >
-                <path
-                  id="volume-icon-path"
-                  d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"
-                />
-              </svg>
-            </button>
-            <button
-              class="volume__step-btn"
-              id="vol-down-btn"
-              aria-label="Decrease volume"
-              title="Decrease volume"
-            >
-              -
-            </button>
-            <input
-              type="range"
-              class="volume__slider"
-              id="volume-slider"
-              min="0"
-              max="100"
-              value="100"
-              aria-label="Volume"
-            />
-            <button
-              class="volume__step-btn"
-              id="vol-up-btn"
-              aria-label="Increase volume"
-              title="Increase volume"
-            >
-              +
-            </button>
-            <span class="volume__value" id="volume-value">100%</span>
-          </div>
-        </div>
       </section>
 
       <section class="info">

@@ -14,6 +14,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.annotation.Keep
 import java.io.File
 
@@ -42,17 +45,31 @@ class MainActivity : TauriActivity() {
     fun getTransportType(): String {
         return try {
             val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val activeNetwork = connectivityManager.activeNetwork ?: return "NONE"
-
-            val caps = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return "NONE"
-
-            when {
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
-                else -> "OTHER"
+            val networks = connectivityManager.allNetworks
+            
+            val activeTransports = mutableSetOf<String>()
+            for (network in networks) {
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                if (caps != null) {
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) activeTransports.add("WIFI")
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) activeTransports.add("ETHERNET")
+                }
             }
+            
+            val networkType = if (activeTransports.isEmpty()) "NONE" else activeTransports.joinToString(",")
+
+            val intentFilter = android.content.IntentFilter("android.hardware.usb.action.USB_STATE")
+            val usbIntent = registerReceiver(null, intentFilter)
+            val usbConnected = usbIntent?.extras?.getBoolean("connected") ?: false
+
+            val adbActive = android.provider.Settings.Global.getInt(
+                contentResolver, 
+                android.provider.Settings.Global.ADB_ENABLED, 0
+            ) != 0
+
+            val adbStatus = if (usbConnected && adbActive) "ADB_ON" else "ADB_OFF"
+
+            "${networkType}|${adbStatus}"
         } catch (e: Exception) {
             "ERROR: ${e.message}"
         }
@@ -65,6 +82,16 @@ class MainActivity : TauriActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent()
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
             }
         }
     }
@@ -97,9 +124,14 @@ class MainActivity : TauriActivity() {
 
         // If the user disconnected from the notification while the app was in background,
         // the flag will be gone but the service may still be running. Clean it up.
-        if (GemaCastService.isRunning && !isStreamingActive()) {
-            val sIntent = Intent(this, GemaCastService::class.java).apply { action = "STOP" }
-            try { startService(sIntent) } catch (_: Exception) {}
+        if (GemaCastService.isRunning) {
+            if (isStreamingActive()) {
+                val sIntent = Intent(this, GemaCastService::class.java).apply { action = "HIDE_NOTIFICATION" }
+                try { startService(sIntent) } catch (_: Exception) {}
+            } else {
+                val sIntent = Intent(this, GemaCastService::class.java).apply { action = "STOP" }
+                try { startService(sIntent) } catch (_: Exception) {}
+            }
         }
     }
 

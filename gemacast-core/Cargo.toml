@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.89"
 cpal = { version = "0.17.3", features = ["asio"] }
 netdev = "0.41.0"
 opus = "0.3.1"

@@ -69,8 +69,6 @@ export function makeDiscoveredSender(
     deviceName: 'Desktop PC',
     addr: '192.168.1.10:9000',
     isOffline: false,
-    volume: 0.75,
-    isMuted: false,
     ...overrides,
   };
 }

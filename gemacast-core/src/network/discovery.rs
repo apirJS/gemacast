@@ -14,20 +14,11 @@ pub struct DiscoveryListener {
     discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
 }
 
-pub struct DiscoveryListenerHandles {
-    pub listener: DiscoveryListener,
-    pub discovery_rx: mpsc::Receiver<(ControlMessage, std::net::SocketAddr)>,
-}
-
 impl DiscoveryListener {
-    #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
-    pub async fn new() -> Result<DiscoveryListenerHandles, GemaCastError> {
-        let (discovery_tx, discovery_rx) =
-            mpsc::channel::<(ControlMessage, std::net::SocketAddr)>(8);
-
+    pub async fn new(
+        discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
+    ) -> Result<Self, GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
-
-        // Use socket2 to set SO_REUSEADDR and SO_REUSEPORT before binding
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
             socket2::Type::DGRAM,
@@ -62,22 +53,15 @@ impl DiscoveryListener {
             _ => Ipv4Addr::UNSPECIFIED,
         };
 
-        match socket.join_multicast_v4(multicast_ip, local_bind_ip) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to join multicast on {}: {}. Continuing with broadcast.",
-                    local_bind_ip, e
-                );
-            }
+        if !local_bind_ip.is_link_local()
+            && let Err(_e) = socket.join_multicast_v4(multicast_ip, local_bind_ip)
+        {
+            
         }
 
-        Ok(DiscoveryListenerHandles {
-            listener: DiscoveryListener {
-                discovery_tx,
-                socket: Arc::new(socket),
-            },
-            discovery_rx,
+        Ok(Self {
+            discovery_tx,
+            socket: Arc::new(socket),
         })
     }
 
@@ -87,11 +71,8 @@ impl DiscoveryListener {
         loop {
             let (len, remote_addr) = match self.socket.recv_from(&mut buff).await {
                 Ok(result) => result,
-                Err(e) => {
-                    eprintln!(
-                        "Error receiving UDP packet: {}",
-                        NetworkError::RecvFailed(e)
-                    );
+                Err(_e) => {
+                    
                     continue;
                 }
             };
@@ -100,16 +81,13 @@ impl DiscoveryListener {
 
             match serde_json::from_slice::<ControlMessage>(packet_data) {
                 Ok(message) => {
-                    if let Err(e) = self.discovery_tx.send((message, remote_addr)).await {
-                        eprintln!("Failed to send discovery to UI, receiver dropped: {}", e);
+                    if let Err(_e) = self.discovery_tx.send((message, remote_addr)).await {
+                        
                         break;
                     }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "Error parsing UDP packet: {}",
-                        NetworkError::Serialization(e)
-                    );
+                Err(_e) => {
+                    
                     continue;
                 }
             }
@@ -124,14 +102,8 @@ pub struct DiscoveryBroadcaster {
     shutdown_rx: oneshot::Receiver<()>,
 }
 
-pub struct DiscoveryBroadcasterHandles {
-    pub broadcaster: DiscoveryBroadcaster,
-    pub shutdown_tx: oneshot::Sender<()>,
-}
-
 impl DiscoveryBroadcaster {
-    #[expect(clippy::new_ret_no_self, reason = "returns a handles bundle by design")]
-    pub async fn new() -> Result<DiscoveryBroadcasterHandles, GemaCastError> {
+    pub async fn new(shutdown_rx: oneshot::Receiver<()>) -> Result<Self, GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
         let socket = socket2::Socket::new(
@@ -162,14 +134,9 @@ impl DiscoveryBroadcaster {
             source: e,
         })?;
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        Ok(DiscoveryBroadcasterHandles {
-            broadcaster: DiscoveryBroadcaster {
-                socket,
-                shutdown_rx,
-            },
-            shutdown_tx,
+        Ok(Self {
+            socket,
+            shutdown_rx,
         })
     }
 
@@ -208,7 +175,7 @@ impl DiscoveryBroadcaster {
                     .send_to(&json_bytes, broadcast_addr_global)
                     .await;
                 let _ = self.socket.send_to(&json_bytes, multicast_addr).await;
-                
+
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
 
@@ -244,6 +211,23 @@ pub async fn send_control_message(
     target_ip: std::net::IpAddr,
     message: ControlMessage,
 ) -> Result<(), NetworkError> {
+    if target_ip.is_loopback() {
+        let mut json_bytes = serde_json::to_vec(&message)?;
+        json_bytes.push(b'\n');
+        if let Ok(mut stream) = tokio::net::TcpStream::connect(std::net::SocketAddr::new(
+            target_ip,
+            super::Ports::ADB_DISCOVERY_TCP,
+        ))
+        .await
+        {
+            use tokio::io::AsyncWriteExt;
+            let _ = stream.write_all(&json_bytes).await;
+            let _ = stream.flush().await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            let _ = stream.shutdown().await;
+        }
+        return Ok(());
+    }
     let addr: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(addr)
         .await

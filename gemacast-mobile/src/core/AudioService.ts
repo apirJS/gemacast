@@ -18,7 +18,10 @@ export class AudioService {
       });
       const current = this.stateHandler.getState();
       if (current.connectedSender) {
-        this.stateHandler.setState({ status: Status.Playing, isLoading: false });
+        this.stateHandler.setState({
+          status: Status.Connected,
+          isLoading: false,
+        });
       } else {
         this.stateHandler.setState({ isLoading: false });
       }
@@ -57,55 +60,6 @@ export class AudioService {
       this.stateHandler.setState({
         status: isActive ? Status.Playing : Status.Connected,
       });
-    }
-  }
-
-  public async setRemoteVolume(level: number): Promise<void> {
-    const { connectedSender } = this.stateHandler.getState();
-    if (!connectedSender) return;
-
-    const clamped = Math.max(0, Math.min(1, level));
-
-    this.stateHandler.setState({
-      connectedSender: {
-        ...connectedSender,
-        volume: clamped,
-        isMuted: clamped === 0,
-      },
-    });
-
-    try {
-      await invoke('set_remote_system_volume', {
-        ip: connectedSender.addr.split(':')[0],
-        deviceId: connectedSender.deviceId,
-        level: clamped,
-      });
-    } catch (e) {
-      console.warn('set_remote_system_volume IPC failed:', e);
-    }
-  }
-
-  public async toggleRemoteMute(): Promise<void> {
-    const { connectedSender } = this.stateHandler.getState();
-    if (!connectedSender) return;
-
-    const newMuted = !(connectedSender.isMuted ?? false);
-
-    this.stateHandler.setState({
-      connectedSender: {
-        ...connectedSender,
-        isMuted: newMuted,
-      },
-    });
-
-    try {
-      await invoke('set_remote_system_mute', {
-        ip: connectedSender.addr.split(':')[0],
-        deviceId: connectedSender.deviceId,
-        muted: newMuted,
-      });
-    } catch (e) {
-      console.warn('set_remote_system_mute IPC failed:', e);
     }
   }
 }

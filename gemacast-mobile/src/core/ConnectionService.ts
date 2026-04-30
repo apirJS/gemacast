@@ -41,20 +41,18 @@ export class ConnectionService {
   private handleNetworkOnline() {
     this.stateHandler.setState({
       isNetworkAvailable: true,
-      error: null, // Clear network errors
+      error: null,
     });
   }
 
   public handleSenderTimeout(senderId: string) {
     const currentState = this.stateHandler.getState();
 
-    // Remove the stale sender from discovery list
     const list = currentState.discoveredSenders.filter(
       (s) => s.deviceId !== senderId,
     );
     this.stateHandler.setState({ discoveredSenders: list });
 
-    // If it was our connected sender, purge connection and go to Scanning
     if (currentState.connectedSender?.deviceId === senderId) {
       this.stateHandler.setState({
         connectionHealth: 'lost',
@@ -63,8 +61,6 @@ export class ConnectionService {
         error: GemaCastError.senderTimeout(),
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
-      
-      // Stop the backend task since the connection is deemed dead
       this.killPlayback().catch(console.warn);
     }
   }
@@ -87,6 +83,13 @@ export class ConnectionService {
         settings.customJitterConfig,
       );
 
+      const transport =
+        settings.mode === 'usb'
+          ? 'usb'
+          : settings.mode === 'wifi'
+            ? 'wifi'
+            : null;
+
       await invoke('connect_to_sender', {
         ip,
         deviceId: state.deviceInfo.deviceId,
@@ -94,6 +97,7 @@ export class ConnectionService {
         mode: settings.mode,
         exclusiveMode: settings.exclusiveMode,
         jitterConfig: config,
+        transport,
       });
 
       StateHandler.saveLastSender(sender);
@@ -109,9 +113,6 @@ export class ConnectionService {
       });
 
       await this.audioResumer();
-      if (this.stateHandler.getState().connectedSender) {
-        this.stateHandler.setState({ status: Status.Playing });
-      }
 
       return ok(true);
     } catch (e) {
@@ -191,7 +192,7 @@ export class ConnectionService {
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
     invoke('notify_streaming_stopped').catch(console.warn);
-    
+
     // Stop the backend task on forced disconnects
     this.killPlayback().catch(console.warn);
   }

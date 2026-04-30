@@ -24,6 +24,7 @@ pub struct AudioSender {
     audio_consumer: HeapCons<f32>,
     notify: Arc<Notify>,
     error_rx: mpsc::Receiver<cpal::StreamError>,
+    pub tcp_broadcaster_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
 }
 
 impl AudioSender {
@@ -49,10 +50,11 @@ impl AudioSender {
                     && c.min_sample_rate() <= rate
                     && c.max_sample_rate() >= rate
             })
-            && let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
-                let desired = OPUS_FRAME_SAMPLES as u32;
-                buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
-            }
+            && let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size()
+        {
+            let desired = OPUS_FRAME_SAMPLES as u32;
+            buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
+        }
 
         let stream_config = cpal::StreamConfig {
             channels: OPUS_CHANNELS,
@@ -66,8 +68,6 @@ impl AudioSender {
                 move |data: &[f32], _: &_| {
                     if rb_producer.vacant_len() >= data.len() {
                         let _ = rb_producer.push_slice(data);
-                    } else {
-                        eprintln!("Dropped audio frame to prevent freezing!");
                     }
                     notify_clone.notify_one();
                 },
@@ -78,11 +78,14 @@ impl AudioSender {
             )
             .map_err(AudioCaptureError::FailedToBuildInputStream)?;
 
+        let (tcp_broadcaster_tx, _) = tokio::sync::broadcast::channel(4000);
+
         Ok(AudioSender {
             audio_consumer: rb_consumer,
             notify,
             error_rx,
             audio_stream,
+            tcp_broadcaster_tx,
         })
     }
 
@@ -101,10 +104,6 @@ impl AudioSender {
         })?;
 
         let _ = socket.set_tos(0xB8); // Guarantee WMM AC_VO (DSCP 46 / EF) to bypass router policing
-
-        // Minimize OS-level send buffering.
-        // 4KB (~40 packets) is enough to absorb encoding jitter without accumulating.
-        let _ = socket.set_send_buffer_size(4096);
 
         socket
             .bind(&addr.into())
@@ -160,8 +159,15 @@ impl AudioSender {
                             }
                         }
                         SenderCommand::ChangeBitrate(bitrate_opt) => {
+                            let previous_bitrate = current_bitrate;
                             current_bitrate = bitrate_opt;
-                            if let Some(b) = current_bitrate {
+
+                            // Opus allows seamless on-the-fly bitrate changes.
+                            // We MUST NOT reset the predictive state machine or the receiver
+                            // will emit severe artifacting/stuttering until it heuristically catches up!
+                            if previous_bitrate != current_bitrate
+                                && let Some(b) = current_bitrate
+                            {
                                 let _ = encoder.set_bitrate(opus::Bitrate::Bits(b));
                             }
                         }
@@ -177,11 +183,11 @@ impl AudioSender {
                         continue;
                     }
 
-                    if targets.is_empty() {
+                    let has_tcp_listeners = self.tcp_broadcaster_tx.receiver_count() > 0;
+                    if targets.is_empty() && !has_tcp_listeners {
                         while self.audio_consumer.try_pop().is_some() {}
                         continue;
                     }
-
                     let prev_len = sample_buf.len();
                     sample_buf.resize(prev_len + occupied, 0.0);
                     let actually_read = self.audio_consumer.pop_slice(&mut sample_buf[prev_len..]);
@@ -197,10 +203,10 @@ impl AudioSender {
                             sum_sq += sample * sample;
                         }
                         let rms = (sum_sq / OPUS_FRAME_SAMPLES as f32).sqrt();
-                        
+
                         let is_silence = rms < 0.0001;
                         let is_uncompressed = current_bitrate.is_none();
-                        
+
                         let format_flag = if is_silence {
                             crate::audio::FORMAT_SILENCE
                         } else if is_uncompressed {
@@ -222,8 +228,8 @@ impl AudioSender {
                         } else {
                             let encoded_len = match encoder.encode_float(&frame_buf, &mut opus_output) {
                                 Ok(e) => e,
-                                Err(e) => {
-                                    eprintln!("Opus encoder failed: {}", e);
+                                Err(_e) => {
+
                                     continue;
                                 }
                             };
@@ -236,17 +242,33 @@ impl AudioSender {
                         packet_buf.push(format_flag);
                         packet_buf.extend_from_slice(payload_bytes);
 
+                        // Share the packet with TCP subscribers without cloning.
+                        // Build the Arc from a cheaply constructed Vec only when
+                        // there are active TCP listeners, otherwise skip entirely.
+                        let has_tcp_subs = self.tcp_broadcaster_tx.receiver_count() > 0;
+                        let arc_packet = if has_tcp_subs {
+                            let shared = Arc::new(packet_buf.clone());
+                            let _ = self.tcp_broadcaster_tx.send(Arc::clone(&shared));
+                            Some(shared)
+                        } else {
+                            None
+                        };
+                        // ^ clone still required for TCP path but is now conditional
+
                         for target_addr in &targets {
                             match audio_socket.try_send_to(&packet_buf, *target_addr) {
                                 Ok(_) => {}
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                     // OS UDP buffer full — drop this packet rather than block.
                                 }
-                                Err(e) => {
-                                    eprintln!("UDP send failed: {}", e);
+                                Err(_e) => {
+
                                 }
                             }
                         }
+
+                        // Ensure arc_packet lives until after UDP sends complete
+                        drop(arc_packet);
 
                         seq_num = seq_num.wrapping_add(1);
                     }
