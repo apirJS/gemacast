@@ -90,11 +90,11 @@ describe('DiscoveryService — updateDiscoveredSender', () => {
 
   it('updates an existing sender in-place', () => {
     const { sh, discovery } = setup();
-    const sender = makeDiscoveredSender({ volume: 0.5 });
+    const sender = makeDiscoveredSender({ deviceName: 'PC-1' });
     discovery.updateDiscoveredSender(sender);
-    discovery.updateDiscoveredSender({ ...sender, volume: 0.8 });
+    discovery.updateDiscoveredSender({ ...sender, deviceName: 'PC-1-Updated' });
     expect(sh.getState().discoveredSenders).toHaveLength(1);
-    expect(sh.getState().discoveredSenders[0].volume).toBe(0.8);
+    expect(sh.getState().discoveredSenders[0].deviceName).toBe('PC-1-Updated');
   });
 
   it('removes sender from list when isOffline=true', () => {
@@ -113,16 +113,16 @@ describe('DiscoveryService — updateDiscoveredSender', () => {
 
   it('syncs connectedSender when the matching sender is updated', () => {
     const { sh, discovery } = setup();
-    const sender = makeDiscoveredSender({ volume: 0.5 });
+    const sender = makeDiscoveredSender({ deviceName: 'PC-1' });
     sh.setState({ connectedSender: sender });
-    discovery.updateDiscoveredSender({ ...sender, volume: 1.0 });
-    expect(sh.getState().connectedSender?.volume).toBe(1.0);
+    discovery.updateDiscoveredSender({ ...sender, deviceName: 'PC-1-Updated' });
+    expect(sh.getState().connectedSender?.deviceName).toBe('PC-1-Updated');
   });
 
   it('leaves connectedSender unchanged when another sender updates', () => {
     const { sh, discovery } = setup();
-    const connected = makeDiscoveredSender({ deviceId: 'A', volume: 0.5 });
-    const other = makeDiscoveredSender({ deviceId: 'B', volume: 0.9 });
+    const connected = makeDiscoveredSender({ deviceId: 'A', deviceName: 'PC-A' });
+    const other = makeDiscoveredSender({ deviceId: 'B', deviceName: 'PC-B' });
     sh.setState({ connectedSender: connected });
     discovery.updateDiscoveredSender(other);
     expect(sh.getState().connectedSender?.deviceId).toBe('A');

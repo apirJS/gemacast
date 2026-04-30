@@ -69,8 +69,6 @@ export function makeDiscoveredSender(
     deviceName: 'Desktop PC',
     addr: '192.168.1.10:9000',
     isOffline: false,
-    volume: 0.75,
-    isMuted: false,
     ...overrides,
   };
 }
@@ -91,6 +89,8 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     latency: { current: null, avg: null, max: null, min: null },
     settings: require('./StateHandler').DEFAULT_SETTINGS,
     availableModes: { wifi: true, usb: false, adb: false },
+    audioSources: [],
+    senderCapabilities: null,
     ...overrides,
   };
 }

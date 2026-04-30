@@ -43,15 +43,6 @@ export function listenForTauriEvents(app: App) {
       if (target) {
         await app.connection.connectToSender(target);
       }
-    } else if (cmd === 'VOL_UP' || cmd === 'VOL_DOWN') {
-      const state = app.stateHandler.getState();
-      const sender = state.connectedSender;
-      if (sender && sender.volume !== undefined && sender.volume !== null) {
-        const step = 0.05;
-        let newVol = sender.volume + (cmd === 'VOL_UP' ? step : -step);
-        newVol = Math.max(0.0, Math.min(1.0, newVol));
-        await app.audio.setRemoteVolume(newVol);
-      }
     }
   });
 }

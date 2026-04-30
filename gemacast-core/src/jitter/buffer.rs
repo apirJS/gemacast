@@ -28,8 +28,8 @@ impl Default for JitterBuffer {
 
 impl JitterBuffer {
     pub fn new() -> Self {
-        // We use an explicit manual layout because we can't use vec![None; CAPACITY] 
-        // without making the inner type Clone, and we don't want RawPacket to be Clone 
+        // We use an explicit manual layout because we can't use vec![None; CAPACITY]
+        // without making the inner type Clone, and we don't want RawPacket to be Clone
         // to prevent accidental array duplications.
         let mut slots = Vec::with_capacity(BUFFER_CAPACITY as usize);
         for _ in 0..BUFFER_CAPACITY {

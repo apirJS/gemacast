@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use gemacast_core::types::{DeviceId, TransportType};
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -7,19 +8,18 @@ use tray_icon::{
 
 pub struct TrayManager {
     _tray_icon: TrayIcon,
-    pub device_buttons: HashMap<String, CheckMenuItem>,
+    pub device_buttons: HashMap<DeviceId, CheckMenuItem>,
     pub devices_submenu: Submenu,
     pub quality_buttons: Vec<(Option<i32>, CheckMenuItem)>,
     pub scanning_placeholder: MenuItem,
-    pub broadcast_toggle: CheckMenuItem,
+    pub broadcast_toggle: MenuItem,
     pub quit_item: MenuItem,
 }
 
 impl TrayManager {
     pub fn new() -> Self {
         let tray_menu = Menu::new();
-
-        let broadcast_toggle = CheckMenuItem::new("Broadcast Presence", true, true, None);
+        let broadcast_toggle = MenuItem::new("Stop Stream", true, None);
         let devices_submenu = Submenu::new("Connected Phones", true);
         let scanning_placeholder = MenuItem::new("No devices connected yet", false, None);
         let quit_item = MenuItem::new("quit", true, None);
@@ -47,13 +47,17 @@ impl TrayManager {
             } else {
                 format!("{} Kb/s - {}", kbps, category)
             };
-            
+
             let is_checked = kbps == 128;
             let item = CheckMenuItem::new(label, true, is_checked, None);
-            
+
             let bitrate_val = if kbps == -1 { None } else { Some(kbps * 1000) };
             let _ = quality_submenu.append(&item);
             quality_buttons.push((bitrate_val, item));
+
+            if kbps == 32 || kbps == 96 || kbps == 256 || kbps == 512 {
+                let _ = quality_submenu.append(&PredefinedMenuItem::separator());
+            }
         }
 
         let _ = tray_menu.append(&broadcast_toggle);
@@ -80,8 +84,25 @@ impl TrayManager {
         }
     }
 
-    pub fn add_device(&mut self, device_id: String, device_name: &str, addr: std::net::SocketAddr) {
-        if self.device_buttons.contains_key(&device_id) {
+    pub fn add_device(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        addr: std::net::SocketAddr,
+        transport: Option<TransportType>,
+    ) {
+        let connection_type = if addr.ip().is_loopback() {
+            "ADB"
+        } else {
+            match transport {
+                Some(TransportType::Usb) => "USB",
+                Some(TransportType::Wifi) => "WIFI",
+                None => "WIFI",
+            }
+        };
+        let display_text = format!("{} ({}) [{}]", device_name, addr.ip(), connection_type);
+        if let Some(existing) = self.device_buttons.get(&device_id) {
+            existing.set_text(&display_text);
             return;
         }
 
@@ -89,25 +110,19 @@ impl TrayManager {
             let _ = self.devices_submenu.remove(&self.scanning_placeholder);
         }
 
-        let connection_type = if gemacast_core::network::is_usb_tether_ip(&addr.ip()) {
-            "USB"
-        } else {
-            "WIFI"
-        };
-        let display_text = format!("{} ({}) [{}]", device_name, addr.ip(), connection_type);
         let new_device = CheckMenuItem::new(display_text, true, false, None);
 
         let _ = self.devices_submenu.append(&new_device);
         self.device_buttons.insert(device_id, new_device);
     }
 
-    pub fn set_device_connected(&self, device_id: &str, connected: bool) {
+    pub fn set_device_connected(&self, device_id: &DeviceId, connected: bool) {
         if let Some(item) = self.device_buttons.get(device_id) {
             item.set_checked(connected);
         }
     }
 
-    pub fn remove_device(&mut self, device_id: &str) {
+    pub fn remove_device(&mut self, device_id: &DeviceId) {
         if let Some(device) = self.device_buttons.remove(device_id) {
             let _ = self.devices_submenu.remove(&device);
         }

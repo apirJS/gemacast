@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use gemacast_core::types::DeviceId;
+
 /// Acquires a [`Mutex`] lock and maps the poison error to a [`String`]
 pub fn lock<T>(m: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
     m.lock().map_err(|e| e.to_string())
@@ -27,13 +29,19 @@ pub struct AppState {
     pub connected_ip: Mutex<Option<IpAddr>>,
 
     /// Stable device identifier sent in control messages.
-    pub device_id: Mutex<Option<String>>,
+    pub device_id: Mutex<Option<DeviceId>>,
 
     /// Human-readable device name sent in control messages.
     pub device_name: Mutex<Option<String>>,
 
     /// Shared JitterConfig reference capable of dynamic runtime updates.
     pub config_ref: Mutex<Option<Arc<std::sync::RwLock<gemacast_core::types::JitterConfig>>>>,
+
+    /// Atomic flag shared with the audio thread to toggle TCP/UDP jitter buffer semantics.
+    pub is_tcp_mode: Mutex<Option<Arc<AtomicBool>>>,
+
+    /// Last used exclusive mode truthy flag, required for correctly resuming intents.
+    pub exclusive_mode: Mutex<Option<bool>>,
 }
 
 impl AppState {
@@ -47,6 +55,8 @@ impl AppState {
             device_id: Mutex::new(None),
             device_name: Mutex::new(None),
             config_ref: Mutex::new(None),
+            is_tcp_mode: Mutex::new(None),
+            exclusive_mode: Mutex::new(None),
         }
     }
 }

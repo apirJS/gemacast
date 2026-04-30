@@ -1,21 +1,20 @@
+use gemacast_core::types::DeviceId;
 use std::net::SocketAddr;
 
 pub enum DaemonEvent {
     DiscoveredDevice {
-        device_id: String,
+        device_id: DeviceId,
         name: String,
         addr: SocketAddr,
     },
-    DeviceLost(String, SocketAddr),
+    DeviceLost(DeviceId, SocketAddr),
     FatalError(String),
 }
 
-#[derive(Debug)]
-pub enum StreamCommand {
-    #[allow(dead_code)] // Used internally by the background engine dispatch path
-    AddTarget(SocketAddr),
-    RemoveTarget(SocketAddr, String),
-    StopStream,
+#[derive(Debug, Clone)]
+pub enum DaemonCommand {
+    KickDevice(DeviceId),
+    StopAllStreams,
     StartBroadcasting,
     StopBroadcasting,
     ChangeBitrate(Option<i32>),

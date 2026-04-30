@@ -33,8 +33,6 @@ export type DiscoveredSender = {
   deviceName: string;
   addr: string;
   isOffline: boolean;
-  volume?: number;
-  isMuted?: boolean;
 };
 
 export enum Status {
@@ -68,20 +66,33 @@ export enum ConnectionMode {
 export type JitterConfig = {
   minDepthMs: number;
   comfortCapMs: number;
-  bounceMultiplier: number;
+  peakDecayHalflifeMs: number;
   resumeThresholdPct: number;
-  wsolaMaxSkip: number;
-  initialComfortMs: number;
-  fastSettleMultiplier: number;
-  fastSettleFrames: number;
+  staticTargetMs?: number | null;
 };
+
+export type SavedPreset = {
+  name: string;
+  config: JitterConfig;
+};
+
+export type PresetId = 'auto' | 'wired' | 'fast' | 'balanced' | 'stable' | 'resilient' | 'custom';
 
 export type AppSettings = {
   theme: 'light' | 'dark';
   mode: ConnectionMode;
   exclusiveMode: boolean;
-  bufferPreset: number; // 0-9 for 1-10 levels, 10 for custom
+  bufferPreset: PresetId;
   customJitterConfig: JitterConfig;
+  savedPresets: SavedPreset[];
+};
+
+export type AudioSource =
+  | { type: 'desktop' }
+  | { type: 'process'; pid: number; name: string };
+
+export type SenderCapabilities = {
+  supportsProcessCapture: boolean;
 };
 
 export type AppState = {
@@ -100,6 +111,8 @@ export type AppState = {
   latency: LatencyStats;
   settings: AppSettings;
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
+  audioSources: AudioSource[];
+  senderCapabilities: SenderCapabilities | null;
 };
 
 export type StateSubscriber = (state: AppState) => void;

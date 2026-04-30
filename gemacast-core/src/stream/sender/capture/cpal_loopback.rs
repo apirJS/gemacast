@@ -1,0 +1,87 @@
+use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+use crate::error::{AudioCaptureError, GemaCastError};
+use crate::stream::sender::capture::{CaptureBackend, CaptureHandle};
+use cpal::traits::{DeviceTrait, HostTrait};
+use ringbuf::{HeapRb, traits::*};
+use std::sync::Arc;
+use tokio::sync::{Notify, mpsc};
+
+struct CpalLoopbackCapture {
+    stream: cpal::Stream,
+}
+
+impl CaptureBackend for CpalLoopbackCapture {
+    fn play(&mut self) -> Result<(), GemaCastError> {
+        use cpal::traits::StreamTrait;
+        self.stream
+            .play()
+            .map_err(AudioCaptureError::FailedToPlayInputStream)?;
+        Ok(())
+    }
+
+    fn pause(&mut self) -> Result<(), GemaCastError> {
+        use cpal::traits::StreamTrait;
+        let _ = self.stream.pause();
+        Ok(())
+    }
+}
+
+pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
+    let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
+    let (mut rb_producer, rb_consumer) = rb.split();
+    let (error_tx, error_rx) = mpsc::channel::<cpal::StreamError>(1);
+
+    let notify = Arc::new(Notify::new());
+    let notify_clone = notify.clone();
+
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
+
+    let mut buffer_size = cpal::BufferSize::Default;
+    let rate = OPUS_SAMPLE_RATE;
+    if let Ok(mut supported_configs) = device.supported_output_configs()
+        && let Some(config) = supported_configs.find(|c| {
+            c.channels() == OPUS_CHANNELS
+                && c.min_sample_rate() <= rate
+                && c.max_sample_rate() >= rate
+        })
+        && let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size()
+    {
+        let desired = OPUS_FRAME_SAMPLES as u32;
+        buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
+    }
+
+    let stream_config = cpal::StreamConfig {
+        channels: OPUS_CHANNELS,
+        sample_rate: OPUS_SAMPLE_RATE,
+        buffer_size,
+    };
+
+    let audio_stream = device
+        .build_input_stream(
+            &stream_config,
+            move |data: &[f32], _: &_| {
+                if rb_producer.vacant_len() >= data.len() {
+                    let _ = rb_producer.push_slice(data);
+                }
+
+                notify_clone.notify_one();
+            },
+            move |e| {
+                let _ = error_tx.blocking_send(e);
+            },
+            None,
+        )
+        .map_err(AudioCaptureError::FailedToBuildInputStream)?;
+
+    Ok(CaptureHandle {
+        backend: Box::new(CpalLoopbackCapture {
+            stream: audio_stream,
+        }),
+        consumer: rb_consumer,
+        notify,
+        error_rx,
+    })
+}
