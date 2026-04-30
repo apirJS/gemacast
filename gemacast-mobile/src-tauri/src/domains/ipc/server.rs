@@ -12,7 +12,7 @@ pub fn spawn_service_command_listener(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 0);
         let Ok(socket) = tokio::net::UdpSocket::bind(addr).await else {
-            eprintln!("[service] Failed to bind IPC socket");
+            
             return;
         };
 
@@ -69,6 +69,7 @@ async fn handle_resume(app_handle: &tauri::AppHandle) {
                 mode: gemacast_core::types::ConnectionMode::default(),
                 exclusive_mode: false,
                 jitter_config: gemacast_core::types::JitterConfig::default(),
+                transport: None,
             },
         )
         .await;
@@ -92,5 +93,5 @@ async fn handle_stop(app_handle: &tauri::AppHandle) {
         .await;
     }
 
-    crate::commands::playback::set_streaming_flag(app_handle, false);
+    crate::domains::audio::playback::set_streaming_flag(app_handle, false);
 }

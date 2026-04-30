@@ -63,6 +63,7 @@ export class DiscoveryService {
           reconnectAttempts: 0,
         });
         this.stateHandler.updateLatencyInfo(null, null, null, null);
+        invoke('kill_playback').catch(console.warn);
         return;
       }
     } else {

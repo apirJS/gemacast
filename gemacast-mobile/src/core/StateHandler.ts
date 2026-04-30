@@ -9,6 +9,10 @@ import {
   AppSettings,
 } from '../types';
 import { GemaCastError } from '../error';
+import { JITTER_PRESETS } from './presets';
+
+// Auto preset is the single source of truth for the default fallback config.
+const DEFAULT_AUTO_CONFIG = JITTER_PRESETS.find(p => p.id === 'auto')!.config!;
 
 const LS_LAST_SENDER = 'gemacast_last_sender';
 const LS_SETTINGS = 'gemacast_settings';
@@ -17,17 +21,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   mode: ConnectionMode.Wifi,
   exclusiveMode: false,
-  bufferPreset: 5,
-  customJitterConfig: {
-    minDepthMs: 20,
-    comfortCapMs: 400,
-    bounceMultiplier: 1.5,
-    resumeThresholdPct: 0.75,
-    wsolaMaxSkip: 2,
-    initialComfortMs: 50,
-    fastSettleMultiplier: 2.5,
-    fastSettleFrames: 200,
-  },
+  bufferPreset: 'auto',
+  customJitterConfig: DEFAULT_AUTO_CONFIG,
+  savedPresets: [],
 };
 
 export class StateHandler {

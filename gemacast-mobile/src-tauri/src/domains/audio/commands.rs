@@ -1,25 +1,14 @@
-use std::sync::atomic::Ordering;
-use tauri::{Emitter, Manager, State};
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tauri::State;
 
 use gemacast_core::network::AudioReceiver;
+use gemacast_core::types::{DeviceId, TransportType};
 
 use crate::state::{lock, AppState};
 
-/// Writes or removes the `.streaming_active` flag file used by the Android
-/// foreground service to know whether audio is currently streaming.
-pub fn set_streaming_flag(app_handle: &tauri::AppHandle, active: bool) {
-    if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
-        let flag_path: std::path::PathBuf = cache_dir.join(".streaming_active");
-        if active {
-            let _ = std::fs::create_dir_all(&cache_dir);
-            let _ = std::fs::write(&flag_path, "1");
-        } else {
-            let _ = std::fs::remove_file(&flag_path);
-        }
-    }
-}
+use super::playback::{
+    set_playing_flag, set_streaming_flag, setup_event_forwarding, spawn_playback_task,
+    stop_playback_flag,
+};
 
 /// Notifies the Rust core that the Android foreground service has stopped
 /// streaming. Clears the flag so the service UI does not show incorrectly.
@@ -37,11 +26,12 @@ pub fn notify_streaming_stopped(app_handle: tauri::AppHandle) -> Result<(), Stri
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_to_sender(
     ip: String,
-    device_id: String,
+    device_id: DeviceId,
     device_name: String,
     mode: gemacast_core::types::ConnectionMode,
     exclusive_mode: bool,
     jitter_config: gemacast_core::types::JitterConfig,
+    transport: Option<TransportType>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -55,6 +45,7 @@ pub async fn connect_to_sender(
             mode,
             exclusive_mode,
             jitter_config: jitter_config.clone(),
+            transport,
         },
     )
     .await
@@ -69,30 +60,55 @@ pub async fn connect_to_sender(
     let is_initialized = lock(&state.playback_handle)?.is_some();
 
     if !is_initialized {
-        let audio_handles = AudioReceiver::create(jitter_config.clone(), exclusive_mode)
-            .await
-            .map_err(|e| e.to_string())?;
-        *lock(&state.shutdown_playback_tx)? = Some(audio_handles.shutdown_tx);
-        *lock(&state.is_playing)? = Some(audio_handles.is_playing);
-        *lock(&state.config_ref)? = Some(audio_handles.config_ref);
+        let config_ref = std::sync::Arc::new(std::sync::RwLock::new(jitter_config.clone()));
+        let is_tcp_mode = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            mode == gemacast_core::types::ConnectionMode::Adb,
+        ));
+        let is_playing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let volume = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let receiver = AudioReceiver::new(
+            config_ref.clone(),
+            is_tcp_mode.clone(),
+            is_playing.clone(),
+            volume.clone(),
+            exclusive_mode,
+            shutdown_rx,
+        )
+        .map_err(|e| e.to_string())?;
+
+        *lock(&state.shutdown_playback_tx)? = Some(shutdown_tx);
+        *lock(&state.is_playing)? = Some(is_playing);
+        *lock(&state.config_ref)? = Some(config_ref);
+        *lock(&state.is_tcp_mode)? = Some(is_tcp_mode);
+        *lock(&state.exclusive_mode)? = Some(exclusive_mode);
 
         let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
         let playback_task = spawn_playback_task(
-            audio_handles.receiver,
+            receiver,
             app_handle.clone(),
             sender_ip_tx,
             latency_tx,
             Some(ip_addr),
+            mode,
         );
         *lock(&state.playback_handle)? = Some(playback_task);
-    } else if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
-        if let Ok(mut guard) = config_ref.write() {
-            *guard = jitter_config.clone();
+    } else {
+        if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
+            if let Ok(mut guard) = config_ref.write() {
+                *guard = jitter_config.clone();
+            }
+        }
+        if let Some(tcp_flag) = lock(&state.is_tcp_mode)?.as_ref() {
+            let is_tcp = mode == gemacast_core::types::ConnectionMode::Adb;
+            tcp_flag.store(is_tcp, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     set_playing_flag(&state, true)?;
     set_streaming_flag(&app_handle, true);
+    sync_android_service(true, exclusive_mode);
 
     Ok(())
 }
@@ -101,7 +117,7 @@ pub async fn connect_to_sender(
 #[tauri::command]
 pub async fn disconnect_from_sender(
     ip: String,
-    device_id: String,
+    device_id: DeviceId,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -115,13 +131,14 @@ pub async fn disconnect_from_sender(
 
     stop_playback_flag(&state)?;
     set_streaming_flag(&app_handle, false);
+    sync_android_service(false, false);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn stop_audio_playback(
     ip: Option<String>,
-    device_id: Option<String>,
+    device_id: Option<DeviceId>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     if let (Some(ip_str), Some(did)) = (ip, device_id) {
@@ -133,7 +150,9 @@ pub async fn stop_audio_playback(
             .await;
         }
     }
-    stop_playback_flag(&state)
+    stop_playback_flag(&state)?;
+    sync_android_service(false, false);
+    Ok(())
 }
 
 /// Forcefully terminates the playback task and clears all state.
@@ -156,7 +175,8 @@ pub async fn kill_playback(
 
     set_streaming_flag(&app_handle, false);
 
-    eprintln!("[kill_playback] Playback task killed and state cleared.");
+    
+    sync_android_service(false, false);
     Ok(())
 }
 
@@ -166,10 +186,11 @@ pub async fn kill_playback(
 #[tauri::command]
 pub async fn start_audio_playback(
     ip: Option<String>,
-    device_id: Option<String>,
+    device_id: Option<DeviceId>,
     device_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let mode_flag = lock(&state.exclusive_mode)?.unwrap_or(false);
     if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
         if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
             let _ = gemacast_core::network::send_control_message(
@@ -178,86 +199,17 @@ pub async fn start_audio_playback(
                     device_id: did,
                     device_name: dname,
                     mode: gemacast_core::types::ConnectionMode::default(),
-                    exclusive_mode: false,
+                    exclusive_mode: mode_flag,
                     jitter_config: gemacast_core::types::JitterConfig::default(),
+                    transport: None,
                 },
             )
             .await;
         }
     }
-    set_playing_flag(&state, true)
-}
-
-/// Sets the `is_playing` atomic flag.
-fn set_playing_flag(state: &AppState, playing: bool) -> Result<(), String> {
-    if let Some(flag) = lock(&state.is_playing)?.as_ref() {
-        flag.store(playing, Ordering::Relaxed);
-    }
+    set_playing_flag(&state, true)?;
+    sync_android_service(true, mode_flag);
     Ok(())
-}
-
-/// Clears the `is_playing` flag (pauses audio without destroying the stream).
-fn stop_playback_flag(state: &AppState) -> Result<(), String> {
-    set_playing_flag(state, false)
-}
-
-/// Spawns async relay tasks that forward playback events to the Tauri frontend.
-///
-/// Returns:
-/// - A oneshot sender that, when resolved, emits `sender-connected` with the
-///   sender's IP.
-/// - An mpsc sender for `(latency_ms, rms)` pairs that emit `latency-update`
-///   and `audio-active` events.
-fn setup_event_forwarding(
-    app_handle: tauri::AppHandle,
-) -> (
-    oneshot::Sender<String>,
-    tokio::sync::mpsc::Sender<(f32, f32)>,
-) {
-    let (sender_ip_tx, sender_ip_rx) = oneshot::channel::<String>();
-    let handle_conn = app_handle.clone();
-    tokio::spawn(async move {
-        if let Ok(ip) = sender_ip_rx.await {
-            let _ = handle_conn.emit("sender-connected", ip);
-        }
-    });
-
-    let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32)>(10);
-    let handle_latency = app_handle.clone();
-    tokio::spawn(async move {
-        while let Some((latency, rms)) = latency_rx.recv().await {
-            let _ = handle_latency.emit("latency-update", latency);
-            let is_active = rms > 0.0001;
-            let _ = handle_latency.emit("audio-active", is_active);
-        }
-    });
-
-    (sender_ip_tx, latency_tx)
-}
-
-/// Spawns the audio playback task that drives the permanent hardware stream.
-fn spawn_playback_task(
-    mut receiver: AudioReceiver,
-    app_handle: tauri::AppHandle,
-    sender_ip_tx: oneshot::Sender<String>,
-    latency_tx: tokio::sync::mpsc::Sender<(f32, f32)>,
-    target_ip: Option<std::net::IpAddr>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = receiver.start_audio_playback() {
-            eprintln!("[playback] Start failed: {:?}", e);
-            let _ = app_handle.emit("playback-error", e.to_string());
-            return;
-        }
-
-        if let Err(e) = receiver
-            .start_audio_listener(Some(sender_ip_tx), Some(latency_tx), target_ip)
-            .await
-        {
-            eprintln!("[playback] Audio listener crashed: {:?}", e);
-            let _ = app_handle.emit("playback-error", e.to_string());
-        }
-    })
 }
 
 /// Dynamically updates the jitter buffer configuration in real-time.
@@ -266,20 +218,33 @@ pub async fn update_jitter_config(
     jitter_config: gemacast_core::types::JitterConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    eprintln!("[update_jitter_config] Received: min_depth={}ms comfort_cap={}ms bounce={} resume={} wsola={}",
-        jitter_config.min_depth_ms,
-        jitter_config.comfort_cap_ms,
-        jitter_config.bounce_multiplier,
-        jitter_config.resume_threshold_pct,
-        jitter_config.wsola_max_skip,
-    );
-    let has_ref = lock(&state.config_ref)?.is_some();
-    eprintln!("[update_jitter_config] config_ref exists: {}", has_ref);
+    
+    let _has_ref = lock(&state.config_ref)?.is_some();
+    
     if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
         if let Ok(mut guard) = config_ref.write() {
             *guard = jitter_config;
-            eprintln!("[update_jitter_config] Config written successfully");
+            
         }
     }
     Ok(())
+}
+
+#[allow(unused_variables)]
+fn sync_android_service(is_playing: bool, is_exclusive: bool) {
+    #[cfg(target_os = "android")]
+    {
+        let action = if is_playing { "START" } else { "STOP_STREAM" };
+        let _ = std::process::Command::new("am")
+            .args([
+                "startservice",
+                "-a",
+                action,
+                "--ez",
+                "EXCLUSIVE_MODE",
+                if is_exclusive { "true" } else { "false" },
+                "com.apir.gemacast/.GemaCastService",
+            ])
+            .spawn();
+    }
 }

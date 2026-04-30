@@ -1,6 +1,4 @@
-mod commands;
-mod discovery;
-mod service;
+mod domains;
 mod state;
 
 use state::AppState;
@@ -16,27 +14,30 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .setup(|app| {
-            service::spawn_service_command_listener(app.handle().clone());
+            domains::ipc::server::spawn_service_command_listener(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_device_info::init())
         .invoke_handler(tauri::generate_handler![
-            commands::discovery::get_local_ip,
-            commands::discovery::get_network_identifier,
-            commands::discovery::get_connection_status,
-            commands::discovery::start_listening_for_senders,
-            commands::discovery::stop_listening_for_senders,
-            commands::playback::connect_to_sender,
-            commands::playback::disconnect_from_sender,
-            commands::playback::start_audio_playback,
-            commands::playback::stop_audio_playback,
-            commands::playback::notify_streaming_stopped,
-            commands::playback::kill_playback,
-            commands::playback::update_jitter_config,
-            commands::volume::set_remote_system_volume,
-            commands::volume::set_remote_system_mute,
+            domains::discovery::commands::get_local_ip,
+            domains::discovery::commands::get_network_identifier,
+            domains::discovery::commands::get_connection_status,
+            domains::discovery::commands::start_listening_for_senders,
+            domains::discovery::commands::stop_listening_for_senders,
+            domains::audio::commands::connect_to_sender,
+            domains::audio::commands::disconnect_from_sender,
+            domains::audio::commands::start_audio_playback,
+            domains::audio::commands::stop_audio_playback,
+            domains::audio::commands::notify_streaming_stopped,
+            domains::audio::commands::kill_playback,
+            domains::audio::commands::update_jitter_config,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                std::process::exit(0);
+            }
+        });
 }

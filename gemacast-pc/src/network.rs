@@ -1,28 +1,62 @@
+use gemacast_core::network::adb::{
+    PresenceProvider, spawn_adb_reverse_watchdog, spawn_audio_spigot, spawn_discovery_spigot,
+};
 use gemacast_core::network::{AudioSender, SenderCommand};
-use gemacast_core::network::{DiscoveryBroadcaster, send_control_message};
-use gemacast_core::types::{ControlMessage, DiscoveredDevice};
+use gemacast_core::types::{ControlMessage, SenderId};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use tao::event_loop::EventLoopProxy;
+use tokio::task::JoinSet;
 
 use crate::{
+    domains::{
+        audio::{engine::spawn_audio_engine, stream_manager::spawn_stream_command_manager},
+        discovery::{
+            dispatch::spawn_discovery_dispatcher, udp_listener::spawn_udp_listener,
+            watchdog::spawn_stale_device_watchdog,
+        },
+    },
     events::{DaemonEvent, StreamCommand},
     state::DeviceList,
 };
 
+/// Adapter implementing [`PresenceProvider`] for the PC daemon's broadcast state,
+/// decoupling the centralized ADB spigots from PC internals.
+struct PcPresenceProvider {
+    is_broadcasting: Arc<AtomicBool>,
+    sender_id: SenderId,
+    sender_name: String,
+}
+
+impl PresenceProvider for PcPresenceProvider {
+    fn is_broadcasting(&self) -> bool {
+        self.is_broadcasting.load(Ordering::Relaxed)
+    }
+
+    fn sender_id(&self) -> SenderId {
+        self.sender_id.clone()
+    }
+
+    fn sender_name(&self) -> String {
+        self.sender_name.clone()
+    }
+}
+
 pub fn spawn_background_engine(
     proxy: EventLoopProxy<DaemonEvent>,
     state: DeviceList,
-    mut stream_command_rx: tokio::sync::mpsc::Receiver<StreamCommand>,
+    stream_command_rx: tokio::sync::mpsc::Receiver<StreamCommand>,
 ) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .on_thread_start(|| {
-                if let Err(e) = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
-                    eprintln!("Failed to promote Tokio worker thread to Max priority: {:?}", e);
+                if let Err(_e) = thread_priority::set_current_thread_priority(
+                    thread_priority::ThreadPriority::Max,
+                ) {
+                    
                 }
             })
             .build()
@@ -35,15 +69,16 @@ pub fn spawn_background_engine(
         };
 
         rt.block_on(async {
-            let handles_res = gemacast_core::network::DiscoveryListener::new().await;
-            let (listener, mut discovery_rx) = match handles_res {
-                Ok(h) => (h.listener, h.discovery_rx),
+            let mut set = JoinSet::new();
+            let (discovery_tx, discovery_rx) = tokio::sync::mpsc::channel(8);
+            let listener_res = gemacast_core::network::DiscoveryListener::new(discovery_tx).await;
+            let listener = match listener_res {
+                Ok(l) => l,
                 Err(e) => {
                     let _ = proxy.send_event(DaemonEvent::FatalError(e.to_string()));
                     return;
                 }
             };
-
             let engine = match AudioSender::new().await {
                 Ok(sender) => sender,
                 Err(e) => {
@@ -55,328 +90,80 @@ pub fn spawn_background_engine(
             let (sender_command_tx, sender_command_rx) =
                 tokio::sync::mpsc::channel::<SenderCommand>(32);
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-
-            let proxy_for_discovery = proxy.clone();
-            tokio::spawn(async move {
-                if let Err(e) = listener.start().await {
-                    let _ = proxy_for_discovery.send_event(DaemonEvent::FatalError(e.to_string()));
-                }
-            });
-
-            tokio::spawn(async move {
-                let mut engine = engine;
-                if let Err(e) = engine.start_broadcast(sender_command_rx, stop_rx).await {
-                    eprintln!("Audio stream failed: {:?}", e);
-                }
-            });
-
-            let proxy_for_dispatch = proxy.clone();
-            let sender_command_tx_for_dispatch = sender_command_tx.clone();
-            let state_for_dispatch = state.clone();
-
-            // Shared flag: true when the broadcaster is running, false when stopped.
-            // The Probe handler reads this to decide whether to respond as online or offline.
+            let (combined_tx, combined_rx) = tokio::sync::mpsc::channel(32);
+            let (tcp_drop_tx, _) = tokio::sync::broadcast::channel::<()>(16);
+            let (adb_control_tx, _) = tokio::sync::broadcast::channel::<ControlMessage>(16);
             let is_broadcasting = Arc::new(AtomicBool::new(true));
-            let is_broadcasting_for_dispatch = is_broadcasting.clone();
-            let is_broadcasting_for_probe = is_broadcasting.clone();
 
-            let state_for_watchdog = state.clone();
-            let proxy_for_watchdog = proxy.clone();
-            let sender_command_tx_for_watchdog = sender_command_tx.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
-                loop {
-                    interval.tick().await;
-                    let mut timed_out = Vec::new();
-                    if let Ok(mut map) = state_for_watchdog.lock() {
-                        let now = std::time::Instant::now();
-                        map.retain(|id, device| {
-                            if now.duration_since(device.last_seen).as_secs() > 10 {
-                                timed_out.push((id.clone(), device.addr));
-                                false
-                            } else {
-                                true
-                            }
-                        });
-                    }
+            spawn_udp_listener(
+                &mut set,
+                listener,
+                discovery_rx,
+                combined_tx.clone(),
+                proxy.clone(),
+            );
 
-                    for (id, addr) in timed_out {
-                        let _ = proxy_for_watchdog.send_event(DaemonEvent::DeviceLost(id, addr));
-                        let _ = sender_command_tx_for_watchdog
-                            .send(SenderCommand::RemoveTarget(addr))
-                            .await;
-                    }
-                }
+            let tcp_broadcaster_tx = engine.tcp_broadcaster_tx.clone();
+
+            spawn_audio_engine(&mut set, engine, sender_command_rx, stop_rx);
+
+            let _ = tokio::process::Command::new("adb")
+                .arg("kill-server")
+                .output()
+                .await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            spawn_audio_spigot(&mut set, tcp_broadcaster_tx, tcp_drop_tx.clone());
+
+            let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
+            let sender_id = SenderId(format!("PC_{}", device_name.to_uppercase()));
+
+            let presence_provider = Arc::new(PcPresenceProvider {
+                is_broadcasting: is_broadcasting.clone(),
+                sender_id,
+                sender_name: device_name,
             });
 
-            tokio::spawn(async move {
-                let mut active_broadcaster_tx: Option<tokio::sync::oneshot::Sender<()>> = None;
-                let mut stop_tx_opt = Some(stop_tx);
+            spawn_discovery_spigot(
+                &mut set,
+                presence_provider,
+                combined_tx.clone(),
+                tcp_drop_tx.clone(),
+                adb_control_tx.clone(),
+            );
+            spawn_adb_reverse_watchdog(&mut set, tcp_drop_tx.clone());
 
-                while let Some(command) = stream_command_rx.recv().await {
-                    match command {
-                        StreamCommand::StartBroadcasting => {
-                            if active_broadcaster_tx.is_none()
-                                && let Ok(handles) = DiscoveryBroadcaster::new().await
-                            {
-                                // Only flip the flag once we have a confirmed broadcaster running.
-                                is_broadcasting_for_dispatch.store(true, Ordering::Relaxed);
-                                active_broadcaster_tx = Some(handles.shutdown_tx);
-                                let state_for_closure = state_for_dispatch.clone();
-                                tokio::spawn(async move {
-                                    let sys_vol = crate::volume::default_volume_controller();
-                                    let device_name = whoami::devicename()
-                                        .unwrap_or_else(|_| "Desktop PC".to_string());
-                                    let device_id = format!("PC_{}", device_name.to_uppercase());
-                                    let factory = move || {
-                                        let vol = sys_vol.get_volume().ok();
-                                        let muted = sys_vol.get_mute().ok();
-                                        ControlMessage::Presence {
-                                            sender_id: device_id.clone(),
-                                            sender_name: device_name.clone(),
-                                            is_offline: false,
-                                            volume: vol,
-                                            is_muted: muted,
-                                        }
-                                    };
-                                    let target_ips = move || {
-                                        if let Ok(map) = state_for_closure.lock() {
-                                            map.values()
-                                                .filter_map(|d| {
-                                                    if let std::net::SocketAddr::V4(v4) = d.addr {
-                                                        Some(std::net::SocketAddrV4::new(*v4.ip(), gemacast_core::network::DISCOVERY_PORT))
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .collect()
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    };
-                                    let _ = handles.broadcaster.broadcast_presence(factory, target_ips).await;
-                                });
-                            }
-                        }
-                        StreamCommand::StopBroadcasting => {
-                            is_broadcasting_for_dispatch.store(false, Ordering::Relaxed);
-                            if let Some(tx) = active_broadcaster_tx.take() {
-                                let _ = tx.send(());
-                            }
+            spawn_stale_device_watchdog(
+                &mut set,
+                state.clone(),
+                proxy.clone(),
+                sender_command_tx.clone(),
+            );
 
-                            let mut devices_to_remove = Vec::new();
-                            if let Ok(mut map) = state_for_dispatch.lock() {
-                                for (device_id, device) in map.drain() {
-                                    devices_to_remove.push((device.addr, device_id.clone()));
-                                    let _ = proxy_for_dispatch.send_event(DaemonEvent::DeviceLost(
-                                        device_id,
-                                        device.addr,
-                                    ));
-                                }
-                            }
+            spawn_stream_command_manager(
+                &mut set,
+                stream_command_rx,
+                crate::domains::audio::stream_manager::StreamManagerContext {
+                    is_broadcasting_for_dispatch: is_broadcasting.clone(),
+                    tcp_drop_tx: tcp_drop_tx.clone(),
+                    state_for_dispatch: state.clone(),
+                    proxy_for_dispatch: proxy.clone(),
+                    sender_command_tx: sender_command_tx.clone(),
+                    stop_tx_opt: Some(stop_tx),
+                    adb_control_tx: adb_control_tx.clone(),
+                },
+            );
 
-                            for (addr, device_id) in devices_to_remove {
-                                let _ = sender_command_tx
-                                    .send(SenderCommand::RemoveTarget(addr))
-                                    .await;
-                                let _ = send_control_message(
-                                    addr.ip(),
-                                    ControlMessage::Disconnect { device_id },
-                                )
-                                .await;
-                            }
-                        }
-                        StreamCommand::AddTarget(target_addr) => {
-                            let _ = sender_command_tx
-                                .send(SenderCommand::AddTarget(target_addr))
-                                .await;
-                        }
-                        StreamCommand::RemoveTarget(target_addr, device_id) => {
-                            let _ = sender_command_tx
-                                .send(SenderCommand::RemoveTarget(target_addr))
-                                .await;
+            spawn_discovery_dispatcher(
+                &mut set,
+                combined_rx,
+                state.clone(),
+                is_broadcasting.clone(),
+                proxy.clone(),
+                sender_command_tx.clone(),
+            );
 
-                            if let Ok(mut map) = state_for_dispatch.lock() {
-                                map.remove(&device_id);
-                            }
-
-                            let _ = send_control_message(
-                                target_addr.ip(),
-                                ControlMessage::Disconnect { device_id },
-                            )
-                            .await;
-                        }
-                        StreamCommand::ChangeBitrate(bitrate) => {
-                            let _ = sender_command_tx
-                                .send(SenderCommand::ChangeBitrate(bitrate))
-                                .await;
-                        }
-                        StreamCommand::StopStream => {
-                            if let Some(tx) = active_broadcaster_tx.take() {
-                                let _ = tx.send(());
-                            }
-                            if let Some(tx) = stop_tx_opt.take() {
-                                let _ = tx.send(());
-                            }
-
-                            let mut devices_to_remove = Vec::new();
-                            if let Ok(mut map) = state_for_dispatch.lock() {
-                                for (device_id, device) in map.drain() {
-                                    devices_to_remove.push((device_id, device.addr));
-                                }
-                            }
-
-                            for (device_id, addr) in devices_to_remove {
-                                let _ = proxy_for_dispatch
-                                    .send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
-                                let _ = send_control_message(
-                                    addr.ip(),
-                                    ControlMessage::Disconnect { device_id },
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                }
-            });
-
-            while let Some((message, remote_addr)) = discovery_rx.recv().await {
-                let mut audio_addr = remote_addr;
-                audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
-
-                match message {
-                    ControlMessage::Probe {
-                        device_id: incoming_id,
-                    } => {
-                        if let Some(id) = incoming_id
-                            && let Ok(mut map) = state.lock()
-                            && let Some(device) = map.get_mut(&id)
-                        {
-                            device.last_seen = std::time::Instant::now();
-                        }
-
-                        let broadcasting = is_broadcasting_for_probe.load(Ordering::Relaxed);
-                        let device_name =
-                            whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-                        let device_id = format!("PC_{}", device_name.to_uppercase());
-
-                        // When broadcasting is paused, reply with is_offline=true so the mobile's
-                        // probe task removes this sender from its discovered list immediately,
-                        // rather than re-adding it right after the offline broadcast burst.
-                        let (vol, muted, is_offline) = if broadcasting {
-                            let sys_vol = crate::volume::default_volume_controller();
-                            (sys_vol.get_volume().ok(), sys_vol.get_mute().ok(), false)
-                        } else {
-                            (None, None, true)
-                        };
-
-                        let _ = send_control_message(
-                            remote_addr.ip(),
-                            ControlMessage::Presence {
-                                sender_id: device_id,
-                                sender_name: device_name,
-                                is_offline,
-                                volume: vol,
-                                is_muted: muted,
-                            },
-                        )
-                        .await;
-                    }
-                    ControlMessage::Connect {
-                        device_id,
-                        device_name,
-                        ..
-                    } => {
-                        if !is_broadcasting_for_probe.load(Ordering::Relaxed) {
-                            let dev_name =
-                                whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-                            let dev_id = format!("PC_{}", dev_name.to_uppercase());
-                            let _ = send_control_message(
-                                remote_addr.ip(),
-                                ControlMessage::Presence {
-                                    sender_id: dev_id,
-                                    sender_name: dev_name,
-                                    is_offline: true,
-                                    volume: None,
-                                    is_muted: None,
-                                },
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        let mut is_new = false;
-                        let mut ip_changed = false;
-                        let mut old_addr = None;
-                        if let Ok(mut map) = state.lock() {
-                            if let Some(existing) = map.get(&device_id) {
-                                if existing.addr != audio_addr {
-                                    ip_changed = true;
-                                    old_addr = Some(existing.addr);
-                                }
-                            } else {
-                                is_new = true;
-                            }
-
-                            let device = DiscoveredDevice::from_presence(
-                                device_id.clone(),
-                                device_name.clone(),
-                                false,
-                                audio_addr,
-                                None,
-                                None,
-                            );
-                            map.insert(device_id.clone(), device);
-                        }
-
-                        if ip_changed {
-                            if let Some(old) = old_addr {
-                                let _ = proxy
-                                    .send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
-                                let _ = sender_command_tx_for_dispatch
-                                    .send(SenderCommand::RemoveTarget(old))
-                                    .await;
-                            }
-                            is_new = true; // Force UI re-add
-                        }
-
-                        if is_new {
-                            let _ = proxy.send_event(DaemonEvent::DiscoveredDevice {
-                                device_id,
-                                name: device_name,
-                                addr: audio_addr,
-                            });
-                        }
-
-                        let _ = sender_command_tx_for_dispatch
-                            .send(SenderCommand::AddTarget(audio_addr))
-                            .await;
-                    }
-                    ControlMessage::Disconnect { device_id } => {
-                        let mut removed_addr = None;
-                        if let Ok(mut map) = state.lock()
-                            && let Some(removed) = map.remove(&device_id)
-                        {
-                            removed_addr = Some(removed.addr);
-                        }
-                        if let Some(addr) = removed_addr {
-                            let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id, addr));
-                            let _ = sender_command_tx_for_dispatch
-                                .send(SenderCommand::RemoveTarget(addr))
-                                .await;
-                        }
-                    }
-                    ControlMessage::SetSystemVolume { level, .. } => {
-                        let sys_vol = crate::volume::default_volume_controller();
-                        let _ = sys_vol.set_volume(level);
-                    }
-                    ControlMessage::SetSystemMute { muted, .. } => {
-                        let sys_vol = crate::volume::default_volume_controller();
-                        let _ = sys_vol.set_mute(muted);
-                    }
-                    _ => {}
-                }
-            }
+            while set.join_next().await.is_some() {}
         });
     });
 }

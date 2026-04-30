@@ -131,17 +131,28 @@ class GemaCastService : Service() {
 
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // A phone call or other long-running media started, so stop streaming completely.
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // A permanent loss of audio focus (e.g. another music player was manually started).
                 sendUdpCommand("DISCONNECT")
                 scope.launch {
                     kotlinx.coroutines.delay(300)
                     stopStreaming()
                 }
             }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                // A phone call or strong interruption started, pause the stream safely.
+                sendUdpCommand("STOP_STREAM")
+                updatePlaybackState(false)
+            }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Ignore or lower volume if supported.
+                // Notification sound. Do nothing, just mix over it.
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                // The phone call ended or interruption finished. Resume streaming.
+                if (isRunning && !isPlayingState) {
+                    sendUdpCommand("RESUME")
+                    updatePlaybackState(true)
+                }
             }
         }
     }
@@ -266,20 +277,35 @@ class GemaCastService : Service() {
                 updatePlaybackState(true)
                 return START_STICKY
             }
+            "HIDE_NOTIFICATION" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                return START_STICKY
+            }
             "STOP_STREAM" -> {
                 sendUdpCommand("STOP_STREAM")
-                // Delete the streaming flag so the activity knows we're done
-                java.io.File(cacheDir, ".streaming_active").delete()
-                // Brief delay to let the UDP command propagate, then stop the service
-                scope.launch {
-                    kotlinx.coroutines.delay(300)
-                    stopStreaming()
-                }
-                return START_NOT_STICKY
+                updatePlaybackState(false)
+                return START_STICKY
             }
             else -> { // "START" or null
+                val isExclusive = intent?.getBooleanExtra("EXCLUSIVE_MODE", false) ?: false
                 isRunning = true
-                requestAudioFocus()
+                if (isExclusive) {
+                    requestAudioFocus()
+                } else {
+                    // If Exclusive is OFF, we abandon audio focus so the user can freely use Twitter/TikTok 
+                    // without Android killing the audio stream.
+                    if (audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        audioManager.abandonAudioFocusRequest(audioFocusRequest!!)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        audioManager.abandonAudioFocus(audioFocusChangeListener)
+                    }
+                }
                 updatePlaybackState(true)
             }
         }
@@ -301,11 +327,15 @@ class GemaCastService : Service() {
             @Suppress("DEPRECATION")
             audioManager.abandonAudioFocus(null)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         stopSelf()
     }

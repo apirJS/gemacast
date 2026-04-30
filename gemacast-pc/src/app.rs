@@ -25,11 +25,9 @@ pub fn run() {
     );
 
     let _ = stream_command_tx.try_send(StreamCommand::StartBroadcasting);
-
     let mut tray_manager = TrayManager::new();
-    let state_for_tao = state.clone();
-
     let proxy_for_main = event_loop.create_proxy();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -40,7 +38,11 @@ pub fn run() {
                     name,
                     addr,
                 } => {
-                    tray_manager.add_device(device_id.clone(), &name, addr);
+                    let transport = state
+                        .lock()
+                        .ok()
+                        .and_then(|map| map.get(&device_id).and_then(|d| d.transport));
+                    tray_manager.add_device(device_id.clone(), &name, addr, transport);
                     tray_manager.set_device_connected(&device_id, true);
                 }
                 DaemonEvent::DeviceLost(device_id, _addr) => {
@@ -74,36 +76,47 @@ pub fn run() {
                         for (bitrate_opt, menu_item) in &tray_manager.quality_buttons {
                             menu_item.set_checked(*bitrate_opt == new_bitrate);
                         }
-                        if let Err(e) = stream_command_tx.try_send(StreamCommand::ChangeBitrate(new_bitrate)) {
+                        if let Err(e) =
+                            stream_command_tx.try_send(StreamCommand::ChangeBitrate(new_bitrate))
+                        {
                             display_error_dialog(e.to_string());
                         }
                     }
 
                     if menu_event.id() == tray_manager.broadcast_toggle.id() {
-                        let is_broadcasting = tray_manager.broadcast_toggle.is_checked();
-                        let command = if is_broadcasting {
-                            StreamCommand::StartBroadcasting
-                        } else {
+                        let label = tray_manager.broadcast_toggle.text();
+                        let currently_broadcasting = label.contains("Stop");
+
+                        let command = if currently_broadcasting {
                             StreamCommand::StopBroadcasting
+                        } else {
+                            StreamCommand::StartBroadcasting
                         };
+
                         if let Err(e) = stream_command_tx.try_send(command) {
-                            display_error_dialog(e.to_string());
+                            display_error_dialog(format!("Failed to toggle streaming: {}", e));
+                        } else {
+                            if currently_broadcasting {
+                                tray_manager.broadcast_toggle.set_text("Start Stream");
+                            } else {
+                                tray_manager.broadcast_toggle.set_text("Stop Stream");
+                            }
                         }
                     }
 
                     if let Some(device_id) = clicked_device_id {
-                        let addr_opt = state_for_tao.lock().ok().and_then(|map| {
+                        let addr_opt = state.lock().ok().and_then(|map| {
                             map.get(&device_id).map(|d| (d.device_id.clone(), d.addr))
                         });
 
-                        if let Some((dev_id, addr)) = addr_opt {
+                        if let Some((_dev_id, addr)) = addr_opt {
                             if let Err(e) = stream_command_tx
-                                .try_send(StreamCommand::RemoveTarget(addr, dev_id.clone()))
+                                .try_send(StreamCommand::RemoveTarget(addr, device_id.clone()))
                             {
                                 display_error_dialog(e.to_string());
                             }
                             let _ =
-                                proxy_for_main.send_event(DaemonEvent::DeviceLost(dev_id, addr));
+                                proxy_for_main.send_event(DaemonEvent::DeviceLost(device_id, addr));
                         }
                     }
 

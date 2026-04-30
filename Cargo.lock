@@ -1519,6 +1519,7 @@ dependencies = [
 name = "gemacast-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cpal",
  "libc",
  "netdev",
@@ -1555,6 +1556,7 @@ version = "0.1.0"
 dependencies = [
  "gemacast-core",
  "rfd",
+ "serde_json",
  "tao",
  "thread-priority",
  "tokio",

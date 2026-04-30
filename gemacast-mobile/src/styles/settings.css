@@ -485,3 +485,107 @@
   font-size: 0.8rem;
   color: var(--muted-foreground);
 }
+
+.setting-input--wide {
+  width: 120px;
+  text-align: left;
+}
+
+.segmented-control--mini {
+  font-size: 0.8rem;
+}
+.segmented-control--mini label {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.custom-inputs__apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.custom-inputs__adaptive {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.custom-inputs__delete {
+  width: 100%;
+  padding: 0.7rem;
+  background: transparent;
+  color: var(--destructive);
+  border: 1px solid var(--destructive);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, background-color 0.2s;
+  margin-top: 0.25rem;
+}
+
+.custom-inputs__delete:active {
+  background: var(--destructive-muted);
+}
+
+.confirm-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  min-width: 260px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  z-index: 200;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.confirm-dialog__message {
+  font-size: 1rem;
+  font-weight: 500;
+  margin: 0 0 1.25rem;
+  text-align: center;
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.confirm-dialog__cancel {
+  flex: 1;
+  padding: 0.6rem;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.confirm-dialog__ok {
+  flex: 1;
+  padding: 0.6rem;
+  background: transparent;
+  color: var(--destructive);
+  border: 1px solid var(--destructive);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.confirm-dialog__ok:active {
+  background: var(--destructive-muted);
+}
