@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tao::event_loop::EventLoopProxy;
 use tokio::task::JoinSet;
 
-use gemacast_core::network::{DiscoveryBroadcaster, SenderCommand, send_control_message};
+use gemacast_core::network::{DiscoveryBroadcaster, send_control_message};
+use gemacast_core::sender::SenderCommand;
 use gemacast_core::types::{ControlMessage, SenderId};
 
 use crate::events::{DaemonEvent, StreamCommand};
@@ -58,7 +59,7 @@ pub fn spawn_stream_command_manager(
                                             if let std::net::SocketAddr::V4(v4) = d.addr {
                                                 Some(std::net::SocketAddrV4::new(
                                                     *v4.ip(),
-                                                    gemacast_core::network::DISCOVERY_PORT,
+                                                    gemacast_core::network::Ports::DISCOVERY,
                                                 ))
                                             } else {
                                                 None

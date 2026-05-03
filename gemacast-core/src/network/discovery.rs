@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
-use super::DISCOVERY_PORT;
+use super::Ports;
 
 pub struct DiscoveryListener {
     pub socket: Arc<UdpSocket>,
@@ -18,7 +18,7 @@ impl DiscoveryListener {
     pub async fn new(
         discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
     ) -> Result<Self, GemaCastError> {
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT);
+        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::DISCOVERY);
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
             socket2::Type::DGRAM,
@@ -152,12 +152,12 @@ impl DiscoveryBroadcaster {
         loop {
             let broadcast_addrs: Vec<SocketAddrV4> = super::get_broadcast_addrs()
                 .into_iter()
-                .map(|ip| SocketAddrV4::new(ip, DISCOVERY_PORT))
+                .map(|ip| SocketAddrV4::new(ip, Ports::DISCOVERY))
                 .collect();
             let unicast_addrs = target_ips();
             let broadcast_addr_global =
-                SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), DISCOVERY_PORT);
-            let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), DISCOVERY_PORT);
+                SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), Ports::DISCOVERY);
+            let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), Ports::DISCOVERY);
 
             let mut payload = payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
@@ -236,7 +236,7 @@ pub async fn send_control_message(
             source: e,
         })?;
 
-    let target_addr = std::net::SocketAddr::new(target_ip, DISCOVERY_PORT);
+    let target_addr = std::net::SocketAddr::new(target_ip, Ports::DISCOVERY);
     let json_bytes = serde_json::to_vec(&message)?;
 
     // Send multiple times rapidly to ensure delivery

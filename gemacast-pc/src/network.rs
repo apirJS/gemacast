@@ -1,7 +1,7 @@
 use gemacast_core::network::adb::{
     PresenceProvider, spawn_adb_reverse_watchdog, spawn_audio_spigot, spawn_discovery_spigot,
 };
-use gemacast_core::network::{AudioSender, SenderCommand};
+use gemacast_core::sender::{AudioSender, SenderCommand};
 use gemacast_core::types::{ControlMessage, SenderId};
 use std::sync::{
     Arc,

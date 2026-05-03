@@ -1,4 +1,5 @@
-use gemacast_core::network::{SenderCommand, send_control_message};
+use gemacast_core::network::send_control_message;
+use gemacast_core::sender::SenderCommand;
 use gemacast_core::types::{ControlMessage, DiscoveredDevice, SenderId};
 use std::net::SocketAddr;
 use std::sync::{
@@ -25,7 +26,7 @@ pub fn spawn_discovery_dispatcher(
 
         while let Some((message, remote_addr)) = combined_rx.recv().await {
             let mut audio_addr = remote_addr;
-            audio_addr.set_port(gemacast_core::network::AUDIO_PORT);
+            audio_addr.set_port(gemacast_core::network::Ports::AUDIO_UDP);
 
             match message {
                 ControlMessage::Probe {

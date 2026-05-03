@@ -1,6 +1,6 @@
 use tauri::State;
 
-use gemacast_core::network::AudioReceiver;
+use gemacast_core::receiver::AudioReceiver;
 use gemacast_core::types::{DeviceId, TransportType};
 
 use crate::state::{lock, AppState};
@@ -175,7 +175,6 @@ pub async fn kill_playback(
 
     set_streaming_flag(&app_handle, false);
 
-    
     sync_android_service(false, false);
     Ok(())
 }
@@ -218,13 +217,11 @@ pub async fn update_jitter_config(
     jitter_config: gemacast_core::types::JitterConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    
     let _has_ref = lock(&state.config_ref)?.is_some();
-    
+
     if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
         if let Ok(mut guard) = config_ref.write() {
             *guard = jitter_config;
-            
         }
     }
     Ok(())
