@@ -1,4 +1,4 @@
-use gemacast_core::network::SenderCommand;
+use gemacast_core::sender::SenderCommand;
 use tao::event_loop::EventLoopProxy;
 use tokio::task::JoinSet;
 

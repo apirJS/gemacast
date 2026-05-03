@@ -1,4 +1,4 @@
-use gemacast_core::network::{AudioSender, SenderCommand};
+use gemacast_core::sender::{AudioSender, SenderCommand};
 use tokio::task::JoinSet;
 
 pub fn spawn_audio_engine(

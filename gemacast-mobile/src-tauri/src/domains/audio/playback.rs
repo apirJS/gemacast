@@ -3,7 +3,7 @@ use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use gemacast_core::network::AudioReceiver;
+use gemacast_core::receiver::AudioReceiver;
 
 use crate::state::{lock, AppState};
 
