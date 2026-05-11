@@ -1,9 +1,22 @@
 import { App } from '../App';
-import { AppState, Status } from '../types';
+import { AppState, AudioSource, Status } from '../types';
+
+function sourceLabel(source: AudioSource): string {
+  if (source.type === 'desktop') return '🖥️ Desktop Audio';
+  return `🎵 ${source.name} (PID ${source.pid})`;
+}
+
+function sourcesEqual(a: AudioSource, b: AudioSource): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === 'desktop') return true;
+  return a.type === 'process' && b.type === 'process' && a.pid === b.pid;
+}
 
 export function setupSenderList(app: App) {
   const senderListEl = document.getElementById('sender-list');
   const senderEmptyEl = document.getElementById('sender-empty-state');
+
+  let currentSource: AudioSource = { type: 'desktop' };
 
   app.stateHandler.subscribe((state: AppState) => {
     if (!senderListEl) return;
@@ -26,7 +39,12 @@ export function setupSenderList(app: App) {
         (isConnected || state.status === Status.Connecting);
 
       const li = document.createElement('li');
-      li.className = `sender-list__item${isConnected ? ' sender-list__item--active' : ''}`;
+      const hasSource = isConnected && state.audioSources.length > 0;
+      li.className = [
+        'sender-list__item',
+        isConnected ? 'sender-list__item--active' : '',
+        hasSource ? 'sender-list__item--has-source' : '',
+      ].filter(Boolean).join(' ');
 
       const iconInfo = document.createElement('div');
       iconInfo.className = 'sender-list__icon-info';
@@ -116,6 +134,49 @@ export function setupSenderList(app: App) {
       });
 
       li.appendChild(btn);
+
+      if (isConnected && state.audioSources.length > 0) {
+        const sourceDiv = document.createElement('div');
+        sourceDiv.className = 'source-select';
+
+        const label = document.createElement('span');
+        label.className = 'source-select__label';
+        label.textContent = 'Source:';
+
+        const select = document.createElement('select');
+        select.className = 'source-select__dropdown';
+        select.id = 'source-select-dropdown';
+        select.setAttribute('aria-label', 'Audio source');
+
+        // Disable if process capture is not supported and there's only desktop
+        const caps = state.senderCapabilities;
+        const onlyDesktop = !caps?.supportsProcessCapture && state.audioSources.length <= 1;
+        select.disabled = onlyDesktop;
+
+        state.audioSources.forEach((source, idx) => {
+          const option = document.createElement('option');
+          option.value = String(idx);
+          option.textContent = sourceLabel(source);
+          if (sourcesEqual(source, currentSource)) {
+            option.selected = true;
+          }
+          select.appendChild(option);
+        });
+
+        select.addEventListener('change', async () => {
+          const selectedIdx = parseInt(select.value, 10);
+          const selected = state.audioSources[selectedIdx];
+          if (selected) {
+            currentSource = selected;
+            await app.connection.changeAudioSource(selected);
+          }
+        });
+
+        sourceDiv.appendChild(label);
+        sourceDiv.appendChild(select);
+        li.appendChild(sourceDiv);
+      }
+
       senderListEl.appendChild(li);
     });
   });

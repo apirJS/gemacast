@@ -8,6 +8,7 @@
 @import './styles/device.css';
 @import './styles/latency.css';
 @import './styles/senders.css';
+@import './styles/source-select.css';
 @import './styles/error.css';
 
 :root {

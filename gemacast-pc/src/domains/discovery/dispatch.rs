@@ -1,5 +1,5 @@
-use gemacast_core::network::send_control_message;
-use gemacast_core::sender::SenderCommand;
+use gemacast_core::discovery::send_control_message;
+use gemacast_core::stream::sender::broadcast::StreamCommand;
 use gemacast_core::types::{ControlMessage, DiscoveredDevice, SenderId};
 use std::net::SocketAddr;
 use std::sync::{
@@ -18,7 +18,7 @@ pub fn spawn_discovery_dispatcher(
     state: DeviceList,
     is_broadcasting_for_probe: Arc<AtomicBool>,
     proxy: EventLoopProxy<DaemonEvent>,
-    sender_command_tx_for_dispatch: tokio::sync::mpsc::Sender<SenderCommand>,
+    stream_command_tx_for_dispatch: tokio::sync::mpsc::Sender<StreamCommand>,
 ) {
     set.spawn(async move {
         let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
@@ -56,6 +56,7 @@ pub fn spawn_discovery_dispatcher(
                     device_id,
                     device_name: connect_device_name,
                     transport,
+                    source,
                     ..
                 } => {
                     if !is_broadcasting_for_probe.load(Ordering::Relaxed) {
@@ -99,8 +100,8 @@ pub fn spawn_discovery_dispatcher(
                         if let Some(old) = old_addr {
                             let _ =
                                 proxy.send_event(DaemonEvent::DeviceLost(device_id.clone(), old));
-                            let _ = sender_command_tx_for_dispatch
-                                .send(SenderCommand::RemoveTarget(old))
+                            let _ = stream_command_tx_for_dispatch
+                                .send(StreamCommand::Unsubscribe { device_id: device_id.clone() })
                                 .await;
                         }
                         is_new = true;
@@ -108,17 +109,24 @@ pub fn spawn_discovery_dispatcher(
 
                     if is_new {
                         let _ = proxy.send_event(DaemonEvent::DiscoveredDevice {
-                            device_id,
+                            device_id: device_id.clone(),
                             name: connect_device_name,
                             addr: audio_addr,
                         });
                     }
 
-                    if !remote_addr.ip().is_loopback() {
-                        let _ = sender_command_tx_for_dispatch
-                            .send(SenderCommand::AddTarget(audio_addr))
-                            .await;
-                    }
+                    let effective_addr = if remote_addr.ip().is_loopback() {
+                        None // ADB: no UDP target, audio goes via TCP spigot
+                    } else {
+                        Some(audio_addr)
+                    };
+                    let _ = stream_command_tx_for_dispatch
+                        .send(StreamCommand::Subscribe {
+                            device_id: device_id.clone(),
+                            target_addr: effective_addr,
+                            source,
+                        })
+                        .await;
                 }
                 ControlMessage::Disconnect { device_id } => {
                     let mut removed_addr = None;
@@ -129,12 +137,15 @@ pub fn spawn_discovery_dispatcher(
                     }
                     if let Some(addr) = removed_addr {
                         let _ = proxy.send_event(DaemonEvent::DeviceLost(device_id.clone(), addr));
-                        if !remote_addr.ip().is_loopback() {
-                            let _ = sender_command_tx_for_dispatch
-                                .send(SenderCommand::RemoveTarget(addr))
-                                .await;
-                        }
+                        let _ = stream_command_tx_for_dispatch
+                            .send(StreamCommand::Unsubscribe { device_id: device_id.clone() })
+                            .await;
                     }
+                }
+                ControlMessage::ChangeSource { device_id, source } => {
+                    let _ = stream_command_tx_for_dispatch
+                        .send(StreamCommand::ChangeSource { device_id, source })
+                        .await;
                 }
                 _ => {}
             }

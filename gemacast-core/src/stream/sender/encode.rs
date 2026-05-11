@@ -1,7 +1,4 @@
-use crate::audio::{
-    FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED,
-    OPUS_FRAME_SAMPLES,
-};
+use crate::audio::{FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, OPUS_FRAME_SAMPLES};
 use opus::Encoder;
 
 pub enum EncodeResult {
@@ -37,7 +34,6 @@ pub fn encode_frame(
     let payload_bytes: &[u8] = if is_silence {
         &[]
     } else if is_uncompressed {
-        // Safety: frame is a properly aligned &[f32].
         unsafe {
             std::slice::from_raw_parts(
                 frame.as_ptr() as *const u8,
@@ -64,8 +60,8 @@ pub fn encode_frame(
 mod tests {
     use super::*;
     use crate::audio::{
-        FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, MAX_OPUS_PACKET_SIZE,
-        OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE, FORMAT_FLAG_SIZE,
+        FORMAT_FLAG_SIZE, FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, MAX_OPUS_PACKET_SIZE,
+        OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE,
     };
 
     fn make_encoder() -> Encoder {
@@ -79,7 +75,14 @@ mod tests {
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(&frame, &mut encoder, Some(128_000), 5, &mut opus_out, &mut packet);
+        let result = encode_frame(
+            &frame,
+            &mut encoder,
+            Some(128_000),
+            5,
+            &mut opus_out,
+            &mut packet,
+        );
         assert!(matches!(result, EncodeResult::Encoded));
         assert_eq!(packet[SEQ_NUM_SIZE], FORMAT_SILENCE);
         assert_eq!(packet.len(), SEQ_NUM_SIZE + FORMAT_FLAG_SIZE); // no payload
@@ -106,7 +109,14 @@ mod tests {
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(&frame, &mut encoder, Some(128_000), 7, &mut opus_out, &mut packet);
+        let result = encode_frame(
+            &frame,
+            &mut encoder,
+            Some(128_000),
+            7,
+            &mut opus_out,
+            &mut packet,
+        );
         assert!(matches!(result, EncodeResult::Encoded));
         assert_eq!(packet[SEQ_NUM_SIZE], FORMAT_OPUS);
         assert!(packet.len() > SEQ_NUM_SIZE + FORMAT_FLAG_SIZE); // has opus payload
@@ -119,7 +129,14 @@ mod tests {
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        encode_frame(&frame, &mut encoder, Some(128_000), 0xDEAD, &mut opus_out, &mut packet);
+        encode_frame(
+            &frame,
+            &mut encoder,
+            Some(128_000),
+            0xDEAD,
+            &mut opus_out,
+            &mut packet,
+        );
         let seq = u64::from_be_bytes(packet[..8].try_into().unwrap());
         assert_eq!(seq, 0xDEAD);
     }

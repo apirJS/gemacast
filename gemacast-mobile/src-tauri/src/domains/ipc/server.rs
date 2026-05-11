@@ -61,7 +61,7 @@ async fn handle_resume(app_handle: &tauri::AppHandle) {
     let dname = state.device_name.lock().ok().and_then(|g| g.clone());
 
     if let (Some(ip_addr), Some(device_id), Some(device_name)) = (ip, did, dname) {
-        let _ = gemacast_core::network::send_control_message(
+        let _ = gemacast_core::discovery::send_control_message(
             ip_addr,
             gemacast_core::types::ControlMessage::Connect {
                 device_id,
@@ -70,6 +70,7 @@ async fn handle_resume(app_handle: &tauri::AppHandle) {
                 exclusive_mode: false,
                 jitter_config: gemacast_core::types::JitterConfig::default(),
                 transport: None,
+                source: gemacast_core::types::AudioSource::default(),
             },
         )
         .await;
@@ -86,7 +87,7 @@ async fn handle_stop(app_handle: &tauri::AppHandle) {
     let did = state.device_id.lock().ok().and_then(|g| g.clone());
 
     if let (Some(ip_addr), Some(device_id)) = (ip, did) {
-        let _ = gemacast_core::network::send_control_message(
+        let _ = gemacast_core::discovery::send_control_message(
             ip_addr,
             gemacast_core::types::ControlMessage::Disconnect { device_id },
         )

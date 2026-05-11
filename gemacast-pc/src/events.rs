@@ -11,12 +11,10 @@ pub enum DaemonEvent {
     FatalError(String),
 }
 
-#[derive(Debug)]
-pub enum StreamCommand {
-    #[allow(dead_code)]
-    AddTarget(SocketAddr),
-    RemoveTarget(SocketAddr, DeviceId),
-    StopStream,
+#[derive(Debug, Clone)]
+pub enum DaemonCommand {
+    KickDevice(DeviceId),
+    StopAllStreams,
     StartBroadcasting,
     StopBroadcasting,
     ChangeBitrate(Option<i32>),

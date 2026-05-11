@@ -32,6 +32,8 @@ pub fn run() {
             domains::audio::commands::notify_streaming_stopped,
             domains::audio::commands::kill_playback,
             domains::audio::commands::update_jitter_config,
+            domains::audio::commands::get_audio_sources,
+            domains::audio::commands::change_audio_source,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

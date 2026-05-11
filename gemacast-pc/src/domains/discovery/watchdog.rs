@@ -1,4 +1,4 @@
-use gemacast_core::sender::SenderCommand;
+use gemacast_core::stream::sender::broadcast::StreamCommand;
 use tao::event_loop::EventLoopProxy;
 use tokio::task::JoinSet;
 
@@ -9,7 +9,7 @@ pub fn spawn_stale_device_watchdog(
     set: &mut JoinSet<()>,
     state_for_watchdog: DeviceList,
     proxy_for_watchdog: EventLoopProxy<DaemonEvent>,
-    sender_command_tx_for_watchdog: tokio::sync::mpsc::Sender<SenderCommand>,
+    sender_command_tx: tokio::sync::mpsc::Sender<StreamCommand>,
 ) {
     set.spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
@@ -31,9 +31,9 @@ pub fn spawn_stale_device_watchdog(
             }
 
             for (id, addr) in timed_out {
-                let _ = proxy_for_watchdog.send_event(DaemonEvent::DeviceLost(id, addr));
-                let _ = sender_command_tx_for_watchdog
-                    .send(SenderCommand::RemoveTarget(addr))
+                let _ = proxy_for_watchdog.send_event(DaemonEvent::DeviceLost(id.clone(), addr));
+                let _ = sender_command_tx
+                    .send(StreamCommand::Unsubscribe { device_id: id })
                     .await;
             }
         }

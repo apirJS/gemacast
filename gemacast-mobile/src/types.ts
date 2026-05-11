@@ -87,6 +87,14 @@ export type AppSettings = {
   savedPresets: SavedPreset[];
 };
 
+export type AudioSource =
+  | { type: 'desktop' }
+  | { type: 'process'; pid: number; name: string };
+
+export type SenderCapabilities = {
+  supportsProcessCapture: boolean;
+};
+
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
@@ -103,6 +111,8 @@ export type AppState = {
   latency: LatencyStats;
   settings: AppSettings;
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
+  audioSources: AudioSource[];
+  senderCapabilities: SenderCapabilities | null;
 };
 
 export type StateSubscriber = (state: AppState) => void;

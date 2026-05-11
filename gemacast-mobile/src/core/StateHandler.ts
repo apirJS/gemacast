@@ -49,6 +49,8 @@ export class StateHandler {
       latency: { current: null, avg: null, max: null, min: null },
       settings,
       availableModes: { wifi: true, usb: false, adb: false },
+      audioSources: [],
+      senderCapabilities: null,
     };
   }
 

@@ -89,6 +89,8 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     latency: { current: null, avg: null, max: null, min: null },
     settings: require('./StateHandler').DEFAULT_SETTINGS,
     availableModes: { wifi: true, usb: false, adb: false },
+    audioSources: [],
+    senderCapabilities: null,
     ...overrides,
   };
 }
