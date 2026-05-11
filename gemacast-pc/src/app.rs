@@ -1,4 +1,4 @@
-use crate::events::{DaemonEvent, StreamCommand};
+use crate::events::{DaemonEvent, DaemonCommand};
 use crate::tray::TrayManager;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -15,16 +15,17 @@ fn display_error_dialog(message: String) {
 pub fn run() {
     let state = crate::state::create_shared_state();
     let event_loop = EventLoopBuilder::<DaemonEvent>::with_user_event().build();
-    let (stream_command_tx, stream_command_rx) = tokio::sync::mpsc::channel::<StreamCommand>(32);
+
+    let (daemon_command_tx, daemon_command_rx) = tokio::sync::mpsc::channel::<DaemonCommand>(32);
     let state_for_bg = state.clone();
 
     crate::network::spawn_background_engine(
         event_loop.create_proxy(),
         state_for_bg,
-        stream_command_rx,
+        daemon_command_rx,
     );
 
-    let _ = stream_command_tx.try_send(StreamCommand::StartBroadcasting);
+    let _ = daemon_command_tx.try_send(DaemonCommand::StartBroadcasting);
     let mut tray_manager = TrayManager::new();
     let proxy_for_main = event_loop.create_proxy();
 
@@ -77,7 +78,7 @@ pub fn run() {
                             menu_item.set_checked(*bitrate_opt == new_bitrate);
                         }
                         if let Err(e) =
-                            stream_command_tx.try_send(StreamCommand::ChangeBitrate(new_bitrate))
+                            daemon_command_tx.try_send(DaemonCommand::ChangeBitrate(new_bitrate))
                         {
                             display_error_dialog(e.to_string());
                         }
@@ -88,12 +89,12 @@ pub fn run() {
                         let currently_broadcasting = label.contains("Stop");
 
                         let command = if currently_broadcasting {
-                            StreamCommand::StopBroadcasting
+                            DaemonCommand::StopBroadcasting
                         } else {
-                            StreamCommand::StartBroadcasting
+                            DaemonCommand::StartBroadcasting
                         };
 
-                        if let Err(e) = stream_command_tx.try_send(command) {
+                        if let Err(e) = daemon_command_tx.try_send(command) {
                             display_error_dialog(format!("Failed to toggle streaming: {}", e));
                         } else {
                             if currently_broadcasting {
@@ -110,8 +111,8 @@ pub fn run() {
                         });
 
                         if let Some((_dev_id, addr)) = addr_opt {
-                            if let Err(e) = stream_command_tx
-                                .try_send(StreamCommand::RemoveTarget(addr, device_id.clone()))
+                            if let Err(e) = daemon_command_tx
+                                .try_send(DaemonCommand::KickDevice(device_id.clone()))
                             {
                                 display_error_dialog(e.to_string());
                             }
@@ -121,14 +122,14 @@ pub fn run() {
                     }
 
                     if menu_event.id() == tray_manager.quit_item.id() {
-                        let _ = stream_command_tx.try_send(StreamCommand::StopStream);
+                        let _ = daemon_command_tx.try_send(DaemonCommand::StopAllStreams);
                         std::thread::sleep(std::time::Duration::from_millis(150));
                         *control_flow = ControlFlow::Exit;
                     }
                 }
             }
             Event::LoopDestroyed => {
-                let _ = stream_command_tx.try_send(StreamCommand::StopStream);
+                let _ = daemon_command_tx.try_send(DaemonCommand::StopAllStreams);
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             _ => {}

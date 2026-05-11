@@ -1,21 +1,10 @@
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
 use crate::error::{AudioCaptureError, GemaCastError};
+use crate::stream::sender::capture::{CaptureBackend, CaptureHandle};
 use cpal::traits::{DeviceTrait, HostTrait};
-use ringbuf::{HeapCons, HeapRb, traits::*};
+use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
-
-pub trait CaptureBackend: Send {
-    fn play(&mut self) -> Result<(), GemaCastError>;
-    fn pause(&mut self) -> Result<(), GemaCastError>;
-}
-
-pub struct CaptureHandle {
-    pub backend: Box<dyn CaptureBackend>,
-    pub consumer: HeapCons<f32>,
-    pub notify: Arc<Notify>,
-    pub error_rx: mpsc::Receiver<cpal::StreamError>,
-}
 
 struct CpalLoopbackCapture {
     stream: cpal::Stream,
@@ -40,10 +29,10 @@ impl CaptureBackend for CpalLoopbackCapture {
 pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
     let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
     let (mut rb_producer, rb_consumer) = rb.split();
+    let (error_tx, error_rx) = mpsc::channel::<cpal::StreamError>(1);
+
     let notify = Arc::new(Notify::new());
     let notify_clone = notify.clone();
-
-    let (error_tx, error_rx) = mpsc::channel::<cpal::StreamError>(1);
 
     let host = cpal::default_host();
     let device = host
@@ -51,7 +40,6 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
         .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
 
     let mut buffer_size = cpal::BufferSize::Default;
-
     let rate = OPUS_SAMPLE_RATE;
     if let Ok(mut supported_configs) = device.supported_output_configs()
         && let Some(config) = supported_configs.find(|c| {
@@ -78,6 +66,7 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
                 if rb_producer.vacant_len() >= data.len() {
                     let _ = rb_producer.push_slice(data);
                 }
+
                 notify_clone.notify_one();
             },
             move |e| {

@@ -1,5 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Result, ok, err, DiscoveredSender, Status } from '../types';
+import {
+  Result,
+  ok,
+  err,
+  DiscoveredSender,
+  Status,
+  AudioSource,
+  SenderCapabilities,
+} from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
 import { getPresetConfig } from './presets';
@@ -31,7 +39,7 @@ export class ConnectionService {
 
     if (state.connectedSender || state.status === Status.Playing) {
       this.stateHandler.setState({
-        status: Status.Listening, // Immediately jump to Scanning
+        status: Status.Listening,
         connectedSender: null,
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
@@ -114,6 +122,8 @@ export class ConnectionService {
 
       await this.audioResumer();
 
+      this.fetchAudioSources(sender).catch(console.warn);
+
       return ok(true);
     } catch (e) {
       const error = GemaCastError.failedToStartPlayback(e);
@@ -172,9 +182,52 @@ export class ConnectionService {
       reconnectAttempts: 0,
       isLoading: false,
       isSuspended: !forgetSender,
+      audioSources: [],
+      senderCapabilities: null,
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
     return ok(true);
+  }
+
+  private async fetchAudioSources(sender: DiscoveredSender): Promise<void> {
+    try {
+      const ip = sender.addr.split(':')[0];
+      const result = await invoke<[AudioSource[], SenderCapabilities]>(
+        'get_audio_sources',
+        { ip },
+      );
+      this.stateHandler.setState({
+        audioSources: result[0],
+        senderCapabilities: result[1],
+      });
+    } catch (e) {
+      console.warn('Failed to fetch audio sources:', e);
+      // Default to desktop-only if fetch fails
+      this.stateHandler.setState({
+        audioSources: [{ type: 'desktop' }],
+        senderCapabilities: { supportsProcessCapture: false },
+      });
+    }
+  }
+
+  public async changeAudioSource(
+    source: AudioSource,
+  ): Promise<Result<true, GemaCastError>> {
+    const state = this.stateHandler.getState();
+    const sender = state.connectedSender;
+    if (!sender) return err(GemaCastError.from('No sender connected'));
+
+    try {
+      const ip = sender.addr.split(':')[0];
+      await invoke('change_audio_source', {
+        ip,
+        deviceId: state.deviceInfo.deviceId,
+        source,
+      });
+      return ok(true);
+    } catch (e) {
+      return err(GemaCastError.from(e));
+    }
   }
 
   public handleForceDisconnect(forgetSender: boolean = true) {

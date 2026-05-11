@@ -1,5 +1,5 @@
 use crate::error::NetworkError;
-use crate::network::transport::{TcpTransport, UdpTransport};
+use crate::stream::transport::{TcpTransport, UdpTransport};
 use crate::network::Ports;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -84,7 +84,7 @@ pub fn setup_transport(
     target_ip: Option<std::net::IpAddr>,
 ) -> Result<
     (
-        Box<dyn crate::network::transport::AudioTransport>,
+        Box<dyn crate::stream::transport::AudioTransport>,
         Option<std::net::UdpSocket>,
     ),
     NetworkError,

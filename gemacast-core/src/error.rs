@@ -10,6 +10,9 @@ pub enum GemaCastError {
 
     #[error("{0}")]
     Network(#[from] NetworkError),
+
+    #[error("{0}")]
+    Control(#[from] ControlError),
 }
 
 #[derive(ThisError, Debug)]
@@ -55,6 +58,22 @@ pub enum AudioCaptureError {
 
     #[error("cpal stream error")]
     StreamError(#[source] cpal::StreamError),
+
+    #[cfg(target_os = "windows")]
+    #[error("Windows API Error: {0}")]
+    WindowsApiError(#[from] windows::core::Error),
+
+    #[error("per-process audio capture is not available on this platform")]
+    ProcessCaptureUnavailable,
+
+    #[error("process with PID {0} not found or not producing audio")]
+    ProcessNotFound(u32),
+
+    #[error("failed to create capture instance for source: {0}")]
+    CaptureInstanceFailed(String),
+
+    #[error("capture pool is full (max {max} concurrent captures)")]
+    CapturePoolExhausted { max: usize },
 }
 
 #[derive(ThisError, Debug)]
@@ -113,4 +132,26 @@ pub enum NetworkError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("no active connection for device {0}")]
+    DeviceNotConnected(String),
+}
+
+#[derive(ThisError, Debug)]
+pub enum ControlError {
+    #[error("failed to serialize control message")]
+    Serialization(#[from] serde_json::Error),
+
+    #[error("failed to send control message to {addr}: {source}")]
+    SendFailed {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("request timed out after {timeout_ms}ms")]
+    Timeout { timeout_ms: u64 },
+
+    #[error("sender rejected the request: {reason}")]
+    Rejected { reason: String },
 }

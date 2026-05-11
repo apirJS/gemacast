@@ -77,37 +77,26 @@ pub enum TransportType {
     Usb,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What audio source a receiver wants to listen to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum ControlMessage {
-    Probe {
-        #[serde(default)]
-        device_id: Option<DeviceId>,
-    },
-    Presence {
-        sender_id: SenderId,
-        sender_name: String,
-        #[serde(default)]
-        is_offline: bool,
-        #[serde(default)]
-        transport: Option<TransportType>,
-    },
-    Connect {
-        device_id: DeviceId,
-        device_name: String,
-        #[serde(default)]
-        mode: ConnectionMode,
-        #[serde(default)]
-        exclusive_mode: bool,
-        #[serde(default)]
-        jitter_config: JitterConfig,
-        #[serde(default)]
-        transport: Option<TransportType>,
-    },
-    Disconnect {
-        device_id: DeviceId,
-    },
+pub enum AudioSource {
+    /// Entire desktop audio (system loopback). Always available.
+    #[default]
+    Desktop,
+    /// A specific process by PID. Only available on Windows with WASAPI support.
+    Process { pid: u32, name: String },
 }
+
+/// Capabilities reported by the PC sender to connected receivers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderCapabilities {
+    /// True if the sender supports per-process audio capture (Windows + WASAPI).
+    pub supports_process_capture: bool,
+}
+
+pub use crate::control::messages::ControlMessage;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

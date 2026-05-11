@@ -1,7 +1,7 @@
 use gemacast_core::network::adb::{
     PresenceProvider, spawn_adb_reverse_watchdog, spawn_audio_spigot, spawn_discovery_spigot,
 };
-use gemacast_core::sender::{AudioSender, SenderCommand};
+use gemacast_core::stream::sender::broadcast::StreamEngine;
 use gemacast_core::types::{ControlMessage, SenderId};
 use std::sync::{
     Arc,
@@ -18,7 +18,7 @@ use crate::{
             watchdog::spawn_stale_device_watchdog,
         },
     },
-    events::{DaemonEvent, StreamCommand},
+    events::{DaemonCommand, DaemonEvent},
     state::DeviceList,
 };
 
@@ -47,7 +47,7 @@ impl PresenceProvider for PcPresenceProvider {
 pub fn spawn_background_engine(
     proxy: EventLoopProxy<DaemonEvent>,
     state: DeviceList,
-    stream_command_rx: tokio::sync::mpsc::Receiver<StreamCommand>,
+    stream_command_rx: tokio::sync::mpsc::Receiver<DaemonCommand>,
 ) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -79,17 +79,11 @@ pub fn spawn_background_engine(
                     return;
                 }
             };
-            let engine = match AudioSender::new().await {
-                Ok(sender) => sender,
-                Err(e) => {
-                    let _ = proxy.send_event(DaemonEvent::FatalError(format!("{:?}", e)));
-                    return;
-                }
-            };
+            let mut engine = StreamEngine::new(true);
 
-            let (sender_command_tx, sender_command_rx) =
-                tokio::sync::mpsc::channel::<SenderCommand>(32);
-            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let (stream_command_tx, stream_command_rx_engine) =
+                tokio::sync::mpsc::channel::<gemacast_core::stream::sender::broadcast::StreamCommand>(32);
+            let (stop_tx, _stop_rx) = tokio::sync::oneshot::channel::<()>();
             let (combined_tx, combined_rx) = tokio::sync::mpsc::channel(32);
             let (tcp_drop_tx, _) = tokio::sync::broadcast::channel::<()>(16);
             let (adb_control_tx, _) = tokio::sync::broadcast::channel::<ControlMessage>(16);
@@ -103,9 +97,9 @@ pub fn spawn_background_engine(
                 proxy.clone(),
             );
 
-            let tcp_broadcaster_tx = engine.tcp_broadcaster_tx.clone();
+            let tcp_broadcaster_tx = engine.pool.subscribe(gemacast_core::types::AudioSource::Desktop, None).await.unwrap();
 
-            spawn_audio_engine(&mut set, engine, sender_command_rx, stop_rx);
+            spawn_audio_engine(&mut set, engine, stream_command_rx_engine);
 
             let _ = tokio::process::Command::new("adb")
                 .arg("kill-server")
@@ -137,7 +131,7 @@ pub fn spawn_background_engine(
                 &mut set,
                 state.clone(),
                 proxy.clone(),
-                sender_command_tx.clone(),
+                stream_command_tx.clone(),
             );
 
             spawn_stream_command_manager(
@@ -148,7 +142,7 @@ pub fn spawn_background_engine(
                     tcp_drop_tx: tcp_drop_tx.clone(),
                     state_for_dispatch: state.clone(),
                     proxy_for_dispatch: proxy.clone(),
-                    sender_command_tx: sender_command_tx.clone(),
+                    stream_command_tx: stream_command_tx.clone(),
                     stop_tx_opt: Some(stop_tx),
                     adb_control_tx: adb_control_tx.clone(),
                 },
@@ -160,7 +154,7 @@ pub fn spawn_background_engine(
                 state.clone(),
                 is_broadcasting.clone(),
                 proxy.clone(),
-                sender_command_tx.clone(),
+                stream_command_tx.clone(),
             );
 
             while set.join_next().await.is_some() {}

@@ -19,7 +19,7 @@ pub fn spawn_heartbeat_thread(
             let p = port.load(Ordering::Relaxed);
             let target_addr = std::net::SocketAddr::new(target, p);
             let _ = socket.send_to(&[0u8], target_addr);
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     })
 }

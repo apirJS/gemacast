@@ -170,7 +170,7 @@ impl AudioReceiver {
 }
 
 fn spawn_receiver_thread(
-    mut transport: Box<dyn crate::network::transport::AudioTransport>,
+    mut transport: Box<dyn crate::stream::transport::AudioTransport>,
     mut packet_producer: HeapProd<RawPacket>,
     latency_metric: Arc<AtomicU32>,
     mut sender_ip_tx: Option<oneshot::Sender<String>>,

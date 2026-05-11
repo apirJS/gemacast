@@ -1,6 +1,6 @@
 use tauri::State;
 
-use gemacast_core::receiver::AudioReceiver;
+use gemacast_core::stream::receiver::AudioReceiver;
 use gemacast_core::types::{DeviceId, TransportType};
 
 use crate::state::{lock, AppState};
@@ -31,22 +31,20 @@ pub async fn connect_to_sender(
     mode: gemacast_core::types::ConnectionMode,
     exclusive_mode: bool,
     jitter_config: gemacast_core::types::JitterConfig,
-    transport: Option<TransportType>,
+    _transport: Option<TransportType>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
 
-    gemacast_core::network::send_control_message(
-        ip_addr,
-        gemacast_core::types::ControlMessage::Connect {
-            device_id: device_id.clone(),
-            device_name: device_name.clone(),
-            mode,
-            exclusive_mode,
-            jitter_config: jitter_config.clone(),
-            transport,
-        },
+    use gemacast_core::control::handler::ControlHandler;
+    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+    handler.handle_connect(
+        device_id.clone(),
+        device_name.clone(),
+        gemacast_core::types::AudioSource::default(),
+        mode,
+        jitter_config.clone(),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -123,11 +121,9 @@ pub async fn disconnect_from_sender(
 ) -> Result<(), String> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
 
-    let _ = gemacast_core::network::send_control_message(
-        ip_addr,
-        gemacast_core::types::ControlMessage::Disconnect { device_id },
-    )
-    .await;
+    use gemacast_core::control::handler::ControlHandler;
+    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+    let _ = handler.handle_disconnect(device_id).await;
 
     stop_playback_flag(&state)?;
     set_streaming_flag(&app_handle, false);
@@ -143,11 +139,9 @@ pub async fn stop_audio_playback(
 ) -> Result<(), String> {
     if let (Some(ip_str), Some(did)) = (ip, device_id) {
         if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            let _ = gemacast_core::network::send_control_message(
-                ip_addr,
-                gemacast_core::types::ControlMessage::Disconnect { device_id: did },
-            )
-            .await;
+            use gemacast_core::control::handler::ControlHandler;
+            let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+            let _ = handler.handle_disconnect(did).await;
         }
     }
     stop_playback_flag(&state)?;
@@ -171,6 +165,8 @@ pub async fn kill_playback(
 
     *lock(&state.is_playing)? = None;
     *lock(&state.config_ref)? = None;
+    *lock(&state.is_tcp_mode)? = None;
+    *lock(&state.exclusive_mode)? = None;
     *lock(&state.connected_ip)? = None;
 
     set_streaming_flag(&app_handle, false);
@@ -192,18 +188,15 @@ pub async fn start_audio_playback(
     let mode_flag = lock(&state.exclusive_mode)?.unwrap_or(false);
     if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
         if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            let _ = gemacast_core::network::send_control_message(
-                ip_addr,
-                gemacast_core::types::ControlMessage::Connect {
-                    device_id: did,
-                    device_name: dname,
-                    mode: gemacast_core::types::ConnectionMode::default(),
-                    exclusive_mode: mode_flag,
-                    jitter_config: gemacast_core::types::JitterConfig::default(),
-                    transport: None,
-                },
-            )
-            .await;
+            use gemacast_core::control::handler::ControlHandler;
+            let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+            let _ = handler.handle_connect(
+                did,
+                dname,
+                gemacast_core::types::AudioSource::default(),
+                gemacast_core::types::ConnectionMode::default(),
+                gemacast_core::types::JitterConfig::default(),
+            ).await;
         }
     }
     set_playing_flag(&state, true)?;
@@ -225,6 +218,26 @@ pub async fn update_jitter_config(
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_audio_sources(ip: String) -> Result<(Vec<gemacast_core::types::AudioSource>, gemacast_core::types::SenderCapabilities), String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    use gemacast_core::control::handler::ControlHandler;
+    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+    handler.get_sources().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn change_audio_source(
+    ip: String,
+    device_id: DeviceId,
+    source: gemacast_core::types::AudioSource,
+) -> Result<(), String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    use gemacast_core::control::handler::ControlHandler;
+    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
+    handler.handle_change_source(device_id, source).await.map_err(|e| e.to_string())
 }
 
 #[allow(unused_variables)]
