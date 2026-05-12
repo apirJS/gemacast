@@ -1,72 +1,74 @@
 import { App } from '../App';
 import { AppState, Status } from '../types';
+import { h } from './utils';
 
-function setChipStatus(
-  chipEl: HTMLElement,
-  labelEl: HTMLElement,
-  status: Status,
-  reconnectAttempts: number,
-) {
-  chipEl.className = chipEl.className.replace(/status-chip--\S+/g, '').trim();
-
-  let chipClass: string;
-  let label: string;
-
+function getStatusDetails(status: Status, attempts: number) {
   switch (status) {
     case Status.Idle:
-      chipClass = 'status-chip--idle';
-      label = 'Idle';
-      break;
+      return { class: 'status-chip--idle', label: 'Idle' };
     case Status.Listening:
-      chipClass = 'status-chip--listening';
-      label = 'Scanning…';
-      break;
+      return { class: 'status-chip--listening', label: 'Scanning…' };
     case Status.Connecting:
-      chipClass = 'status-chip--connecting';
-      label = 'Connecting…';
-      break;
+      return { class: 'status-chip--connecting', label: 'Connecting…' };
     case Status.Connected:
-      chipClass = 'status-chip--connected';
-      label = 'Connected';
-      break;
+      return { class: 'status-chip--connected', label: 'Connected' };
     case Status.Playing:
-      chipClass = 'status-chip--playing';
-      label = '● Playing';
-      break;
+      return { class: 'status-chip--playing', label: '● Playing' };
     case Status.Reconnecting:
-      chipClass = 'status-chip--reconnecting';
-      label =
-        reconnectAttempts > 0
-          ? `Reconnecting (${reconnectAttempts}/5)…`
-          : 'Reconnecting…';
-      break;
+      return {
+        class: 'status-chip--reconnecting',
+        label: attempts > 0 ? `Reconnecting (${attempts}/5)…` : 'Reconnecting…',
+      };
     default:
-      chipClass = 'status-chip--idle';
-      label = String(status);
+      return { class: 'status-chip--idle', label: String(status) };
   }
-
-  chipEl.classList.add('status-chip', chipClass);
-  labelEl.textContent = label;
 }
 
 export function setupDeviceAndStatus(app: App) {
-  const deviceNameEl = document.querySelector<HTMLSpanElement>('.device__name');
-  const deviceIpEl = document.querySelector<HTMLSpanElement>('.device__ip');
+  const deviceSection = document.querySelector('.device') as HTMLElement;
+  const infoSection = document.querySelector('.info') as HTMLElement;
 
-  const statusChipEl = document.getElementById('status-chip');
-  const statusChipLabelEl = document.getElementById('status-chip-label') as HTMLSpanElement | null;
+  const statusContainer = h('div', {});
+  const existingChip = document.getElementById('status-chip');
+  if (existingChip) {
+    existingChip.replaceWith(statusContainer);
+  } else {
+    infoSection.insertBefore(statusContainer, infoSection.firstChild);
+  }
 
   app.stateHandler.subscribe((state: AppState) => {
-    if (deviceNameEl) deviceNameEl.textContent = state.deviceInfo.deviceName;
-    if (deviceIpEl) deviceIpEl.textContent = `IP: ${state.deviceInfo.ip}`;
+    deviceSection.innerHTML = '';
+    deviceSection.appendChild(
+      h('span', {
+        className: 'device__name',
+        textContent: state.deviceInfo.deviceName,
+      }),
+    );
+    deviceSection.appendChild(
+      h('span', {
+        className: 'device__ip',
+        textContent: `IP: ${state.deviceInfo.ip}`,
+      }),
+    );
 
-    if (statusChipEl && statusChipLabelEl) {
-      setChipStatus(
-        statusChipEl,
-        statusChipLabelEl,
-        state.status,
-        state.reconnectAttempts,
-      );
-    }
+    const details = getStatusDetails(state.status, state.reconnectAttempts);
+    const chip = h(
+      'div',
+      {
+        className: `status-chip ${details.class}`,
+        id: 'status-chip',
+        role: 'status',
+        ariaLive: 'polite',
+      },
+      h('span', { className: 'status-chip__dot', ariaHidden: 'true' }),
+      h('span', {
+        className: 'status-chip__label',
+        id: 'status-chip-label',
+        textContent: details.label,
+      }),
+    );
+
+    statusContainer.innerHTML = '';
+    statusContainer.appendChild(chip);
   });
 }

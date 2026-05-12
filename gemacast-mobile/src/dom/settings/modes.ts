@@ -1,65 +1,87 @@
 import { AppState, ConnectionMode, Status } from '../../types';
 import type { App } from '../../App';
+import { h } from '../utils';
+import { toastManager } from '../toast';
 
 export function initModes(app: App) {
   const stateHandler = app.stateHandler;
-  const excMode = document.getElementById('setting-exclusive-mode') as HTMLInputElement;
-  const modes = document.getElementsByName('conn-mode') as NodeListOf<HTMLInputElement>;
+  
+  const connWrapper = document.querySelector('input[name="conn-mode"]')?.closest('.segmented-control') as HTMLElement | null;
+  const excWrapper = document.getElementById('setting-exclusive-mode')?.closest('.toggle-switch') as HTMLElement | null;
 
-  excMode.addEventListener('change', () => {
-    const state = stateHandler.getState();
-    stateHandler.setState({
-      settings: { ...state.settings, exclusiveMode: excMode.checked },
-    });
-    if (state.connectedSender && state.status === Status.Playing) {
-      app.connection.disconnect(false);
+  if (!connWrapper || !excWrapper) return;
+
+  const excModeInput = h('input', {
+    type: 'checkbox',
+    id: 'setting-exclusive-mode',
+    onChange: () => {
+      const state = stateHandler.getState();
+      stateHandler.setState({
+        settings: { ...state.settings, exclusiveMode: excModeInput.checked },
+      });
+      toastManager.showSuccess(`Exclusive mode ${excModeInput.checked ? 'enabled' : 'disabled'}`);
+      if (state.connectedSender && state.status === Status.Playing) {
+        app.connection.disconnect(false);
+      }
     }
   });
 
-  const updateModes = () => {
-    const currSettings = stateHandler.getState().settings;
-    let nextMode = currSettings.mode;
-    modes.forEach((m: HTMLInputElement) => {
-      if (m.checked && !m.disabled) nextMode = m.value as ConnectionMode;
-    });
+  excWrapper.innerHTML = '';
+  excWrapper.appendChild(excModeInput);
+  excWrapper.appendChild(h('div', { className: 'toggle-switch__slider' },
+    h('span', { className: 'toggle-switch__label--off', textContent: 'OFF' }),
+    h('span', { className: 'toggle-switch__label--on', textContent: 'ON' })
+  ));
 
-    stateHandler.setState({
-      settings: {
-        ...currSettings,
-        exclusiveMode: excMode.checked,
-        mode: nextMode,
-      },
-    });
+  const updateModes = (val: ConnectionMode) => {
+    const currSettings = stateHandler.getState().settings;
+    if (currSettings.mode !== val) {
+      stateHandler.setState({
+        settings: { ...currSettings, exclusiveMode: excModeInput.checked, mode: val },
+      });
+      toastManager.showSuccess(`Connection mode set to ${val.toUpperCase()}`);
+    }
   };
 
-  modes.forEach((m: HTMLInputElement) =>
-    m.addEventListener('change', updateModes)
-  );
+  const createModeRadio = (val: ConnectionMode, labelText: string, state: AppState) => {
+    let disabled = true;
+    if (val === ConnectionMode.Wifi) disabled = !state.availableModes.wifi;
+    if (val === ConnectionMode.Usb) disabled = !state.availableModes.usb;
+    if (val === ConnectionMode.Adb) disabled = !state.availableModes.adb;
 
-  stateHandler.subscribe((state: AppState) => {
-    const s = state.settings;
-    excMode.checked = s.exclusiveMode;
-
-    modes.forEach((m: HTMLInputElement) => {
-      if (m.value === s.mode) m.checked = true;
-
-      const isWifi = m.value === ConnectionMode.Wifi;
-      const isUsb = m.value === ConnectionMode.Usb;
-      const isAdb = m.value === ConnectionMode.Adb;
-
-      if (isWifi) {
-        m.disabled = !state.availableModes.wifi;
-      } else if (isUsb) {
-        m.disabled = !state.availableModes.usb;
-      } else if (isAdb) {
-        m.disabled = !state.availableModes.adb;
-      }
-
-      const label = m.closest('label');
-      if (label) {
-        if (m.disabled) label.classList.add('mode-btn--disabled');
-        else label.classList.remove('mode-btn--disabled');
-      }
+    const id = `conn-mode-${val}`;
+    const input = h('input', {
+      type: 'radio',
+      name: 'conn-mode',
+      id,
+      value: val,
+      checked: state.settings.mode === val,
+      disabled,
+      onChange: () => updateModes(val)
     });
+
+    const label = h('label', { 
+      htmlFor: id, 
+      textContent: labelText,
+      className: disabled ? 'mode-btn--disabled' : ''
+    });
+
+    return { input, label };
+  };
+
+  app.stateHandler.subscribe((state: AppState) => {
+    excModeInput.checked = state.settings.exclusiveMode;
+
+    connWrapper.innerHTML = '';
+    const wifi = createModeRadio(ConnectionMode.Wifi, 'Wifi', state);
+    const usb = createModeRadio(ConnectionMode.Usb, 'USB', state);
+    const adb = createModeRadio(ConnectionMode.Adb, 'ADB', state);
+
+    connWrapper.appendChild(wifi.input);
+    connWrapper.appendChild(wifi.label);
+    connWrapper.appendChild(usb.input);
+    connWrapper.appendChild(usb.label);
+    connWrapper.appendChild(adb.input);
+    connWrapper.appendChild(adb.label);
   });
 }

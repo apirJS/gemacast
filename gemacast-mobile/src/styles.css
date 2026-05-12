@@ -10,6 +10,7 @@
 @import './styles/senders.css';
 @import './styles/source-select.css';
 @import './styles/error.css';
+@import './styles/toast.css';
 
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;

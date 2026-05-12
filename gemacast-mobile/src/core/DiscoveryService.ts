@@ -1,5 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Result, ok, err, DiscoveredSender, Status, ConnectionMode } from '../types';
+import {
+  Result,
+  ok,
+  err,
+  DiscoveredSender,
+  Status,
+  ConnectionMode,
+} from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
 
@@ -9,13 +16,15 @@ export class DiscoveryService {
     private autoReconnectCallback: (sender: DiscoveredSender) => void,
   ) {}
 
-  public async startListening(mode: ConnectionMode): Promise<Result<true, GemaCastError>> {
+  public async startListening(
+    mode: ConnectionMode,
+  ): Promise<Result<true, GemaCastError>> {
     this.stateHandler.setState({ isLoading: true });
     try {
       const state = this.stateHandler.getState();
-      await invoke('start_listening_for_senders', { 
+      await invoke('start_listening_for_senders', {
         deviceId: state.deviceInfo.deviceId,
-        mode 
+        mode,
       });
       this.stateHandler.setState({
         status: Status.Listening,
@@ -79,7 +88,7 @@ export class DiscoveryService {
 
     this.stateHandler.setState({
       discoveredSenders: list,
-      connectedSender
+      connectedSender,
     });
 
     if (
