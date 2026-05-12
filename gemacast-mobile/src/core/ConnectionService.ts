@@ -11,6 +11,7 @@ import {
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
 import { getPresetConfig } from './presets';
+import { toastManager } from '../dom/toast';
 
 export class ConnectionService {
   private audioResumer: () => Promise<void>;
@@ -37,6 +38,8 @@ export class ConnectionService {
       discoveredSenders: [], // Instantaneously clear the sender list
     });
 
+    toastManager.showWarning('Network offline');
+
     if (state.connectedSender || state.status === Status.Playing) {
       this.stateHandler.setState({
         status: Status.Listening,
@@ -51,6 +54,7 @@ export class ConnectionService {
       isNetworkAvailable: true,
       error: null,
     });
+    toastManager.showInfo('Network online');
   }
 
   public handleSenderTimeout(senderId: string) {
@@ -70,6 +74,8 @@ export class ConnectionService {
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
       this.killPlayback().catch(console.warn);
+
+      toastManager.showWarning('Connection lost');
     }
   }
 
@@ -124,6 +130,7 @@ export class ConnectionService {
 
       this.fetchAudioSources(sender).catch(console.warn);
 
+      toastManager.showSuccess('Connected');
       return ok(true);
     } catch (e) {
       const error = GemaCastError.failedToStartPlayback(e);
@@ -159,6 +166,7 @@ export class ConnectionService {
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
       await invoke('notify_streaming_stopped').catch(console.warn);
+      if (forgetSender) toastManager.showInfo('Disconnected');
       return ok(true);
     }
 
@@ -186,6 +194,7 @@ export class ConnectionService {
       senderCapabilities: null,
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
+    if (forgetSender) toastManager.showInfo('Disconnected');
     return ok(true);
   }
 
@@ -224,6 +233,7 @@ export class ConnectionService {
         deviceId: state.deviceInfo.deviceId,
         source,
       });
+      toastManager.showSuccess('Audio source changed');
       return ok(true);
     } catch (e) {
       return err(GemaCastError.from(e));

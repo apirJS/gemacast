@@ -16,6 +16,23 @@
   </head>
 
   <body>
+    <div id="toast-container" class="toast-container"></div>
+
+    <dialog class="error-log-modal" id="error-log-modal">
+      <div class="error-log-modal__body" id="error-log-modal-body"></div>
+      <button
+        class="settings-btn"
+        id="error-log-modal-close"
+        style="
+          margin-top: 1rem;
+          width: 100%;
+          border-radius: var(--radius);
+          background: var(--secondary);
+        "
+      >
+        Close
+      </button>
+    </dialog>
     <button
       class="settings-btn"
       id="settings-open-btn"
@@ -391,27 +408,6 @@
             <span class="latency-stats__label">Min</span>
             <span class="latency-stats__value">-- ms</span>
           </span>
-        </div>
-
-        <div class="error" id="error-section" hidden>
-          <div class="error__body">
-            <span class="error__message" id="error-message"></span>
-            <button
-              class="error__dismiss"
-              id="error-dismiss-btn"
-              aria-label="Dismiss error"
-              title="Dismiss"
-            >
-              ✕
-            </button>
-          </div>
-          <button class="error__expander" popovertarget="error-details-popover">
-            Details
-          </button>
-
-          <div id="error-details-popover" class="error__popover" popover="auto">
-            <p class="error__popover-detailed-error" id="error-detail-text"></p>
-          </div>
         </div>
       </section>
     </main>
