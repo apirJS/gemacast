@@ -2,38 +2,78 @@ import { invoke } from '@tauri-apps/api/core';
 import { AppState, PresetId, SavedPreset, JitterConfig } from '../../types';
 import { JITTER_PRESETS, getPresetConfig } from '../../core/presets';
 import type { App } from '../../App';
+import { h } from '../utils';
+import { toastManager } from '../toast';
 
 export function initBufferSettings(app: App) {
   const stateHandler = app.stateHandler;
 
-  const presetContainer = document.getElementById('setting-preset') as HTMLElement;
-  const presetHeader = document.getElementById('custom-preset-header') as HTMLElement;
-  const presetValue = document.getElementById('custom-preset-value') as HTMLElement;
-  const presetDropdown = document.getElementById('custom-preset-dropdown') as HTMLElement;
+  const presetContainer = document.getElementById(
+    'setting-preset',
+  ) as HTMLElement;
+  const presetHeader = document.getElementById(
+    'custom-preset-header',
+  ) as HTMLElement;
+  const presetValue = document.getElementById(
+    'custom-preset-value',
+  ) as HTMLElement;
+  const presetDropdown = document.getElementById(
+    'custom-preset-dropdown',
+  ) as HTMLElement;
   let currentPresetValue: PresetId = 'balanced';
-  const customConfig = document.getElementById('custom-jitter-config') as HTMLDivElement;
+  const customConfig = document.getElementById(
+    'custom-jitter-config',
+  ) as HTMLDivElement;
 
-  const presetNameInput = document.getElementById('setting-preset-name') as HTMLInputElement;
-  const staticFields = document.getElementById('static-fields') as HTMLDivElement;
-  const adaptiveFields = document.getElementById('adaptive-fields') as HTMLDivElement;
-  const staticDepth = document.getElementById('setting-static-depth') as HTMLInputElement;
-  const bufferModeRadios = document.getElementsByName('buffer-mode') as NodeListOf<HTMLInputElement>;
-  const customDeleteBtn = document.getElementById('custom-delete-btn') as HTMLButtonElement;
-  const deleteConfirmDialog = document.getElementById('delete-confirm-dialog') as HTMLDialogElement;
-  const deleteConfirmMsg = document.getElementById('delete-confirm-msg') as HTMLElement;
-  const deleteConfirmCancel = document.getElementById('delete-confirm-cancel') as HTMLButtonElement;
-  const deleteConfirmOk = document.getElementById('delete-confirm-ok') as HTMLButtonElement;
+  const presetNameInput = document.getElementById(
+    'setting-preset-name',
+  ) as HTMLInputElement;
+  const staticFields = document.getElementById(
+    'static-fields',
+  ) as HTMLDivElement;
+  const adaptiveFields = document.getElementById(
+    'adaptive-fields',
+  ) as HTMLDivElement;
+  const staticDepth = document.getElementById(
+    'setting-static-depth',
+  ) as HTMLInputElement;
+  const bufferModeRadios = document.getElementsByName(
+    'buffer-mode',
+  ) as NodeListOf<HTMLInputElement>;
+  const customDeleteBtn = document.getElementById(
+    'custom-delete-btn',
+  ) as HTMLButtonElement;
+  const deleteConfirmDialog = document.getElementById(
+    'delete-confirm-dialog',
+  ) as HTMLDialogElement;
+  const deleteConfirmMsg = document.getElementById(
+    'delete-confirm-msg',
+  ) as HTMLElement;
+  const deleteConfirmCancel = document.getElementById(
+    'delete-confirm-cancel',
+  ) as HTMLButtonElement;
+  const deleteConfirmOk = document.getElementById(
+    'delete-confirm-ok',
+  ) as HTMLButtonElement;
 
   let activeSavedPresetName: string | null = null;
   let customApplied = false;
 
-  const minDepth = document.getElementById('setting-min-depth') as HTMLInputElement;
-  const comfortCap = document.getElementById('setting-comfort-cap') as HTMLInputElement;
+  const minDepth = document.getElementById(
+    'setting-min-depth',
+  ) as HTMLInputElement;
+  const comfortCap = document.getElementById(
+    'setting-comfort-cap',
+  ) as HTMLInputElement;
   const bounce = document.getElementById('setting-bounce') as HTMLInputElement;
   const resume = document.getElementById('setting-resume') as HTMLInputElement;
 
-  const customApplyBtn = document.getElementById('custom-apply-btn') as HTMLButtonElement;
-  const customResetBtn = document.getElementById('custom-reset-btn') as HTMLButtonElement;
+  const customApplyBtn = document.getElementById(
+    'custom-apply-btn',
+  ) as HTMLButtonElement;
+  const customResetBtn = document.getElementById(
+    'custom-reset-btn',
+  ) as HTMLButtonElement;
 
   const validateSaveBtn = () => {
     const name = presetNameInput.value.trim();
@@ -42,59 +82,82 @@ export function initBufferSettings(app: App) {
   presetNameInput.addEventListener('input', validateSaveBtn);
 
   const syncBufferModeUI = () => {
-    const checked = document.querySelector('input[name="buffer-mode"]:checked') as HTMLInputElement;
+    const checked = document.querySelector(
+      'input[name="buffer-mode"]:checked',
+    ) as HTMLInputElement;
     const isStatic = checked?.value === 'static';
     staticFields.hidden = !isStatic;
     adaptiveFields.hidden = isStatic;
     validateSaveBtn();
   };
-  bufferModeRadios.forEach((r) => r.addEventListener('change', () => {
-    syncBufferModeUI();
-    if (stateHandler.getState().settings.bufferPreset === 'custom') {
-      applyLiveCustomConfig();
-    }
-  }));
+  bufferModeRadios.forEach((r) =>
+    r.addEventListener('change', () => {
+      syncBufferModeUI();
+      if (stateHandler.getState().settings.bufferPreset === 'custom') {
+        applyLiveCustomConfig();
+      }
+    }),
+  );
   syncBufferModeUI();
 
   const renderSavedPresets = (savedPresets: SavedPreset[]) => {
-    document.querySelectorAll('.custom-select__option--saved').forEach((el) => el.remove());
+    document
+      .querySelectorAll('.custom-select__option--saved')
+      .forEach((el) => el.remove());
 
     savedPresets.forEach((sp) => {
-      const opt = document.createElement('div');
-      opt.className = 'custom-select__option custom-select__option--saved';
-      opt.dataset.savedName = sp.name;
-      const title = document.createElement('div');
-      title.className = 'custom-select__option-title';
-      title.textContent = sp.name;
-      opt.appendChild(title);
-      const desc = document.createElement('div');
-      desc.className = 'custom-select__option-desc';
-      desc.textContent = sp.config.staticTargetMs != null ? `Static: ${sp.config.staticTargetMs}ms` : 'Adaptive';
-      opt.appendChild(desc);
-      
-      opt.addEventListener('click', () => {
-        activeSavedPresetName = sp.name;
-        currentPresetValue = 'custom';
-        presetDropdown.hidden = true;
-        presetValue.textContent = sp.name;
-        stateHandler.setState({
-          settings: {
-            ...stateHandler.getState().settings,
-            bufferPreset: 'custom',
-            customJitterConfig: sp.config,
-          },
-        });
-        invoke('update_jitter_config', { jitterConfig: sp.config }).catch(console.warn);
+      const opt = h(
+        'div',
+        {
+          className: 'custom-select__option custom-select__option--saved',
+          dataset: { savedName: sp.name },
+          onClick: () => {
+            activeSavedPresetName = sp.name;
+            currentPresetValue = 'custom';
+            presetDropdown.hidden = true;
+            presetValue.textContent = sp.name;
+            stateHandler.setState({
+              settings: {
+                ...stateHandler.getState().settings,
+                bufferPreset: 'custom',
+                customJitterConfig: sp.config,
+              },
+            });
+            invoke('update_jitter_config', { jitterConfig: sp.config }).catch(
+              console.warn,
+            );
 
-        if (sp.config.staticTargetMs != null) {
-          (document.getElementById('buffer-mode-static') as HTMLInputElement).checked = true;
-        } else {
-          (document.getElementById('buffer-mode-adaptive') as HTMLInputElement).checked = true;
-        }
-        syncBufferModeUI();
-        presetNameInput.value = sp.name;
-        customApplied = true;
-      });
+            if (sp.config.staticTargetMs != null) {
+              (
+                document.getElementById(
+                  'buffer-mode-static',
+                ) as HTMLInputElement
+              ).checked = true;
+            } else {
+              (
+                document.getElementById(
+                  'buffer-mode-adaptive',
+                ) as HTMLInputElement
+              ).checked = true;
+            }
+            syncBufferModeUI();
+            presetNameInput.value = sp.name;
+            customApplied = true;
+          },
+        },
+        h('div', {
+          className: 'custom-select__option-title',
+          textContent: sp.name,
+        }),
+        h('div', {
+          className: 'custom-select__option-desc',
+          textContent:
+            sp.config.staticTargetMs != null
+              ? `Static: ${sp.config.staticTargetMs}ms`
+              : 'Adaptive',
+        }),
+      );
+
       presetDropdown.appendChild(opt);
     });
   };
@@ -104,19 +167,25 @@ export function initBufferSettings(app: App) {
     deleteConfirmMsg.textContent = `Delete "${activeSavedPresetName}"?`;
     deleteConfirmDialog.showModal();
   });
-  deleteConfirmCancel.addEventListener('click', () => deleteConfirmDialog.close());
+  deleteConfirmCancel.addEventListener('click', () =>
+    deleteConfirmDialog.close(),
+  );
   deleteConfirmOk.addEventListener('click', () => {
     deleteConfirmDialog.close();
     if (!activeSavedPresetName) return;
     const curr = stateHandler.getState().settings;
-    const next = (curr.savedPresets ?? []).filter((p) => p.name !== activeSavedPresetName);
+    const next = (curr.savedPresets ?? []).filter(
+      (p) => p.name !== activeSavedPresetName,
+    );
     activeSavedPresetName = null;
     currentPresetValue = 'auto';
     stateHandler.setState({
       settings: { ...curr, savedPresets: next, bufferPreset: 'auto' },
     });
     const autoConfig = getPresetConfig('auto', curr.customJitterConfig);
-    invoke('update_jitter_config', { jitterConfig: autoConfig }).catch(console.warn);
+    invoke('update_jitter_config', { jitterConfig: autoConfig }).catch(
+      console.warn,
+    );
   });
   deleteConfirmDialog.addEventListener('click', (e) => {
     if (e.target === deleteConfirmDialog) deleteConfirmDialog.close();
@@ -125,26 +194,35 @@ export function initBufferSettings(app: App) {
   presetDropdown.innerHTML = '';
   const presetOptionsList: HTMLElement[] = [];
   JITTER_PRESETS.forEach((preset) => {
-    const opt = document.createElement('div');
-    opt.className = 'custom-select__option';
-    const title = document.createElement('div');
-    title.className = 'custom-select__option-title';
-    title.textContent = preset.name;
-    opt.appendChild(title);
-
+    const children = [
+      h('div', {
+        className: 'custom-select__option-title',
+        textContent: preset.name,
+      }),
+    ];
     if (preset.id !== 'custom' && preset.description) {
-      const desc = document.createElement('div');
-      desc.className = 'custom-select__option-desc';
-      desc.textContent = preset.description;
-      opt.appendChild(desc);
+      children.push(
+        h('div', {
+          className: 'custom-select__option-desc',
+          textContent: preset.description,
+        }),
+      );
     }
 
-    opt.addEventListener('click', () => {
-      currentPresetValue = preset.id;
-      activeSavedPresetName = null;
-      presetDropdown.hidden = true;
-      updateState();
-    });
+    const opt = h(
+      'div',
+      {
+        className: 'custom-select__option',
+        onClick: () => {
+          currentPresetValue = preset.id;
+          activeSavedPresetName = null;
+          presetDropdown.hidden = true;
+          updateState();
+        },
+      },
+      ...children,
+    );
+
     presetOptionsList.push(opt);
     presetDropdown.appendChild(opt);
   });
@@ -159,7 +237,8 @@ export function initBufferSettings(app: App) {
     }
   });
 
-  let lastNonCustomPreset: PresetId = stateHandler.getState().settings.bufferPreset;
+  let lastNonCustomPreset: PresetId =
+    stateHandler.getState().settings.bufferPreset;
   if (lastNonCustomPreset === 'custom') lastNonCustomPreset = 'balanced';
 
   const updateState = () => {
@@ -169,7 +248,10 @@ export function initBufferSettings(app: App) {
 
     if (presetIdx !== 'custom') {
       lastNonCustomPreset = presetIdx;
-    } else if (presetIdx === 'custom' && currSettings.bufferPreset !== 'custom') {
+    } else if (
+      presetIdx === 'custom' &&
+      currSettings.bufferPreset !== 'custom'
+    ) {
       if (!customApplied) {
         nextCustom = getPresetConfig('auto', nextCustom);
       }
@@ -185,14 +267,21 @@ export function initBufferSettings(app: App) {
 
     if (presetIdx !== 'custom') {
       const activeConfig = getPresetConfig(presetIdx, nextCustom);
-      
-      invoke('update_jitter_config', { jitterConfig: activeConfig }).catch(console.warn);
+
+      invoke('update_jitter_config', { jitterConfig: activeConfig }).catch(
+        console.warn,
+      );
     }
   };
 
   const applyLiveCustomConfig = () => {
     const currSettings = stateHandler.getState().settings;
-    const isStatic = (document.querySelector('input[name="buffer-mode"]:checked') as HTMLInputElement)?.value === 'static';
+    const isStatic =
+      (
+        document.querySelector(
+          'input[name="buffer-mode"]:checked',
+        ) as HTMLInputElement
+      )?.value === 'static';
 
     let custom: JitterConfig;
     if (isStatic) {
@@ -219,7 +308,11 @@ export function initBufferSettings(app: App) {
     if (activeSavedPresetName !== null) {
       activeSavedPresetName = null;
       presetValue.textContent = 'Custom';
-      document.querySelectorAll('.custom-select__option--saved').forEach(el => el.classList.remove('custom-select__option--selected'));
+      document
+        .querySelectorAll('.custom-select__option--saved')
+        .forEach((el) =>
+          el.classList.remove('custom-select__option--selected'),
+        );
     }
 
     stateHandler.setState({
@@ -230,12 +323,15 @@ export function initBufferSettings(app: App) {
       },
     });
 
-    
-    invoke('update_jitter_config', { jitterConfig: custom }).catch(console.warn);
+    invoke('update_jitter_config', { jitterConfig: custom }).catch(
+      console.warn,
+    );
   };
 
   const liveInputs = [minDepth, comfortCap, bounce, resume, staticDepth];
-  liveInputs.forEach(input => input.addEventListener('input', applyLiveCustomConfig));
+  liveInputs.forEach((input) =>
+    input.addEventListener('input', applyLiveCustomConfig),
+  );
 
   customApplyBtn.addEventListener('click', () => {
     const currSettings = stateHandler.getState().settings;
@@ -244,7 +340,9 @@ export function initBufferSettings(app: App) {
 
     const custom = currSettings.customJitterConfig;
     const prevSaved = currSettings.savedPresets ?? [];
-    const filteredSaved = prevSaved.filter((p) => p.name.toLowerCase() !== name.toLowerCase());
+    const filteredSaved = prevSaved.filter(
+      (p) => p.name.toLowerCase() !== name.toLowerCase(),
+    );
     const savedPresets = [...filteredSaved, { name, config: custom }];
 
     activeSavedPresetName = name;
@@ -257,12 +355,16 @@ export function initBufferSettings(app: App) {
     });
     presetNameInput.value = name;
     validateSaveBtn();
+    toastManager.showSuccess(`Preset "${name}" saved`);
   });
 
   customResetBtn.addEventListener('click', () => {
     customApplied = false;
     const currSettings = stateHandler.getState().settings;
-    const fromPreset = getPresetConfig(lastNonCustomPreset, currSettings.customJitterConfig);
+    const fromPreset = getPresetConfig(
+      lastNonCustomPreset,
+      currSettings.customJitterConfig,
+    );
     stateHandler.setState({
       settings: { ...currSettings, customJitterConfig: fromPreset },
     });
@@ -277,22 +379,27 @@ export function initBufferSettings(app: App) {
     if (activeSavedPresetName && s.bufferPreset === 'custom') {
       presetValue.textContent = activeSavedPresetName;
     } else {
-      const activePresetDef = JITTER_PRESETS.find((p) => p.id === s.bufferPreset);
+      const activePresetDef = JITTER_PRESETS.find(
+        (p) => p.id === s.bufferPreset,
+      );
       presetValue.textContent = activePresetDef?.name || 'Custom';
       if (s.bufferPreset !== 'custom') activeSavedPresetName = null;
     }
 
     presetOptionsList.forEach((opt, i) => {
-      const isSelected = JITTER_PRESETS[i].id === s.bufferPreset && !activeSavedPresetName;
+      const isSelected =
+        JITTER_PRESETS[i].id === s.bufferPreset && !activeSavedPresetName;
       if (isSelected) opt.classList.add('custom-select__option--selected');
       else opt.classList.remove('custom-select__option--selected');
     });
 
-    document.querySelectorAll<HTMLElement>('.custom-select__option--saved').forEach((el) => {
-      const isSel = el.dataset.savedName === activeSavedPresetName;
-      if (isSel) el.classList.add('custom-select__option--selected');
-      else el.classList.remove('custom-select__option--selected');
-    });
+    document
+      .querySelectorAll<HTMLElement>('.custom-select__option--saved')
+      .forEach((el) => {
+        const isSel = el.dataset.savedName === activeSavedPresetName;
+        if (isSel) el.classList.add('custom-select__option--selected');
+        else el.classList.remove('custom-select__option--selected');
+      });
 
     if (!(window as any).__lastJitterConfig) {
       (window as any).__lastJitterConfig = JSON.stringify(s.customJitterConfig);
@@ -303,7 +410,9 @@ export function initBufferSettings(app: App) {
       (window as any).__lastJitterConfig = currentJitterString;
 
       if (document.activeElement !== staticDepth) {
-        staticDepth.value = (s.customJitterConfig.staticTargetMs ?? 60).toString();
+        staticDepth.value = (
+          s.customJitterConfig.staticTargetMs ?? 60
+        ).toString();
       }
 
       if (document.activeElement !== minDepth)
@@ -311,11 +420,16 @@ export function initBufferSettings(app: App) {
       if (document.activeElement !== comfortCap)
         comfortCap.value = s.customJitterConfig.comfortCapMs.toString();
       if (document.activeElement !== bounce) {
-        const val = s.customJitterConfig.peakDecayHalflifeMs ?? (s.customJitterConfig as any).bounceMultiplier ?? 0;
+        const val =
+          s.customJitterConfig.peakDecayHalflifeMs ??
+          (s.customJitterConfig as any).bounceMultiplier ??
+          0;
         bounce.value = val.toString();
       }
       if (document.activeElement !== resume)
-        resume.value = (s.customJitterConfig.resumeThresholdPct * 100).toString();
+        resume.value = (
+          s.customJitterConfig.resumeThresholdPct * 100
+        ).toString();
     }
 
     renderSavedPresets(s.savedPresets ?? []);

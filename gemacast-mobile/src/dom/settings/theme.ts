@@ -1,5 +1,6 @@
 import { AppState } from '../../types';
 import type { App } from '../../App';
+import { toastManager } from '../toast';
 
 export function initThemeToggle(app: App) {
   const themeBtn = document.getElementById(
@@ -8,12 +9,14 @@ export function initThemeToggle(app: App) {
 
   themeBtn.addEventListener('click', () => {
     const curr = app.stateHandler.getState().settings;
+    const nextTheme = curr.theme === 'dark' ? 'light' : 'dark';
     app.stateHandler.setState({
       settings: {
         ...curr,
-        theme: curr.theme === 'dark' ? 'light' : 'dark',
+        theme: nextTheme,
       },
     });
+    toastManager.showInfo(`Theme set to ${nextTheme}`);
   });
 
   app.stateHandler.subscribe((state: AppState) => {

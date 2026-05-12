@@ -1,7 +1,7 @@
-pub mod listener;
-pub mod stream;
-pub mod packet;
 pub mod heartbeat;
+pub mod listener;
+pub mod packet;
+pub mod stream;
 pub mod transport;
 
-pub use listener::AudioReceiver;
+pub use listener::AudioStreamReceiver;

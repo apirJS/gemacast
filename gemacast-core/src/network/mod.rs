@@ -1,11 +1,14 @@
+//! Network utilities, port definitions, and ADB transport support.
+
 pub mod adb;
 pub mod interface;
 pub mod ports;
 
-pub use crate::discovery::{DiscoveryBroadcaster, DiscoveryListener, send_control_message};
-pub use interface::{
-    classify_interface, get_broadcast_addrs, get_local_ip, is_usb_tether_ip,
-};
+/// Re-export discovery types for convenience — consumers can import
+/// from either `discovery::` or `network::`.
+pub use crate::discovery::{PresenceBroadcaster, PresenceListener};
+
+pub use interface::{classify_interface, get_broadcast_addrs, get_local_ip, is_usb_tether_ip};
 pub use ports::Ports;
 
 pub use crate::types::{ConnectionModes, get_available_connection_modes};

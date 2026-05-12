@@ -88,6 +88,24 @@ Lower values = less latency but more risk of stutter on bad networks. Higher val
 <b>5 GHz Wi-Fi:</b> 40-80 ms<br>
 <b>2.4 GHz Wi-Fi:</b> 100-300 ms`,
   },
+  'audio-bitrate': {
+    title: 'Audio Bitrate Quality',
+    body: `Controls how much the audio is compressed before streaming. Each connected device can choose its own quality independently.
+<br><br>
+<b>VoIP (10-32 Kbps):</b> Heavily compressed. Uses very little bandwidth but sounds noticeably degraded — voices are intelligible but music loses detail. Good for testing or extremely constrained networks.
+<br><br>
+<b>Standard (64-96 Kbps):</b> Decent quality for speech and casual listening. Noticeable compression artifacts in music.
+<br><br>
+<b>High (128-256 Kbps):</b> Good quality for most use cases. <b>128 Kbps</b> is the default — a balanced sweet spot between quality and bandwidth.
+<br><br>
+<b>Very High (450-512 Kbps):</b> Near-transparent quality. Hard to distinguish from uncompressed on most hardware.
+<br><br>
+<b>Uncompressed (Raw PCM):</b> No compression at all — bit-perfect audio. Uses significantly more bandwidth (~1.5 Mbps stereo). Best on USB or fast 5 GHz Wi-Fi.
+<br><br>
+<b>Custom:</b> Set any bitrate between 6-512 Kbps.
+<br><br>
+<b>Note:</b> Changing this setting takes effect on the <b>next connection</b>. If you're currently connected, disconnect and reconnect to apply.`,
+  },
 };
 
 export function initHelpModal() {

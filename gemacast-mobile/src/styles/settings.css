@@ -310,7 +310,7 @@
   align-items: center;
 }
 
-.custom-inputs__row label {
+.custom-inputs__label {
   font-size: 0.9rem;
   color: var(--foreground);
   display: flex;
@@ -588,4 +588,51 @@
 
 .confirm-dialog__ok:active {
   background: var(--destructive-muted);
+}
+
+/* ── Bitrate custom row ── */
+.bitrate-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.bitrate-custom-row__input {
+  flex: 1;
+  width: auto;
+  text-align: left;
+}
+
+.bitrate-custom-row__unit {
+  font-size: 0.9rem;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.bitrate-custom-row__apply {
+  padding: 0.45rem 0.9rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.bitrate-custom-row__apply:active {
+  opacity: 0.8;
+}
+
+.bitrate-custom-row__apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.custom-select__separator {
+  height: 1px;
+  background: var(--border);
+  margin: 0;
 }

@@ -13,22 +13,24 @@ import { JITTER_PRESETS } from './presets';
 
 // Auto preset is the single source of truth for the default fallback config.
 const DEFAULT_AUTO_CONFIG = JITTER_PRESETS.find(p => p.id === 'auto')!.config!;
-
 const LS_LAST_SENDER = 'gemacast_last_sender';
 const LS_SETTINGS = 'gemacast_settings';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   mode: ConnectionMode.Wifi,
-  exclusiveMode: false,
+  exclusiveMode: true,
   bufferPreset: 'auto',
   customJitterConfig: DEFAULT_AUTO_CONFIG,
   savedPresets: [],
+  bitratePreset: '128',
+  customBitrateKbps: 128,
 };
 
 export class StateHandler {
   private state: AppState;
   private subscribers: StateSubscriber[] = [];
+  private pendingNotify = false;
 
   constructor(deviceInfo: DeviceInfo) {
     const lastConnectedSender = StateHandler.loadLastSender();
@@ -39,6 +41,7 @@ export class StateHandler {
       status: Status.Idle,
       discoveredSenders: [],
       connectedSender: null,
+      connectingSenderId: null,
       lastConnectedSender,
       error: null,
       connectionHealth: 'ok',
@@ -51,6 +54,7 @@ export class StateHandler {
       availableModes: { wifi: true, usb: false, adb: false },
       audioSources: [],
       senderCapabilities: null,
+      processList: [],
     };
   }
 
@@ -72,7 +76,24 @@ export class StateHandler {
     if (partial.settings) {
       StateHandler.saveSettings(partial.settings);
     }
-    this.subscribers.forEach((cb) => cb(this.state));
+    // Coalesce multiple rapid setState() calls into one subscriber
+    // notification per vsync frame. Prevents Android's BLASTBufferQueue
+    // overflow when latency, network, and audio-active events fire in
+    // quick succession — each triggering full DOM rebuilds.
+    if (!this.pendingNotify) {
+      this.pendingNotify = true;
+      if (typeof requestAnimationFrame !== 'undefined') {
+        requestAnimationFrame(() => {
+          this.pendingNotify = false;
+          this.subscribers.forEach((cb) => cb(this.state));
+        });
+      } else {
+        setTimeout(() => {
+          this.pendingNotify = false;
+          this.subscribers.forEach((cb) => cb(this.state));
+        }, 0);
+      }
+    }
   }
 
   public displayError(error: string | GemaCastError) {

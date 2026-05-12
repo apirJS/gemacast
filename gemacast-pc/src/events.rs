@@ -17,5 +17,4 @@ pub enum DaemonCommand {
     StopAllStreams,
     StartBroadcasting,
     StopBroadcasting,
-    ChangeBitrate(Option<i32>),
 }

@@ -3,7 +3,9 @@
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
   padding: 4rem 2rem 2rem;
   padding-top: calc(4rem + env(safe-area-inset-top));
   padding-bottom: calc(2rem + env(safe-area-inset-bottom));

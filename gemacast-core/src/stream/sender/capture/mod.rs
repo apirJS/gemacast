@@ -5,6 +5,10 @@ use tokio::sync::{Notify, mpsc};
 use crate::error::GemaCastError;
 
 pub mod cpal_loopback;
+#[cfg(target_os = "windows")]
+pub mod wasapi_common;
+#[cfg(target_os = "windows")]
+pub mod wasapi_desktop;
 pub mod wasapi_loopback;
 
 pub trait CaptureBackend: Send {
@@ -15,5 +19,5 @@ pub struct CaptureHandle {
     pub backend: Box<dyn CaptureBackend>,
     pub consumer: HeapCons<f32>,
     pub notify: Arc<Notify>,
-    pub error_rx: mpsc::Receiver<cpal::StreamError>,
+    pub stream_error_rx: mpsc::Receiver<cpal::StreamError>,
 }

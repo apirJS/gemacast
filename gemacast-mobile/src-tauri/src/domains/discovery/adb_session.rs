@@ -51,12 +51,9 @@ pub async fn run_adb_session(
                         Ok(Ok(n)) if n > 0 => {
                             if let Ok(msg) = serde_json::from_str::<
                                 gemacast_core::types::ControlMessage,
-                            >(
-                                line_buf.trim_end()
-                            ) {
-                                if let gemacast_core::types::ControlMessage::Presence {
-                                    ..
-                                } = &msg
+                            >(line_buf.trim_end())
+                            {
+                                if let gemacast_core::types::ControlMessage::Presence { .. } = &msg
                                 {
                                     last_presence = Some(msg.clone());
                                 }

@@ -7,13 +7,24 @@ import {
   Status,
   AudioSource,
   SenderCapabilities,
+  ProcessInfo,
+  BitratePreset,
 } from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
 import { getPresetConfig } from './presets';
+import { toastManager } from '../dom/toast';
+
+/** Converts a BitratePreset to bits/sec for the Rust backend. null = uncompressed raw PCM. */
+function resolveBitrate(preset: BitratePreset, customKbps: number): number | null {
+  if (preset === 'raw') return null;
+  if (preset === 'custom') return customKbps * 1000;
+  return parseInt(preset, 10) * 1000;
+}
 
 export class ConnectionService {
   private audioResumer: () => Promise<void>;
+  private probeTimer: number | null = null;
 
   constructor(
     private stateHandler: StateHandler,
@@ -37,6 +48,8 @@ export class ConnectionService {
       discoveredSenders: [], // Instantaneously clear the sender list
     });
 
+    toastManager.showWarning('Network offline');
+
     if (state.connectedSender || state.status === Status.Playing) {
       this.stateHandler.setState({
         status: Status.Listening,
@@ -51,17 +64,18 @@ export class ConnectionService {
       isNetworkAvailable: true,
       error: null,
     });
+    toastManager.showInfo('Network online');
   }
 
-  public handleSenderTimeout(senderId: string) {
+  public handleSenderTimeout(deviceId: string) {
     const currentState = this.stateHandler.getState();
 
     const list = currentState.discoveredSenders.filter(
-      (s) => s.deviceId !== senderId,
+      (s) => s.deviceId !== deviceId,
     );
     this.stateHandler.setState({ discoveredSenders: list });
 
-    if (currentState.connectedSender?.deviceId === senderId) {
+    if (currentState.connectedSender?.deviceId === deviceId) {
       this.stateHandler.setState({
         connectionHealth: 'lost',
         status: Status.Listening,
@@ -70,6 +84,8 @@ export class ConnectionService {
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
       this.killPlayback().catch(console.warn);
+
+      toastManager.showWarning('Connection lost');
     }
   }
 
@@ -80,6 +96,7 @@ export class ConnectionService {
       isLoading: true,
       status: Status.Connecting,
       isSuspended: false,
+      connectingSenderId: sender.deviceId,
     });
     try {
       const state = this.stateHandler.getState();
@@ -91,27 +108,42 @@ export class ConnectionService {
         settings.customJitterConfig,
       );
 
+      const isManual = sender.deviceId.startsWith('manual-');
+      const connectionMode = isManual ? 'wifi' : settings.mode;
+
       const transport =
-        settings.mode === 'usb'
+        connectionMode === 'usb'
           ? 'usb'
-          : settings.mode === 'wifi'
+          : connectionMode === 'wifi'
             ? 'wifi'
             : null;
+
+      // Resolve bitrate preset to bits/sec. null = uncompressed raw PCM.
+      const bitrate = resolveBitrate(settings.bitratePreset, settings.customBitrateKbps);
 
       await invoke('connect_to_sender', {
         ip,
         deviceId: state.deviceInfo.deviceId,
         deviceName: state.deviceInfo.deviceName,
-        mode: settings.mode,
+        mode: connectionMode,
         exclusiveMode: settings.exclusiveMode,
         jitterConfig: config,
+        bitrate,
         transport,
       });
+
+      // Establish WebSocket so the PC can push disconnect events to us.
+      // Fire-and-forget: a WS failure must never abort the audio connection.
+      invoke('establish_websocket', {
+        senderIp: ip,
+        deviceId: state.deviceInfo.deviceId,
+      }).catch((e) => console.warn('WebSocket setup failed (non-fatal):', e));
 
       StateHandler.saveLastSender(sender);
 
       this.stateHandler.setState({
         connectedSender: sender,
+        connectingSenderId: null,
         lastConnectedSender: sender,
         status: Status.Connected,
         connectionHealth: 'ok',
@@ -123,7 +155,11 @@ export class ConnectionService {
       await this.audioResumer();
 
       this.fetchAudioSources(sender).catch(console.warn);
+      this.fetchProcessList(sender).catch(console.warn);
 
+      this.startProbeTimer(ip, state.deviceInfo.deviceId);
+
+      toastManager.showSuccess('Connected');
       return ok(true);
     } catch (e) {
       const error = GemaCastError.failedToStartPlayback(e);
@@ -131,6 +167,7 @@ export class ConnectionService {
         error,
         isLoading: false,
         status: Status.Listening,
+        connectingSenderId: null,
       });
       return err(error);
     }
@@ -146,6 +183,7 @@ export class ConnectionService {
       StateHandler.saveLastSender(null);
     }
     this.stateHandler.setState({ isLoading: true });
+    this.stopProbeTimer();
 
     if (!sender) {
       this.stateHandler.setState({
@@ -159,6 +197,7 @@ export class ConnectionService {
       });
       this.stateHandler.updateLatencyInfo(null, null, null, null);
       await invoke('notify_streaming_stopped').catch(console.warn);
+      if (forgetSender) toastManager.showInfo('Disconnected');
       return ok(true);
     }
 
@@ -184,8 +223,10 @@ export class ConnectionService {
       isSuspended: !forgetSender,
       audioSources: [],
       senderCapabilities: null,
+      processList: [],
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
+    if (forgetSender) toastManager.showInfo('Disconnected');
     return ok(true);
   }
 
@@ -224,9 +265,22 @@ export class ConnectionService {
         deviceId: state.deviceInfo.deviceId,
         source,
       });
+      toastManager.showSuccess('Audio source changed');
       return ok(true);
-    } catch (e) {
+    } catch (e: any) {
+      console.error('Failed to change source:', e);
       return err(GemaCastError.from(e));
+    }
+  }
+
+  public async fetchProcessList(sender: DiscoveredSender): Promise<void> {
+    try {
+      const ip = sender.addr.split(':')[0];
+      const processes = await invoke<ProcessInfo[]>('get_process_list', { ip });
+      this.stateHandler.setState({ processList: processes });
+    } catch (e) {
+      console.warn('Failed to fetch process list:', e);
+      this.stateHandler.setState({ processList: [] });
     }
   }
 
@@ -258,6 +312,22 @@ export class ConnectionService {
       await invoke('kill_playback');
     } catch (e) {
       console.warn('kill_playback IPC failed:', e);
+    }
+  }
+
+  private startProbeTimer(ip: string, deviceId: string) {
+    this.stopProbeTimer();
+    this.probeTimer = window.setInterval(() => {
+      invoke('probe_sender', { ip, deviceId }).catch((e) => {
+        console.warn('Failed to probe sender via HTTP:', e);
+      });
+    }, 5000);
+  }
+
+  private stopProbeTimer() {
+    if (this.probeTimer) {
+      clearInterval(this.probeTimer);
+      this.probeTimer = null;
     }
   }
 }

@@ -78,6 +78,8 @@ export type SavedPreset = {
 
 export type PresetId = 'auto' | 'wired' | 'fast' | 'balanced' | 'stable' | 'resilient' | 'custom';
 
+export type BitratePreset = '10' | '24' | '32' | '64' | '96' | '128' | '256' | '450' | '512' | 'raw' | 'custom';
+
 export type AppSettings = {
   theme: 'light' | 'dark';
   mode: ConnectionMode;
@@ -85,14 +87,22 @@ export type AppSettings = {
   bufferPreset: PresetId;
   customJitterConfig: JitterConfig;
   savedPresets: SavedPreset[];
+  bitratePreset: BitratePreset;
+  customBitrateKbps: number;
 };
 
 export type AudioSource =
   | { type: 'desktop' }
-  | { type: 'process'; pid: number; name: string };
+  | { type: 'process'; pid: number; name: string; hasAudioSession?: boolean };
 
 export type SenderCapabilities = {
   supportsProcessCapture: boolean;
+};
+
+export type ProcessInfo = {
+  pid: number;
+  name: string;
+  hasAudioSession: boolean;
 };
 
 export type AppState = {
@@ -100,6 +110,7 @@ export type AppState = {
   status: Status;
   discoveredSenders: DiscoveredSender[];
   connectedSender: DiscoveredSender | null;
+  connectingSenderId: string | null;
   /** Persisted across reconnects — used for auto-reconnect. Cleared on explicit user disconnect. */
   lastConnectedSender: DiscoveredSender | null;
   error: GemaCastError | null;
@@ -113,6 +124,7 @@ export type AppState = {
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
   audioSources: AudioSource[];
   senderCapabilities: SenderCapabilities | null;
+  processList: ProcessInfo[];
 };
 
 export type StateSubscriber = (state: AppState) => void;

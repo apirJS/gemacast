@@ -1,15 +1,12 @@
 import { listen } from '@tauri-apps/api/event';
-import { App } from '../App';
-import { DiscoveredSender } from '../types';
-import { GemaCastError } from '../error';
+import { App } from '../../App';
+import { DiscoveredSender } from '../../types';
+import { GemaCastError } from '../../error';
 
 export function listenForTauriEvents(app: App) {
-  listen<number>('latency-update', (event) => {
-    app.latency.updateLatency(event.payload);
-  });
-
-  listen<boolean>('audio-active', (event) => {
-    app.audio.updateAudioActive(event.payload);
+  listen<{ latency: number; isActive: boolean }>('audio-telemetry', (event) => {
+    app.latency.updateLatency(event.payload.latency);
+    app.audio.updateAudioActive(event.payload.isActive);
   });
 
   listen<string>('playback-error', (event) => {
@@ -31,6 +28,11 @@ export function listenForTauriEvents(app: App) {
   listen('force-disconnect', () => {
     app.connection.handleForceDisconnect();
   });
+
+  listen('ws-disconnect', () => {
+    app.connection.handleForceDisconnect();
+  });
+
   listen<string>('service-command', async (event) => {
     const cmd = event.payload;
     if (cmd === 'DISCONNECT') {

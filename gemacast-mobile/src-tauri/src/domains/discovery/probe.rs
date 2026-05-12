@@ -3,11 +3,7 @@ use gemacast_core::types::{ConnectionMode, DeviceId};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
-pub async fn run_probe_loop(
-    socket: Arc<UdpSocket>,
-    device_id: DeviceId,
-    mode: ConnectionMode,
-) {
+pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: ConnectionMode) {
     if mode == ConnectionMode::Adb {
         return;
     }
@@ -40,6 +36,8 @@ pub async fn run_probe_loop(
     }
 }
 
+/// Collects the /24 subnets for all non-loopback IPv4 interfaces.
+/// Falls back to common USB-tethering subnets if none are found.
 fn collect_local_subnets() -> Vec<(u8, u8, u8)> {
     let mut subnets = Vec::new();
     for iface in netdev::get_interfaces() {
