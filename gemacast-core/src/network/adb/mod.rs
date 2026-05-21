@@ -1,7 +1,7 @@
 pub mod framer;
 pub mod reverse;
-pub mod spigots;
+pub mod server;
 
 pub use framer::TcpAudioFramer;
-pub use reverse::spawn_adb_reverse_watchdog;
-pub use spigots::{PresenceProvider, spawn_audio_spigot, spawn_discovery_spigot};
+pub use reverse::spawn_adb_port_forwarding_watchdog;
+pub use server::{PresenceProvider, spawn_adb_audio_tcp_server, spawn_adb_discovery_tcp_server};

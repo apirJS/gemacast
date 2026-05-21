@@ -1,26 +1,23 @@
 use crate::network::Ports;
-use crate::types::{ControlMessage, DeviceId, SenderId};
+use crate::types::{ControlMessage, DeviceId};
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use super::framer::TcpAudioFramer;
 
-/// Trait abstracting the broadcaster state needed by the ADB discovery spigot.
-///
-/// Decouples the spigot from platform-specific state. Consumers implement
-/// this for their platform and pass it in.
 pub trait PresenceProvider: Send + Sync + 'static {
     fn is_broadcasting(&self) -> bool;
-    fn sender_id(&self) -> SenderId;
+    fn sender_id(&self) -> DeviceId;
     fn sender_name(&self) -> String;
 }
 
-/// Binds TCP on the ADB audio port and frames binary audio packets from
-/// the engine broadcast channel using [`TcpAudioFramer`].
-pub fn spawn_audio_spigot(
+pub fn spawn_adb_audio_tcp_server(
     set: &mut JoinSet<()>,
-    tcp_broadcaster_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+    tcp_source_watch_rx: tokio::sync::watch::Receiver<
+        Option<tokio::sync::broadcast::Sender<Arc<Vec<u8>>>>,
+    >,
     tcp_drop_tx_for_audio: tokio::sync::broadcast::Sender<()>,
+    error_tx: tokio::sync::mpsc::Sender<String>,
 ) {
     set.spawn(async move {
         let listener = {
@@ -32,8 +29,14 @@ pub fn spawn_audio_spigot(
                     Err(e) => {
                         attempts += 1;
                         if attempts >= 10 {
-                            eprintln!("Failed to bind ADB audio TCP listener after 10 attempts: {}", e);
-                            std::process::exit(1);
+                            let e_str = e.to_string();
+                            let msg = if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
+                                "ADB Audio Port (4040) is already in use by another application. Please check your Task Manager.".to_string()
+                            } else {
+                                format!("Failed to bind ADB audio TCP listener: {}", e)
+                            };
+                            let _ = error_tx.send(msg).await;
+                            return;
                         }
                         
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -48,38 +51,60 @@ pub fn spawn_audio_spigot(
                 Err(_) => continue,
             };
             let _ = socket.set_nodelay(true);
-            
-            let mut rx = tcp_broadcaster_tx.subscribe();
-            
+
+            // Get the current broadcast sender (if any)
+            let initial_broadcaster = tcp_source_watch_rx.borrow().clone();
+            let mut source_watch = tcp_source_watch_rx.clone();
             let mut drop_rx = tcp_drop_tx_for_audio.subscribe();
 
             tokio::spawn(async move {
                 let mut framer = TcpAudioFramer::new();
+                let mut current_rx: Option<tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>> =
+                    initial_broadcaster.map(|tx| tx.subscribe());
+
                 loop {
                     tokio::select! {
-                        msg = rx.recv() => {
+                        // Forward audio packets from the current broadcast source
+                        msg = async {
+                            match current_rx.as_mut() {
+                                Some(rx) => rx.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
                             match msg {
                                 Ok(packet) => {
                                     framer.clear();
                                     framer.append_packet(&packet);
 
-                                    while let Ok(msg2) = rx.try_recv() {
-                                        framer.append_packet(&msg2);
+                                    // Drain any queued packets
+                                    if let Some(rx) = current_rx.as_mut() {
+                                        while let Ok(msg2) = rx.try_recv() {
+                                            framer.append_packet(&msg2);
+                                        }
                                     }
 
                                     if framer.flush(&mut socket).await.is_err() {
-                                        
                                         break;
                                     }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_n)) => {
-                                    
                                     // Drain stale packets to catch up rather than playing old audio
-                                    while rx.try_recv().is_ok() {}
+                                    if let Some(rx) = current_rx.as_mut() {
+                                        while rx.try_recv().is_ok() {}
+                                    }
                                     continue;
                                 }
-                                Err(_) => break,
+                                Err(_) => {
+                                    // Channel closed — wait for source watch to provide a new one
+                                    current_rx = None;
+                                    continue;
+                                }
                             }
+                        }
+                        // Source changed — re-subscribe to the new broadcast channel
+                        _ = source_watch.changed() => {
+                            let new_broadcaster = source_watch.borrow().clone();
+                            current_rx = new_broadcaster.map(|tx| tx.subscribe());
                         }
                         _ = drop_rx.recv() => {
                             break;
@@ -91,14 +116,14 @@ pub fn spawn_audio_spigot(
     });
 }
 
-/// Binds TCP on the ADB discovery port and handles discovery handshakes /
-/// keepalive loops with ADB clients.
-pub fn spawn_discovery_spigot<P: PresenceProvider>(
+
+pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
     set: &mut JoinSet<()>,
     presence_provider: Arc<P>,
     combined_tx_for_tcp: tokio::sync::mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
     tcp_drop_tx_for_discovery: tokio::sync::broadcast::Sender<()>,
     adb_control_tx: tokio::sync::broadcast::Sender<ControlMessage>,
+    error_tx: tokio::sync::mpsc::Sender<String>,
 ) {
     set.spawn(async move {
         let listener = {
@@ -110,8 +135,14 @@ pub fn spawn_discovery_spigot<P: PresenceProvider>(
                     Err(e) => {
                         attempts += 1;
                         if attempts >= 10 {
-                            eprintln!("Failed to bind ADB discovery TCP listener after 10 attempts: {}", e);
-                            std::process::exit(1);
+                            let e_str = e.to_string();
+                            let msg = if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
+                                "ADB Discovery Port (4041) is already in use by another application. Please check your Task Manager.".to_string()
+                            } else {
+                                format!("Failed to bind ADB discovery TCP listener: {}", e)
+                            };
+                            let _ = error_tx.send(msg).await;
+                            return;
                         }
                         
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -135,7 +166,7 @@ pub fn spawn_discovery_spigot<P: PresenceProvider>(
             let is_offline = !is_brdcst;
 
             let presence = ControlMessage::Presence {
-                sender_id: sid,
+                device_id: sid,
                 sender_name: sname,
                 is_offline,
                 transport: None,
@@ -183,7 +214,7 @@ pub fn spawn_discovery_spigot<P: PresenceProvider>(
 
                             let is_brcst_now = pp_clone.is_broadcasting();
                             let presence_update = ControlMessage::Presence {
-                                sender_id: sid_task.clone(),
+                                device_id: sid_task.clone(),
                                 sender_name: sname_task.clone(),
                                 is_offline: !is_brcst_now,
                                 transport: None,
@@ -208,14 +239,8 @@ pub fn spawn_discovery_spigot<P: PresenceProvider>(
                                     while let Some(pos) = accum[start..].iter().position(|&b| b == b'\n') {
                                         let chunk = &accum[start..start + pos];
                                         if let Ok(msg) = serde_json::from_slice::<ControlMessage>(chunk) {
-                                            match &msg {
-                                                ControlMessage::Connect { device_id, .. } => {
-                                                    adb_device_id = Some(device_id.clone());
-                                                }
-                                                ControlMessage::Probe { device_id: Some(id), .. } => {
-                                                    adb_device_id = Some(id.clone());
-                                                }
-                                                _ => {}
+                                            if let ControlMessage::Probe { device_id: Some(id), .. } = &msg {
+                                                adb_device_id = Some(id.clone());
                                             }
                                             let peer = socket.peer_addr().unwrap_or(
                                                 std::net::SocketAddr::new(
@@ -227,28 +252,6 @@ pub fn spawn_discovery_spigot<P: PresenceProvider>(
                                         }
                                         start += pos + 1;
                                     }
-
-                                    if start == 0 && n > 0 && accum.ends_with(b"}")
-                                        && let Ok(msg) = serde_json::from_slice::<ControlMessage>(&accum) {
-                                            match &msg {
-                                                ControlMessage::Connect { device_id, .. } => {
-                                                    adb_device_id = Some(device_id.clone());
-                                                }
-                                                ControlMessage::Probe { device_id: Some(id), .. } => {
-                                                    adb_device_id = Some(id.clone());
-                                                }
-                                                _ => {}
-                                            }
-                                            let peer = socket.peer_addr().unwrap_or(
-                                                std::net::SocketAddr::new(
-                                                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                                                    Ports::ADB_DISCOVERY_TCP,
-                                                ),
-                                            );
-                                            let _ = combined_tx_clone.send((msg, peer)).await;
-                                            accum.clear();
-                                            start = accum.len();
-                                        }
 
                                     accum.drain(..start);
                                 }

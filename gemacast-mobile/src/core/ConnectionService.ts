@@ -7,6 +7,7 @@ import {
   Status,
   AudioSource,
   SenderCapabilities,
+  ProcessInfo,
 } from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
@@ -57,15 +58,15 @@ export class ConnectionService {
     toastManager.showInfo('Network online');
   }
 
-  public handleSenderTimeout(senderId: string) {
+  public handleSenderTimeout(deviceId: string) {
     const currentState = this.stateHandler.getState();
 
     const list = currentState.discoveredSenders.filter(
-      (s) => s.deviceId !== senderId,
+      (s) => s.deviceId !== deviceId,
     );
     this.stateHandler.setState({ discoveredSenders: list });
 
-    if (currentState.connectedSender?.deviceId === senderId) {
+    if (currentState.connectedSender?.deviceId === deviceId) {
       this.stateHandler.setState({
         connectionHealth: 'lost',
         status: Status.Listening,
@@ -114,6 +115,13 @@ export class ConnectionService {
         transport,
       });
 
+      // Establish WebSocket so the PC can push disconnect events to us.
+      // Fire-and-forget: a WS failure must never abort the audio connection.
+      invoke('establish_websocket', {
+        senderIp: ip,
+        deviceId: state.deviceInfo.deviceId,
+      }).catch((e) => console.warn('WebSocket setup failed (non-fatal):', e));
+
       StateHandler.saveLastSender(sender);
 
       this.stateHandler.setState({
@@ -129,6 +137,7 @@ export class ConnectionService {
       await this.audioResumer();
 
       this.fetchAudioSources(sender).catch(console.warn);
+      this.fetchProcessList(sender).catch(console.warn);
 
       toastManager.showSuccess('Connected');
       return ok(true);
@@ -192,6 +201,7 @@ export class ConnectionService {
       isSuspended: !forgetSender,
       audioSources: [],
       senderCapabilities: null,
+      processList: [],
     });
     this.stateHandler.updateLatencyInfo(null, null, null, null);
     if (forgetSender) toastManager.showInfo('Disconnected');
@@ -237,6 +247,17 @@ export class ConnectionService {
       return ok(true);
     } catch (e) {
       return err(GemaCastError.from(e));
+    }
+  }
+
+  public async fetchProcessList(sender: DiscoveredSender): Promise<void> {
+    try {
+      const ip = sender.addr.split(':')[0];
+      const processes = await invoke<ProcessInfo[]>('get_process_list', { ip });
+      this.stateHandler.setState({ processList: processes });
+    } catch (e) {
+      console.warn('Failed to fetch process list:', e);
+      this.stateHandler.setState({ processList: [] });
     }
   }
 

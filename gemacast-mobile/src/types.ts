@@ -89,10 +89,16 @@ export type AppSettings = {
 
 export type AudioSource =
   | { type: 'desktop' }
-  | { type: 'process'; pid: number; name: string };
+  | { type: 'process'; pid: number; name: string; hasAudioSession?: boolean };
 
 export type SenderCapabilities = {
   supportsProcessCapture: boolean;
+};
+
+export type ProcessInfo = {
+  pid: number;
+  name: string;
+  hasAudioSession: boolean;
 };
 
 export type AppState = {
@@ -113,6 +119,7 @@ export type AppState = {
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
   audioSources: AudioSource[];
   senderCapabilities: SenderCapabilities | null;
+  processList: ProcessInfo[];
 };
 
 export type StateSubscriber = (state: AppState) => void;

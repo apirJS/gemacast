@@ -5,78 +5,87 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::broadcast::SenderCommand;
 use super::capture::CaptureHandle;
 use super::encode::{EncodeResult, encode_frame};
+use super::engine::CaptureCommand;
 use crate::audio::{MAX_OPUS_PACKET_SIZE, OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE, create_opus_encoder};
-use crate::error::{AudioCaptureError, GemaCastError, NetworkError};
+use crate::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
 use crate::types::AudioSource;
 
-pub struct CaptureInstance {
+pub struct AudioCaptureInstance {
     pub targets: HashSet<SocketAddr>,
-    pub tcp_broadcaster_tx: broadcast::Sender<Arc<Vec<u8>>>,
-    pub command_tx: mpsc::Sender<SenderCommand>,
-    pub stop_tx: Option<oneshot::Sender<()>>,
+    pub audio_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
+    pub capture_command_tx: mpsc::Sender<CaptureCommand>,
+    pub capture_shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
-impl CaptureInstance {
+impl AudioCaptureInstance {
     pub fn new(capture: CaptureHandle) -> Result<Self, GemaCastError> {
-        let (tcp_broadcaster_tx, _) = broadcast::channel(4000);
-        let (command_tx, command_rx) = mpsc::channel(32);
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let tcp_tx_clone = tcp_broadcaster_tx.clone();
+        let (audio_broadcast_tx, _) = broadcast::channel(4000);
+        let (capture_command_tx, capture_command_rx) = mpsc::channel(32);
+        let (capture_shutdown_tx, capture_shutdown_rx) = oneshot::channel();
+        let tcp_tx_clone = audio_broadcast_tx.clone();
 
         tokio::spawn(async move {
-            let _ = Self::run_encode_loop(capture, command_rx, stop_rx, tcp_tx_clone).await;
+            let _ = Self::run_capture_and_encode_loop(
+                capture,
+                capture_command_rx,
+                capture_shutdown_rx,
+                tcp_tx_clone,
+            )
+            .await;
         });
 
         Ok(Self {
             targets: HashSet::new(),
-            tcp_broadcaster_tx,
-            command_tx,
-            stop_tx: Some(stop_tx),
+            audio_broadcast_tx,
+            capture_command_tx,
+            capture_shutdown_tx: Some(capture_shutdown_tx),
         })
     }
 
-    async fn run_encode_loop(
+    async fn run_capture_and_encode_loop(
         mut capture: CaptureHandle,
-        mut command_rx: mpsc::Receiver<SenderCommand>,
-        mut stop_rx: oneshot::Receiver<()>,
-        tcp_broadcaster_tx: broadcast::Sender<Arc<Vec<u8>>>,
+        mut capture_command_rx: mpsc::Receiver<CaptureCommand>,
+        mut capture_shutdown_rx: oneshot::Receiver<()>,
+        audio_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
     ) -> Result<(), GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| {
-            NetworkError::BindFailed {
+            NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             }
         })?;
 
-        let _ = socket.set_tos(0xB8);
+        let _ = socket.set_tos_v4(0xB8);
 
         socket
             .bind(&addr.into())
-            .map_err(|e| NetworkError::BindFailed {
+            .map_err(|e| NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
 
         socket
             .set_nonblocking(true)
-            .map_err(|e| NetworkError::BindFailed {
+            .map_err(|e| NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
 
         let audio_socket =
-            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::BindFailed {
+            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
 
         let mut current_bitrate = Some(128_000);
-        let mut encoder = create_opus_encoder().map_err(AudioCaptureError::OpusEncoderFailed)?;
+        let mut encoder = create_opus_encoder().map_err(|e| AudioError::OpusInitFailed {
+            direction: CodecDirection::Encoder,
+            source: e,
+        })?;
         let mut seq_num: u64 = 0;
         let mut frame_buf = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
@@ -91,23 +100,23 @@ impl CaptureInstance {
 
         loop {
             tokio::select! {
-                Some(command) = command_rx.recv() => {
+                Some(command) = capture_command_rx.recv() => {
                     match command {
-                        SenderCommand::AddTarget(target_addr) => {
+                        CaptureCommand::AddTarget(target_addr) => {
                             let is_new = targets.insert(target_addr);
                             if is_new {
                                 let _ = encoder.reset_state();
                                 sample_buf.clear();
                             }
                         }
-                        SenderCommand::RemoveTarget(target_addr) => {
+                        CaptureCommand::RemoveTarget(target_addr) => {
                             targets.remove(&target_addr);
                             if targets.is_empty() {
                                 let _ = encoder.reset_state();
                                 sample_buf.clear();
                             }
                         }
-                        SenderCommand::ChangeBitrate(bitrate_opt) => {
+                        CaptureCommand::ChangeBitrate(bitrate_opt) => {
                             let previous_bitrate = current_bitrate;
                             current_bitrate = bitrate_opt;
 
@@ -128,7 +137,7 @@ impl CaptureInstance {
                         continue;
                     }
 
-                    let has_tcp_listeners = tcp_broadcaster_tx.receiver_count() > 0;
+                    let has_tcp_listeners = audio_broadcast_tx.receiver_count() > 0;
                     if targets.is_empty() && !has_tcp_listeners {
                         while capture.consumer.try_pop().is_some() {}
                         continue;
@@ -157,10 +166,10 @@ impl CaptureInstance {
                             continue;
                         }
 
-                        let has_tcp_subs = tcp_broadcaster_tx.receiver_count() > 0;
+                        let has_tcp_subs = audio_broadcast_tx.receiver_count() > 0;
                         let arc_packet = if has_tcp_subs {
                             let shared = Arc::new(packet_buf.clone());
-                            let _ = tcp_broadcaster_tx.send(Arc::clone(&shared));
+                            let _ = audio_broadcast_tx.send(Arc::clone(&shared));
                             Some(shared)
                         } else {
                             None
@@ -178,10 +187,10 @@ impl CaptureInstance {
                         seq_num = seq_num.wrapping_add(1);
                     }
                 },
-                Some(stream_error) = capture.error_rx.recv() => {
-                    return Err(AudioCaptureError::StreamError(stream_error).into());
+                Some(stream_error) = capture.stream_error_rx.recv() => {
+                    return Err(AudioError::StreamError(stream_error).into());
                 },
-                _ = &mut stop_rx => {
+                _ = &mut capture_shutdown_rx => {
                     let _ = capture.backend.pause();
                     break;
                 }
@@ -194,7 +203,7 @@ impl CaptureInstance {
 }
 
 pub struct CapturePool {
-    instances: HashMap<AudioSource, CaptureInstance>,
+    instances: HashMap<AudioSource, AudioCaptureInstance>,
     max_instances: usize,
     pub supports_process_capture: bool,
 }
@@ -215,7 +224,7 @@ impl CapturePool {
     ) -> Result<broadcast::Sender<Arc<Vec<u8>>>, GemaCastError> {
         if !self.instances.contains_key(&source) {
             if self.instances.len() >= self.max_instances {
-                return Err(AudioCaptureError::CapturePoolExhausted {
+                return Err(AudioError::CapturePoolExhausted {
                     max: self.max_instances,
                 }
                 .into());
@@ -223,9 +232,10 @@ impl CapturePool {
 
             let handle = match &source {
                 AudioSource::Desktop => super::capture::cpal_loopback::create_cpal_loopback()?,
+                #[allow(unused_variables)]
                 AudioSource::Process { pid, .. } => {
                     if !self.supports_process_capture {
-                        return Err(AudioCaptureError::ProcessCaptureUnavailable.into());
+                        return Err(AudioError::ProcessCaptureUnavailable.into());
                     }
                     #[cfg(windows)]
                     {
@@ -233,12 +243,12 @@ impl CapturePool {
                     }
                     #[cfg(not(windows))]
                     {
-                        return Err(AudioCaptureError::ProcessCaptureUnavailable.into());
+                        return Err(AudioError::ProcessCaptureUnavailable.into());
                     }
                 }
             };
 
-            let instance = CaptureInstance::new(handle)?;
+            let instance = AudioCaptureInstance::new(handle)?;
             self.instances.insert(source.clone(), instance);
         }
 
@@ -246,12 +256,12 @@ impl CapturePool {
         if let Some(addr) = target_addr {
             instance.targets.insert(addr);
             let _ = instance
-                .command_tx
-                .send(SenderCommand::AddTarget(addr))
+                .capture_command_tx
+                .send(CaptureCommand::AddTarget(addr))
                 .await;
         }
 
-        Ok(instance.tcp_broadcaster_tx.clone())
+        Ok(instance.audio_broadcast_tx.clone())
     }
 
     pub async fn unsubscribe(
@@ -263,17 +273,17 @@ impl CapturePool {
             if let Some(addr) = target_addr {
                 instance.targets.remove(&addr);
                 let _ = instance
-                    .command_tx
-                    .send(SenderCommand::RemoveTarget(addr))
+                    .capture_command_tx
+                    .send(CaptureCommand::RemoveTarget(addr))
                     .await;
             }
 
             let is_teardown_eligible = !matches!(source, AudioSource::Desktop);
             if is_teardown_eligible
                 && instance.targets.is_empty()
-                && instance.tcp_broadcaster_tx.receiver_count() == 0
+                && instance.audio_broadcast_tx.receiver_count() == 0
                 && let Some(mut removed) = self.instances.remove(source)
-                && let Some(stop_tx) = removed.stop_tx.take()
+                && let Some(stop_tx) = removed.capture_shutdown_tx.take()
             {
                 let _ = stop_tx.send(());
             }
@@ -294,8 +304,8 @@ impl CapturePool {
     pub async fn change_bitrate(&mut self, bitrate: Option<i32>) {
         for instance in self.instances.values() {
             let _ = instance
-                .command_tx
-                .send(SenderCommand::ChangeBitrate(bitrate))
+                .capture_command_tx
+                .send(CaptureCommand::ChangeBitrate(bitrate))
                 .await;
         }
     }
@@ -303,16 +313,11 @@ impl CapturePool {
     pub fn available_sources(&self) -> Result<Vec<AudioSource>, GemaCastError> {
         let mut sources = vec![AudioSource::Desktop];
 
-        // Return existing process sources so the UI knows they are active
         for source in self.instances.keys() {
             if let AudioSource::Process { .. } = source {
                 sources.push(source.clone());
             }
         }
-
-        // Ideally here we would enumerate all active audio processes,
-        // but for now we just return the currently active ones + Desktop.
-        // The mobile client expects to be able to request ANY PID if they have it.
 
         Ok(sources)
     }
@@ -323,6 +328,6 @@ impl CapturePool {
     ) -> Option<broadcast::Sender<Arc<Vec<u8>>>> {
         self.instances
             .get(source)
-            .map(|i| i.tcp_broadcaster_tx.clone())
+            .map(|i| i.audio_broadcast_tx.clone())
     }
 }

@@ -1,6 +1,8 @@
+//! Sender-side audio capture, encoding, and streaming.
+
 pub mod capture_pool;
-pub mod broadcast;
+pub mod engine;
 pub mod encode;
 pub mod capture;
 
-pub use broadcast::{StreamCommand, StreamEngine};
+pub use engine::{AudioStreamCommand, AudioStreamEngine};

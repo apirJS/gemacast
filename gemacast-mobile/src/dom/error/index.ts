@@ -1,13 +1,22 @@
-import { App } from '../App';
-import { AppState } from '../types';
-import { toastManager } from './toast';
+import { App } from '../../App';
+import { AppState } from '../../types';
+import { toastManager } from '../toast';
+import { GemaCastError } from '../../error';
 
 export function setupErrorSection(app: App) {
+  let lastError: GemaCastError | null = null;
+
   app.stateHandler.subscribe((state: AppState) => {
     if (!state.error) {
       toastManager.clearError();
+      lastError = null;
       return;
     }
+
+    if (state.error === lastError) {
+      return;
+    }
+    lastError = state.error;
 
     let detail = 'No additional details available.';
     if (state.error.cause instanceof Error) {

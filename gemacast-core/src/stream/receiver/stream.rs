@@ -1,6 +1,6 @@
 use crate::{
     audio::{OPUS_SAMPLE_RATE, create_opus_decoder},
-    error::{AudioCaptureError, GemaCastError},
+    error::{AudioError, CodecDirection, GemaCastError, StreamDirection},
     jitter::{JitterBufferManager, RawPacket},
     types::JitterConfig,
 };
@@ -80,13 +80,16 @@ pub fn build_playback_stream(
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
-    error_tx: mpsc::Sender<StreamError>,
+    stream_error_tx: mpsc::Sender<StreamError>,
 ) -> Result<PlaybackStream, GemaCastError> {
-    let decoder = create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
+    let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
+        direction: CodecDirection::Decoder,
+        source: e,
+    })?;
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
+        .ok_or(AudioError::NoOutputDevice)?;
 
     let mut buffer_size = cpal::BufferSize::Default;
 
@@ -134,11 +137,17 @@ pub fn build_playback_stream(
                 jitter_manager.fill_output(data, vol);
             },
             move |e| {
-                let _ = error_tx.blocking_send(e);
+                let _ = stream_error_tx.blocking_send(e);
             },
             None,
         )
-        .map_err(|e| AudioCaptureError::FailedToBuildOutputStream(e).into())
+        .map_err(|e| {
+            AudioError::BuildStreamFailed {
+                direction: StreamDirection::Output,
+                source: e,
+            }
+            .into()
+        })
 }
 
 #[cfg(target_os = "android")]
@@ -151,7 +160,10 @@ pub fn build_playback_stream(
     latency_metric: Arc<AtomicU32>,
     exclusive_mode: bool,
 ) -> Result<PlaybackStream, GemaCastError> {
-    let decoder = create_opus_decoder().map_err(AudioCaptureError::OpusDecoderFailed)?;
+    let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
+        direction: CodecDirection::Decoder,
+        source: e,
+    })?;
     let callback = OboeCallback {
         jitter_manager: JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode),
         packet_consumer,
@@ -173,7 +185,10 @@ pub fn build_playback_stream(
         .set_callback(callback);
 
     let stream = builder.open_stream().map_err(|_| {
-        AudioCaptureError::FailedToBuildOutputStream(cpal::BuildStreamError::DeviceNotAvailable)
+        AudioError::BuildStreamFailed {
+            direction: StreamDirection::Output,
+            source: cpal::BuildStreamError::DeviceNotAvailable,
+        }
     })?;
     Ok(stream)
 }

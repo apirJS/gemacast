@@ -1,4 +1,4 @@
-use crate::audio::{FORMAT_SILENCE, FORMAT_UNCOMPRESSED, FORMAT_FLAG_SIZE, SEQ_NUM_SIZE};
+use crate::audio::{FORMAT_FLAG_SIZE, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, SEQ_NUM_SIZE};
 use crate::jitter::RawPacket;
 use std::time::Instant;
 
@@ -31,11 +31,7 @@ pub fn parse_packet(buffer: &[u8], len: usize) -> Option<RawPacket> {
     })
 }
 
-pub fn compute_rms(
-    rms_data: &[u8],
-    is_silence: bool,
-    is_uncompressed: bool,
-) -> f32 {
+pub fn compute_rms(rms_data: &[u8], is_silence: bool, is_uncompressed: bool) -> f32 {
     if is_silence {
         return 0.0;
     }
@@ -67,7 +63,9 @@ pub fn compute_rms(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, SEQ_NUM_SIZE, FORMAT_FLAG_SIZE};
+    use crate::audio::{
+        FORMAT_FLAG_SIZE, FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, SEQ_NUM_SIZE,
+    };
 
     fn build_raw(seq: u64, format_flag: u8, payload: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();

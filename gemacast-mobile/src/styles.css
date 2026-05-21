@@ -9,6 +9,7 @@
 @import './styles/latency.css';
 @import './styles/senders.css';
 @import './styles/source-select.css';
+@import './styles/process-select.css';
 @import './styles/error.css';
 @import './styles/toast.css';
 

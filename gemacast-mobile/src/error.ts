@@ -39,13 +39,17 @@ export class GemaCastError extends Error {
 
     this.name = 'GemaCastError';
     this.code = options.code;
-    this.userMessage = ERROR_MESSAGES[this.code];
+    this.userMessage = options.message ?? ERROR_MESSAGES[this.code];
   }
 
   public static failedToStartDiscovery(error: unknown) {
+    let message = ERROR_MESSAGES[ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY];
+    if (typeof error === 'string' && error.includes('already in use')) {
+      message = error;
+    }
     return new GemaCastError({
       code: ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY,
-      message: ERROR_MESSAGES[ErrorCode.NETWORK_FAILED_TO_START_DISCOVERY],
+      message,
       cause: error,
     });
   }
