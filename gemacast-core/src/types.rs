@@ -2,9 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::fmt;
 
-/// Strongly-typed wrapper for device identifiers (mobile/receiver side).
-///
-/// Serializes transparently as a raw JSON string for wire compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DeviceId(pub String);
@@ -33,66 +30,52 @@ impl From<String> for DeviceId {
     }
 }
 
-/// Strongly-typed wrapper for sender identifiers (PC/broadcaster side).
-///
-/// Serializes transparently as a raw JSON string for wire compatibility.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SenderId(pub String);
-
-impl fmt::Display for SenderId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+impl DeviceId {
+    pub fn new() -> Self {
+        DeviceId(format!(
+            "PC_{}",
+            whoami::hostname().unwrap_or("UNKNOWN".to_string())
+        ))
     }
 }
 
-impl AsRef<str> for SenderId {
-    fn as_ref(&self) -> &str {
-        &self.0
+impl Default for DeviceId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl Borrow<str> for SenderId {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for SenderId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-/// The physical network transport a presence announcement was received over.
-///
-/// This is distinct from [`ConnectionMode`] which describes the user's chosen
-/// connection strategy. `TransportType` is a runtime observation embedded in
-/// `Presence` and `Connect` messages by the mobile client's native transport
-/// detection layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
     Wifi,
     Usb,
+    Adb,
 }
 
-/// What audio source a receiver wants to listen to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AudioSource {
-    /// Entire desktop audio (system loopback). Always available.
     #[default]
     Desktop,
-    /// A specific process by PID. Only available on Windows with WASAPI support.
-    Process { pid: u32, name: String },
+    Process {
+        pid: u32,
+        name: String,
+    },
 }
 
-/// Capabilities reported by the PC sender to connected receivers.
+/// A running process discovered on the PC sender, suitable for per-process audio capture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub has_audio_session: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SenderCapabilities {
-    /// True if the sender supports per-process audio capture (Windows + WASAPI).
     pub supports_process_capture: bool,
 }
 
@@ -112,14 +95,14 @@ pub struct DiscoveredDevice {
 
 impl DiscoveredDevice {
     pub fn from_presence(
-        sender_id: SenderId,
+        sender_id: DeviceId,
         sender_name: String,
         is_offline: bool,
         addr: std::net::SocketAddr,
         transport: Option<TransportType>,
     ) -> Self {
         Self {
-            device_id: DeviceId(sender_id.0),
+            device_id: sender_id,
             device_name: sender_name,
             last_seen: std::time::Instant::now(),
             addr,
@@ -138,7 +121,6 @@ pub enum ConnectionMode {
     Adb,
 }
 
-/// Runtime availability of each connection mode, as reported to the frontend.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectionModes {
     pub wifi: bool,
@@ -146,8 +128,6 @@ pub struct ConnectionModes {
     pub adb: bool,
 }
 
-/// Returns the default connection mode availability (all enabled).
-/// Platform-specific detection narrows this down at runtime.
 pub fn get_available_connection_modes() -> ConnectionModes {
     ConnectionModes {
         wifi: true,
@@ -162,14 +142,10 @@ pub struct JitterConfig {
     pub min_depth_ms: u32,
     pub comfort_cap_ms: u32,
     pub peak_decay_halflife_ms: u32,
-    pub resume_threshold_pct: f32, // e.g., 0.75 for 75%
-    /// When set, bypasses all adaptive EMA math and locks the buffer
-    /// to this exact depth in milliseconds. `None` = adaptive mode.
+    pub resume_threshold_pct: f32,
     #[serde(default)]
     pub static_target_ms: Option<u32>,
 }
-
-
 
 impl Default for JitterConfig {
     fn default() -> Self {

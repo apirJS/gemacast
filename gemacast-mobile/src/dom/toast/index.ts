@@ -1,4 +1,4 @@
-import { h } from './utils';
+import { h } from '../utils';
 
 export type ToastLevel = 'success' | 'error' | 'warning' | 'info';
 

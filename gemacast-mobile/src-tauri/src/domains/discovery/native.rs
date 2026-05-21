@@ -1,9 +1,13 @@
 #[cfg(target_os = "android")]
+/// Calls the Android Activity's `getTransportType()` method via JNI.
+///
+/// Returns a pipe-delimited string like `"WIFI|ADB_ON"` indicating the
+/// active network transports and ADB status.
 pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, String> {
     use std::sync::mpsc;
     use tauri::Manager;
 
-    let (tx, rx) = mpsc::channel();
+    let (transport_info_tx, transport_info_rx) = mpsc::channel();
 
     let window = app
         .get_webview_window("main")
@@ -13,7 +17,7 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
         .with_webview(move |webview| {
             #[cfg(target_os = "android")]
             {
-                let tx = tx.clone();
+                let transport_info_tx = transport_info_tx.clone();
                 let _ = webview.jni_handle().exec(move |env, context, _webview| {
                     let result = (|| -> Result<String, String> {
                         let _class = env
@@ -38,12 +42,13 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
                         Ok(transport)
                     })();
 
-                    let _ = tx.send(result);
+                    let _ = transport_info_tx.send(result);
                 });
             }
         })
         .map_err(|e| format!("WebView JNI execution failed: {}", e))?;
 
-    rx.recv()
+    transport_info_rx
+        .recv()
         .map_err(|e| format!("Failed to receive JNI result: {}", e))?
 }

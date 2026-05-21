@@ -1,6 +1,6 @@
-import { App } from '../App';
-import { AppState, Status } from '../types';
-import { h } from './utils';
+import { App } from '../../App';
+import { AppState, Status } from '../../types';
+import { h } from '../utils';
 
 function getStatusDetails(status: Status, attempts: number) {
   switch (status) {

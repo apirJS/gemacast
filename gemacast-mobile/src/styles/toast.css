@@ -115,20 +115,4 @@
   height: 1rem;
 }
 
-.error-log-modal {
-  max-width: 90vw;
-  width: 500px;
-}
 
-.error-log-modal__body {
-  white-space: pre-wrap;
-  font-family: monospace;
-  font-size: 0.875rem;
-  background: var(--muted);
-  padding: 1rem;
-  border-radius: var(--radius);
-  max-height: 50vh;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  color: var(--foreground);
-}

@@ -6,14 +6,14 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-pub struct DiscoveryListener {
+pub struct PresenceListener {
     pub socket: Arc<UdpSocket>,
-    discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
+    incoming_message_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
 }
 
-impl DiscoveryListener {
+impl PresenceListener {
     pub async fn new(
-        discovery_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
+        incoming_message_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
     ) -> Result<Self, GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::DISCOVERY);
         let socket = socket2::Socket::new(
@@ -21,7 +21,7 @@ impl DiscoveryListener {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )
-        .map_err(|e| NetworkError::BindFailed {
+        .map_err(|e| NetworkError::SocketBindFailed {
             addr: addr.to_string(),
             source: e,
         })?;
@@ -32,16 +32,17 @@ impl DiscoveryListener {
 
         socket
             .bind(&addr.into())
-            .map_err(|e| NetworkError::BindFailed {
+            .map_err(|e| NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
 
         socket.set_nonblocking(true).ok();
-        let socket = UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::BindFailed {
-            addr: addr.to_string(),
-            source: e,
-        })?;
+        let socket =
+            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::SocketBindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
 
         let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
 
@@ -52,16 +53,15 @@ impl DiscoveryListener {
 
         if !local_bind_ip.is_link_local()
             && let Err(_e) = socket.join_multicast_v4(multicast_ip, local_bind_ip)
-        {
-        }
+        {}
 
         Ok(Self {
-            discovery_tx,
+            incoming_message_tx,
             socket: Arc::new(socket),
         })
     }
 
-    pub async fn start(&self) -> Result<(), GemaCastError> {
+    pub async fn run_receive_loop(&self) -> Result<(), GemaCastError> {
         let mut buff = vec![0u8; 2048];
 
         loop {
@@ -76,7 +76,7 @@ impl DiscoveryListener {
 
             match serde_json::from_slice::<ControlMessage>(packet_data) {
                 Ok(message) => {
-                    if let Err(_e) = self.discovery_tx.send((message, remote_addr)).await {
+                    if let Err(_e) = self.incoming_message_tx.send((message, remote_addr)).await {
                         break;
                     }
                 }

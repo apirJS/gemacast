@@ -91,6 +91,7 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     availableModes: { wifi: true, usb: false, adb: false },
     audioSources: [],
     senderCapabilities: null,
+    processList: [],
     ...overrides,
   };
 }

@@ -1,27 +1,16 @@
-use tauri::State;
-
-use gemacast_core::stream::receiver::AudioReceiver;
+use super::playback::{set_streaming_flag, spawn_session_receiver};
+use crate::state::{ActiveSession, AppState};
+use gemacast_core::control::types::ConnectReq;
+use gemacast_core::control::HttpControlClient;
 use gemacast_core::types::{DeviceId, TransportType};
+use tauri::{Emitter, State};
 
-use crate::state::{lock, AppState};
-
-use super::playback::{
-    set_playing_flag, set_streaming_flag, setup_event_forwarding, spawn_playback_task,
-    stop_playback_flag,
-};
-
-/// Notifies the Rust core that the Android foreground service has stopped
-/// streaming. Clears the flag so the service UI does not show incorrectly.
 #[tauri::command]
 pub fn notify_streaming_stopped(app_handle: tauri::AppHandle) -> Result<(), String> {
     set_streaming_flag(&app_handle, false);
     Ok(())
 }
 
-/// Connects to a PC sender:
-/// 1. Sends a `Connect` control message.
-/// 2. Initialises the [`AudioReceiver`] (only on the first call).
-/// 3. Sets the `is_playing` atomic flag to `true`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_to_sender(
@@ -36,82 +25,55 @@ pub async fn connect_to_sender(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    let client = HttpControlClient::new(ip_addr);
 
-    use gemacast_core::control::handler::ControlHandler;
-    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-    handler.handle_connect(
-        device_id.clone(),
-        device_name.clone(),
-        gemacast_core::types::AudioSource::default(),
-        mode,
-        jitter_config.clone(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    *lock(&state.connected_ip)? = Some(ip_addr);
-    *lock(&state.device_id)? = Some(device_id);
-    *lock(&state.device_name)? = Some(device_name);
-
-    stop_playback_flag(&state)?;
-
-    let is_initialized = lock(&state.playback_handle)?.is_some();
-
-    if !is_initialized {
-        let config_ref = std::sync::Arc::new(std::sync::RwLock::new(jitter_config.clone()));
-        let is_tcp_mode = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-            mode == gemacast_core::types::ConnectionMode::Adb,
-        ));
-        let is_playing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let volume = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-
-        let receiver = AudioReceiver::new(
-            config_ref.clone(),
-            is_tcp_mode.clone(),
-            is_playing.clone(),
-            volume.clone(),
-            exclusive_mode,
-            shutdown_rx,
-        )
+    client
+        .send_connect_request(ConnectReq {
+            device_id: device_id.clone(),
+            device_name: device_name.clone(),
+            source: gemacast_core::types::AudioSource::default(),
+            mode,
+            jitter_config: jitter_config.clone(),
+        })
+        .await
         .map_err(|e| e.to_string())?;
 
-        *lock(&state.shutdown_playback_tx)? = Some(shutdown_tx);
-        *lock(&state.is_playing)? = Some(is_playing);
-        *lock(&state.config_ref)? = Some(config_ref);
-        *lock(&state.is_tcp_mode)? = Some(is_tcp_mode);
-        *lock(&state.exclusive_mode)? = Some(exclusive_mode);
+    let is_tcp = mode == gemacast_core::types::ConnectionMode::Adb;
 
-        let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
-        let playback_task = spawn_playback_task(
-            receiver,
-            app_handle.clone(),
-            sender_ip_tx,
-            latency_tx,
-            Some(ip_addr),
-            mode,
-        );
-        *lock(&state.playback_handle)? = Some(playback_task);
-    } else {
-        if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
-            if let Ok(mut guard) = config_ref.write() {
-                *guard = jitter_config.clone();
-            }
-        }
-        if let Some(tcp_flag) = lock(&state.is_tcp_mode)?.as_ref() {
-            let is_tcp = mode == gemacast_core::types::ConnectionMode::Adb;
-            tcp_flag.store(is_tcp, std::sync::atomic::Ordering::Relaxed);
-        }
+    let mut session_guard = state.session.lock().await;
+
+    if let Some(existing) = session_guard.take() {
+        let _ = existing.shutdown_tx.send(());
+        existing.playback_task.abort();
     }
 
-    set_playing_flag(&state, true)?;
+    let (is_playing, _is_tcp_mode, jitter_config_ref, shutdown_tx, playback_task) =
+        spawn_session_receiver(
+            jitter_config,
+            is_tcp,
+            exclusive_mode,
+            app_handle.clone(),
+            Some(ip_addr),
+            mode,
+        )?;
+
+    *session_guard = Some(ActiveSession {
+        ip: ip_addr,
+        device_id,
+        device_name,
+        exclusive_mode,
+        is_playing,
+        jitter_config: jitter_config_ref,
+        shutdown_tx,
+        playback_task,
+    });
+
     set_streaming_flag(&app_handle, true);
     sync_android_service(true, exclusive_mode);
 
     Ok(())
 }
 
-/// Sends a `Disconnect` control message and pauses local playback.
 #[tauri::command]
 pub async fn disconnect_from_sender(
     ip: String,
@@ -120,12 +82,14 @@ pub async fn disconnect_from_sender(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    let client = HttpControlClient::new(ip_addr);
+    let _ = client.send_disconnect_request(device_id).await;
 
-    use gemacast_core::control::handler::ControlHandler;
-    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-    let _ = handler.handle_disconnect(device_id).await;
+    if let Some(session) = state.session.lock().await.take() {
+        let _ = session.shutdown_tx.send(());
+        session.playback_task.abort();
+    }
 
-    stop_playback_flag(&state)?;
     set_streaming_flag(&app_handle, false);
     sync_android_service(false, false);
     Ok(())
@@ -139,45 +103,35 @@ pub async fn stop_audio_playback(
 ) -> Result<(), String> {
     if let (Some(ip_str), Some(did)) = (ip, device_id) {
         if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            use gemacast_core::control::handler::ControlHandler;
-            let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-            let _ = handler.handle_disconnect(did).await;
+            let client = HttpControlClient::new(ip_addr);
+            let _ = client.send_disconnect_request(did).await;
         }
     }
-    stop_playback_flag(&state)?;
+
+    if let Some(session) = state.session.lock().await.take() {
+        let _ = session.shutdown_tx.send(());
+        session.playback_task.abort();
+    }
+
     sync_android_service(false, false);
     Ok(())
 }
 
-/// Forcefully terminates the playback task and clears all state.
 #[tauri::command]
 pub async fn kill_playback(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(tx) = lock(&state.shutdown_playback_tx)?.take() {
-        let _ = tx.send(());
+    if let Some(session) = state.session.lock().await.take() {
+        let _ = session.shutdown_tx.send(());
+        session.playback_task.abort();
     }
-
-    if let Some(handle) = lock(&state.playback_handle)?.take() {
-        handle.abort();
-    }
-
-    *lock(&state.is_playing)? = None;
-    *lock(&state.config_ref)? = None;
-    *lock(&state.is_tcp_mode)? = None;
-    *lock(&state.exclusive_mode)? = None;
-    *lock(&state.connected_ip)? = None;
 
     set_streaming_flag(&app_handle, false);
-
     sync_android_service(false, false);
     Ok(())
 }
 
-/// Resumes audio by setting the `is_playing` flag to `true`.
-///
-/// Optionally re-sends a `Connect` message so the PC resumes unicasting audio.
 #[tauri::command]
 pub async fn start_audio_playback(
     ip: Option<String>,
@@ -185,35 +139,41 @@ pub async fn start_audio_playback(
     device_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mode_flag = lock(&state.exclusive_mode)?.unwrap_or(false);
+    let mut exclusive_mode = false;
+
+    if let Some(session) = state.session.lock().await.as_ref() {
+        session
+            .is_playing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        exclusive_mode = session.exclusive_mode;
+    }
+
     if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
         if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            use gemacast_core::control::handler::ControlHandler;
-            let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-            let _ = handler.handle_connect(
-                did,
-                dname,
-                gemacast_core::types::AudioSource::default(),
-                gemacast_core::types::ConnectionMode::default(),
-                gemacast_core::types::JitterConfig::default(),
-            ).await;
+            let client = HttpControlClient::new(ip_addr);
+            let _ = client
+                .send_connect_request(ConnectReq {
+                    device_id: did,
+                    device_name: dname,
+                    source: gemacast_core::types::AudioSource::default(),
+                    mode: gemacast_core::types::ConnectionMode::default(),
+                    jitter_config: gemacast_core::types::JitterConfig::default(),
+                })
+                .await;
         }
     }
-    set_playing_flag(&state, true)?;
-    sync_android_service(true, mode_flag);
+
+    sync_android_service(true, exclusive_mode);
     Ok(())
 }
 
-/// Dynamically updates the jitter buffer configuration in real-time.
 #[tauri::command]
 pub async fn update_jitter_config(
     jitter_config: gemacast_core::types::JitterConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let _has_ref = lock(&state.config_ref)?.is_some();
-
-    if let Some(config_ref) = lock(&state.config_ref)?.as_ref() {
-        if let Ok(mut guard) = config_ref.write() {
+    if let Some(session) = state.session.lock().await.as_ref() {
+        if let Ok(mut guard) = session.jitter_config.write() {
             *guard = jitter_config;
         }
     }
@@ -221,11 +181,21 @@ pub async fn update_jitter_config(
 }
 
 #[tauri::command]
-pub async fn get_audio_sources(ip: String) -> Result<(Vec<gemacast_core::types::AudioSource>, gemacast_core::types::SenderCapabilities), String> {
+pub async fn get_audio_sources(
+    ip: String,
+) -> Result<
+    (
+        Vec<gemacast_core::types::AudioSource>,
+        gemacast_core::types::SenderCapabilities,
+    ),
+    String,
+> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    use gemacast_core::control::handler::ControlHandler;
-    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-    handler.get_sources().await.map_err(|e| e.to_string())
+    let client = HttpControlClient::new(ip_addr);
+    client
+        .request_audio_sources()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -235,9 +205,64 @@ pub async fn change_audio_source(
     source: gemacast_core::types::AudioSource,
 ) -> Result<(), String> {
     let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    use gemacast_core::control::handler::ControlHandler;
-    let handler = gemacast_core::control::UdpControlHandler::new(ip_addr);
-    handler.handle_change_source(device_id, source).await.map_err(|e| e.to_string())
+    let client = HttpControlClient::new(ip_addr);
+    client
+        .send_change_source_request(device_id, source)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_process_list(
+    ip: String,
+) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    let client = HttpControlClient::new(ip_addr);
+    client
+        .request_process_list()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn establish_websocket(
+    sender_ip: String,
+    device_id: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let ip_addr = sender_ip
+        .parse::<std::net::IpAddr>()
+        .map_err(|e| e.to_string())?;
+
+    let ws_client = gemacast_core::control::WsControlClient::new(ip_addr, &device_id)
+        .await
+        .map_err(|e| format!("Failed to establish WebSocket: {}", e))?;
+
+    let ws_client_arc = std::sync::Arc::new(tokio::sync::Mutex::new(ws_client));
+
+    let mut ws_guard = state.ws_client.lock().await;
+    *ws_guard = Some(ws_client_arc.clone());
+    drop(ws_guard);
+
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        let event_result = {
+            let client = ws_client_arc.lock().await;
+            client.recv_event().await
+        };
+
+        match event_result {
+            Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
+                let _ = app_handle_clone.emit("ws-disconnect", ());
+            }
+            Err(e) => {
+                eprintln!("WebSocket error: {}", e);
+            }
+        }
+    });
+
+    Ok(())
 }
 
 #[allow(unused_variables)]

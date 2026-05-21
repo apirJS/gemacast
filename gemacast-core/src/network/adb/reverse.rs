@@ -1,18 +1,18 @@
 use crate::network::Ports;
 use tokio::task::JoinSet;
 
-/// Periodically polls `adb devices` and establishes local reversed TCP tunnels
-/// for audio and discovery so mobile USB listeners can connect.
-pub fn spawn_adb_reverse_watchdog(
+pub fn spawn_adb_port_forwarding_watchdog(
     set: &mut JoinSet<()>,
     tcp_drop_tx: tokio::sync::broadcast::Sender<()>,
 ) {
     let audio_port = format!("tcp:{}", Ports::ADB_AUDIO_TCP);
     let discovery_port = format!("tcp:{}", Ports::ADB_DISCOVERY_TCP);
+    let control_port = format!("tcp:{}", Ports::CONTROL);
 
     set.spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
         let mut drop_rx = tcp_drop_tx.subscribe();
+        
         loop {
             tokio::select! {
                 _ = drop_rx.recv() => {
@@ -42,6 +42,12 @@ pub fn spawn_adb_reverse_watchdog(
                                         if !check_out.contains(&discovery_port) {
                                             let _ = tokio::process::Command::new("adb")
                                                 .args(["-s", serial, "reverse", &discovery_port, &discovery_port])
+                                                .output()
+                                                .await;
+                                        }
+                                        if !check_out.contains(&control_port) {
+                                            let _ = tokio::process::Command::new("adb")
+                                                .args(["-s", serial, "reverse", &control_port, &control_port])
                                                 .output()
                                                 .await;
                                         }

@@ -1,6 +1,6 @@
-import { AppState, Status } from '../types';
-import { fmt, h } from './utils';
-import { App } from '../App';
+import { AppState, Status } from '../../types';
+import { fmt, h } from '../utils';
+import { App } from '../../App';
 
 export function setupLatencyStats(app: App) {
   const latencyStatsEl = document.getElementById('latency-stats');

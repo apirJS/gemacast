@@ -3,23 +3,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
 
-use gemacast_core::types::{
-    ConnectionMode, DiscoveredDevice, SenderId, TransportType,
-};
+use gemacast_core::types::{ConnectionMode, DeviceId, DiscoveredDevice, TransportType};
 
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
 
 pub struct DispatchContext {
-    pub last_seen: Arc<Mutex<HashMap<SenderId, Instant>>>,
-    pub active_usb_ips: Arc<Mutex<HashMap<SenderId, Instant>>>,
+    pub sender_last_seen: Arc<Mutex<HashMap<DeviceId, Instant>>>,
+    pub active_usb_senders: Arc<Mutex<HashMap<DeviceId, Instant>>>,
     pub app_handle: tauri::AppHandle,
 }
 
 impl Clone for DispatchContext {
     fn clone(&self) -> Self {
         Self {
-            last_seen: self.last_seen.clone(),
-            active_usb_ips: self.active_usb_ips.clone(),
+            sender_last_seen: self.sender_last_seen.clone(),
+            active_usb_senders: self.active_usb_senders.clone(),
             app_handle: self.app_handle.clone(),
         }
     }
@@ -28,8 +26,8 @@ impl Clone for DispatchContext {
 impl DispatchContext {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
-            last_seen: Arc::new(Mutex::new(HashMap::new())),
-            active_usb_ips: Arc::new(Mutex::new(HashMap::new())),
+            sender_last_seen: Arc::new(Mutex::new(HashMap::new())),
+            active_usb_senders: Arc::new(Mutex::new(HashMap::new())),
             app_handle,
         }
     }
@@ -42,19 +40,12 @@ impl DispatchContext {
     ) {
         match message {
             gemacast_core::types::ControlMessage::Presence {
-                sender_id,
+                device_id,
                 sender_name,
                 is_offline,
                 transport,
             } => {
-                self.handle_presence(
-                    sender_id,
-                    sender_name,
-                    is_offline,
-                    transport,
-                    addr,
-                    mode,
-                );
+                self.handle_presence(device_id, sender_name, is_offline, transport, addr, mode);
             }
             gemacast_core::types::ControlMessage::Disconnect { .. } => {
                 let _ = self.app_handle.emit("force-disconnect", ());
@@ -65,7 +56,7 @@ impl DispatchContext {
 
     fn handle_presence(
         &self,
-        sender_id: SenderId,
+        device_id: DeviceId,
         sender_name: String,
         is_offline: bool,
         transport: Option<TransportType>,
@@ -73,13 +64,13 @@ impl DispatchContext {
         mode: ConnectionMode,
     ) {
         if is_offline {
-            self.last_seen.lock().unwrap().remove(&sender_id);
-            self.active_usb_ips.lock().unwrap().remove(&sender_id);
+            self.sender_last_seen.lock().unwrap().remove(&device_id);
+            self.active_usb_senders.lock().unwrap().remove(&device_id);
         } else {
-            self.last_seen
+            self.sender_last_seen
                 .lock()
                 .unwrap()
-                .insert(sender_id.clone(), Instant::now());
+                .insert(device_id.clone(), Instant::now());
         }
 
         let mut audio_addr = addr;
@@ -110,19 +101,18 @@ impl DispatchContext {
 
         if !is_offline {
             if is_usb {
-                self.active_usb_ips
+                self.active_usb_senders
                     .lock()
                     .unwrap()
-                    .insert(sender_id.clone(), Instant::now());
+                    .insert(device_id.clone(), Instant::now());
             } else {
                 let has_recent_usb = self
-                    .active_usb_ips
+                    .active_usb_senders
                     .lock()
                     .unwrap()
-                    .get(&sender_id)
+                    .get(&device_id)
                     .is_some_and(|ts| {
-                        Instant::now().duration_since(*ts).as_secs()
-                            < SENDER_HEARTBEAT_TIMEOUT_SECS
+                        Instant::now().duration_since(*ts).as_secs() < SENDER_HEARTBEAT_TIMEOUT_SECS
                     });
                 if has_recent_usb {
                     return;
@@ -131,7 +121,7 @@ impl DispatchContext {
         }
 
         let device = DiscoveredDevice::from_presence(
-            sender_id,
+            device_id,
             sender_name,
             is_offline,
             audio_addr,

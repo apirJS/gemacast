@@ -1,14 +1,12 @@
 use tauri::State;
-
 use gemacast_core::types::{ConnectionMode, DeviceId};
 
 #[cfg(target_os = "android")]
 use super::native::call_native_transport_check;
-use crate::state::{lock, AppState};
+use crate::state::AppState;
 
 use super::listener::spawn_discovery_listener;
 
-/// Returns the device's primary non-loopback IPv4 address as a string.
 #[tauri::command]
 pub fn get_local_ip() -> Result<String, String> {
     gemacast_core::network::get_local_ip()
@@ -16,8 +14,6 @@ pub fn get_local_ip() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Returns a composite identifier for the current default network interface
-/// explicitly meant to catch when we stay on the same IP but the interface/network bounces.
 #[tauri::command]
 pub fn get_network_identifier() -> Result<String, String> {
     let iface = netdev::get_default_interface().map_err(|e| e.to_string())?;
@@ -38,10 +34,6 @@ pub fn get_network_identifier() -> Result<String, String> {
     Ok(format!("{}_{}_{}", iface.name, mac, ip))
 }
 
-/// Starts the discovery listener, replacing any currently running one.
-///
-/// Spawns the full discovery pipeline (listener + watchdog + USB probe)
-/// and stores the task handle in [`AppState`].
 #[tauri::command]
 pub async fn start_listening_for_senders(
     device_id: DeviceId,
@@ -49,30 +41,35 @@ pub async fn start_listening_for_senders(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(handle) = lock(&state.discovery_handle)?.take() {
+    if let Some(handle) = state.discovery_task.lock().await.take() {
         handle.abort();
     }
 
-    let (discovery_tx, discovery_rx) = tokio::sync::mpsc::channel(8);
-    let listener = gemacast_core::network::DiscoveryListener::new(discovery_tx)
+    let (presence_message_tx, presence_message_rx) = tokio::sync::mpsc::channel(8);
+    let listener = gemacast_core::network::PresenceListener::new(presence_message_tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let e_str = e.to_string();
+            if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
+                "Discovery port is already in use. Is GemaCast already running in the background?".to_string()
+            } else {
+                e_str
+            }
+        })?;
 
-    let handle = spawn_discovery_listener(listener, discovery_rx, app_handle, device_id, mode);
-    *lock(&state.discovery_handle)? = Some(handle);
+    let handle = spawn_discovery_listener(listener, presence_message_rx, app_handle, device_id, mode);
+    *state.discovery_task.lock().await = Some(handle);
     Ok(())
 }
 
-/// Stops the currently running discovery listener, if any.
 #[tauri::command]
 pub async fn stop_listening_for_senders(state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(handle) = lock(&state.discovery_handle)?.take() {
+    if let Some(handle) = state.discovery_task.lock().await.take() {
         handle.abort();
     }
     Ok(())
 }
 
-/// Returns the currently available connection modes (Wifi, USB).
 #[tauri::command]
 pub async fn get_connection_status(
     _app: tauri::AppHandle,

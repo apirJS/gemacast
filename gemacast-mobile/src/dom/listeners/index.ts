@@ -1,7 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
-import { App } from '../App';
-import { DiscoveredSender } from '../types';
-import { GemaCastError } from '../error';
+import { App } from '../../App';
+import { DiscoveredSender } from '../../types';
+import { GemaCastError } from '../../error';
 
 export function listenForTauriEvents(app: App) {
   listen<number>('latency-update', (event) => {
@@ -31,6 +31,11 @@ export function listenForTauriEvents(app: App) {
   listen('force-disconnect', () => {
     app.connection.handleForceDisconnect();
   });
+
+  listen('ws-disconnect', () => {
+    app.connection.handleForceDisconnect();
+  });
+
   listen<string>('service-command', async (event) => {
     const cmd = event.payload;
     if (cmd === 'DISCONNECT') {

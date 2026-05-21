@@ -63,3 +63,38 @@
 .help-modal__body b {
   font-weight: bold;
 }
+
+.error-log-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  max-width: 90vw;
+  width: 450px;
+  background-color: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+.error-log-modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.error-log-modal__body {
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 0.875rem;
+  background: var(--muted);
+  padding: 1rem;
+  border-radius: var(--radius);
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}

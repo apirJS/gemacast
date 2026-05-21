@@ -1,0 +1,274 @@
+/* ─── Process select — custom dropdown for audio source selection ─── */
+
+.process-select {
+  width: 100%;
+  padding-top: 0.5rem;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.process-select__label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ─── Trigger button ─── */
+
+.process-select__trigger {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: calc(var(--radius) - 0.2rem);
+  border: 1px solid var(--border);
+  background-color: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.process-select__trigger:hover {
+  border-color: var(--primary);
+}
+
+.process-select__trigger:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.process-select__trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.process-select__trigger-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.process-select__trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.process-select__trigger-icon {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.process-select__trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-select__trigger-chevron {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  color: var(--muted-foreground);
+  transition: transform 200ms ease;
+}
+
+.process-select--open .process-select__trigger-chevron {
+  transform: rotate(180deg);
+}
+
+/* ─── Dropdown panel ─── */
+
+.process-select__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  margin-top: 0.25rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background-color: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.process-select--open .process-select__dropdown {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* ─── Search bar ─── */
+
+.process-select__search {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--card);
+  color: var(--card-foreground);
+  font-family: inherit;
+  font-size: 0.7rem;
+  outline: none;
+  border-top-left-radius: var(--radius);
+  border-top-right-radius: var(--radius);
+}
+
+.process-select__search:focus {
+  background-color: var(--secondary);
+}
+
+/* ─── Options list ─── */
+
+.process-select__options {
+  max-height: 16rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  padding: 0.25rem 0;
+}
+
+.process-select__options::-webkit-scrollbar {
+  width: 4px;
+}
+
+.process-select__options::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.process-select__options::-webkit-scrollbar-thumb {
+  background-color: var(--muted-foreground);
+  border-radius: 2px;
+  opacity: 0.5;
+}
+
+/* ─── Individual option ─── */
+
+.process-select__option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  border: none;
+  background: none;
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--card-foreground);
+  text-align: left;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.process-select__option:hover {
+  background-color: var(--accent);
+}
+
+.process-select__option:active {
+  background-color: var(--secondary);
+}
+
+.process-select__option--active {
+  background-color: var(--accent);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.process-select__option-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.process-select__option-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.process-select__option-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── Divider ─── */
+
+.process-select__divider {
+  height: 1px;
+  background-color: var(--border);
+  margin: 0.25rem 0.5rem;
+}
+
+/* ─── Refresh button ─── */
+
+.process-select__refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  border-top: 1px solid var(--border);
+  background-color: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.65rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.process-select__refresh:hover {
+  background-color: var(--accent);
+  color: var(--card-foreground);
+}
+
+.process-select__refresh-icon {
+  display: inline-flex;
+  transition: transform 300ms ease;
+}
+
+.process-select__refresh--loading .process-select__refresh-icon {
+  animation: spin-refresh 600ms linear infinite;
+}
+
+@keyframes spin-refresh {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Audio-active indicator ─── */
+
+.process-select__option-icon--audio-active {
+  color: var(--primary);
+  filter: drop-shadow(0 0 3px var(--primary));
+}

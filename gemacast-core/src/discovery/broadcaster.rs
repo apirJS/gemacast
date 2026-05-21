@@ -7,12 +7,12 @@ use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
-pub struct DiscoveryBroadcaster {
+pub struct PresenceBroadcaster {
     socket: UdpSocket,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
-impl DiscoveryBroadcaster {
+impl PresenceBroadcaster {
     pub async fn new(shutdown_rx: oneshot::Receiver<()>) -> Result<Self, GemaCastError> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
@@ -21,14 +21,14 @@ impl DiscoveryBroadcaster {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )
-        .map_err(|e| NetworkError::BindFailed {
+        .map_err(|e| NetworkError::SocketBindFailed {
             addr: addr.to_string(),
             source: e,
         })?;
 
         socket
             .bind(&addr.into())
-            .map_err(|e| NetworkError::BindFailed {
+            .map_err(|e| NetworkError::SocketBindFailed {
                 addr: addr.to_string(),
                 source: e,
             })?;
@@ -39,10 +39,11 @@ impl DiscoveryBroadcaster {
         socket.set_multicast_ttl_v4(255).ok();
 
         socket.set_nonblocking(true).ok();
-        let socket = UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::BindFailed {
-            addr: addr.to_string(),
-            source: e,
-        })?;
+        let socket =
+            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::SocketBindFailed {
+                addr: addr.to_string(),
+                source: e,
+            })?;
 
         Ok(Self {
             socket,
@@ -50,10 +51,10 @@ impl DiscoveryBroadcaster {
         })
     }
 
-    pub async fn broadcast_presence<F, T>(
+    pub async fn run_broadcast_loop<F, T>(
         mut self,
-        mut payload_factory: F,
-        mut target_ips: T,
+        mut presence_payload_factory: F,
+        mut known_receiver_addresses: T,
     ) -> Result<(), NetworkError>
     where
         F: FnMut() -> ControlMessage + Send,
@@ -64,12 +65,12 @@ impl DiscoveryBroadcaster {
                 .into_iter()
                 .map(|ip| SocketAddrV4::new(ip, Ports::DISCOVERY))
                 .collect();
-            let unicast_addrs = target_ips();
+            let unicast_addrs = known_receiver_addresses();
             let broadcast_addr_global =
                 SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), Ports::DISCOVERY);
             let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), Ports::DISCOVERY);
 
-            let mut payload = payload_factory();
+            let mut payload = presence_payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
 
             // Rapid-fire 3 packets for reliability on congested bands like 2.4 GHz
@@ -90,7 +91,7 @@ impl DiscoveryBroadcaster {
             }
 
             tokio::select! {
-                // Wait the remainder of the 1-second interval minus the 50ms from retries
+                // Wait the remainder of the 1-second interval minus the ~75ms from retries
                 _ = sleep(Duration::from_millis(950)) => {}
                 _ = &mut self.shutdown_rx => {
                     if let ControlMessage::Presence { ref mut is_offline, .. } = payload {
@@ -115,52 +116,4 @@ impl DiscoveryBroadcaster {
 
         Ok(())
     }
-}
-
-pub async fn send_control_message(
-    target_ip: std::net::IpAddr,
-    message: ControlMessage,
-) -> Result<(), NetworkError> {
-    if target_ip.is_loopback() {
-        let mut json_bytes = serde_json::to_vec(&message)?;
-        json_bytes.push(b'\n');
-        if let Ok(mut stream) = tokio::net::TcpStream::connect(std::net::SocketAddr::new(
-            target_ip,
-            crate::network::Ports::ADB_DISCOVERY_TCP,
-        ))
-        .await
-        {
-            use tokio::io::AsyncWriteExt;
-            let _ = stream.write_all(&json_bytes).await;
-            let _ = stream.flush().await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            let _ = stream.shutdown().await;
-        }
-        return Ok(());
-    }
-    let addr: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-    let socket = UdpSocket::bind(addr)
-        .await
-        .map_err(|e| NetworkError::BindFailed {
-            addr: addr.to_string(),
-            source: e,
-        })?;
-
-    let target_addr = std::net::SocketAddr::new(target_ip, Ports::DISCOVERY);
-    let json_bytes = serde_json::to_vec(&message)?;
-
-    // Send multiple times rapidly to ensure delivery
-    let mut last_err = None;
-    for _ in 0..3 {
-        match socket.send_to(&json_bytes, target_addr).await {
-            Ok(_) => {}
-            Err(e) => last_err = Some(e),
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-
-    if let Some(e) = last_err {
-        return Err(NetworkError::SendFailed(e));
-    }
-    Ok(())
 }

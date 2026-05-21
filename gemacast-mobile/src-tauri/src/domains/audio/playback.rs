@@ -1,14 +1,12 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use gemacast_core::stream::receiver::AudioReceiver;
+use gemacast_core::stream::receiver::AudioStreamReceiver;
+use gemacast_core::types::JitterConfig;
 
-use crate::state::{lock, AppState};
-
-/// Writes or removes the `.streaming_active` flag file used by the Android
-/// foreground service to know whether audio is currently streaming.
 pub fn set_streaming_flag(app_handle: &tauri::AppHandle, active: bool) {
     if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
         let flag_path = cache_dir.join(".streaming_active");
@@ -21,26 +19,6 @@ pub fn set_streaming_flag(app_handle: &tauri::AppHandle, active: bool) {
     }
 }
 
-/// Sets the `is_playing` atomic flag.
-pub fn set_playing_flag(state: &AppState, playing: bool) -> Result<(), String> {
-    if let Some(flag) = lock(&state.is_playing)?.as_ref() {
-        flag.store(playing, Ordering::Relaxed);
-    }
-    Ok(())
-}
-
-/// Clears the `is_playing` flag (pauses audio without destroying the stream).
-pub fn stop_playback_flag(state: &AppState) -> Result<(), String> {
-    set_playing_flag(state, false)
-}
-
-/// Spawns async relay tasks that forward playback events to the Tauri frontend.
-///
-/// Returns:
-/// - A oneshot sender that, when resolved, emits `sender-connected` with the
-///   sender's IP.
-/// - An mpsc sender for `(latency_ms, rms)` pairs that emit `latency-update`
-///   and `audio-active` events.
 pub fn setup_event_forwarding(
     app_handle: tauri::AppHandle,
 ) -> (
@@ -68,28 +46,69 @@ pub fn setup_event_forwarding(
     (sender_ip_tx, latency_tx)
 }
 
-/// Spawns the audio playback task that drives the permanent hardware stream.
-pub fn spawn_playback_task(
-    mut receiver: AudioReceiver,
+pub type SessionReceiverResult = Result<
+    (
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+        Arc<RwLock<JitterConfig>>,
+        oneshot::Sender<()>,
+        JoinHandle<()>,
+    ),
+    String,
+>;
+
+pub fn spawn_session_receiver(
+    jitter_config: JitterConfig,
+    is_tcp: bool,
+    exclusive_mode: bool,
     app_handle: tauri::AppHandle,
-    sender_ip_tx: oneshot::Sender<String>,
-    latency_tx: tokio::sync::mpsc::Sender<(f32, f32)>,
     target_ip: Option<std::net::IpAddr>,
     mode: gemacast_core::types::ConnectionMode,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = receiver.start_audio_playback() {
-            
+) -> SessionReceiverResult {
+    let config_ref = Arc::new(RwLock::new(jitter_config));
+    let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
+    let is_playing = Arc::new(AtomicBool::new(true));
+    let volume = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let mut receiver = AudioStreamReceiver::new(
+        config_ref.clone(),
+        is_tcp_mode.clone(),
+        is_playing.clone(),
+        volume,
+        exclusive_mode,
+        shutdown_rx,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
+
+    let task = tokio::spawn(async move {
+        if let Err(e) = receiver.activate_playback_stream() {
             let _ = app_handle.emit("playback-error", e.to_string());
             return;
         }
 
         if let Err(e) = receiver
-            .start_audio_listener(Some(sender_ip_tx), Some(latency_tx), target_ip, mode)
+            .run_audio_receive_loop(Some(sender_ip_tx), Some(latency_tx), target_ip, mode)
             .await
         {
-            
-            let _ = app_handle.emit("playback-error", e.to_string());
+            if matches!(
+                e,
+                gemacast_core::error::GemaCastError::Network(gemacast_core::error::NetworkError::ConnectionLost)
+            ) {
+                let _ = app_handle.emit("force-disconnect", ());
+            } else {
+                let _ = app_handle.emit("playback-error", e.to_string());
+            }
         }
-    })
+    });
+
+    Ok((
+        is_playing,
+        is_tcp_mode,
+        config_ref,
+        shutdown_tx,
+        task,
+    ))
 }

@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export class StateHandler {
   private state: AppState;
   private subscribers: StateSubscriber[] = [];
+  private pendingNotify = false;
 
   constructor(deviceInfo: DeviceInfo) {
     const lastConnectedSender = StateHandler.loadLastSender();
@@ -51,6 +52,7 @@ export class StateHandler {
       availableModes: { wifi: true, usb: false, adb: false },
       audioSources: [],
       senderCapabilities: null,
+      processList: [],
     };
   }
 
@@ -72,7 +74,17 @@ export class StateHandler {
     if (partial.settings) {
       StateHandler.saveSettings(partial.settings);
     }
-    this.subscribers.forEach((cb) => cb(this.state));
+    // Coalesce multiple rapid setState() calls into one subscriber
+    // notification per vsync frame. Prevents Android's BLASTBufferQueue
+    // overflow when latency, network, and audio-active events fire in
+    // quick succession — each triggering full DOM rebuilds.
+    if (!this.pendingNotify) {
+      this.pendingNotify = true;
+      requestAnimationFrame(() => {
+        this.pendingNotify = false;
+        this.subscribers.forEach((cb) => cb(this.state));
+      });
+    }
   }
 
   public displayError(error: string | GemaCastError) {

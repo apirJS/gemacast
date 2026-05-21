@@ -34,6 +34,8 @@ pub fn run() {
             domains::audio::commands::update_jitter_config,
             domains::audio::commands::get_audio_sources,
             domains::audio::commands::change_audio_source,
+            domains::audio::commands::get_process_list,
+            domains::audio::commands::establish_websocket,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

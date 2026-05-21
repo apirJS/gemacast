@@ -1,5 +1,5 @@
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
-use crate::error::{AudioCaptureError, GemaCastError};
+use crate::error::{AudioError, GemaCastError, StreamDirection};
 use crate::stream::sender::capture::{CaptureBackend, CaptureHandle};
 use cpal::traits::{DeviceTrait, HostTrait};
 use ringbuf::{HeapRb, traits::*};
@@ -13,9 +13,10 @@ struct CpalLoopbackCapture {
 impl CaptureBackend for CpalLoopbackCapture {
     fn play(&mut self) -> Result<(), GemaCastError> {
         use cpal::traits::StreamTrait;
-        self.stream
-            .play()
-            .map_err(AudioCaptureError::FailedToPlayInputStream)?;
+        self.stream.play().map_err(|e| AudioError::PlayStreamFailed {
+            direction: StreamDirection::Input,
+            source: e,
+        })?;
         Ok(())
     }
 
@@ -29,7 +30,7 @@ impl CaptureBackend for CpalLoopbackCapture {
 pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
     let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
     let (mut rb_producer, rb_consumer) = rb.split();
-    let (error_tx, error_rx) = mpsc::channel::<cpal::StreamError>(1);
+    let (stream_error_tx, stream_error_rx) = mpsc::channel::<cpal::StreamError>(1);
 
     let notify = Arc::new(Notify::new());
     let notify_clone = notify.clone();
@@ -37,7 +38,7 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or(AudioCaptureError::DefaultOutputDeviceUnavailable)?;
+        .ok_or(AudioError::NoOutputDevice)?;
 
     let mut buffer_size = cpal::BufferSize::Default;
     let rate = OPUS_SAMPLE_RATE;
@@ -70,11 +71,14 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
                 notify_clone.notify_one();
             },
             move |e| {
-                let _ = error_tx.blocking_send(e);
+                let _ = stream_error_tx.blocking_send(e);
             },
             None,
         )
-        .map_err(AudioCaptureError::FailedToBuildInputStream)?;
+        .map_err(|e| AudioError::BuildStreamFailed {
+            direction: StreamDirection::Input,
+            source: e,
+        })?;
 
     Ok(CaptureHandle {
         backend: Box::new(CpalLoopbackCapture {
@@ -82,6 +86,6 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
         }),
         consumer: rb_consumer,
         notify,
-        error_rx,
+        stream_error_rx,
     })
 }

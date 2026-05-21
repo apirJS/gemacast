@@ -1,9 +1,9 @@
 use crate::error::NetworkError;
-use crate::stream::transport::{TcpTransport, UdpTransport};
 use crate::network::Ports;
+use crate::stream::transport::{TcpTransport, UdpTransport};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
-pub fn setup_udp_transport(
+pub fn create_udp_audio_transport(
     target_ip: Option<std::net::IpAddr>,
 ) -> Result<(UdpTransport, std::net::UdpSocket), NetworkError> {
     let addr = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::AUDIO_UDP));
@@ -12,22 +12,28 @@ pub fn setup_udp_transport(
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )
-    .map_err(|source| NetworkError::BindFailed {
+    .map_err(|source| NetworkError::SocketBindFailed {
         addr: addr.to_string(),
         source,
     })?;
 
     socket
         .set_reuse_address(true)
-        .map_err(NetworkError::SetReuseAddressFailed)?;
+        .map_err(|source| NetworkError::SocketOptionFailed {
+            option: "reuse address",
+            source,
+        })?;
     #[cfg(not(windows))]
     socket
         .set_reuse_port(true)
-        .map_err(NetworkError::SetReusePortFailed)?;
+        .map_err(|source| NetworkError::SocketOptionFailed {
+            option: "reuse port",
+            source,
+        })?;
 
     socket
         .bind(&addr.into())
-        .map_err(|source| NetworkError::BindFailed {
+        .map_err(|source| NetworkError::SocketBindFailed {
             addr: addr.to_string(),
             source,
         })?;
@@ -38,12 +44,18 @@ pub fn setup_udp_transport(
         .try_clone()
         .map_err(NetworkError::SocketCloneFailed)?;
     socket2::Socket::from(cloned_for_tos)
-        .set_tos(0xB8)
-        .map_err(NetworkError::SetTosFailed)?;
+        .set_tos_v4(0xB8)
+        .map_err(|source| NetworkError::SocketOptionFailed {
+            option: "type of service",
+            source,
+        })?;
 
     std_socket
         .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-        .map_err(NetworkError::SetReadTimeoutFailed)?;
+        .map_err(|source| NetworkError::SocketOptionFailed {
+            option: "read timeout",
+            source,
+        })?;
 
     if let Some(target) = target_ip {
         let target_addr = std::net::SocketAddr::new(target, Ports::AUDIO_UDP);
@@ -62,38 +74,38 @@ pub fn setup_udp_transport(
     Ok((UdpTransport { socket: std_socket }, heartbeat_socket))
 }
 
-pub fn setup_tcp_transport() -> Result<TcpTransport, NetworkError> {
+pub fn create_tcp_audio_transport() -> Result<TcpTransport, NetworkError> {
     let adb_addr = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
-    let stream_addr: std::net::SocketAddr = adb_addr.parse().unwrap();
+    let stream_addr: std::net::SocketAddr = adb_addr
+        .parse()
+        .expect("INTERNAL: ADB loopback address must be valid");
 
-    let stream = std::net::TcpStream::connect_timeout(
-        &stream_addr,
-        std::time::Duration::from_millis(2500),
-    )
-    .map_err(|source| NetworkError::TcpConnectFailed {
-        addr: adb_addr,
-        source,
-    })?;
+    let stream =
+        std::net::TcpStream::connect_timeout(&stream_addr, std::time::Duration::from_millis(2500))
+            .map_err(|source| NetworkError::TcpConnectFailed {
+                addr: adb_addr,
+                source,
+            })?;
 
     let _ = stream.set_nodelay(true);
     Ok(TcpTransport { stream })
 }
 
-pub fn setup_transport(
+pub fn create_audio_transport(
     mode: crate::types::ConnectionMode,
     target_ip: Option<std::net::IpAddr>,
 ) -> Result<
     (
-        Box<dyn crate::stream::transport::AudioTransport>,
+        Box<dyn crate::stream::transport::AudioPacketTransport>,
         Option<std::net::UdpSocket>,
     ),
     NetworkError,
 > {
     if mode == crate::types::ConnectionMode::Adb {
-        let t = setup_tcp_transport()?;
+        let t = create_tcp_audio_transport()?;
         return Ok((Box::new(t), None));
     }
 
-    let (udp, heartbeat_socket) = setup_udp_transport(target_ip)?;
+    let (udp, heartbeat_socket) = create_udp_audio_transport(target_ip)?;
     Ok((Box::new(udp), Some(heartbeat_socket)))
 }

@@ -2,16 +2,16 @@ use thiserror::Error as ThisError;
 
 #[derive(ThisError, Debug)]
 pub enum GemaCastError {
-    #[error("{0}")]
+    #[error(transparent)]
     Protocol(#[from] ProtocolError),
 
-    #[error("{0}")]
-    AudioCapture(#[from] AudioCaptureError),
+    #[error(transparent)]
+    Audio(#[from] AudioError),
 
-    #[error("{0}")]
+    #[error(transparent)]
     Network(#[from] NetworkError),
 
-    #[error("{0}")]
+    #[error(transparent)]
     Control(#[from] ControlError),
 }
 
@@ -21,47 +21,81 @@ pub enum ProtocolError {
     PacketTooShort { got: usize, min: usize },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum StreamDirection {
+    Input,
+    Output,
+}
+
+impl std::fmt::Display for StreamDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Input => write!(f, "input"),
+            Self::Output => write!(f, "output"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CodecDirection {
+    Encoder,
+    Decoder,
+}
+
+impl std::fmt::Display for CodecDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Encoder => write!(f, "encoder"),
+            Self::Decoder => write!(f, "decoder"),
+        }
+    }
+}
+
 #[derive(ThisError, Debug)]
-pub enum AudioCaptureError {
-    #[error("Audio host is not available")]
+pub enum AudioError {
+    #[error("audio host is not available")]
     HostUnavailable(#[source] cpal::HostUnavailable),
 
     #[error("no default output device available")]
-    DefaultOutputDeviceUnavailable,
+    NoOutputDevice,
 
     #[error("failed to get default stream config from output device")]
-    DefaultOutputStreamConfigUnavailable(#[from] cpal::DefaultStreamConfigError),
+    StreamConfigUnavailable(#[from] cpal::DefaultStreamConfigError),
 
-    #[error("failed to build input stream on output device")]
-    FailedToBuildInputStream(#[source] cpal::BuildStreamError),
+    #[error("failed to build {direction} stream on output device")]
+    BuildStreamFailed {
+        direction: StreamDirection,
+        #[source]
+        source: cpal::BuildStreamError,
+    },
 
-    #[error("failed to build output stream on output device")]
-    FailedToBuildOutputStream(#[source] cpal::BuildStreamError),
-
-    #[error("failed to play input stream")]
-    FailedToPlayInputStream(#[source] cpal::PlayStreamError),
-
-    #[error("failed to play output stream")]
-    FailedToPlayOutputStream(#[source] cpal::PlayStreamError),
-
-    #[error("failed to create Opus encoder")]
-    OpusEncoderFailed(#[source] opus::Error),
-
-    #[error("failed to create Opus decoder")]
-    OpusDecoderFailed(#[source] opus::Error),
-
-    #[error("Opus encoding failed")]
-    OpusEncodeFailed(#[source] opus::Error),
-
-    #[error("Opus decoding failed")]
-    OpusDecodeFailed(#[source] opus::Error),
+    #[error("failed to play {direction} stream")]
+    PlayStreamFailed {
+        direction: StreamDirection,
+        #[source]
+        source: cpal::PlayStreamError,
+    },
 
     #[error("cpal stream error")]
     StreamError(#[source] cpal::StreamError),
 
+    #[error("failed to create Opus {direction}")]
+    OpusInitFailed {
+        direction: CodecDirection,
+        #[source]
+        source: opus::Error,
+    },
+
+    #[error("Opus {direction} failed")]
+    OpusCodecFailed {
+        direction: CodecDirection,
+        #[source]
+        source: opus::Error,
+    },
+
     #[cfg(target_os = "windows")]
-    #[error("Windows API Error: {0}")]
-    WindowsApiError(#[from] windows::core::Error),
+    #[error("Windows API error: {0}")]
+    WindowsApi(#[from] windows::core::Error),
 
     #[error("per-process audio capture is not available on this platform")]
     ProcessCaptureUnavailable,
@@ -78,38 +112,33 @@ pub enum AudioCaptureError {
 
 #[derive(ThisError, Debug)]
 pub enum NetworkError {
-    #[error("failed to bind UDP socket on {addr}")]
-    BindFailed {
+    #[error("failed to bind socket on {addr}")]
+    SocketBindFailed {
         addr: String,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to send UDP packet")]
+    #[error("failed to configure socket option: {option}")]
+    SocketOptionFailed {
+        option: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to send packet")]
     SendFailed(#[source] std::io::Error),
 
-    #[error("failed to receive UDP packet")]
+    #[error("failed to receive packet")]
     RecvFailed(#[source] std::io::Error),
-
-    #[error("failed to configure socket reuse address")]
-    SetReuseAddressFailed(#[source] std::io::Error),
-
-    #[error("failed to configure socket reuse port")]
-    SetReusePortFailed(#[source] std::io::Error),
-
-    #[error("failed to configure socket type of service (TOS)")]
-    SetTosFailed(#[source] std::io::Error),
-
-    #[error("failed to set socket read timeout")]
-    SetReadTimeoutFailed(#[source] std::io::Error),
 
     #[error("failed to clone socket")]
     SocketCloneFailed(#[source] std::io::Error),
 
-    #[error("failed to enable broadcast feature")]
+    #[error("failed to enable broadcast")]
     EnableBroadcastFailed(#[source] std::io::Error),
 
-    #[error("Failed to serialize discovery payload")]
+    #[error("failed to serialize discovery payload")]
     Serialization(#[from] serde_json::Error),
 
     #[error("failed to connect TCP stream to {addr}")]
@@ -119,22 +148,14 @@ pub enum NetworkError {
         source: std::io::Error,
     },
 
-    #[error("failed to bind TCP discovery spigot on {addr}")]
-    TcpSpigotBindFailed {
-        addr: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to bind TCP audio framer on {addr}")]
-    TcpFramerBindFailed {
-        addr: String,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("connection lost or sender stopped transmitting")]
+    ConnectionLost,
 
     #[error("no active connection for device {0}")]
     DeviceNotConnected(String),
+
+    #[error("failed to register mDNS service: {0}")]
+    MdnsRegisterFailed(#[source] mdns_sd::Error),
 }
 
 #[derive(ThisError, Debug)]
@@ -142,7 +163,7 @@ pub enum ControlError {
     #[error("failed to serialize control message")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("failed to send control message to {addr}: {source}")]
+    #[error("failed to send control message to {addr}")]
     SendFailed {
         addr: String,
         #[source]
@@ -154,4 +175,13 @@ pub enum ControlError {
 
     #[error("sender rejected the request: {reason}")]
     Rejected { reason: String },
+
+    #[error("failed to start control server")]
+    ServerStartFailed(#[source] std::io::Error),
+
+    #[error("HTTP request failed: {0}")]
+    HttpRequestFailed(String),
+
+    #[error("WebSocket connection failed: {reason}")]
+    WebSocketFailed { reason: String },
 }

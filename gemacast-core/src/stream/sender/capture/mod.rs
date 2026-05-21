@@ -15,5 +15,5 @@ pub struct CaptureHandle {
     pub backend: Box<dyn CaptureBackend>,
     pub consumer: HeapCons<f32>,
     pub notify: Arc<Notify>,
-    pub error_rx: mpsc::Receiver<cpal::StreamError>,
+    pub stream_error_rx: mpsc::Receiver<cpal::StreamError>,
 }
