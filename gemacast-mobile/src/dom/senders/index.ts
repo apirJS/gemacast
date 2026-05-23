@@ -62,13 +62,10 @@ export function setupSenderList(app: App) {
     const isEmpty = state.discoveredSenders.length === 0 && isListening;
     if (senderEmptyEl) senderEmptyEl.hidden = !isEmpty;
 
-    // Skip full DOM rebuild while user is typing in search input
-    // to prevent Android from dismissing the keyboard
     if (searchInputFocused && dropdownOpen) {
       return;
     }
 
-    // Clean up document listeners before destroying the DOM
     teardownDropdownListeners();
 
     // Reset source when not connected

@@ -1,13 +1,15 @@
 #![cfg(target_os = "windows")]
 
 use crate::{
-    audio::OPUS_FRAME_SAMPLES,
+    audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
     error::{AudioError, GemaCastError},
     stream::sender::capture::{CaptureBackend, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
+
+use super::wasapi_common::{decode_samples_to_f32, downmix_to_stereo, parse_mix_format};
 
 use windows::{
     Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPPROCESS},
@@ -53,6 +55,13 @@ unsafe impl Sync for SendClient {}
 
 struct WasapiLoopbackCapture {
     client: SendClient,
+    is_running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for WasapiLoopbackCapture {
+    fn drop(&mut self) {
+        self.is_running.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl CaptureBackend for WasapiLoopbackCapture {
@@ -79,30 +88,15 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
         // We must query the system's shared-mode mix format from the default render endpoint,
         // which all process audio streams conform to.
         let mix_format_ptr = get_default_mix_format()?;
-
-        let native_rate = (*mix_format_ptr).nSamplesPerSec;
-        let native_channels = (*mix_format_ptr).nChannels as usize;
-        let bits_per_sample = (*mix_format_ptr).wBitsPerSample;
-        let block_align = (*mix_format_ptr).nBlockAlign as usize;
-
-        // Determine if the format is IEEE float or PCM integer
-        let is_float = if (*mix_format_ptr).wFormatTag == 0xFFFE {
-            // WAVE_FORMAT_EXTENSIBLE — check SubFormat GUID
-            let ext = mix_format_ptr as *const windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
-            let float_guid = windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-            let sub_format = std::ptr::addr_of!((*ext).SubFormat).read_unaligned();
-            sub_format == float_guid
-        } else {
-            (*mix_format_ptr).wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
-        };
+        let format = parse_mix_format(mix_format_ptr);
 
         tracing::info!(
             "[WASAPI] Process loopback: native_rate={}, native_channels={}, bits={}, block_align={}, is_float={}",
-            native_rate,
-            native_channels,
-            bits_per_sample,
-            block_align,
-            is_float
+            format.native_rate,
+            format.native_channels,
+            format.bits_per_sample,
+            format.block_align,
+            format.is_float
         );
 
         let init_result = audio_client.Initialize(
@@ -134,34 +128,42 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
         struct SendCaptureClient(windows::Win32::Media::Audio::IAudioCaptureClient);
         unsafe impl Send for SendCaptureClient {}
         let send_capture_client = SendCaptureClient(capture_client);
+        let client_clone = audio_client.clone();
 
         let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
         let (mut rb_producer, rb_consumer) = rb.split();
         let (_stream_error_tx, stream_error_rx) = mpsc::channel::<cpal::StreamError>(1);
         let notify = Arc::new(Notify::new());
         let notify_clone = notify.clone();
-        let client_clone = audio_client.clone();
+        let is_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let is_running_thread = is_running.clone();
 
-        // NOTE: Do NOT call audio_client.Start() here!
-        // The encode loop in AudioCaptureInstance calls capture.backend.play()
-        // which calls Start(). Calling it here would cause AUDCLNT_E_NOT_STOPPED
-        // when play() tries to start it again, silently killing the encode loop.
+        // Build resampler if native format differs from pipeline's 48kHz stereo
+        let needs_resample = format.native_rate != 48000 || format.native_channels != 2;
+        let mut resampler = if needs_resample {
+            let resample_channels = if format.native_channels == 2 { 2 } else { 2 };
+            Some(CaptureResampler::new(format.native_rate, 48000, resample_channels)?)
+        } else {
+            None
+        };
 
         std::thread::spawn(move || {
+            // Force whole-struct capture. Rust 2021+ closures capture individual
+            // fields; accessing .0 directly would capture the bare !Send
+            // IAudioCaptureClient instead of the Send wrapper.
             let send_capture_client = send_capture_client;
-            let capture_client = send_capture_client.0;
+            let cap_client = send_capture_client.0;
+            let mut decoded = Vec::with_capacity(4096);
+            let mut stereo_buf = Vec::with_capacity(4096);
 
-            let mut phase: f32 = 0.0;
-            let phase_inc = native_rate as f32 / 48000.0;
-
-            loop {
+            while is_running_thread.load(std::sync::atomic::Ordering::Relaxed) {
                 let wait_res =
-                    windows::Win32::System::Threading::WaitForSingleObject(event_handle, 1000);
+                    windows::Win32::System::Threading::WaitForSingleObject(event_handle, 500);
                 if wait_res != windows::Win32::Foundation::WAIT_OBJECT_0 {
                     continue;
                 }
 
-                let mut packet_length = match capture_client.GetNextPacketSize() {
+                let mut packet_length = match cap_client.GetNextPacketSize() {
                     Ok(len) => len,
                     Err(_) => break,
                 };
@@ -173,7 +175,7 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
                     let mut device_position = 0;
                     let mut qpc_position = 0;
 
-                    if capture_client
+                    if cap_client
                         .GetBuffer(
                             &mut buffer_ptr,
                             &mut num_frames_available,
@@ -187,9 +189,8 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
                     }
 
                     if num_frames_available == 0 {
-                        let _ = capture_client.ReleaseBuffer(0);
-
-                        packet_length = match capture_client.GetNextPacketSize() {
+                        let _ = cap_client.ReleaseBuffer(0);
+                        packet_length = match cap_client.GetNextPacketSize() {
                             Ok(len) => len,
                             Err(_) => break,
                         };
@@ -203,112 +204,52 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
                         }
                     } else {
                         let src_frames = num_frames_available as usize;
-                        let total_bytes = src_frames * block_align;
-                        let raw_bytes = std::slice::from_raw_parts(buffer_ptr, total_bytes);
 
-                        // Decode raw bytes into f32 samples based on format
-                        let total_samples = src_frames * native_channels;
-                        let mut decoded = Vec::with_capacity(total_samples);
+                        // Decode raw bytes → f32 using shared utilities
+                        decode_samples_to_f32(buffer_ptr, &format, src_frames, &mut decoded);
 
-                        if is_float && bits_per_sample == 32 {
-                            // IEEE Float 32-bit — direct reinterpret
-                            let float_ptr = buffer_ptr as *const f32;
-                            let float_slice = std::slice::from_raw_parts(float_ptr, total_samples);
-                            decoded.extend_from_slice(float_slice);
-                        } else if !is_float && bits_per_sample == 16 {
-                            // PCM 16-bit signed integer
-                            let i16_ptr = buffer_ptr as *const i16;
-                            let i16_slice = std::slice::from_raw_parts(i16_ptr, total_samples);
-                            for &s in i16_slice {
-                                decoded.push(s as f32 / 32768.0);
-                            }
-                        } else if !is_float && bits_per_sample == 24 {
-                            // PCM 24-bit packed (3 bytes per sample)
-                            let bytes_per_sample = 3usize;
-                            for i in 0..total_samples {
-                                let offset = (i / native_channels) * block_align
-                                    + (i % native_channels) * bytes_per_sample;
-                                if offset + 2 < raw_bytes.len() {
-                                    let b0 = raw_bytes[offset] as i32;
-                                    let b1 = raw_bytes[offset + 1] as i32;
-                                    let b2 = raw_bytes[offset + 2] as i32;
-                                    let val = (b2 << 24) | (b1 << 16) | (b0 << 8);
-                                    decoded.push(val as f32 / 2147483648.0);
-                                } else {
-                                    decoded.push(0.0);
-                                }
-                            }
-                        } else if !is_float && bits_per_sample == 32 {
-                            // PCM 32-bit signed integer
-                            let i32_ptr = buffer_ptr as *const i32;
-                            let i32_slice = std::slice::from_raw_parts(i32_ptr, total_samples);
-                            for &s in i32_slice {
-                                decoded.push(s as f32 / 2147483648.0);
+                        // Determine final samples to push
+                        let final_samples: &[f32] = if needs_resample {
+                            // Downmix to stereo if needed
+                            let stereo_input = if format.native_channels != 2 {
+                                downmix_to_stereo(&decoded, format.native_channels, &mut stereo_buf);
+                                &stereo_buf
+                            } else {
+                                &decoded
+                            };
+
+                            // Resample to 48kHz via Rubato
+                            match resampler.as_mut().unwrap().process_interleaved(stereo_input) {
+                                Ok(resampled) => resampled,
+                                Err(_) => stereo_input,
                             }
                         } else {
-                            // Unknown format — push silence
-                            decoded.resize(total_samples, 0.0);
-                        }
+                            &decoded
+                        };
 
-                        // Now resample/downmix the decoded f32 samples
-                        if native_rate == 48000 && native_channels == 2 {
-                            if rb_producer.vacant_len() >= decoded.len() {
-                                let _ = rb_producer.push_slice(&decoded);
-                            }
-                        } else {
-                            // Inline linear resampler and downmixer
-                            let target_frames = (src_frames as f32 / phase_inc).ceil() as usize;
-                            let mut out = Vec::with_capacity(target_frames * 2);
-
-                            while (phase as usize) < src_frames {
-                                let idx = phase as usize;
-                                let frac = phase - idx as f32;
-
-                                let next_idx = (idx + 1).min(src_frames - 1);
-
-                                let (l, r, next_l, next_r);
-
-                                if native_channels == 1 {
-                                    l = decoded[idx];
-                                    r = decoded[idx];
-                                    next_l = decoded[next_idx];
-                                    next_r = decoded[next_idx];
-                                } else {
-                                    l = decoded[idx * native_channels];
-                                    r = decoded[idx * native_channels + 1];
-                                    next_l = decoded[next_idx * native_channels];
-                                    next_r = decoded[next_idx * native_channels + 1];
-                                }
-
-                                out.push(l + (next_l - l) * frac);
-                                out.push(r + (next_r - r) * frac);
-
-                                phase += phase_inc;
-                            }
-
-                            phase -= src_frames as f32;
-
-                            if rb_producer.vacant_len() >= out.len() {
-                                let _ = rb_producer.push_slice(&out);
-                            }
+                        if rb_producer.vacant_len() >= final_samples.len() {
+                            let _ = rb_producer.push_slice(final_samples);
                         }
                     }
 
-                    let _ = capture_client.ReleaseBuffer(num_frames_available);
+                    let _ = cap_client.ReleaseBuffer(num_frames_available);
 
-                    packet_length = match capture_client.GetNextPacketSize() {
+                    packet_length = match cap_client.GetNextPacketSize() {
                         Ok(len) => len,
                         Err(_) => break,
                     };
                 }
-                
+
                 notify_clone.notify_one();
             }
+
+            let _ = windows::Win32::Foundation::CloseHandle(event_handle);
         });
 
         Ok(CaptureHandle {
             backend: Box::new(WasapiLoopbackCapture {
                 client: SendClient(client_clone),
+                is_running,
             }),
             consumer: rb_consumer,
             notify,

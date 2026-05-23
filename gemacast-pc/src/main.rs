@@ -66,7 +66,6 @@ async fn wait_for_termination() {
 }
 
 fn main() {
-    // Initialize tracing to see logs in console (can filter using RUST_LOG env var)
     let _ = tracing_subscriber::fmt::try_init();
 
     std::thread::spawn(|| {

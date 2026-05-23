@@ -108,6 +108,9 @@ pub enum AudioError {
 
     #[error("capture pool is full (max {max} concurrent captures)")]
     CapturePoolExhausted { max: usize },
+
+    #[error("audio resampling failed: {0}")]
+    ResampleFailed(String),
 }
 
 #[derive(ThisError, Debug)]
