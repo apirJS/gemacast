@@ -85,6 +85,10 @@ pub struct JitterBufferManager {
 
     /// Pre-computed Hann window for OLA crossfading (OLA_LEN entries).
     hann_window: Vec<f32>,
+    /// Pre-allocated buffer for WSOLA: holds the first frame's PCM while decoding the second.
+    wsola_buf: Vec<f32>,
+    /// Countdown to reduce config lock polling: only check every 100 frames (~500ms).
+    config_check_countdown: u32,
 }
 
 impl JitterBufferManager {
@@ -132,6 +136,8 @@ impl JitterBufferManager {
             config_ref,
             is_tcp_mode,
             hann_window: Self::make_hann_window(),
+            wsola_buf: vec![0.0f32; OPUS_FRAME_SAMPLES],
+            config_check_countdown: 0,
             ema_peak_decay_alpha,
             last_macro_spike: None,
             unstable_regime_until: None,
@@ -160,7 +166,7 @@ impl JitterBufferManager {
         let target = self.min_depth_frames() as f32 + jitter_margin + self.starvation_bump;
         let cap = tcp_cap_override.unwrap_or(self.comfort_cap_frames());
         let safe_cap = cap.max(self.min_depth_frames() as f32);
-        
+
         target
             .ceil()
             .clamp(self.min_depth_frames() as f32, safe_cap) as u32
@@ -248,13 +254,31 @@ impl JitterBufferManager {
         }
     }
 
-    /// Fill `output` with PCM samples.
+    /// Fill `output` with PCM samples using bulk drain for SIMD-friendly access.
     pub fn fill_output(&mut self, output: &mut [f32], volume: f32) {
-        for sample in output.iter_mut() {
+        let mut pos = 0;
+        while pos < output.len() {
             if self.playback_buf.is_empty() {
                 self.process_next_frame();
             }
-            *sample = self.playback_buf.pop_front().unwrap_or(0.0) * volume;
+            let need = output.len() - pos;
+            let take = self.playback_buf.len().min(need);
+            if take == 0 {
+                output[pos..].fill(0.0);
+                return;
+            }
+            // Bulk copy from VecDeque's contiguous slices for vectorization
+            let (front, back) = self.playback_buf.as_slices();
+            let from_front = take.min(front.len());
+            for i in 0..from_front {
+                output[pos + i] = front[i] * volume;
+            }
+            let from_back = take - from_front;
+            for i in 0..from_back {
+                output[pos + from_front + i] = back[i] * volume;
+            }
+            drop(self.playback_buf.drain(..take));
+            pos += take;
         }
     }
 
@@ -264,10 +288,14 @@ impl JitterBufferManager {
         self.starvation_bump = (self.starvation_bump - 0.01).max(0.0);
 
         let mut pending_flush: Option<u32> = None;
-        if let Ok(guard) = self.config_ref.try_read() {
+        self.config_check_countdown += 1;
+        let should_check_config = self.config_check_countdown >= 100;
+        if should_check_config {
+            self.config_check_countdown = 0;
+        }
+        if should_check_config && let Ok(guard) = self.config_ref.try_read() {
             let new_config = guard.clone();
             if new_config != self.config {
-                
                 self.is_prebuffering = true;
                 // Reset jitter tracking for clean convergence.
                 self.ema_jitter = 0.0;
@@ -291,7 +319,7 @@ impl JitterBufferManager {
         if let Some(flush_target) = pending_flush {
             while self.buffer.occupied_count() > flush_target {
                 if let Some(pkt) = self.buffer.pop_next() {
-                    let _ = self.capture_pcm(&pkt);
+                    self.capture_pcm(&pkt);
                 } else {
                     self.buffer.advance_one();
                 }
@@ -318,15 +346,15 @@ impl JitterBufferManager {
             self.compute_target_depth(None)
         };
 
-        // Soft ceiling = target + 80 frames. 
+        // Soft ceiling = target + 80 frames.
         // Only flush for truly catastrophic bloat (retains target + 30).
         let flush_ceiling = target + 80;
         if self.buffer.occupied_count() > flush_ceiling {
             let flush_to = target + 30;
-            
+
             while self.buffer.occupied_count() > flush_to {
                 if let Some(pkt) = self.buffer.pop_next() {
-                    let _ = self.capture_pcm(&pkt);
+                    self.capture_pcm(&pkt);
                 } else {
                     self.buffer.advance_one();
                 }
@@ -373,33 +401,39 @@ impl JitterBufferManager {
             let pkt = self.buffer.pop_next().expect("has_next was true");
             let delay_ms = Instant::now().duration_since(pkt.arrival_time).as_millis() as u32;
             self.latency_metric.store(delay_ms, Ordering::Relaxed);
-            let pcm = self.capture_pcm(&pkt);
+            self.capture_pcm(&pkt);
 
             let occupied = self.buffer.occupied_count();
             if occupied > target + 2 && self.buffer.has_next() {
-                let rms = Self::get_rms(&pcm);
+                let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
 
                 if rms < 0.005 {
-                    // Silence fast-forward: append current frame (fix C1) AND pop an extra.
-                    self.playback_buf.extend(&pcm);
+                    // Silence fast-forward: append current frame AND pop an extra.
+                    self.playback_buf
+                        .extend(&self.decode_buf[..self.decode_len]);
                     if self.buffer.has_next() {
                         let extra = self.buffer.pop_next().unwrap();
-                        let _ = self.capture_pcm(&extra);
+                        self.capture_pcm(&extra);
                         // Extra frame is decoded (keeps Opus state) but discarded from output.
                     }
                     return;
                 }
 
-                // Perform Hann OLA WSOLA splice
+                // WSOLA path: save current PCM, decode second frame
+                let pcm1_len = self.decode_len;
+                self.wsola_buf[..pcm1_len]
+                    .copy_from_slice(&self.decode_buf[..pcm1_len]);
                 let pkt2 = self.buffer.pop_next().unwrap();
-                let delay2_ms = Instant::now().duration_since(pkt2.arrival_time).as_millis() as u32;
+                let delay2_ms =
+                    Instant::now().duration_since(pkt2.arrival_time).as_millis() as u32;
                 self.latency_metric.store(delay2_ms, Ordering::Relaxed);
-                let pcm2 = self.capture_pcm(&pkt2);
-                self.wsola_overlap_add(&pcm, &pcm2);
+                self.capture_pcm(&pkt2);
+                self.wsola_overlap_add_internal(pcm1_len);
                 return;
             }
 
-            self.playback_buf.extend(pcm);
+            self.playback_buf
+                .extend(&self.decode_buf[..self.decode_len]);
             return;
         }
 
@@ -465,62 +499,49 @@ impl JitterBufferManager {
         self.generate_plc();
     }
 
-    /// Hann Overlap-Add WSOLA splice.
+    /// Hann Overlap-Add WSOLA splice (allocation-free).
     ///
-    /// Compresses time by finding the best phase-aligned splice point via 
-    /// normalized cross-correlation and applying a Hann-windowed crossfade.
-    fn wsola_overlap_add(&mut self, pcm1: &[f32], pcm2: &[f32]) {
+    /// Reads pcm1 from `self.wsola_buf[..pcm1_len]` and pcm2 from `self.decode_buf[..self.decode_len]`.
+    /// Finds the best phase-aligned splice point via stereo normalized cross-correlation
+    /// and applies a Hann-windowed crossfade. Writes output to `self.playback_buf`.
+    fn wsola_overlap_add_internal(&mut self, pcm1_len: usize) {
         let ch = OPUS_CHANNELS as usize;
-        let n = pcm1.len() / ch; // 240 sample-frames per packet
+        let pcm2_len = self.decode_len;
+        let n1 = pcm1_len / ch;
+        let n2 = pcm2_len / ch;
 
-        // Guard: if packets are too small for OLA, just pass through
-        if n < OLA_LEN + 16 {
-            self.playback_buf.extend(pcm1);
+        // Guard: if packets are too small for OLA, just pass through pcm1
+        if n1 < OLA_LEN + 16 || n2 < OLA_LEN + 16 {
+            self.playback_buf.extend(&self.wsola_buf[..pcm1_len]);
             return;
         }
 
-        let anchor = n - OLA_LEN; // 112
+        let anchor = n1 - OLA_LEN;
+        let search_limit = SEARCH_RANGE.min(n2.saturating_sub(OLA_LEN));
 
-        // Find offset `d` in pcm2[0..SEARCH_RANGE] that maximizes correlation
-        // with pcm1[anchor..anchor+OLA_LEN].
-        let search_limit = SEARCH_RANGE.min(n.saturating_sub(OLA_LEN));
-        let mut best_d = 0usize;
-        let mut best_corr = f32::NEG_INFINITY;
-
-        // Pre-compute energy of reference segment (pcm1 tail)
+        // Pre-compute energy of reference segment (stereo, per-channel)
         let mut ref_energy = 0.0f32;
         for i in 0..OLA_LEN {
             for c in 0..ch {
-                let idx = (anchor + i) * ch + c;
-                if idx < pcm1.len() {
-                    let s = pcm1[idx];
-                    ref_energy += s * s;
-                }
+                let s = self.wsola_buf[(anchor + i) * ch + c];
+                ref_energy += s * s;
             }
         }
+
+        let mut best_d = 0usize;
+        let mut best_corr = f32::NEG_INFINITY;
 
         for d in 0..search_limit {
             let mut cross = 0.0f32;
             let mut cand_energy = 0.0f32;
             for i in 0..OLA_LEN {
                 for c in 0..ch {
-                    let ref_idx = (anchor + i) * ch + c;
-                    let cand_idx = (d + i) * ch + c;
-                    let r = if ref_idx < pcm1.len() {
-                        pcm1[ref_idx]
-                    } else {
-                        0.0
-                    };
-                    let s = if cand_idx < pcm2.len() {
-                        pcm2[cand_idx]
-                    } else {
-                        0.0
-                    };
+                    let r = self.wsola_buf[(anchor + i) * ch + c];
+                    let s = self.decode_buf[(d + i) * ch + c];
                     cross += r * s;
                     cand_energy += s * s;
                 }
             }
-            // Normalized cross-correlation
             let denom = (ref_energy * cand_energy).sqrt();
             let ncc = if denom > 1e-10 { cross / denom } else { 0.0 };
             if ncc > best_corr {
@@ -529,45 +550,26 @@ impl JitterBufferManager {
             }
         }
 
-        // 1. pcm1[0..anchor] verbatim
-        for f in 0..anchor {
-            for c in 0..ch {
-                let idx = f * ch + c;
-                if idx < pcm1.len() {
-                    self.playback_buf.push_back(pcm1[idx]);
-                }
-            }
-        }
+        // 1. pcm1[0..anchor] verbatim (bulk extend, no per-sample push)
+        self.playback_buf
+            .extend(&self.wsola_buf[..anchor * ch]);
 
         // 2. Hann OLA crossfade
         for i in 0..OLA_LEN {
-            let hann_out = 1.0 - self.hann_window[i]; // Fade-out: complement of fade-in
-            let hann_in = self.hann_window[i]; // Fade-in: standard Hann
+            let hann_in = self.hann_window[i];
+            let hann_out = 1.0 - hann_in;
             for c in 0..ch {
-                let ref_idx = (anchor + i) * ch + c;
-                let cand_idx = (best_d + i) * ch + c;
-                let r = if ref_idx < pcm1.len() {
-                    pcm1[ref_idx]
-                } else {
-                    0.0
-                };
-                let s = if cand_idx < pcm2.len() {
-                    pcm2[cand_idx]
-                } else {
-                    0.0
-                };
+                let r = self.wsola_buf[(anchor + i) * ch + c];
+                let s = self.decode_buf[(best_d + i) * ch + c];
                 self.playback_buf.push_back(r * hann_out + s * hann_in);
             }
         }
 
-        // 3. pcm2[best_d+OLA_LEN..n] verbatim
-        for f in (best_d + OLA_LEN)..n {
-            for c in 0..ch {
-                let idx = f * ch + c;
-                if idx < pcm2.len() {
-                    self.playback_buf.push_back(pcm2[idx]);
-                }
-            }
+        // 3. pcm2[best_d+OLA_LEN..] verbatim (bulk extend)
+        let tail_start = (best_d + OLA_LEN) * ch;
+        if tail_start < pcm2_len {
+            self.playback_buf
+                .extend(&self.decode_buf[tail_start..pcm2_len]);
         }
     }
 
@@ -596,39 +598,45 @@ impl JitterBufferManager {
         (sum_sq / samples.len() as f32).sqrt()
     }
 
-    fn capture_pcm(&mut self, pkt: &RawPacket) -> Vec<f32> {
+    /// Decode a packet's payload into `self.decode_buf[..self.decode_len]`.
+    ///
+    /// Zero-allocation: all output goes into the pre-allocated decode buffer.
+    /// For silence frames, outputs zeros but feeds PLC to keep the decoder state warm.
+    fn capture_pcm(&mut self, pkt: &RawPacket) {
         if let Some(expected) = self.opus_next_expected_seq
             && pkt.seq_num != expected
         {
             let _ = self.decoder.reset_state();
         }
 
-        let pcm = if pkt.is_silence {
+        if pkt.is_silence {
+            // Feed PLC to keep Opus decoder state warm
             let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
-            vec![0.0f32; OPUS_FRAME_SAMPLES]
+            // Output true silence (PLC content is discarded)
+            self.decode_buf[..OPUS_FRAME_SAMPLES].fill(0.0);
+            self.decode_len = OPUS_FRAME_SAMPLES;
         } else if pkt.is_uncompressed {
             let f32_len = pkt.payload_len / std::mem::size_of::<f32>();
-            let mut temp_samples = Vec::with_capacity(f32_len);
-            for chunk in pkt.payload_data[..pkt.payload_len].chunks_exact(4) {
-                let f = f32::from_ne_bytes(chunk.try_into().unwrap());
-                temp_samples.push(f);
-            }
-            let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
-            if temp_samples.is_empty() {
+            if f32_len == 0 {
+                // Empty uncompressed payload — generate PLC as fallback
                 self.decode_plc_to_buf();
-                self.decode_buf[..self.decode_len].to_vec()
             } else {
-                temp_samples
+                // Feed PLC to keep decoder state warm (output overwritten below)
+                let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
+                // Overwrite decode_buf with uncompressed PCM (zero-alloc)
+                for (i, chunk) in pkt.payload_data[..pkt.payload_len]
+                    .chunks_exact(4)
+                    .enumerate()
+                {
+                    self.decode_buf[i] = f32::from_ne_bytes(chunk.try_into().unwrap());
+                }
+                self.decode_len = f32_len.min(self.decode_buf.len());
             }
-        } else if self.decode_opus(&pkt.payload_data[..pkt.payload_len]) {
-            self.decode_buf[..self.decode_len].to_vec()
-        } else {
+        } else if !self.decode_opus(&pkt.payload_data[..pkt.payload_len]) {
             self.decode_plc_to_buf();
-            self.decode_buf[..self.decode_len].to_vec()
-        };
+        }
 
         self.opus_next_expected_seq = Some(pkt.seq_num + 1);
-        pcm
     }
 
     fn decode_opus(&mut self, opus_data: &[u8]) -> bool {

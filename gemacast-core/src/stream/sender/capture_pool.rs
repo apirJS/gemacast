@@ -231,7 +231,16 @@ impl CapturePool {
             }
 
             let handle = match &source {
-                AudioSource::Desktop => super::capture::cpal_loopback::create_cpal_loopback()?,
+                AudioSource::Desktop => {
+                    #[cfg(windows)]
+                    {
+                        super::capture::wasapi_desktop::create_wasapi_desktop_loopback()?
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        super::capture::cpal_loopback::create_cpal_loopback()?
+                    }
+                }
                 #[allow(unused_variables)]
                 AudioSource::Process { pid, .. } => {
                     if !self.supports_process_capture {

@@ -18,6 +18,9 @@ pub struct JitterBuffer {
     initialized: bool,
     /// O(1) count of filled slots. Maintained by insert / pop_next / reset.
     occupied: u32,
+    /// Cached minimum sequence number for O(1) gap-path queries.
+    /// `None` means the cache is stale and must be recomputed on next access.
+    cached_min_seq: Option<u64>,
 }
 
 impl Default for JitterBuffer {
@@ -41,6 +44,7 @@ impl JitterBuffer {
             next_play_seq: 0,
             initialized: false,
             occupied: 0,
+            cached_min_seq: None,
         }
     }
 
@@ -67,11 +71,13 @@ impl JitterBuffer {
             self.skip_to(packet.seq_num.saturating_sub(self.capacity / 2));
         }
 
-        let index = (packet.seq_num % self.capacity) as usize;
+        let seq = packet.seq_num;
+        let index = (seq % self.capacity) as usize;
         if self.slots[index].is_none() {
             self.occupied += 1;
         }
         self.slots[index] = Some(packet);
+        self.cached_min_seq = Some(self.cached_min_seq.map_or(seq, |m| m.min(seq)));
         true
     }
 
@@ -92,6 +98,7 @@ impl JitterBuffer {
             Some(pkt) if pkt.seq_num == self.next_play_seq => {
                 self.occupied = self.occupied.saturating_sub(1);
                 self.next_play_seq += 1;
+                self.cached_min_seq = None;
                 Some(pkt)
             }
             Some(pkt) => {
@@ -102,6 +109,7 @@ impl JitterBuffer {
                     self.occupied = self.occupied.saturating_sub(1);
                     self.next_play_seq += 1;
                 }
+                self.cached_min_seq = None;
                 None
             }
             None => {
@@ -121,6 +129,7 @@ impl JitterBuffer {
             self.occupied = self.occupied.saturating_sub(1);
         }
         self.next_play_seq += 1;
+        self.cached_min_seq = None;
     }
 
     /// O(1) count of filled slots.
@@ -143,6 +152,7 @@ impl JitterBuffer {
     }
 
     /// Represents the total buffer occupancy depth to prevent prebuffer deadlocking on dropped packets.
+    /// **Warning**: O(n) scan of all 512 slots. Only suitable for tests, not the hot path.
     pub fn contiguous_depth(&self) -> u32 {
         if !self.initialized {
             return 0;
@@ -161,15 +171,25 @@ impl JitterBuffer {
 
     /// Skip the playhead forward to `new_seq`, clearing any slots in between.
     fn skip_to(&mut self, new_seq: u64) {
-        let clear_end = new_seq.min(self.next_play_seq + self.capacity);
-        for seq in self.next_play_seq..clear_end {
-            let index = (seq % self.capacity) as usize;
-            if self.slots[index].is_some() {
-                self.slots[index] = None;
-                self.occupied = self.occupied.saturating_sub(1);
+        let skip_distance = new_seq.saturating_sub(self.next_play_seq);
+        if skip_distance >= self.capacity {
+            // Full clear is faster than per-slot iteration when skipping >= capacity.
+            for slot in &mut self.slots {
+                *slot = None;
+            }
+            self.occupied = 0;
+        } else {
+            let clear_end = new_seq.min(self.next_play_seq + self.capacity);
+            for seq in self.next_play_seq..clear_end {
+                let index = (seq % self.capacity) as usize;
+                if self.slots[index].is_some() {
+                    self.slots[index] = None;
+                    self.occupied = self.occupied.saturating_sub(1);
+                }
             }
         }
         self.next_play_seq = new_seq;
+        self.cached_min_seq = None;
     }
 
     /// Reset all state. Called on disconnect/reconnect.
@@ -180,6 +200,7 @@ impl JitterBuffer {
         self.next_play_seq = 0;
         self.initialized = false;
         self.occupied = 0;
+        self.cached_min_seq = None;
     }
 
     /// Read the sequence number the buffer expects to play next.
@@ -188,7 +209,11 @@ impl JitterBuffer {
     }
 
     /// Find the lowest sequence number currently in the buffer slots.
-    pub fn lowest_available_seq(&self) -> Option<u64> {
+    /// Uses a lazy cache: O(1) when cache is valid, O(n) recompute on first access after mutation.
+    pub fn lowest_available_seq(&mut self) -> Option<u64> {
+        if let Some(min) = self.cached_min_seq {
+            return Some(min);
+        }
         let mut min_seq = None;
         for pkt in self.slots.iter().flatten() {
             min_seq = match min_seq {
@@ -196,6 +221,7 @@ impl JitterBuffer {
                 Some(m) => Some(std::cmp::min(m, pkt.seq_num)),
             };
         }
+        self.cached_min_seq = min_seq;
         min_seq
     }
 

@@ -1,5 +1,7 @@
 use opus::{Decoder, Encoder};
 
+pub mod resampler;
+pub use resampler::CaptureResampler;
 pub const OPUS_CHANNELS: u16 = 2;
 pub const OPUS_SAMPLE_RATE: u32 = 48_000;
 
