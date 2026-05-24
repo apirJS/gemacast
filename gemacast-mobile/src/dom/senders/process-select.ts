@@ -3,6 +3,7 @@ import { AppState, AudioSource } from '../../types';
 import { h } from '../utils';
 import { chevronSvg, refreshSvg } from './icons';
 import { sourceIcon, sourceLabel, sourcesEqual, buildSourceOptions } from './source';
+import { invalidateRenderHash } from './render-state';
 
 /**
  * Module-level state that persists across subscriber re-renders.
@@ -138,8 +139,10 @@ export function createProcessSelect(
           if (!result.ok) {
             console.error('Failed to change audio source', result.error);
             onSourceChange(prevSource);
-            app.stateHandler.setState({}); // Revert UI
           }
+          // Force re-render to update the trigger label
+          invalidateRenderHash();
+          app.stateHandler.setState({});
         },
       },
       (() => {

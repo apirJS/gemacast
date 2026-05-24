@@ -141,7 +141,7 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
         // Build resampler if native format differs from pipeline's 48kHz stereo
         let needs_resample = format.native_rate != 48000 || format.native_channels != 2;
         let mut resampler = if needs_resample {
-            let resample_channels = if format.native_channels == 2 { 2 } else { 2 };
+            let resample_channels = 2;
             Some(CaptureResampler::new(format.native_rate, 48000, resample_channels)?)
         } else {
             None

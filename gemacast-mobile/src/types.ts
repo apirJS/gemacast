@@ -106,6 +106,7 @@ export type AppState = {
   status: Status;
   discoveredSenders: DiscoveredSender[];
   connectedSender: DiscoveredSender | null;
+  connectingSenderId: string | null;
   /** Persisted across reconnects — used for auto-reconnect. Cleared on explicit user disconnect. */
   lastConnectedSender: DiscoveredSender | null;
   error: GemaCastError | null;

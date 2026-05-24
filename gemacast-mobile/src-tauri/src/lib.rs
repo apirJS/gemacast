@@ -36,6 +36,7 @@ pub fn run() {
             domains::audio::commands::change_audio_source,
             domains::audio::commands::get_process_list,
             domains::audio::commands::establish_websocket,
+            domains::audio::commands::probe_sender,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

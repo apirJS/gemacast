@@ -11,6 +11,7 @@ pub struct ActiveSession {
     pub device_id: DeviceId,
     pub device_name: String,
     pub exclusive_mode: bool,
+    pub mode: gemacast_core::types::ConnectionMode,
 
     pub is_playing: Arc<AtomicBool>,
     pub jitter_config: Arc<RwLock<JitterConfig>>,

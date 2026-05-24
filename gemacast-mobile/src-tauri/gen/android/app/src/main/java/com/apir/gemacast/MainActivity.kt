@@ -37,6 +37,29 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
+
+    private fun acquireMulticastLock() {
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            multicastLock = wifiManager.createMulticastLock("GemaCast::DiscoveryMulticastLock").also {
+                it.setReferenceCounted(false)
+                it.acquire()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            multicastLock?.let { if (it.isHeld) it.release() }
+            multicastLock = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun isStreamingActive(): Boolean {
         return File(cacheDir, ".streaming_active").exists()
     }
@@ -45,15 +68,13 @@ class MainActivity : TauriActivity() {
     fun getTransportType(): String {
         return try {
             val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val networks = connectivityManager.allNetworks
+            val activeNetwork = connectivityManager.activeNetwork
+            val caps = connectivityManager.getNetworkCapabilities(activeNetwork)
             
             val activeTransports = mutableSetOf<String>()
-            for (network in networks) {
-                val caps = connectivityManager.getNetworkCapabilities(network)
-                if (caps != null) {
-                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) activeTransports.add("WIFI")
-                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) activeTransports.add("ETHERNET")
-                }
+            if (caps != null) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) activeTransports.add("WIFI")
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) activeTransports.add("ETHERNET")
             }
             
             val networkType = if (activeTransports.isEmpty()) "NONE" else activeTransports.joinToString(",")
@@ -86,12 +107,19 @@ class MainActivity : TauriActivity() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent()
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-                intent.data = Uri.parse("package:$packageName")
-                startActivity(intent)
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Battery Optimization")
+                    .setMessage("To prevent audio stuttering when the screen is off, GemaCast needs to be excluded from battery optimizations. Please disable battery optimization for GemaCast in the next screen.")
+                    .setPositiveButton("Allow") { _, _ ->
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        startActivity(intent)
+                    }
+                    .setNegativeButton("Not Now", null)
+                    .show()
             }
         }
     }
@@ -104,6 +132,7 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onPause() {
+        releaseMulticastLock()
         if (isStreamingActive()) {
             val sIntent = Intent(this, GemaCastService::class.java).apply { action = "START" }
             try {
@@ -121,6 +150,7 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
+        acquireMulticastLock()
 
         // If the user disconnected from the notification while the app was in background,
         // the flag will be gone but the service may still be running. Clean it up.

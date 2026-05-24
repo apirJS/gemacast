@@ -40,6 +40,7 @@ export class StateHandler {
       status: Status.Idle,
       discoveredSenders: [],
       connectedSender: null,
+      connectingSenderId: null,
       lastConnectedSender,
       error: null,
       connectionHealth: 'ok',
