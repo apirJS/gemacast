@@ -16,6 +16,7 @@ import { toastManager } from '../dom/toast';
 
 export class ConnectionService {
   private audioResumer: () => Promise<void>;
+  private probeTimer: number | null = null;
 
   constructor(
     private stateHandler: StateHandler,
@@ -87,6 +88,7 @@ export class ConnectionService {
       isLoading: true,
       status: Status.Connecting,
       isSuspended: false,
+      connectingSenderId: sender.deviceId,
     });
     try {
       const state = this.stateHandler.getState();
@@ -98,10 +100,13 @@ export class ConnectionService {
         settings.customJitterConfig,
       );
 
+      const isManual = sender.deviceId.startsWith('manual-');
+      const connectionMode = isManual ? 'wifi' : settings.mode;
+
       const transport =
-        settings.mode === 'usb'
+        connectionMode === 'usb'
           ? 'usb'
-          : settings.mode === 'wifi'
+          : connectionMode === 'wifi'
             ? 'wifi'
             : null;
 
@@ -109,7 +114,7 @@ export class ConnectionService {
         ip,
         deviceId: state.deviceInfo.deviceId,
         deviceName: state.deviceInfo.deviceName,
-        mode: settings.mode,
+        mode: connectionMode,
         exclusiveMode: settings.exclusiveMode,
         jitterConfig: config,
         transport,
@@ -126,6 +131,7 @@ export class ConnectionService {
 
       this.stateHandler.setState({
         connectedSender: sender,
+        connectingSenderId: null,
         lastConnectedSender: sender,
         status: Status.Connected,
         connectionHealth: 'ok',
@@ -139,6 +145,8 @@ export class ConnectionService {
       this.fetchAudioSources(sender).catch(console.warn);
       this.fetchProcessList(sender).catch(console.warn);
 
+      this.startProbeTimer(ip, state.deviceInfo.deviceId);
+
       toastManager.showSuccess('Connected');
       return ok(true);
     } catch (e) {
@@ -147,6 +155,7 @@ export class ConnectionService {
         error,
         isLoading: false,
         status: Status.Listening,
+        connectingSenderId: null,
       });
       return err(error);
     }
@@ -162,6 +171,7 @@ export class ConnectionService {
       StateHandler.saveLastSender(null);
     }
     this.stateHandler.setState({ isLoading: true });
+    this.stopProbeTimer();
 
     if (!sender) {
       this.stateHandler.setState({
@@ -245,7 +255,8 @@ export class ConnectionService {
       });
       toastManager.showSuccess('Audio source changed');
       return ok(true);
-    } catch (e) {
+    } catch (e: any) {
+      console.error('Failed to change source:', e);
       return err(GemaCastError.from(e));
     }
   }
@@ -289,6 +300,22 @@ export class ConnectionService {
       await invoke('kill_playback');
     } catch (e) {
       console.warn('kill_playback IPC failed:', e);
+    }
+  }
+
+  private startProbeTimer(ip: string, deviceId: string) {
+    this.stopProbeTimer();
+    this.probeTimer = window.setInterval(() => {
+      invoke('probe_sender', { ip, deviceId }).catch((e) => {
+        console.warn('Failed to probe sender via HTTP:', e);
+      });
+    }, 5000);
+  }
+
+  private stopProbeTimer() {
+    if (this.probeTimer) {
+      clearInterval(this.probeTimer);
+      this.probeTimer = null;
     }
   }
 }

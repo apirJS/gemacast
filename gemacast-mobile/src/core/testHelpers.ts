@@ -79,6 +79,7 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     status: Status.Idle,
     discoveredSenders: [],
     connectedSender: null,
+    connectingSenderId: null,
     lastConnectedSender: null,
     error: null,
     connectionHealth: 'ok',

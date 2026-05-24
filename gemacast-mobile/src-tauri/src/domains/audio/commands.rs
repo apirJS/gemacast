@@ -62,6 +62,7 @@ pub async fn connect_to_sender(
         device_id,
         device_name,
         exclusive_mode,
+        mode,
         is_playing,
         jitter_config: jitter_config_ref,
         shutdown_tx,
@@ -141,11 +142,18 @@ pub async fn start_audio_playback(
 ) -> Result<(), String> {
     let mut exclusive_mode = false;
 
+    let mut active_mode = gemacast_core::types::ConnectionMode::default();
+    let mut active_jitter = gemacast_core::types::JitterConfig::default();
+
     if let Some(session) = state.session.lock().await.as_ref() {
         session
             .is_playing
             .store(true, std::sync::atomic::Ordering::Relaxed);
         exclusive_mode = session.exclusive_mode;
+        active_mode = session.mode;
+        if let Ok(guard) = session.jitter_config.read() {
+            active_jitter = guard.clone();
+        }
     }
 
     if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
@@ -156,8 +164,8 @@ pub async fn start_audio_playback(
                     device_id: did,
                     device_name: dname,
                     source: gemacast_core::types::AudioSource::default(),
-                    mode: gemacast_core::types::ConnectionMode::default(),
-                    jitter_config: gemacast_core::types::JitterConfig::default(),
+                    mode: active_mode,
+                    jitter_config: active_jitter,
                 })
                 .await;
         }
@@ -194,6 +202,19 @@ pub async fn get_audio_sources(
     let client = HttpControlClient::new(ip_addr);
     client
         .request_audio_sources()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn probe_sender(
+    ip: String,
+    device_id: DeviceId,
+) -> Result<gemacast_core::control::types::PresenceResponse, String> {
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    let client = HttpControlClient::new(ip_addr);
+    client
+        .send_probe(Some(device_id))
         .await
         .map_err(|e| e.to_string())
 }

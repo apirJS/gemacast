@@ -191,14 +191,17 @@ class GemaCastService : Service() {
     }
 
     private var cachedIpcPort: Int? = null
+    private var lastIpcPortFileTime: Long = 0L
 
     private fun sendUdpCommand(command: String) {
         scope.launch {
             try {
-                if (cachedIpcPort == null) {
-                    val ipcPortFile = java.io.File(cacheDir, ".ipc_port")
-                    if (ipcPortFile.exists()) {
+                val ipcPortFile = java.io.File(cacheDir, ".ipc_port")
+                if (ipcPortFile.exists()) {
+                    val lastModified = ipcPortFile.lastModified()
+                    if (cachedIpcPort == null || lastModified > lastIpcPortFileTime) {
                         cachedIpcPort = ipcPortFile.readText().trim().toIntOrNull()
+                        lastIpcPortFileTime = lastModified
                     }
                 }
                 val port = cachedIpcPort ?: return@launch
@@ -248,10 +251,14 @@ class GemaCastService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -353,6 +360,11 @@ class GemaCastService : Service() {
         super.onDestroy()
         isRunning = false
         wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        highPerfWifiLock?.let { if (it.isHeld) it.release() }
+        highPerfWifiLock = null
+        lowLatencyWifiLock?.let { if (it.isHeld) it.release() }
+        lowLatencyWifiLock = null
         mediaSession.isActive = false
         mediaSession.release()
     }

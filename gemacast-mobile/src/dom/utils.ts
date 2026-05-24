@@ -4,15 +4,15 @@ export function fmt(ms: number | null): string {
 
 export function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
-  props: Partial<HTMLElementTagNameMap[K]> & { 
+  props: Partial<HTMLElementTagNameMap[K]> & {
     onClick?: (e: MouseEvent) => void;
     onChange?: (e: Event) => void;
     dataset?: Record<string, string>;
   } = {},
-  ...children: (string | Node)[]
+  ...children: (string | Node | null | undefined | boolean)[]
 ): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
-  
+
   for (const [key, value] of Object.entries(props)) {
     if (value === undefined || value === null) continue;
     if (key === 'onClick') el.addEventListener('click', value as any);
@@ -25,7 +25,7 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 
   for (const child of children) {
     if (typeof child === 'string') el.appendChild(document.createTextNode(child));
-    else if (child) el.appendChild(child);
+    else if (child && typeof child !== 'boolean') el.appendChild(child as Node);
   }
 
   return el;

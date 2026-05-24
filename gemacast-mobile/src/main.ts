@@ -3,6 +3,7 @@ import { setupLatencyStats } from './dom/latency';
 import { setupDeviceAndStatus } from './dom/device';
 import { setupSenderList } from './dom/senders';
 import { setupErrorSection } from './dom/error';
+import { setupManualConnect } from './dom/manual-connect';
 import { listenForTauriEvents } from './dom/listeners';
 import { initSettingsDrawer } from './dom/settings';
 import { setupNavigationHandler } from './dom/navigation';
@@ -13,6 +14,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupDeviceAndStatus(app);
   setupLatencyStats(app);
   setupSenderList(app);
+  setupManualConnect(app);
   setupErrorSection(app);
   listenForTauriEvents(app);
   initSettingsDrawer(app);
