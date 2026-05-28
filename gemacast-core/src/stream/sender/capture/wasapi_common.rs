@@ -88,8 +88,7 @@ pub unsafe fn decode_samples_to_f32(
                 output.push(s as f32 / 32768.0);
             }
         } else if !format.is_float && format.bits_per_sample == 24 {
-            let raw_bytes =
-                std::slice::from_raw_parts(buffer_ptr, num_frames * format.block_align);
+            let raw_bytes = std::slice::from_raw_parts(buffer_ptr, num_frames * format.block_align);
             let bytes_per_sample = 3usize;
             for i in 0..total_samples {
                 let offset = (i / format.native_channels) * format.block_align

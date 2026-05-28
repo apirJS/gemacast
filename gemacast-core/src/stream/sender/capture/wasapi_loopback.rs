@@ -60,7 +60,8 @@ struct WasapiLoopbackCapture {
 
 impl Drop for WasapiLoopbackCapture {
     fn drop(&mut self) {
-        self.is_running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.is_running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -142,7 +143,11 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
         let needs_resample = format.native_rate != 48000 || format.native_channels != 2;
         let mut resampler = if needs_resample {
             let resample_channels = 2;
-            Some(CaptureResampler::new(format.native_rate, 48000, resample_channels)?)
+            Some(CaptureResampler::new(
+                format.native_rate,
+                48000,
+                resample_channels,
+            )?)
         } else {
             None
         };
@@ -212,14 +217,22 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
                         let final_samples: &[f32] = if needs_resample {
                             // Downmix to stereo if needed
                             let stereo_input = if format.native_channels != 2 {
-                                downmix_to_stereo(&decoded, format.native_channels, &mut stereo_buf);
+                                downmix_to_stereo(
+                                    &decoded,
+                                    format.native_channels,
+                                    &mut stereo_buf,
+                                );
                                 &stereo_buf
                             } else {
                                 &decoded
                             };
 
                             // Resample to 48kHz via Rubato
-                            match resampler.as_mut().unwrap().process_interleaved(stereo_input) {
+                            match resampler
+                                .as_mut()
+                                .unwrap()
+                                .process_interleaved(stereo_input)
+                            {
                                 Ok(resampled) => resampled,
                                 Err(_) => stereo_input,
                             }

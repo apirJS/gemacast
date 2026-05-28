@@ -8,11 +8,19 @@ import {
   AudioSource,
   SenderCapabilities,
   ProcessInfo,
+  BitratePreset,
 } from '../types';
 import { GemaCastError } from '../error';
 import { StateHandler } from './StateHandler';
 import { getPresetConfig } from './presets';
 import { toastManager } from '../dom/toast';
+
+/** Converts a BitratePreset to bits/sec for the Rust backend. null = uncompressed raw PCM. */
+function resolveBitrate(preset: BitratePreset, customKbps: number): number | null {
+  if (preset === 'raw') return null;
+  if (preset === 'custom') return customKbps * 1000;
+  return parseInt(preset, 10) * 1000;
+}
 
 export class ConnectionService {
   private audioResumer: () => Promise<void>;
@@ -110,6 +118,9 @@ export class ConnectionService {
             ? 'wifi'
             : null;
 
+      // Resolve bitrate preset to bits/sec. null = uncompressed raw PCM.
+      const bitrate = resolveBitrate(settings.bitratePreset, settings.customBitrateKbps);
+
       await invoke('connect_to_sender', {
         ip,
         deviceId: state.deviceInfo.deviceId,
@@ -117,6 +128,7 @@ export class ConnectionService {
         mode: connectionMode,
         exclusiveMode: settings.exclusiveMode,
         jitterConfig: config,
+        bitrate,
         transport,
       });
 

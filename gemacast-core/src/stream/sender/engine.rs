@@ -5,29 +5,30 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::error::GemaCastError;
 use crate::types::{AudioSource, DeviceId};
-use tokio::sync::watch;
 
 use super::capture_pool::CapturePool;
 
 #[derive(Debug)]
 pub enum CaptureCommand {
-    AddTarget(SocketAddr),
+    AddTarget {
+        addr: SocketAddr,
+        bitrate: Option<i32>,
+    },
     RemoveTarget(SocketAddr),
-    ChangeBitrate(Option<i32>),
 }
 
 pub struct AudioStreamEngine {
     pub pool: CapturePool,
-    pub active_receiver_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource)>,
-    tcp_source_watch_tx: watch::Sender<Option<broadcast::Sender<Arc<Vec<u8>>>>>,
-    tcp_source_watch_rx: watch::Receiver<Option<broadcast::Sender<Arc<Vec<u8>>>>>,
+    /// Maps device_id → (target_addr, source, bitrate)
+    pub active_receiver_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource, Option<i32>)>,
 }
 
 pub enum AudioStreamCommand {
     Subscribe {
         device_id: DeviceId,
         target_addr: Option<SocketAddr>,
-        source: AudioSource,
+        source: Option<AudioSource>,
+        bitrate: Option<i32>,
     },
     Unsubscribe {
         device_id: DeviceId,
@@ -36,27 +37,23 @@ pub enum AudioStreamCommand {
         device_id: DeviceId,
         source: AudioSource,
     },
-    ChangeBitrate(Option<i32>),
+    ChangeBitrate {
+        device_id: DeviceId,
+        bitrate: Option<i32>,
+    },
+    GetTcpBroadcaster {
+        device_id: DeviceId,
+        reply: tokio::sync::oneshot::Sender<Option<broadcast::Sender<Arc<Vec<u8>>>>>,
+    },
     Shutdown,
 }
 
 impl AudioStreamEngine {
     pub fn new(supports_process_capture: bool) -> Self {
-        let (tcp_source_watch_tx, tcp_source_watch_rx) = watch::channel(None);
         Self {
             pool: CapturePool::new(supports_process_capture),
             active_receiver_sessions: HashMap::new(),
-            tcp_source_watch_tx,
-            tcp_source_watch_rx,
         }
-    }
-
-    pub fn tcp_source_watch(&self) -> watch::Receiver<Option<broadcast::Sender<Arc<Vec<u8>>>>> {
-        self.tcp_source_watch_rx.clone()
-    }
-
-    pub fn seed_tcp_source(&self, broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>) {
-        let _ = self.tcp_source_watch_tx.send(Some(broadcast_tx));
     }
 
     pub async fn run_command_loop(
@@ -69,33 +66,49 @@ impl AudioStreamEngine {
                     device_id,
                     target_addr,
                     source,
+                    bitrate,
                 } => {
+                    let mut final_source = source.unwrap_or_default();
+                    if let Some((_, existing_source, _)) =
+                        self.active_receiver_sessions.get(&device_id)
+                    {
+                        final_source = existing_source.clone();
+                    }
+
                     tracing::info!(
-                        "[Engine] Subscribe device={:?} source={:?} target_addr={:?}",
+                        "[Engine] Subscribe device={:?} source={:?} target_addr={:?} bitrate={:?}",
                         device_id,
-                        source,
-                        target_addr
+                        final_source,
+                        target_addr,
+                        bitrate
                     );
-                    match self.pool.subscribe(source.clone(), target_addr).await {
-                        Ok(broadcast_tx) => {
-                            if target_addr.is_none() {
-                                tracing::info!(
-                                    "[Engine] Sending initial broadcast to ADB TCP watch"
-                                );
-                                let _ = self.tcp_source_watch_tx.send(Some(broadcast_tx));
-                            }
+
+                    // If device is already subscribed (e.g. fast reconnect), we might want to clean up first
+                    if self.active_receiver_sessions.contains_key(&device_id) {
+                        tracing::info!(
+                            "[Engine] Cleaning up existing session for device={:?}",
+                            device_id
+                        );
+                        let _ = self.pool.unsubscribe(&final_source, target_addr).await;
+                    }
+
+                    match self
+                        .pool
+                        .subscribe(final_source.clone(), target_addr, bitrate)
+                        .await
+                    {
+                        Ok(_) => {
                             self.active_receiver_sessions
-                                .insert(device_id, (target_addr, source));
+                                .insert(device_id, (target_addr, final_source, bitrate));
                         }
                         Err(e) => {
                             tracing::error!("[Engine] Subscribe failed: {}", e);
-                            continue;
                         }
                     }
                 }
                 AudioStreamCommand::Unsubscribe { device_id } => {
                     tracing::info!("[Engine] Unsubscribe device={:?}", device_id);
-                    if let Some((target_addr, source)) =
+                    if let Some((target_addr, source, _bitrate)) =
                         self.active_receiver_sessions.remove(&device_id)
                     {
                         let _ = self.pool.unsubscribe(&source, target_addr).await;
@@ -107,15 +120,18 @@ impl AudioStreamEngine {
                         device_id,
                         source
                     );
+
                     tracing::info!(
                         "[Engine] Active sessions: {:?}",
                         self.active_receiver_sessions.keys().collect::<Vec<_>>()
                     );
-                    if let Some((target_addr, old_source)) =
+
+                    if let Some((target_addr, old_source, bitrate)) =
                         self.active_receiver_sessions.get(&device_id)
                     {
                         let old_source = old_source.clone();
                         let target_addr = *target_addr;
+                        let bitrate = *bitrate;
                         tracing::info!(
                             "[Engine] Found session: old_source={:?} target_addr={:?}",
                             old_source,
@@ -124,19 +140,13 @@ impl AudioStreamEngine {
 
                         match self
                             .pool
-                            .change_source(&old_source, source.clone(), target_addr)
+                            .change_source(&old_source, source.clone(), target_addr, bitrate)
                             .await
                         {
-                            Ok(broadcast_tx) => {
+                            Ok(_broadcast_tx) => {
                                 tracing::info!("[Engine] Source changed successfully");
-                                if target_addr.is_none() {
-                                    tracing::info!(
-                                        "[Engine] Sending new broadcast to ADB TCP watch"
-                                    );
-                                    let _ = self.tcp_source_watch_tx.send(Some(broadcast_tx));
-                                }
                                 self.active_receiver_sessions
-                                    .insert(device_id, (target_addr, source));
+                                    .insert(device_id, (target_addr, source, bitrate));
                             }
                             Err(e) => {
                                 let err_msg = match e {
@@ -163,10 +173,74 @@ impl AudioStreamEngine {
                         );
                     }
                 }
-                AudioStreamCommand::ChangeBitrate(bitrate_opt) => {
-                    self.pool.change_bitrate(bitrate_opt).await;
+                AudioStreamCommand::ChangeBitrate { device_id, bitrate } => {
+                    tracing::info!(
+                        "[Engine] ChangeBitrate device={:?} new_bitrate={:?}",
+                        device_id,
+                        bitrate
+                    );
+
+                    if let Some((target_addr, source, old_bitrate)) =
+                        self.active_receiver_sessions.get(&device_id)
+                    {
+                        if *old_bitrate == bitrate {
+                            tracing::info!("[Engine] Bitrate unchanged, skipping.");
+                            continue;
+                        }
+
+                        let source_clone = source.clone();
+                        let target_addr_clone = *target_addr;
+
+                        tracing::info!(
+                            "[Engine] Found session to update bitrate: source={:?} target_addr={:?}",
+                            source_clone,
+                            target_addr_clone
+                        );
+
+                        match self
+                            .pool
+                            .change_bitrate(&source_clone, target_addr_clone, bitrate)
+                            .await
+                        {
+                            Ok(_broadcast_tx) => {
+                                tracing::info!("[Engine] Bitrate changed successfully");
+                                self.active_receiver_sessions
+                                    .insert(device_id, (target_addr_clone, source_clone, bitrate));
+                            }
+                            Err(e) => {
+                                tracing::error!("[Engine] Bitrate change failed: {}", e);
+                            }
+                        }
+                    }
+                }
+                AudioStreamCommand::GetTcpBroadcaster { device_id, reply } => {
+                    tracing::info!("[Engine] GetTcpBroadcaster for device={:?}", device_id);
+                    if let Some((_target_addr, source, bitrate)) =
+                        self.active_receiver_sessions.get(&device_id)
+                    {
+                        match self.pool.subscribe(source.clone(), None, *bitrate).await {
+                            Ok(broadcast_tx) => {
+                                let _ = reply.send(Some(broadcast_tx));
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "[Engine] Failed to get broadcaster for device={:?}: {}",
+                                    device_id,
+                                    e
+                                );
+                                let _ = reply.send(None);
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "[Engine] GetTcpBroadcaster: No active session for device={:?}",
+                            device_id
+                        );
+                        let _ = reply.send(None);
+                    }
                 }
                 AudioStreamCommand::Shutdown => {
+                    tracing::info!("[Engine] Shutdown");
                     break;
                 }
             }

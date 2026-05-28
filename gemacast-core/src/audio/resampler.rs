@@ -87,7 +87,8 @@ impl CaptureResampler {
                 InterleavedSlice::new(&self.remainder, self.channels, self.frames_needed)
                     .map_err(|e| AudioError::ResampleFailed(format!("input adapter: {e}")))?;
 
-            let output_frames_avail = self.output_capacity_frames - (total_output_samples / self.channels);
+            let output_frames_avail =
+                self.output_capacity_frames - (total_output_samples / self.channels);
             let mut output_adapter = InterleavedSlice::new_mut(
                 &mut self.output_buf[total_output_samples..],
                 self.channels,

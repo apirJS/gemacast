@@ -19,20 +19,24 @@ pub const FORMAT_OPUS: u8 = 0;
 pub const FORMAT_UNCOMPRESSED: u8 = 1;
 pub const FORMAT_SILENCE: u8 = 2;
 
-pub fn create_opus_encoder() -> Result<Encoder, opus::Error> {
+pub fn create_opus_encoder_with_bitrate(bitrate: i32) -> Result<Encoder, opus::Error> {
     let mut encoder = Encoder::new(
         OPUS_SAMPLE_RATE,
         opus::Channels::Stereo,
         opus::Application::LowDelay,
     )?;
 
-    encoder.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE as i32))?;
+    encoder.set_bitrate(opus::Bitrate::Bits(bitrate))?;
     // Complexity 5 (vs default 10): no perceptible quality loss at >=128kbps,
     encoder.set_complexity(5)?;
     // CELT mode: treated as music/system audio, avoids speech/music detection overhead.
     encoder.set_signal(opus::Signal::Music)?;
 
     Ok(encoder)
+}
+
+pub fn create_opus_encoder() -> Result<Encoder, opus::Error> {
+    create_opus_encoder_with_bitrate(OPUS_BITRATE as i32)
 }
 
 pub fn create_opus_decoder() -> Result<Decoder, opus::Error> {

@@ -5,11 +5,11 @@ use tokio::sync::{Notify, mpsc};
 use crate::error::GemaCastError;
 
 pub mod cpal_loopback;
-pub mod wasapi_loopback;
 #[cfg(target_os = "windows")]
 pub mod wasapi_common;
 #[cfg(target_os = "windows")]
 pub mod wasapi_desktop;
+pub mod wasapi_loopback;
 
 pub trait CaptureBackend: Send {
     fn play(&mut self) -> Result<(), GemaCastError>;

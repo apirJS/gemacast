@@ -71,25 +71,6 @@ pub fn run() {
                         }
                     }
 
-                    let mut clicked_quality = None;
-                    for (bitrate_opt, menu_item) in &tray_manager.quality_menu_items {
-                        if menu_item.id() == menu_event.id() {
-                            clicked_quality = Some(*bitrate_opt);
-                            break;
-                        }
-                    }
-
-                    if let Some(new_bitrate) = clicked_quality {
-                        for (bitrate_opt, menu_item) in &tray_manager.quality_menu_items {
-                            menu_item.set_checked(*bitrate_opt == new_bitrate);
-                        }
-                        if let Err(e) =
-                            daemon_command_tx.try_send(DaemonCommand::ChangeBitrate(new_bitrate))
-                        {
-                            display_error_dialog(e.to_string());
-                        }
-                    }
-
                     if menu_event.id() == tray_manager.broadcast_toggle_item.id() {
                         let label = tray_manager.broadcast_toggle_item.text();
                         let currently_broadcasting = label.contains("Stop");

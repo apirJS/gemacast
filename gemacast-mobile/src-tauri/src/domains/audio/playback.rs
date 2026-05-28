@@ -33,13 +33,28 @@ pub fn setup_event_forwarding(
         }
     });
 
+    #[derive(serde::Serialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    struct AudioTelemetry {
+        latency: f32,
+        is_active: bool,
+    }
+
     let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32)>(10);
     let handle_latency = app_handle.clone();
     tokio::spawn(async move {
+        let mut last_emit = std::time::Instant::now();
         while let Some((latency, rms)) = latency_rx.recv().await {
-            let _ = handle_latency.emit("latency-update", latency);
-            let is_active = rms > 0.0001;
-            let _ = handle_latency.emit("audio-active", is_active);
+            if last_emit.elapsed() >= std::time::Duration::from_millis(200) {
+                last_emit = std::time::Instant::now();
+                let _ = handle_latency.emit(
+                    "audio-telemetry",
+                    AudioTelemetry {
+                        latency,
+                        is_active: rms > 0.0001,
+                    },
+                );
+            }
         }
     });
 
@@ -64,6 +79,7 @@ pub fn spawn_session_receiver(
     app_handle: tauri::AppHandle,
     target_ip: Option<std::net::IpAddr>,
     mode: gemacast_core::types::ConnectionMode,
+    device_id: String,
 ) -> SessionReceiverResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
@@ -90,12 +106,20 @@ pub fn spawn_session_receiver(
         }
 
         if let Err(e) = receiver
-            .run_audio_receive_loop(Some(sender_ip_tx), Some(latency_tx), target_ip, mode)
+            .run_audio_receive_loop(
+                Some(sender_ip_tx),
+                Some(latency_tx),
+                target_ip,
+                mode,
+                device_id,
+            )
             .await
         {
             if matches!(
                 e,
-                gemacast_core::error::GemaCastError::Network(gemacast_core::error::NetworkError::ConnectionLost)
+                gemacast_core::error::GemaCastError::Network(
+                    gemacast_core::error::NetworkError::ConnectionLost
+                )
             ) {
                 let _ = app_handle.emit("force-disconnect", ());
             } else {
@@ -104,11 +128,5 @@ pub fn spawn_session_receiver(
         }
     });
 
-    Ok((
-        is_playing,
-        is_tcp_mode,
-        config_ref,
-        shutdown_tx,
-        task,
-    ))
+    Ok((is_playing, is_tcp_mode, config_ref, shutdown_tx, task))
 }

@@ -78,6 +78,8 @@ export type SavedPreset = {
 
 export type PresetId = 'auto' | 'wired' | 'fast' | 'balanced' | 'stable' | 'resilient' | 'custom';
 
+export type BitratePreset = '10' | '24' | '32' | '64' | '96' | '128' | '256' | '450' | '512' | 'raw' | 'custom';
+
 export type AppSettings = {
   theme: 'light' | 'dark';
   mode: ConnectionMode;
@@ -85,6 +87,8 @@ export type AppSettings = {
   bufferPreset: PresetId;
   customJitterConfig: JitterConfig;
   savedPresets: SavedPreset[];
+  bitratePreset: BitratePreset;
+  customBitrateKbps: number;
 };
 
 export type AudioSource =

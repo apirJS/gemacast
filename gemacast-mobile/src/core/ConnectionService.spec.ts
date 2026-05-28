@@ -17,7 +17,10 @@ function setup(
   opts: { onLine?: boolean } = {},
 ) {
   setupBrowserGlobals(opts.onLine ?? true);
-  setupInvokeMock(handlers);
+  setupInvokeMock({ 
+    get_audio_sources: [[], { supportsProcessCapture: false }], 
+    ...handlers 
+  });
   const sh = new StateHandler(makeDeviceInfo());
   const audioResumer = mock(async () => {});
   const conn = new ConnectionService(sh, audioResumer);
@@ -34,8 +37,11 @@ describe('ConnectionService — connectToSender', () => {
     const { sh, conn } = setup({ connect_to_sender: undefined });
     const sender = makeDiscoveredSender();
     const result = await conn.connectToSender(sender);
+    if (!result.ok) {
+      console.log('TEST ERROR:', result.error);
+    }
     expect(result.ok).toBe(true);
-    expect(sh.getState().status).toBe(Status.Playing);
+    expect(sh.getState().status).toBe(Status.Connected);
     expect(sh.getState().connectedSender?.deviceId).toBe(sender.deviceId);
     expect(sh.getState().isLoading).toBe(false);
   });
@@ -59,6 +65,7 @@ describe('ConnectionService — connectToSender', () => {
 
   it('returns err and reverts to Listening on IPC failure', async () => {
     setupInvokeMock({
+      get_audio_sources: [[], { supportsProcessCapture: false }],
       connect_to_sender: () => {
         throw new Error('refused');
       },

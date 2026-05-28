@@ -74,26 +74,44 @@ pub fn create_udp_audio_transport(
     Ok((UdpTransport { socket: std_socket }, heartbeat_socket))
 }
 
-pub fn create_tcp_audio_transport() -> Result<TcpTransport, NetworkError> {
+pub fn create_tcp_audio_transport(
+    device_id: &crate::types::DeviceId,
+) -> Result<TcpTransport, NetworkError> {
     let adb_addr = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
     let stream_addr: std::net::SocketAddr = adb_addr
         .parse()
         .expect("INTERNAL: ADB loopback address must be valid");
 
-    let stream =
+    let mut stream =
         std::net::TcpStream::connect_timeout(&stream_addr, std::time::Duration::from_millis(2500))
             .map_err(|source| NetworkError::TcpConnectFailed {
-                addr: adb_addr,
+                addr: adb_addr.clone(),
                 source,
             })?;
 
+    use std::io::Write;
+
+    let bytes = device_id.0.as_bytes();
+    if stream.write_all(&[bytes.len() as u8]).is_err() || stream.write_all(bytes).is_err() {
+        return Err(NetworkError::TcpConnectFailed {
+            addr: adb_addr,
+            source: std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Handshake write failed",
+            ),
+        });
+    }
+
     let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+
     Ok(TcpTransport { stream })
 }
 
 pub fn create_audio_transport(
     mode: crate::types::ConnectionMode,
     target_ip: Option<std::net::IpAddr>,
+    device_id: &crate::types::DeviceId,
 ) -> Result<
     (
         Box<dyn crate::stream::transport::AudioPacketTransport>,
@@ -102,7 +120,7 @@ pub fn create_audio_transport(
     NetworkError,
 > {
     if mode == crate::types::ConnectionMode::Adb {
-        let t = create_tcp_audio_transport()?;
+        let t = create_tcp_audio_transport(device_id)?;
         return Ok((Box::new(t), None));
     }
 

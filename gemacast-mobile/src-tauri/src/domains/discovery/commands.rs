@@ -1,5 +1,5 @@
-use tauri::State;
 use gemacast_core::types::{ConnectionMode, DeviceId};
+use tauri::State;
 
 #[cfg(target_os = "android")]
 use super::native::call_native_transport_check;
@@ -50,14 +50,20 @@ pub async fn start_listening_for_senders(
         .await
         .map_err(|e| {
             let e_str = e.to_string();
-            if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
-                "Discovery port is already in use. Is GemaCast already running in the background?".to_string()
+            if e_str.contains("Address already in use")
+                || e_str.contains("10048")
+                || e_str.contains("98")
+                || e_str.contains("WSAEADDRINUSE")
+            {
+                "Discovery port is already in use. Is GemaCast already running in the background?"
+                    .to_string()
             } else {
                 e_str
             }
         })?;
 
-    let handle = spawn_discovery_listener(listener, presence_message_rx, app_handle, device_id, mode);
+    let handle =
+        spawn_discovery_listener(listener, presence_message_rx, app_handle, device_id, mode);
     *state.discovery_task.lock().await = Some(handle);
     Ok(())
 }
@@ -104,7 +110,10 @@ pub async fn get_connection_status(
             }
         }
 
-        let interfaces = netdev::get_interfaces();
+        let interfaces = tokio::task::spawn_blocking(|| netdev::get_interfaces())
+            .await
+            .unwrap_or_default();
+
         for iface in interfaces {
             let (is_wifi, is_usb) = gemacast_core::network::classify_interface(&iface);
             if is_wifi && !iface.ipv4.is_empty() {
@@ -120,4 +129,55 @@ pub async fn get_connection_status(
 
     #[cfg(not(target_os = "android"))]
     Ok(modes)
+}
+
+/// Batched network state query — combines `get_local_ip`, `get_network_identifier`,
+/// and `get_connection_status` into a single IPC call. Reduces WebView↔Rust
+/// bridge crossings from 3 to 1 per network check cycle.
+#[tauri::command]
+pub async fn get_network_state(_app: tauri::AppHandle) -> Result<NetworkState, String> {
+    let local_ip = gemacast_core::network::get_local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    let network_id = match netdev::get_default_interface() {
+        Ok(iface) => {
+            let mac = iface
+                .mac_addr
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "00:00:00:00:00:00".to_string());
+            let ip = if let Some(ip) = iface.ipv4.first() {
+                std::net::IpAddr::V4(ip.addr()).to_string()
+            } else if let Some(ip) = iface.ipv6.first() {
+                std::net::IpAddr::V6(ip.addr()).to_string()
+            } else {
+                "no-ip".to_string()
+            };
+            format!("{}_{}_{}", iface.name, mac, ip)
+        }
+        Err(_) => local_ip.clone(),
+    };
+
+    let modes =
+        get_connection_status(_app)
+            .await
+            .unwrap_or(gemacast_core::types::ConnectionModes {
+                wifi: true,
+                usb: false,
+                adb: false,
+            });
+
+    Ok(NetworkState {
+        local_ip,
+        network_id,
+        modes,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkState {
+    pub local_ip: String,
+    pub network_id: String,
+    pub modes: gemacast_core::types::ConnectionModes,
 }

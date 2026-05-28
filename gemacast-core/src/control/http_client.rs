@@ -2,8 +2,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::control::types::{
-    ChangeSourceReq, ConnectReq, DisconnectReq, PresenceResponse, ProcessListResponse, ProbeReq,
-    SourcesResponse,
+    ConnectReq, DisconnectReq, PresenceResponse, ProbeReq, ProcessListResponse, SourcesResponse,
 };
 use crate::error::{ControlError, GemaCastError};
 use crate::network::Ports;
@@ -86,7 +85,21 @@ impl HttpControlClient {
     ) -> Result<(), GemaCastError> {
         self.client
             .post(format!("{}/change-source", self.base_url))
-            .json(&ChangeSourceReq { device_id, source })
+            .json(&super::types::ChangeSourceReq { device_id, source })
+            .send()
+            .await
+            .map_err(|e| ControlError::HttpRequestFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn send_change_bitrate_request(
+        &self,
+        device_id: DeviceId,
+        bitrate: Option<i32>,
+    ) -> Result<(), GemaCastError> {
+        self.client
+            .post(format!("{}/change-bitrate", self.base_url))
+            .json(&super::types::ChangeBitrateReq { device_id, bitrate })
             .send()
             .await
             .map_err(|e| ControlError::HttpRequestFailed(e.to_string()))?;

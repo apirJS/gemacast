@@ -1,5 +1,6 @@
 use crate::audio::{FORMAT_FLAG_SIZE, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, SEQ_NUM_SIZE};
 use crate::jitter::RawPacket;
+use crate::jitter::types::MAX_PACKET_PAYLOAD;
 use std::time::Instant;
 
 pub fn parse_packet(buffer: &[u8], len: usize) -> Option<RawPacket> {
@@ -15,11 +16,13 @@ pub fn parse_packet(buffer: &[u8], len: usize) -> Option<RawPacket> {
     let is_silence = format_flag == FORMAT_SILENCE;
 
     let payload_len = len - (SEQ_NUM_SIZE + FORMAT_FLAG_SIZE);
-    let payload_data = if payload_len > 0 {
-        buffer[SEQ_NUM_SIZE + FORMAT_FLAG_SIZE..len].to_vec()
-    } else {
-        Vec::new()
-    };
+    let mut payload_data = [0u8; MAX_PACKET_PAYLOAD];
+    if payload_len > 0 {
+        let copy_len = payload_len.min(MAX_PACKET_PAYLOAD);
+        payload_data[..copy_len].copy_from_slice(
+            &buffer[SEQ_NUM_SIZE + FORMAT_FLAG_SIZE..SEQ_NUM_SIZE + FORMAT_FLAG_SIZE + copy_len],
+        );
+    }
 
     Some(RawPacket {
         seq_num,

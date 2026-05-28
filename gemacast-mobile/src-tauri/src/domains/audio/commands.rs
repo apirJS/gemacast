@@ -20,6 +20,7 @@ pub async fn connect_to_sender(
     mode: gemacast_core::types::ConnectionMode,
     exclusive_mode: bool,
     jitter_config: gemacast_core::types::JitterConfig,
+    bitrate: Option<i32>,
     _transport: Option<TransportType>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
@@ -31,9 +32,10 @@ pub async fn connect_to_sender(
         .send_connect_request(ConnectReq {
             device_id: device_id.clone(),
             device_name: device_name.clone(),
-            source: gemacast_core::types::AudioSource::default(),
+            source: None,
             mode,
             jitter_config: jitter_config.clone(),
+            bitrate,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -55,6 +57,7 @@ pub async fn connect_to_sender(
             app_handle.clone(),
             Some(ip_addr),
             mode,
+            device_id.to_string(),
         )?;
 
     *session_guard = Some(ActiveSession {
@@ -63,6 +66,7 @@ pub async fn connect_to_sender(
         device_name,
         exclusive_mode,
         mode,
+        bitrate,
         is_playing,
         jitter_config: jitter_config_ref,
         shutdown_tx,
@@ -144,6 +148,7 @@ pub async fn start_audio_playback(
 
     let mut active_mode = gemacast_core::types::ConnectionMode::default();
     let mut active_jitter = gemacast_core::types::JitterConfig::default();
+    let mut active_bitrate = None;
 
     if let Some(session) = state.session.lock().await.as_ref() {
         session
@@ -151,6 +156,7 @@ pub async fn start_audio_playback(
             .store(true, std::sync::atomic::Ordering::Relaxed);
         exclusive_mode = session.exclusive_mode;
         active_mode = session.mode;
+        active_bitrate = session.bitrate;
         if let Ok(guard) = session.jitter_config.read() {
             active_jitter = guard.clone();
         }
@@ -163,9 +169,10 @@ pub async fn start_audio_playback(
                 .send_connect_request(ConnectReq {
                     device_id: did,
                     device_name: dname,
-                    source: gemacast_core::types::AudioSource::default(),
+                    source: None,
                     mode: active_mode,
                     jitter_config: active_jitter,
+                    bitrate: active_bitrate,
                 })
                 .await;
         }
@@ -229,6 +236,25 @@ pub async fn change_audio_source(
     let client = HttpControlClient::new(ip_addr);
     client
         .send_change_source_request(device_id, source)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn change_audio_bitrate(
+    ip: String,
+    device_id: DeviceId,
+    bitrate: Option<i32>,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    if let Some(session) = state.session.lock().await.as_mut() {
+        session.bitrate = bitrate;
+    }
+
+    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
+    let client = HttpControlClient::new(ip_addr);
+    client
+        .send_change_bitrate_request(device_id, bitrate)
         .await
         .map_err(|e| e.to_string())
 }

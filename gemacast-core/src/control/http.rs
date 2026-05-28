@@ -12,8 +12,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::control::types::{
-    ChangeSourceReq, ConnectReq, DisconnectReq, PresenceResponse, ProbeReq, ProcessListResponse,
-    SourcesResponse, WsEvent,
+    ChangeBitrateReq, ChangeSourceReq, ConnectReq, DisconnectReq, PresenceResponse, ProbeReq,
+    ProcessListResponse, SourcesResponse, WsEvent,
 };
 use crate::error::{ControlError, GemaCastError, NetworkError};
 use crate::network::Ports;
@@ -24,8 +24,9 @@ pub enum ControlCommand {
     Connect {
         device_id: DeviceId,
         device_name: String,
-        source: AudioSource,
+        source: Option<AudioSource>,
         remote_addr: SocketAddr,
+        bitrate: Option<i32>,
         response_tx: oneshot::Sender<PresenceResponse>,
     },
     Disconnect {
@@ -38,6 +39,10 @@ pub enum ControlCommand {
     ChangeSource {
         device_id: DeviceId,
         source: AudioSource,
+    },
+    ChangeBitrate {
+        device_id: DeviceId,
+        bitrate: Option<i32>,
     },
     Probe {
         device_id: Option<DeviceId>,
@@ -73,6 +78,7 @@ fn build_router(state: ControlServerState) -> Router {
         .route("/sources", get(handle_get_sources))
         .route("/processes", get(handle_get_processes))
         .route("/change-source", post(handle_change_source))
+        .route("/change-bitrate", post(handle_change_bitrate))
         .with_state(state)
 }
 
@@ -145,8 +151,9 @@ async fn handle_connect(
         .send(ControlCommand::Connect {
             device_id: req.device_id,
             device_name: req.device_name,
-            source: req.source,
+            source: req.source.clone(),
             remote_addr: addr,
+            bitrate: req.bitrate,
             response_tx,
         })
         .await;
@@ -203,6 +210,20 @@ async fn handle_change_source(
         .send(ControlCommand::ChangeSource {
             device_id: req.device_id,
             source: req.source,
+        })
+        .await;
+    StatusCode::OK
+}
+
+async fn handle_change_bitrate(
+    State(state): State<ControlServerState>,
+    Json(req): Json<ChangeBitrateReq>,
+) -> StatusCode {
+    let _ = state
+        .command_tx
+        .send(ControlCommand::ChangeBitrate {
+            device_id: req.device_id,
+            bitrate: req.bitrate,
         })
         .await;
     StatusCode::OK

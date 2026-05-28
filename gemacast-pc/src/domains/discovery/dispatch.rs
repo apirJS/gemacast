@@ -54,6 +54,7 @@ pub fn spawn_control_dispatcher(
                     device_name,
                     source,
                     remote_addr,
+                    bitrate,
                     response_tx,
                 } => {
                     let mut audio_addr = remote_addr;
@@ -69,6 +70,7 @@ pub fn spawn_control_dispatcher(
                         remote_addr,
                         None,
                         source,
+                        bitrate,
                     )
                     .await;
 
@@ -112,6 +114,11 @@ pub fn spawn_control_dispatcher(
                         .send(AudioStreamCommand::ChangeSource { device_id, source })
                         .await;
                 }
+                ControlCommand::ChangeBitrate { device_id, bitrate } => {
+                    let _ = audio_engine_command_tx
+                        .send(AudioStreamCommand::ChangeBitrate { device_id, bitrate })
+                        .await;
+                }
                 ControlCommand::Probe {
                     device_id,
                     response_tx,
@@ -144,7 +151,8 @@ async fn register_device(
     audio_addr: SocketAddr,
     remote_addr: SocketAddr,
     transport: Option<gemacast_core::types::TransportType>,
-    source: gemacast_core::types::AudioSource,
+    source: Option<gemacast_core::types::AudioSource>,
+    bitrate: Option<i32>,
 ) {
     let mut is_new = false;
     let mut ip_changed = false;
@@ -195,12 +203,13 @@ async fn register_device(
     } else {
         Some(audio_addr)
     };
-    
+
     let _ = audio_tx
         .send(AudioStreamCommand::Subscribe {
             device_id,
             target_addr: effective_addr,
             source,
+            bitrate,
         })
         .await;
 }

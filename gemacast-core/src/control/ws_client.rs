@@ -18,12 +18,15 @@ pub struct WsControlClient {
 
 impl WsControlClient {
     pub async fn new(target_ip: IpAddr, device_id: &str) -> Result<Self, GemaCastError> {
-        let url =
-            Url::parse(&format!("ws://{}:{}/ws?device_id={}", target_ip, Ports::CONTROL, device_id)).map_err(|e| {
-                ControlError::WebSocketFailed {
-                    reason: format!("failed to parse WS URL: {e}"),
-                }
-            })?;
+        let url = Url::parse(&format!(
+            "ws://{}:{}/ws?device_id={}",
+            target_ip,
+            Ports::CONTROL,
+            device_id
+        ))
+        .map_err(|e| ControlError::WebSocketFailed {
+            reason: format!("failed to parse WS URL: {e}"),
+        })?;
 
         let (ws_stream, _) =
             connect_async(url.as_str())

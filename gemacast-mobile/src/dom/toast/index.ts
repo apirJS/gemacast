@@ -19,6 +19,8 @@ export class ToastManager {
   private activeErrorToast: HTMLElement | null = null;
 
   constructor() {
+    if (typeof document === 'undefined') return;
+
     this.container = document.getElementById('toast-container');
     this.modal = document.getElementById(
       'error-log-modal',
@@ -67,6 +69,7 @@ export class ToastManager {
     message: string,
     fullLog?: string,
   ): HTMLElement {
+    if (typeof document === 'undefined') return null as any;
     if (!this.container) return document.createElement('div');
 
     const iconWrap = h('div', { className: 'toast__icon' });
