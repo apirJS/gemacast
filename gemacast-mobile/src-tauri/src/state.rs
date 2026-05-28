@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use gemacast_core::types::{DeviceId, JitterConfig};
@@ -12,6 +12,7 @@ pub struct ActiveSession {
     pub device_name: String,
     pub exclusive_mode: bool,
     pub mode: gemacast_core::types::ConnectionMode,
+    pub bitrate: Option<i32>,
 
     pub is_playing: Arc<AtomicBool>,
     pub jitter_config: Arc<RwLock<JitterConfig>>,

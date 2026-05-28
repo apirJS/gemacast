@@ -111,6 +111,9 @@ pub enum AudioError {
 
     #[error("audio resampling failed: {0}")]
     ResampleFailed(String),
+
+    #[error("source is not actively subscribed")]
+    SourceNotSubscribed,
 }
 
 #[derive(ThisError, Debug)]

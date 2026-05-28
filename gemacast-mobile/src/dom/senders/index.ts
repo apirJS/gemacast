@@ -88,7 +88,7 @@ export function setupSenderList(app: App) {
     const renderHash = JSON.stringify({
       senders: state.discoveredSenders,
       connected: state.connectedSender?.deviceId,
-      status: state.status,
+      isConnecting: state.status === Status.Connecting,
       loading: state.isLoading,
       sources: state.audioSources,
       procs: state.processList,

@@ -1,6 +1,7 @@
 import { mock } from 'bun:test';
 import type { AppState, DeviceInfo, DiscoveredSender } from '../types';
 import { Status } from '../types';
+import { DEFAULT_SETTINGS } from './StateHandler';
 
 const _store: Map<string, string> = new Map();
 
@@ -29,26 +30,30 @@ export function setupBrowserGlobals(onLine = true) {
     addEventListener: (_event: string, _cb: () => void) => {},
     // @ts-expect-error
     removeEventListener: (_event: string, _cb: () => void) => {},
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
   };
 }
 
 export let invokeCalls: Array<{ cmd: string; args?: unknown }> = [];
+let currentHandlers: Record<string, unknown | (() => unknown)> = {};
 
 export function setupInvokeMock(
   handlers: Record<string, unknown | (() => unknown)> = {},
 ) {
   invokeCalls = [];
-
-  mock.module('@tauri-apps/api/core', () => ({
-    invoke: async (cmd: string, args?: unknown) => {
-      invokeCalls.push({ cmd, args });
-      const h = handlers[cmd];
-      if (typeof h === 'function') return (h as () => unknown)();
-      if (h !== undefined) return h;
-      return undefined;
-    },
-  }));
+  currentHandlers = handlers;
 }
+
+mock.module('@tauri-apps/api/core', () => ({
+  invoke: async (cmd: string, args?: unknown) => {
+    invokeCalls.push({ cmd, args });
+    const h = currentHandlers[cmd];
+    if (typeof h === 'function') return (h as () => unknown)();
+    if (h !== undefined) return h;
+    return undefined;
+  },
+}));
 
 export function makeDeviceInfo(
   overrides: Partial<DeviceInfo> = {},
@@ -88,7 +93,7 @@ export function makeAppState(overrides: Partial<AppState> = {}): AppState {
     isSuspended: false,
     reconnectAttempts: 0,
     latency: { current: null, avg: null, max: null, min: null },
-    settings: require('./StateHandler').DEFAULT_SETTINGS,
+    settings: DEFAULT_SETTINGS,
     availableModes: { wifi: true, usb: false, adb: false },
     audioSources: [],
     senderCapabilities: null,

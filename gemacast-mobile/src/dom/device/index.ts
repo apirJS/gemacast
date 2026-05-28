@@ -36,39 +36,50 @@ export function setupDeviceAndStatus(app: App) {
     infoSection.insertBefore(statusContainer, infoSection.firstChild);
   }
 
+  let lastDeviceHash = '';
+  let lastStatusHash = '';
+
   app.stateHandler.subscribe((state: AppState) => {
-    deviceSection.innerHTML = '';
-    deviceSection.appendChild(
-      h('span', {
-        className: 'device__name',
-        textContent: state.deviceInfo.deviceName,
-      }),
-    );
-    deviceSection.appendChild(
-      h('span', {
-        className: 'device__ip',
-        textContent: `IP: ${state.deviceInfo.ip}`,
-      }),
-    );
+    const deviceHash = `${state.deviceInfo.deviceName}:${state.deviceInfo.ip}`;
+    if (deviceHash !== lastDeviceHash) {
+      lastDeviceHash = deviceHash;
+      deviceSection.innerHTML = '';
+      deviceSection.appendChild(
+        h('span', {
+          className: 'device__name',
+          textContent: state.deviceInfo.deviceName,
+        }),
+      );
+      deviceSection.appendChild(
+        h('span', {
+          className: 'device__ip',
+          textContent: `IP: ${state.deviceInfo.ip}`,
+        }),
+      );
+    }
 
-    const details = getStatusDetails(state.status, state.reconnectAttempts);
-    const chip = h(
-      'div',
-      {
-        className: `status-chip ${details.class}`,
-        id: 'status-chip',
-        role: 'status',
-        ariaLive: 'polite',
-      },
-      h('span', { className: 'status-chip__dot', ariaHidden: 'true' }),
-      h('span', {
-        className: 'status-chip__label',
-        id: 'status-chip-label',
-        textContent: details.label,
-      }),
-    );
+    const statusHash = `${state.status}:${state.reconnectAttempts}`;
+    if (statusHash !== lastStatusHash) {
+      lastStatusHash = statusHash;
+      const details = getStatusDetails(state.status, state.reconnectAttempts);
+      const chip = h(
+        'div',
+        {
+          className: `status-chip ${details.class}`,
+          id: 'status-chip',
+          role: 'status',
+          ariaLive: 'polite',
+        },
+        h('span', { className: 'status-chip__dot', ariaHidden: 'true' }),
+        h('span', {
+          className: 'status-chip__label',
+          id: 'status-chip-label',
+          textContent: details.label,
+        }),
+      );
 
-    statusContainer.innerHTML = '';
-    statusContainer.appendChild(chip);
+      statusContainer.innerHTML = '';
+      statusContainer.appendChild(chip);
+    }
   });
 }

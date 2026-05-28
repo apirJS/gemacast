@@ -13,17 +13,18 @@ import { JITTER_PRESETS } from './presets';
 
 // Auto preset is the single source of truth for the default fallback config.
 const DEFAULT_AUTO_CONFIG = JITTER_PRESETS.find(p => p.id === 'auto')!.config!;
-
 const LS_LAST_SENDER = 'gemacast_last_sender';
 const LS_SETTINGS = 'gemacast_settings';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   mode: ConnectionMode.Wifi,
-  exclusiveMode: false,
+  exclusiveMode: true,
   bufferPreset: 'auto',
   customJitterConfig: DEFAULT_AUTO_CONFIG,
   savedPresets: [],
+  bitratePreset: '128',
+  customBitrateKbps: 128,
 };
 
 export class StateHandler {
@@ -81,10 +82,17 @@ export class StateHandler {
     // quick succession — each triggering full DOM rebuilds.
     if (!this.pendingNotify) {
       this.pendingNotify = true;
-      requestAnimationFrame(() => {
-        this.pendingNotify = false;
-        this.subscribers.forEach((cb) => cb(this.state));
-      });
+      if (typeof requestAnimationFrame !== 'undefined') {
+        requestAnimationFrame(() => {
+          this.pendingNotify = false;
+          this.subscribers.forEach((cb) => cb(this.state));
+        });
+      } else {
+        setTimeout(() => {
+          this.pendingNotify = false;
+          this.subscribers.forEach((cb) => cb(this.state));
+        }, 0);
+      }
     }
   }
 

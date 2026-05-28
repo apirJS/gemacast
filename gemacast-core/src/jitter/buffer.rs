@@ -4,6 +4,13 @@ use super::types::RawPacket;
 /// 512 slots × 10ms/frame = 5.12s of maximum buffering headroom.
 const BUFFER_CAPACITY: u64 = 512;
 
+#[derive(PartialEq, Debug)]
+pub enum InsertResult {
+    Accepted,
+    Stale,
+    StreamRestarted,
+}
+
 /// A fixed-capacity circular buffer that reorders UDP packets by sequence number.
 ///
 /// Design: Each slot corresponds to `seq_num % capacity`. Out-of-order packets
@@ -49,21 +56,21 @@ impl JitterBuffer {
     }
 
     /// Insert a packet into its sequence-ordered slot.
-    ///
-    /// Returns `true` if accepted, `false` if stale (already played past).
-    pub fn insert(&mut self, packet: RawPacket) -> bool {
+    pub fn insert(&mut self, packet: RawPacket) -> InsertResult {
         if !self.initialized {
             self.next_play_seq = packet.seq_num;
             self.initialized = true;
         }
 
+        let mut restarted = false;
         if packet.seq_num < self.next_play_seq {
             if self.next_play_seq.saturating_sub(packet.seq_num) > self.capacity {
                 self.reset();
                 self.next_play_seq = packet.seq_num;
                 self.initialized = true;
+                restarted = true;
             } else {
-                return false;
+                return InsertResult::Stale;
             }
         }
 
@@ -78,7 +85,12 @@ impl JitterBuffer {
         }
         self.slots[index] = Some(packet);
         self.cached_min_seq = Some(self.cached_min_seq.map_or(seq, |m| m.min(seq)));
-        true
+
+        if restarted {
+            InsertResult::StreamRestarted
+        } else {
+            InsertResult::Accepted
+        }
     }
 
     /// Try to pop the next expected packet.
@@ -240,25 +252,20 @@ impl JitterBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn make_packet(seq: u64) -> RawPacket {
-        RawPacket {
-            seq_num: seq,
-            payload_data: vec![0u8; 100],
-            payload_len: 100,
-            arrival_time: Instant::now(),
-            is_uncompressed: false,
-            is_silence: false,
-        }
+        let mut pkt = RawPacket::zeroed();
+        pkt.seq_num = seq;
+        pkt.payload_len = 100;
+        pkt
     }
 
     #[test]
     fn insert_and_pop_in_order() {
         let mut buf = JitterBuffer::new();
-        buf.insert(make_packet(0));
-        buf.insert(make_packet(1));
-        buf.insert(make_packet(2));
+        matches!(buf.insert(make_packet(0)), InsertResult::Accepted);
+        matches!(buf.insert(make_packet(1)), InsertResult::Accepted);
+        matches!(buf.insert(make_packet(2)), InsertResult::Accepted);
 
         assert_eq!(buf.contiguous_depth(), 3);
         assert_eq!(buf.occupied_count(), 3);
@@ -296,7 +303,7 @@ mod tests {
     fn rejects_stale_packets() {
         let mut buf = JitterBuffer::new();
         buf.insert(make_packet(5));
-        assert!(!buf.insert(make_packet(3))); // stale
+        assert_eq!(InsertResult::Stale, buf.insert(make_packet(3)))
     }
 
     #[test]
@@ -307,6 +314,7 @@ mod tests {
 
         assert!(buf.pop_next().is_some_and(|p| p.seq_num == 0)); // pop 0
         // seq 1 is missing; advance_one() declares it lost without touching slot 2
+
         buf.advance_one();
         assert!(buf.pop_next().is_some_and(|p| p.seq_num == 2)); // 2 still intact
     }

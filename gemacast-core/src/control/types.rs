@@ -7,9 +7,18 @@ use crate::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 pub struct ConnectReq {
     pub device_id: DeviceId,
     pub device_name: String,
-    pub source: AudioSource,
     pub mode: ConnectionMode,
     pub jitter_config: JitterConfig,
+    /// Desired bitrate in bits/sec. `None` = uncompressed raw PCM.
+    #[serde(default = "default_bitrate")]
+    pub bitrate: Option<i32>,
+
+    #[serde(default)]
+    pub source: Option<AudioSource>,
+}
+
+fn default_bitrate() -> Option<i32> {
+    Some(128_000)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +39,13 @@ pub struct ProbeReq {
 pub struct ChangeSourceReq {
     pub device_id: DeviceId,
     pub source: AudioSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeBitrateReq {
+    pub device_id: DeviceId,
+    pub bitrate: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,5 +78,5 @@ pub enum WsEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "type", content = "payload")]
 pub enum WsCommand {
-    Disconnect
+    Disconnect,
 }

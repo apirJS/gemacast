@@ -82,9 +82,13 @@ impl AudioStreamReceiver {
         latency_tx: Option<mpsc::Sender<(f32, f32)>>,
         target_ip: Option<std::net::IpAddr>,
         mode: crate::types::ConnectionMode,
+        device_id: String,
     ) -> Result<(), GemaCastError> {
-        let (transport, heartbeat_socket) =
-            super::transport::create_audio_transport(mode, target_ip)?;
+        let (transport, heartbeat_socket) = super::transport::create_audio_transport(
+            mode,
+            target_ip,
+            &crate::types::DeviceId(device_id),
+        )?;
         let heartbeat_active = Arc::new(AtomicBool::new(true));
         let sender_port = Arc::new(AtomicU16::new(Ports::AUDIO_UDP));
 
@@ -164,21 +168,24 @@ impl AudioStreamReceiver {
 
         #[cfg(target_os = "android")]
         {
-            self.playback_stream.start().map_err(|_| {
-                AudioError::PlayStreamFailed {
-                    direction: StreamDirection::Output,
-                    source: cpal::PlayStreamError::DeviceNotAvailable,
-                }
-            })?;
-
             let burst = self.playback_stream.get_frames_per_burst();
             let _ = self.playback_stream.set_buffer_size_in_frames(burst * 2);
+
+            self.playback_stream
+                .start()
+                .map_err(|_| AudioError::PlayStreamFailed {
+                    direction: StreamDirection::Output,
+                    source: cpal::PlayStreamError::DeviceNotAvailable,
+                })?;
         }
         Ok(())
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "internal thread-spawn helper; struct wrapping adds no clarity")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal thread-spawn helper; struct wrapping adds no clarity"
+)]
 fn spawn_packet_receive_thread(
     mut transport: Box<dyn crate::stream::transport::AudioPacketTransport>,
     mut packet_producer: HeapProd<RawPacket>,
@@ -237,7 +244,12 @@ fn spawn_packet_receive_thread(
             let is_silence = packet.is_silence;
             let is_uncompressed = packet.is_uncompressed;
 
-            let _ = packet_producer.try_push(packet);
+            if packet_producer.try_push(packet).is_err() {
+                eprintln!(
+                    "[WARN] SPSC ring buffer full, dropped seq {}. Audio callback may be stalled.",
+                    seq_num
+                );
+            }
 
             if let Some(ref tx) = latency_tx
                 && seq_num.is_multiple_of(100)

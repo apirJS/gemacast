@@ -134,6 +134,29 @@
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 700ms linear infinite;
+  will-change: transform;
+}
+
+.empty-state__icon-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  animation: scan-pulse 2s ease-in-out infinite;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+
+.empty-state__icon-spinner {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid transparent;
+  border-top-color: var(--primary);
+  border-right-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .sender-list__btn--connect {

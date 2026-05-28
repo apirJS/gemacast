@@ -85,7 +85,7 @@ pub fn spawn_background_engine(
                 }
             };
 
-            let mut engine = AudioStreamEngine::new(true);
+            let engine = AudioStreamEngine::new(true);
 
             // Channel: dispatcher/watchdog -> audio stream engine (Subscribe, Unsubscribe, ChangeSource, etc.)
             let (audio_engine_command_tx, audio_engine_command_rx) =
@@ -117,24 +117,12 @@ pub fn spawn_background_engine(
                     let _ = event_loop_proxy_clone.send_event(DaemonEvent::FatalError(msg));
                 }
             });
-            
-            let desktop_audio_broadcast_tx = match engine.pool.subscribe(gemacast_core::types::AudioSource::Desktop, None).await {
-                Ok(tx) => tx,
-                Err(e) => {
-                    let _ = event_loop_proxy.send_event(DaemonEvent::FatalError(format!("Failed to initialize desktop audio capture: {}", e)));
-                    return;
-                }
-            };
-
-            // Seed the watch channel with the initial Desktop broadcast sender
-            let tcp_source_watch_rx = engine.tcp_source_watch();
-            engine.seed_tcp_source(desktop_audio_broadcast_tx);
 
             let _ = tokio::process::Command::new("adb")
                 .arg("kill-server")
                 .output()
                 .await;
-            
+
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
             let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
@@ -186,7 +174,7 @@ pub fn spawn_background_engine(
 
             spawn_audio_engine(&mut set, engine, audio_engine_command_rx, event_loop_proxy.clone());
 
-            spawn_adb_audio_tcp_server(&mut set, tcp_source_watch_rx, adb_shutdown_signal_tx.clone(), fatal_error_tx.clone());
+            spawn_adb_audio_tcp_server(&mut set, audio_engine_command_tx.clone(), adb_shutdown_signal_tx.clone(), fatal_error_tx.clone());
 
             spawn_adb_discovery_tcp_server(
                 &mut set,

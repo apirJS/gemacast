@@ -144,16 +144,6 @@ pub fn spawn_stream_command_manager(
                         }
                     }
                 }
-                DaemonCommand::ChangeBitrate(bitrate) => {
-                    let _ = ctx
-                        .audio_engine_command_tx
-                        .send(
-                            gemacast_core::stream::sender::AudioStreamCommand::ChangeBitrate(
-                                bitrate,
-                            ),
-                        )
-                        .await;
-                }
                 DaemonCommand::StopAllStreams => {
                     let _ = ctx.adb_shutdown_signal_tx.send(());
                     if let Some(tx) = broadcaster_shutdown_tx.take() {

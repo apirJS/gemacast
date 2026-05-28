@@ -12,7 +12,7 @@ pub fn spawn_adb_port_forwarding_watchdog(
     set.spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
         let mut drop_rx = tcp_drop_tx.subscribe();
-        
+
         loop {
             tokio::select! {
                 _ = drop_rx.recv() => {

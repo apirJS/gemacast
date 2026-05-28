@@ -13,10 +13,12 @@ struct CpalLoopbackCapture {
 impl CaptureBackend for CpalLoopbackCapture {
     fn play(&mut self) -> Result<(), GemaCastError> {
         use cpal::traits::StreamTrait;
-        self.stream.play().map_err(|e| AudioError::PlayStreamFailed {
-            direction: StreamDirection::Input,
-            source: e,
-        })?;
+        self.stream
+            .play()
+            .map_err(|e| AudioError::PlayStreamFailed {
+                direction: StreamDirection::Input,
+                source: e,
+            })?;
         Ok(())
     }
 

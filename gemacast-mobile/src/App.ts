@@ -59,6 +59,8 @@ export class App {
           }
         }
 
+        // Clear discovered senders when switching network modes so old 
+        // senders from the previous mode do not linger on the UI.
         this.stateHandler.setState({
           discoveredSenders: [],
           error: null,
@@ -74,15 +76,17 @@ export class App {
   private setupNetworkListeners() {
     const checkNetwork = async () => {
       try {
-        const localIp = await invoke<string>('get_local_ip');
-        const networkId = await invoke<string>('get_network_identifier').catch(
-          () => localIp,
-        );
-        const modes = await invoke<{
-          wifi: boolean;
-          usb: boolean;
-          adb: boolean;
-        }>('get_connection_status');
+        // Single batched IPC call replaces 3 separate calls
+        // (get_local_ip + get_network_identifier + get_connection_status)
+        const netState = await invoke<{
+          localIp: string;
+          networkId: string;
+          modes: { wifi: boolean; usb: boolean; adb: boolean };
+        }>('get_network_state');
+
+        const localIp = netState.localIp;
+        const networkId = netState.networkId;
+        const modes = netState.modes;
 
         const currentState = this.stateHandler.getState();
 
@@ -156,7 +160,7 @@ export class App {
     };
 
     checkNetwork();
-    setInterval(checkNetwork, 1000);
+    setInterval(checkNetwork, 3000);
 
     window.addEventListener('online', checkNetwork);
     window.addEventListener('offline', checkNetwork);

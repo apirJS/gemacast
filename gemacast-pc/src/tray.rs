@@ -10,7 +10,6 @@ pub struct TrayManager {
     _tray_icon: TrayIcon,
     pub device_menu_items: HashMap<DeviceId, CheckMenuItem>,
     pub connected_devices_submenu: Submenu,
-    pub quality_menu_items: Vec<(Option<i32>, CheckMenuItem)>,
     pub no_devices_placeholder: MenuItem,
     pub broadcast_toggle_item: MenuItem,
     pub quit_menu_item: MenuItem,
@@ -26,43 +25,8 @@ impl TrayManager {
 
         let _ = connected_devices_submenu.append(&no_devices_placeholder);
 
-        let qualities = vec![
-            (10, "VoIP"),
-            (24, "VoIP"),
-            (32, "VoIP"),
-            (64, "Standard"),
-            (96, "Standard"),
-            (128, "High (Default)"),
-            (256, "High"),
-            (450, "Very High"),
-            (512, "Very High"),
-            (-1, "Raw PCM"),
-        ];
-
-        let quality_submenu = Submenu::new("Audio Quality", true);
-        let mut quality_menu_items = Vec::new();
-        for (kbps, category) in qualities {
-            let label = if kbps == -1 {
-                format!("Uncompressed - {}", category)
-            } else {
-                format!("{} Kb/s - {}", kbps, category)
-            };
-
-            let is_default = kbps == 128;
-            let item = CheckMenuItem::new(label, true, is_default, None);
-
-            let bitrate_val = if kbps == -1 { None } else { Some(kbps * 1000) };
-            let _ = quality_submenu.append(&item);
-            quality_menu_items.push((bitrate_val, item));
-
-            if kbps == 32 || kbps == 96 || kbps == 256 || kbps == 512 {
-                let _ = quality_submenu.append(&PredefinedMenuItem::separator());
-            }
-        }
-
         let _ = tray_menu.append(&broadcast_toggle_item);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
-        let _ = tray_menu.append(&quality_submenu);
         let _ = tray_menu.append(&connected_devices_submenu);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&quit_menu_item);
@@ -75,7 +39,6 @@ impl TrayManager {
         Ok(Self {
             _tray_icon: tray_icon,
             device_menu_items: HashMap::new(),
-            quality_menu_items,
             no_devices_placeholder,
             connected_devices_submenu,
             broadcast_toggle_item,

@@ -1,3 +1,5 @@
+#[cfg(not(target_os = "android"))]
+use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
 use crate::{
     audio::{OPUS_SAMPLE_RATE, create_opus_decoder},
     error::{AudioError, CodecDirection, GemaCastError, StreamDirection},
@@ -5,15 +7,13 @@ use crate::{
     types::JitterConfig,
 };
 #[cfg(not(target_os = "android"))]
-use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
-#[cfg(not(target_os = "android"))]
 use cpal::StreamError;
 #[cfg(not(target_os = "android"))]
 use cpal::traits::*;
 #[cfg(target_os = "android")]
 use oboe::{
-    AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBuilder,
-    DataCallbackResult, PerformanceMode, SharingMode,
+    AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBuilder, DataCallbackResult,
+    PerformanceMode, SharingMode,
 };
 use ringbuf::traits::*;
 use std::sync::{
@@ -164,6 +164,7 @@ pub fn build_playback_stream(
         direction: CodecDirection::Decoder,
         source: e,
     })?;
+
     let callback = OboeCallback {
         jitter_manager: JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode),
         packet_consumer,
@@ -181,14 +182,17 @@ pub fn build_playback_stream(
         })
         .set_format::<f32>()
         .set_channel_count::<oboe::Stereo>()
+        .set_channel_conversion_allowed(true)
         .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+        .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
         .set_callback(callback);
 
-    let stream = builder.open_stream().map_err(|_| {
-        AudioError::BuildStreamFailed {
+    let stream = builder
+        .open_stream()
+        .map_err(|_| AudioError::BuildStreamFailed {
             direction: StreamDirection::Output,
             source: cpal::BuildStreamError::DeviceNotAvailable,
-        }
-    })?;
+        })?;
+
     Ok(stream)
 }

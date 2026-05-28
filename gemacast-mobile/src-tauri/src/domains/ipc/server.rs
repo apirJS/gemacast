@@ -46,7 +46,7 @@ async fn handle_resume_command(app_handle: &tauri::AppHandle) {
     };
 
     let session_guard = state.session.lock().await;
-    
+
     if let Some(session) = session_guard.as_ref() {
         session.is_playing.store(true, Ordering::Relaxed);
 
@@ -55,9 +55,10 @@ async fn handle_resume_command(app_handle: &tauri::AppHandle) {
             .send_connect_request(ConnectReq {
                 device_id: session.device_id.clone(),
                 device_name: session.device_name.clone(),
-                source: gemacast_core::types::AudioSource::default(),
+                source: None,
                 mode: gemacast_core::types::ConnectionMode::default(),
                 jitter_config: gemacast_core::types::JitterConfig::default(),
+                bitrate: Some(128_000),
             })
             .await;
     }
@@ -70,7 +71,9 @@ async fn handle_stop_command(app_handle: &tauri::AppHandle) {
 
     if let Some(session) = state.session.lock().await.as_ref() {
         let client = HttpControlClient::new(session.ip);
-        let _ = client.send_disconnect_request(session.device_id.clone()).await;
+        let _ = client
+            .send_disconnect_request(session.device_id.clone())
+            .await;
     }
 
     crate::domains::audio::playback::set_streaming_flag(app_handle, false);

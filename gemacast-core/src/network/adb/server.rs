@@ -13,9 +13,7 @@ pub trait PresenceProvider: Send + Sync + 'static {
 
 pub fn spawn_adb_audio_tcp_server(
     set: &mut JoinSet<()>,
-    tcp_source_watch_rx: tokio::sync::watch::Receiver<
-        Option<tokio::sync::broadcast::Sender<Arc<Vec<u8>>>>,
-    >,
+    engine_command_tx: tokio::sync::mpsc::Sender<crate::stream::sender::engine::AudioStreamCommand>,
     tcp_drop_tx_for_audio: tokio::sync::broadcast::Sender<()>,
     error_tx: tokio::sync::mpsc::Sender<String>,
 ) {
@@ -38,7 +36,7 @@ pub fn spawn_adb_audio_tcp_server(
                             let _ = error_tx.send(msg).await;
                             return;
                         }
-                        
+
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -52,35 +50,65 @@ pub fn spawn_adb_audio_tcp_server(
             };
             let _ = socket.set_nodelay(true);
 
-            // Get the current broadcast sender (if any)
-            let initial_broadcaster = tcp_source_watch_rx.borrow().clone();
-            let mut source_watch = tcp_source_watch_rx.clone();
+            let engine_command_tx = engine_command_tx.clone();
             let mut drop_rx = tcp_drop_tx_for_audio.subscribe();
 
             tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut len_buf = [0u8; 1];
+                if socket.read_exact(&mut len_buf).await.is_err() {
+                    return;
+                }
+                let len = len_buf[0] as usize;
+                if len == 0 || len > 128 {
+                    return;
+                }
+                let mut id_buf = vec![0u8; len];
+                if socket.read_exact(&mut id_buf).await.is_err() {
+                    return;
+                }
+                let device_id = match String::from_utf8(id_buf) {
+                    Ok(id) => id,
+                    Err(_) => return,
+                };
+
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                if engine_command_tx
+                    .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                        device_id: crate::types::DeviceId(device_id.clone()),
+                        reply: reply_tx,
+                    })
+                    .await
+                    .is_err()
+                {
+                    tracing::error!("[ADB] Engine dropped before handshake completed for {}", device_id);
+                    return;
+                }
+
+                let broadcaster = match reply_rx.await {
+                    Ok(Some(b)) => b,
+                    _ => {
+                        tracing::warn!("[ADB] No active source found for device={:?}", device_id);
+                        return;
+                    }
+                };
+
                 let mut framer = TcpAudioFramer::new();
-                let mut current_rx: Option<tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>> =
-                    initial_broadcaster.map(|tx| tx.subscribe());
+                let mut current_rx = broadcaster.subscribe();
+                drop(broadcaster);
 
                 loop {
                     tokio::select! {
                         // Forward audio packets from the current broadcast source
-                        msg = async {
-                            match current_rx.as_mut() {
-                                Some(rx) => rx.recv().await,
-                                None => std::future::pending().await,
-                            }
-                        } => {
+                        msg = current_rx.recv() => {
                             match msg {
                                 Ok(packet) => {
                                     framer.clear();
                                     framer.append_packet(&packet);
 
                                     // Drain any queued packets
-                                    if let Some(rx) = current_rx.as_mut() {
-                                        while let Ok(msg2) = rx.try_recv() {
-                                            framer.append_packet(&msg2);
-                                        }
+                                    while let Ok(msg2) = current_rx.try_recv() {
+                                        framer.append_packet(&msg2);
                                     }
 
                                     if framer.flush(&mut socket).await.is_err() {
@@ -89,22 +117,33 @@ pub fn spawn_adb_audio_tcp_server(
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_n)) => {
                                     // Drain stale packets to catch up rather than playing old audio
-                                    if let Some(rx) = current_rx.as_mut() {
-                                        while rx.try_recv().is_ok() {}
-                                    }
+                                    while current_rx.try_recv().is_ok() {}
                                     continue;
                                 }
                                 Err(_) => {
-                                    // Channel closed — wait for source watch to provide a new one
-                                    current_rx = None;
-                                    continue;
+                                    // Broadcast channel closed — source was torn down or changed.
+                                    // Try to fetch the new broadcaster from the engine.
+                                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                                    if engine_command_tx
+                                        .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                            device_id: crate::types::DeviceId(device_id.clone()),
+                                            reply: reply_tx,
+                                        })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+
+                                    match reply_rx.await {
+                                        Ok(Some(new_broadcaster)) => {
+                                            current_rx = new_broadcaster.subscribe();
+                                            continue;
+                                        }
+                                        _ => break, // No active source found, actually shut down
+                                    }
                                 }
                             }
-                        }
-                        // Source changed — re-subscribe to the new broadcast channel
-                        _ = source_watch.changed() => {
-                            let new_broadcaster = source_watch.borrow().clone();
-                            current_rx = new_broadcaster.map(|tx| tx.subscribe());
                         }
                         _ = drop_rx.recv() => {
                             break;
@@ -115,7 +154,6 @@ pub fn spawn_adb_audio_tcp_server(
         }
     });
 }
-
 
 pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
     set: &mut JoinSet<()>,
@@ -144,7 +182,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
                             let _ = error_tx.send(msg).await;
                             return;
                         }
-                        
+
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -176,6 +214,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
                 Ok(j) => j,
                 Err(_) => continue,
             };
+
             json.push('\n');
 
             let combined_tx_clone = combined_tx_for_tcp.clone();

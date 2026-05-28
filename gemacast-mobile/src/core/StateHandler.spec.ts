@@ -59,7 +59,7 @@ describe('StateHandler — setState', () => {
     expect(sh.getState().reconnectAttempts).toBe(0);
   });
 
-  it('notifies subscribers on every call', () => {
+  it('batches rapid state updates', async () => {
     const sh = new StateHandler(makeDeviceInfo());
     const calls: string[] = [];
     sh.subscribe((s) => {
@@ -67,11 +67,16 @@ describe('StateHandler — setState', () => {
     });
     sh.setState({ status: Status.Listening });
     sh.setState({ status: Status.Connected });
-    // First call is the immediate notification on subscribe, then two updates.
-    expect(calls).toEqual([Status.Idle, Status.Listening, Status.Connected]);
+    
+    // Wait for the async tick to process the batch
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    
+    // First call is the immediate notification on subscribe (Idle).
+    // The second call is the batched result of Listening and Connected (only Connected fires).
+    expect(calls).toEqual([Status.Idle, Status.Connected]);
   });
 
-  it('unsubscribe stops future notifications', () => {
+  it('unsubscribe stops future notifications', async () => {
     const sh = new StateHandler(makeDeviceInfo());
     const calls: number[] = [];
     const unsub = sh.subscribe(() => {
@@ -79,6 +84,7 @@ describe('StateHandler — setState', () => {
     });
     unsub();
     sh.setState({ status: Status.Listening });
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(calls).toHaveLength(1); // only the initial call
   });
 });

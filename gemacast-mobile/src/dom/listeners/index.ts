@@ -4,12 +4,9 @@ import { DiscoveredSender } from '../../types';
 import { GemaCastError } from '../../error';
 
 export function listenForTauriEvents(app: App) {
-  listen<number>('latency-update', (event) => {
-    app.latency.updateLatency(event.payload);
-  });
-
-  listen<boolean>('audio-active', (event) => {
-    app.audio.updateAudioActive(event.payload);
+  listen<{ latency: number; isActive: boolean }>('audio-telemetry', (event) => {
+    app.latency.updateLatency(event.payload.latency);
+    app.audio.updateAudioActive(event.payload.isActive);
   });
 
   listen<string>('playback-error', (event) => {
