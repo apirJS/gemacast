@@ -42,6 +42,17 @@ pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlSer
         connections.remove(&device_id);
     }
 
+    // Always send a disconnect command to ensure Engine cleans up the session
+    // even if the WebSocket dropped ungracefully (e.g. unplugged).
+    let dummy_addr = "0.0.0.0:0".parse().unwrap();
+    let _ = state
+        .command_tx
+        .send(crate::control::ControlCommand::Disconnect {
+            device_id: device_id.clone(),
+            remote_addr: dummy_addr,
+        })
+        .await;
+
     send_task.abort();
 }
 

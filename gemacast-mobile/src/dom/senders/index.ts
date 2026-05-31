@@ -12,7 +12,7 @@ import {
   teardownDropdownListeners,
   setDropdownOpen,
 } from './process-select';
-import { getRenderHash, setRenderHash } from './render-state';
+import { getRenderHash, setRenderHash, getForceNextRender, setForceNextRender } from './render-state';
 
 function createConnectButton(
   app: App,
@@ -72,18 +72,21 @@ export function setupSenderList(app: App) {
     const isEmpty = state.discoveredSenders.length === 0 && isListening;
     if (senderEmptyEl) senderEmptyEl.hidden = !isEmpty;
 
-    if (dropdownOpen) {
-      return;
-    }
-
-    teardownDropdownListeners();
-
     if (!state.connectedSender) {
       currentSource = { type: 'desktop' };
       if (dropdownOpen) {
         setDropdownOpen(false);
       }
     }
+
+    if (dropdownOpen && !getForceNextRender()) {
+      return;
+    }
+    if (getForceNextRender()) {
+      setForceNextRender(false);
+    }
+
+    teardownDropdownListeners();
 
     const renderHash = JSON.stringify({
       senders: state.discoveredSenders,

@@ -191,3 +191,128 @@ pub enum ControlError {
     #[error("WebSocket connection failed: {reason}")]
     WebSocketFailed { reason: String },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod protocol_error {
+        use super::*;
+
+        #[test]
+        fn packet_too_short_should_display_expected_and_actual_sizes() {
+            let err = ProtocolError::PacketTooShort { got: 3, min: 9 };
+            let msg = err.to_string();
+            assert!(
+                msg.contains("at least 9") && msg.contains("got 3"),
+                "Expected sizes in message, got: {msg}"
+            );
+        }
+
+        #[test]
+        fn should_convert_into_gemacast_error_via_from() {
+            let err = ProtocolError::PacketTooShort { got: 0, min: 9 };
+            let outer: GemaCastError = err.into();
+            assert!(
+                matches!(outer, GemaCastError::Protocol(_)),
+                "Expected GemaCastError::Protocol, got: {outer:?}"
+            );
+        }
+    }
+
+    mod network_error {
+        use super::*;
+
+        #[test]
+        fn connection_lost_should_display_descriptive_message() {
+            let err = NetworkError::ConnectionLost;
+            assert!(
+                err.to_string().contains("connection lost"),
+                "Expected 'connection lost' in: {}",
+                err
+            );
+        }
+
+        #[test]
+        fn device_not_connected_should_include_device_id() {
+            let err = NetworkError::DeviceNotConnected("phone_42".to_string());
+            assert!(
+                err.to_string().contains("phone_42"),
+                "Expected device id in: {}",
+                err
+            );
+        }
+
+        #[test]
+        fn should_convert_into_gemacast_error_via_from() {
+            let err = NetworkError::ConnectionLost;
+            let outer: GemaCastError = err.into();
+            assert!(
+                matches!(outer, GemaCastError::Network(_)),
+                "Expected GemaCastError::Network, got: {outer:?}"
+            );
+        }
+    }
+
+    mod audio_error {
+        use super::*;
+
+        #[test]
+        fn no_output_device_should_display_descriptive_message() {
+            let err = AudioError::NoOutputDevice;
+            assert!(
+                err.to_string().contains("no default output device"),
+                "Expected 'no default output device' in: {}",
+                err
+            );
+        }
+    }
+
+    mod control_error {
+        use super::*;
+
+        #[test]
+        fn timeout_should_include_duration_in_display() {
+            let err = ControlError::Timeout { timeout_ms: 3000 };
+            assert!(
+                err.to_string().contains("3000"),
+                "Expected timeout value in: {}",
+                err
+            );
+        }
+
+        #[test]
+        fn should_convert_into_gemacast_error_via_from() {
+            let err = ControlError::Timeout { timeout_ms: 500 };
+            let outer: GemaCastError = err.into();
+            assert!(
+                matches!(outer, GemaCastError::Control(_)),
+                "Expected GemaCastError::Control, got: {outer:?}"
+            );
+        }
+    }
+
+    mod direction_display {
+        use super::*;
+
+        #[test]
+        fn stream_direction_input_should_display_lowercase() {
+            assert_eq!(StreamDirection::Input.to_string(), "input");
+        }
+
+        #[test]
+        fn stream_direction_output_should_display_lowercase() {
+            assert_eq!(StreamDirection::Output.to_string(), "output");
+        }
+
+        #[test]
+        fn codec_direction_encoder_should_display_lowercase() {
+            assert_eq!(CodecDirection::Encoder.to_string(), "encoder");
+        }
+
+        #[test]
+        fn codec_direction_decoder_should_display_lowercase() {
+            assert_eq!(CodecDirection::Decoder.to_string(), "decoder");
+        }
+    }
+}

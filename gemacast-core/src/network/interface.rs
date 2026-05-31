@@ -132,3 +132,69 @@ pub fn is_usb_tether_ip(ip: &std::net::IpAddr) -> bool {
             })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    fn make_interface(name: &str) -> netdev::Interface {
+        let mut iface = netdev::Interface::dummy();
+        iface.name = name.to_string();
+        iface
+    }
+
+    mod classify_interface {
+        use super::*;
+
+        #[test]
+        fn should_identify_wlan_as_wifi() {
+            let iface = make_interface("wlan0");
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(is_wifi, "Expected wlan0 to be classified as wifi");
+            assert!(!is_usb, "wlan0 should not be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_rndis_as_usb() {
+            let iface = make_interface("rndis0");
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "rndis0 should not be classified as wifi");
+            assert!(is_usb, "Expected rndis0 to be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_rmnet_as_cellular_returning_both_false() {
+            let iface = make_interface("rmnet0");
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "rmnet0 should not be wifi");
+            assert!(!is_usb, "rmnet0 should not be usb");
+        }
+    }
+
+    mod is_usb_tether_ip {
+        #[test]
+        fn should_return_false_for_ipv6() {
+            let ip: std::net::IpAddr = "::1".parse().unwrap();
+            assert!(
+                !super::super::is_usb_tether_ip(&ip),
+                "IPv6 addresses should never be USB tether"
+            );
+        }
+
+        #[test]
+        fn should_return_true_for_known_usb_subnet_192_168_42() {
+            let ip: std::net::IpAddr = "192.168.42.129".parse().unwrap();
+            assert!(
+                super::super::is_usb_tether_ip(&ip),
+                "192.168.42.x is a known USB tether subnet"
+            );
+        }
+
+        #[test]
+        fn should_return_true_for_known_usb_subnet_172_20_10() {
+            let ip: std::net::IpAddr = "172.20.10.5".parse().unwrap();
+            assert!(
+                super::super::is_usb_tether_ip(&ip),
+                "172.20.10.x is a known USB tether subnet"
+            );
+        }
+    }
+}

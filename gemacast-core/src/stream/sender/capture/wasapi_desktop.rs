@@ -1,15 +1,5 @@
 #![cfg(target_os = "windows")]
 
-//! Raw WASAPI desktop loopback capture.
-//!
-//! Bypasses cpal entirely to capture system audio via the Windows Audio Session API.
-//! Uses the default render endpoint in loopback mode — captures all desktop audio
-//! at the system mixer's native format, then resamples to 48kHz stereo for the
-//! Opus pipeline.
-//!
-//! This is the same proven approach used by `wasapi_loopback` (Process capture),
-//! but simplified: no process-specific activation, just direct endpoint access.
-
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
     error::{AudioError, GemaCastError},
@@ -41,6 +31,7 @@ unsafe impl Sync for SendClient {}
 struct WasapiDesktopCapture {
     client: SendClient,
     is_running: Arc<std::sync::atomic::AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CaptureBackend for WasapiDesktopCapture {
@@ -63,6 +54,9 @@ impl Drop for WasapiDesktopCapture {
     fn drop(&mut self) {
         self.is_running
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -168,10 +162,7 @@ pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle, GemaCastError> 
             None
         };
 
-        // NOTE: Do NOT call audio_client.Start() here.
-        // The encode loop calls capture.backend.play() which calls Start().
-
-        std::thread::spawn(move || {
+        let thread_handle = std::thread::spawn(move || {
             // Force whole-struct capture. Rust 2021+ closures capture individual
             // fields; accessing .0 directly would capture the bare !Send
             // IAudioCaptureClient instead of the Send wrapper.
@@ -278,12 +269,14 @@ pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle, GemaCastError> 
             }
 
             let _ = CloseHandle(event_handle);
+            notify_clone.notify_waiters();
         });
 
         Ok(CaptureHandle {
             backend: Box::new(WasapiDesktopCapture {
                 client: SendClient(client_clone),
                 is_running,
+                thread_handle: Some(thread_handle),
             }),
             consumer: rb_consumer,
             notify,

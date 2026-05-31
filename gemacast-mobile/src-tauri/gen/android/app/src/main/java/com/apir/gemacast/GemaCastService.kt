@@ -21,6 +21,7 @@ import androidx.media.app.NotificationCompat.MediaStyle
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -32,6 +33,7 @@ class GemaCastService : Service() {
     companion object {
         const val CHANNEL_ID = "GemaCastChannel"
         const val NOTIFICATION_ID = 1
+        @Volatile
         var isRunning = false
             private set
     }
@@ -206,11 +208,11 @@ class GemaCastService : Service() {
                 }
                 val port = cachedIpcPort ?: return@launch
                 
-                val socket = DatagramSocket()
-                val data = command.toByteArray()
-                val packet = DatagramPacket(data, data.size, InetAddress.getByName("127.0.0.1"), port)
-                socket.send(packet)
-                socket.close()
+                DatagramSocket().use { socket ->
+                    val data = command.toByteArray()
+                    val packet = DatagramPacket(data, data.size, InetAddress.getByName("127.0.0.1"), port)
+                    socket.send(packet)
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -232,7 +234,7 @@ class GemaCastService : Service() {
         val playPauseActionText = if (isPlayingState) "Stop" else "Resume"
         val playPauseIcon = if (isPlayingState) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val playPauseIntent = Intent(this, GemaCastService::class.java).apply { action = if (isPlayingState) "STOP_STREAM" else "RESUME" }
-        val pendingPlayPauseIntent = PendingIntent.getService(this, 4, playPauseIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val pendingPlayPauseIntent = PendingIntent.getService(this, 4, playPauseIntent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("GemaCast")
@@ -270,10 +272,10 @@ class GemaCastService : Service() {
             }
             "DISCONNECT" -> {
                 sendUdpCommand("DISCONNECT")
-                // Delete the streaming flag so the activity knows we're done
-                java.io.File(cacheDir, ".streaming_active").delete()
                 // Brief delay to let the UDP command propagate, then stop the service
                 scope.launch {
+                    // Delete the streaming flag so the activity knows we're done
+                    java.io.File(cacheDir, ".streaming_active").delete()
                     kotlinx.coroutines.delay(300)
                     stopStreaming()
                 }
@@ -332,7 +334,7 @@ class GemaCastService : Service() {
             audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         } else {
             @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(null)
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -350,8 +352,22 @@ class GemaCastService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // User swiped app from recents — stop the service cleanly
-        sendUdpCommand("DISCONNECT")
+        // User swiped app from recents — stop the service cleanly.
+        // Send the UDP command synchronously on a background thread and
+        // block briefly so the packet is actually sent before we tear down.
+        try {
+            val ipcPortFile = java.io.File(cacheDir, ".ipc_port")
+            if (ipcPortFile.exists()) {
+                val port = ipcPortFile.readText().trim().toIntOrNull()
+                if (port != null) {
+                    DatagramSocket().use { socket ->
+                        val data = "DISCONNECT".toByteArray()
+                        val packet = DatagramPacket(data, data.size, InetAddress.getByName("127.0.0.1"), port)
+                        socket.send(packet)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
         stopStreaming()
         super.onTaskRemoved(rootIntent)
     }
@@ -367,5 +383,6 @@ class GemaCastService : Service() {
         lowLatencyWifiLock = null
         mediaSession.isActive = false
         mediaSession.release()
+        scope.cancel()
     }
 }

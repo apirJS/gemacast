@@ -131,9 +131,6 @@ pub async fn get_connection_status(
     Ok(modes)
 }
 
-/// Batched network state query — combines `get_local_ip`, `get_network_identifier`,
-/// and `get_connection_status` into a single IPC call. Reduces WebView↔Rust
-/// bridge crossings from 3 to 1 per network check cycle.
 #[tauri::command]
 pub async fn get_network_state(_app: tauri::AppHandle) -> Result<NetworkState, String> {
     let local_ip = gemacast_core::network::get_local_ip()

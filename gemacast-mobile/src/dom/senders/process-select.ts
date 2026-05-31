@@ -3,14 +3,8 @@ import { AppState, AudioSource } from '../../types';
 import { h } from '../utils';
 import { chevronSvg, refreshSvg } from './icons';
 import { sourceIcon, sourceLabel, sourcesEqual, buildSourceOptions } from './source';
-import { invalidateRenderHash } from './render-state';
+import { invalidateRenderHash, setForceNextRender } from './render-state';
 
-/**
- * Module-level state that persists across subscriber re-renders.
- * The subscriber destroys and rebuilds the entire sender list on every
- * `setState()` call (latency updates, network checks, etc.), so local
- * DOM state like "is the dropdown open?" must live here.
- */
 export let dropdownOpen = false;
 export let dropdownScrollTop = 0;
 export let dropdownSearchQuery = '';
@@ -18,7 +12,6 @@ export let searchInputFocused = false;
 export let searchSelectionStart = 0;
 export let searchSelectionEnd = 0;
 
-/** Cleanup reference so we can remove the document listener before DOM teardown. */
 let activeOutsideClickHandler: ((e: MouseEvent) => void) | null = null;
 let activeEscapeHandler: ((e: KeyboardEvent) => void) | null = null;
 
@@ -68,7 +61,6 @@ export function createProcessSelect(
     h('span', { className: 'process-select__label', textContent: 'Source:' }),
   );
 
-  // Trigger button
   const trigger = h(
     'button',
     {
@@ -95,26 +87,59 @@ export function createProcessSelect(
   trigger.appendChild(chevronEl);
   container.appendChild(trigger);
 
-  // Dropdown panel
   const dropdown = h('div', {
     className: 'process-select__dropdown',
     role: 'listbox',
     ariaLabel: 'Audio sources',
   });
-  
-  // Search bar
+
+  const searchRow = h('div', { className: 'process-select__search-row' });
+
   const searchInput = h('input', {
     className: 'process-select__search',
     type: 'text',
     placeholder: 'Search process...',
     value: dropdownSearchQuery,
   }) as HTMLInputElement;
-  
-  dropdown.appendChild(searchInput);
+
+  const refreshBtn = h(
+    'button',
+    {
+      className: 'process-select__refresh',
+      type: 'button',
+      ariaLabel: 'Refresh process list',
+      onClick: async (e) => {
+        e.stopPropagation();
+        refreshBtn.classList.add('process-select__refresh--loading');
+        const sender = state.connectedSender;
+        if (sender) {
+          try {
+            await Promise.all([
+              app.connection.fetchProcessList(sender),
+              new Promise((r) => setTimeout(r, 600)), // ensure minimum 1 spin
+            ]);
+            setForceNextRender(true);
+            invalidateRenderHash();
+            app.stateHandler.setState({});
+          } finally {
+            refreshBtn.classList.remove('process-select__refresh--loading');
+          }
+        } else {
+          refreshBtn.classList.remove('process-select__refresh--loading');
+        }
+      },
+    },
+  );
+  const refreshIconEl = h('span', { className: 'process-select__refresh-icon' });
+  refreshIconEl.innerHTML = refreshSvg;
+  refreshBtn.appendChild(refreshIconEl);
+
+  searchRow.appendChild(searchInput);
+  searchRow.appendChild(refreshBtn);
+  dropdown.appendChild(searchRow);
 
   const optionsList = h('div', { className: 'process-select__options' });
 
-  // Track scroll position at module level
   optionsList.addEventListener('scroll', () => {
     dropdownScrollTop = optionsList.scrollTop;
   });
@@ -133,9 +158,9 @@ export function createProcessSelect(
           const prevSource = currentSource;
           onSourceChange(source);
           closeDropdown();
-          
+
           const result = await app.connection.changeAudioSource(source);
-          
+
           if (!result.ok) {
             console.error('Failed to change audio source', result.error);
             onSourceChange(prevSource);
@@ -159,7 +184,7 @@ export function createProcessSelect(
     );
     optionsList.appendChild(option);
   }
-  
+
   function filterOptions(query: string) {
     const lowerQuery = query.toLowerCase();
     Array.from(optionsList.children).forEach((child) => {
@@ -174,7 +199,7 @@ export function createProcessSelect(
       }
     });
   }
-  
+
   if (dropdownSearchQuery) {
     filterOptions(dropdownSearchQuery);
   }
@@ -184,59 +209,33 @@ export function createProcessSelect(
     dropdownSearchQuery = target.value;
     filterOptions(dropdownSearchQuery);
   });
-  
+
   searchInput.addEventListener('focus', () => {
     searchInputFocused = true;
   });
-  
+
   searchInput.addEventListener('blur', () => {
     searchInputFocused = false;
   });
-  
+
   searchInput.addEventListener('keyup', (e) => {
     const target = e.target as HTMLInputElement;
     searchSelectionStart = target.selectionStart || 0;
     searchSelectionEnd = target.selectionEnd || 0;
   });
-  
+
   searchInput.addEventListener('click', (e) => {
     e.stopPropagation();
   });
-  
+
   searchInput.addEventListener('mousedown', (e) => {
     e.stopPropagation();
   });
 
   dropdown.appendChild(optionsList);
 
-  // Refresh button
-  const refreshBtn = h(
-    'button',
-    {
-      className: 'process-select__refresh',
-      type: 'button',
-      ariaLabel: 'Refresh process list',
-      onClick: async (e) => {
-        e.stopPropagation();
-        refreshBtn.classList.add('process-select__refresh--loading');
-        const sender = state.connectedSender;
-        if (sender) {
-          await app.connection.fetchProcessList(sender);
-        }
-        // The state update will trigger a full re-render.
-        // dropdownOpen remains true so the dropdown stays open.
-      },
-    },
-  );
-  const refreshIconEl = h('span', { className: 'process-select__refresh-icon' });
-  refreshIconEl.innerHTML = refreshSvg;
-  refreshBtn.appendChild(refreshIconEl);
-  refreshBtn.appendChild(document.createTextNode(' Refresh'));
-  dropdown.appendChild(refreshBtn);
-
   container.appendChild(dropdown);
 
-  // Open/close logic — mutates module-level `dropdownOpen`
   function openDropdown() {
     dropdownOpen = true;
     container.classList.add('process-select--open');

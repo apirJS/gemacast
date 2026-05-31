@@ -85,7 +85,8 @@ pub fn spawn_background_engine(
                 }
             };
 
-            let engine = AudioStreamEngine::new(true);
+            let ws_connections = Arc::new(Mutex::new(HashMap::new()));
+            let engine = AudioStreamEngine::new(true, ws_connections.clone());
 
             // Channel: dispatcher/watchdog -> audio stream engine (Subscribe, Unsubscribe, ChangeSource, etc.)
             let (audio_engine_command_tx, audio_engine_command_rx) =
@@ -132,8 +133,6 @@ pub fn spawn_background_engine(
                 sender_id: sender_id.clone(),
                 sender_name: device_name.clone(),
             });
-
-            let ws_connections = Arc::new(Mutex::new(HashMap::new()));
 
             let control_server_state = ControlServerState {
                 command_tx: http_command_tx,

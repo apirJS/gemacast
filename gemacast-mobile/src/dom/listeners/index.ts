@@ -2,6 +2,7 @@ import { listen } from '@tauri-apps/api/event';
 import { App } from '../../App';
 import { DiscoveredSender } from '../../types';
 import { GemaCastError } from '../../error';
+import { toastManager } from '../toast';
 
 export function listenForTauriEvents(app: App) {
   listen<{ latency: number; isActive: boolean }>('audio-telemetry', (event) => {
@@ -31,6 +32,10 @@ export function listenForTauriEvents(app: App) {
 
   listen('ws-disconnect', () => {
     app.connection.handleForceDisconnect();
+  });
+
+  listen<string>('ws-error', (event) => {
+    toastManager.showWarning(event.payload);
   });
 
   listen<string>('service-command', async (event) => {
