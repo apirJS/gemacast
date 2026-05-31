@@ -1,22 +1,10 @@
-//! Audio packet transport abstractions.
-//!
-//! [`AudioPacketTransport`] provides a unified interface for receiving audio
-//! packets regardless of the underlying transport (UDP or TCP).
-
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 
-/// Trait for receiving audio packets from a network transport.
-///
-/// Implementors abstract the differences between UDP (WiFi/USB tethering)
-/// and TCP (ADB tunnel) so the receiver pipeline can be transport-agnostic.
 pub trait AudioPacketTransport: Send {
-    /// Receives a single audio packet into `buffer`, returning the number
-    /// of bytes read and the remote sender's socket address.
     fn receive_audio_packet(&mut self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
 }
 
-/// UDP transport — receives raw datagrams for WiFi and USB tethering modes.
 pub struct UdpTransport {
     pub socket: UdpSocket,
 }
@@ -27,10 +15,6 @@ impl AudioPacketTransport for UdpTransport {
     }
 }
 
-/// TCP transport — receives length-prefixed frames for ADB tunnel mode.
-///
-/// Each packet is preceded by a 4-byte big-endian length header, matching
-/// the framing produced by [`TcpAudioFramer`].
 pub struct TcpTransport {
     pub stream: TcpStream,
 }
@@ -57,5 +41,79 @@ impl AudioPacketTransport for TcpTransport {
             .unwrap_or_else(|_| "127.0.0.1:55557".parse().unwrap());
 
         Ok((length, addr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Helper: creates a connected loopback TcpStream pair and wraps the reader
+    /// in a TcpTransport.
+    fn make_tcp_pair() -> (TcpTransport, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let writer = std::net::TcpStream::connect(addr).unwrap();
+        let (reader, _) = listener.accept().unwrap();
+
+        // Set a short read timeout so tests don't hang on unexpected EOF
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+
+        (TcpTransport { stream: reader }, writer)
+    }
+
+    mod tcp_transport {
+        use super::*;
+
+        #[test]
+        fn should_read_length_prefixed_packet() {
+            let (mut transport, mut writer) = make_tcp_pair();
+
+            let payload = [0xCA, 0xFE, 0xBA, 0xBE, 0x42];
+            let len_bytes = (payload.len() as u32).to_be_bytes();
+            writer.write_all(&len_bytes).unwrap();
+            writer.write_all(&payload).unwrap();
+            writer.flush().unwrap();
+
+            let mut buffer = [0u8; 256];
+            let (len, _addr) = transport.receive_audio_packet(&mut buffer).unwrap();
+            assert_eq!(len, payload.len());
+            assert_eq!(&buffer[..len], &payload);
+        }
+
+        #[test]
+        fn should_reject_packet_larger_than_buffer() {
+            let (mut transport, mut writer) = make_tcp_pair();
+
+            // Claim the packet is 9999 bytes, but our buffer is only 64
+            let len_bytes = (9999u32).to_be_bytes();
+            writer.write_all(&len_bytes).unwrap();
+            writer.flush().unwrap();
+
+            let mut buffer = [0u8; 64];
+            let result = transport.receive_audio_packet(&mut buffer);
+            assert!(result.is_err(), "Should fail with oversized packet");
+            assert_eq!(
+                result.unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData,
+                "Error kind should be InvalidData"
+            );
+        }
+
+        #[test]
+        fn should_return_error_on_incomplete_header() {
+            let (mut transport, mut writer) = make_tcp_pair();
+
+            // Write only 2 of the 4 header bytes, then close
+            writer.write_all(&[0x00, 0x01]).unwrap();
+            drop(writer);
+
+            let mut buffer = [0u8; 256];
+            let result = transport.receive_audio_packet(&mut buffer);
+            assert!(result.is_err(), "Should fail when header is incomplete");
+        }
     }
 }

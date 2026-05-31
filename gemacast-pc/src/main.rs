@@ -1,52 +1,76 @@
+//! GemaCast PC Sender — streams desktop audio to mobile devices.
+//!
+//! This binary runs as a system tray application. The main thread owns the
+//! tray event loop ([`app`]), while a background thread runs all async tasks
+//! ([`background`]) for device discovery, audio streaming, and control.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────┐     AppCommand      ┌───────────────────┐
+//! │  Main Thread (tray/UI)      │ ──────────────────►  │  Background Engine │
+//! │  app.rs + tray.rs           │ ◄──────────────────  │  background.rs     │
+//! └─────────────────────────────┘     TrayEvent       │  └─► tasks/*        │
+//!                                                      └───────────────────┘
+//! ```
+
+mod adapters;
 mod app;
-pub mod domains;
+mod background;
 mod events;
-mod network;
 mod state;
+pub mod tasks;
+pub mod traits;
 mod tray;
 
-async fn wait_for_termination() {
-    let (daemon_shutdown_tx, mut daemon_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+#[cfg(test)]
+pub mod testing;
 
-    let ctrl_c_shutdown_tx = daemon_shutdown_tx.clone();
+/// Wait for any termination signal (Ctrl+C, stdin "quit", or OS-specific signals).
+async fn wait_for_termination() {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    // Ctrl+C
+    let tx = shutdown_tx.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
-        let _ = ctrl_c_shutdown_tx.send(()).await;
+        let _ = tx.send(()).await;
     });
 
     #[cfg(windows)]
     {
-        let ctrl_close_shutdown_tx = daemon_shutdown_tx.clone();
+        let tx = shutdown_tx.clone();
         tokio::spawn(async move {
-            if let Ok(mut ctrl_close) = tokio::signal::windows::ctrl_close() {
-                ctrl_close.recv().await;
-                let _ = ctrl_close_shutdown_tx.send(()).await;
+            if let Ok(mut signal) = tokio::signal::windows::ctrl_close() {
+                signal.recv().await;
+                let _ = tx.send(()).await;
             }
         });
 
-        let ctrl_break_shutdown_tx = daemon_shutdown_tx.clone();
+        let tx = shutdown_tx.clone();
         tokio::spawn(async move {
-            if let Ok(mut ctrl_break) = tokio::signal::windows::ctrl_break() {
-                ctrl_break.recv().await;
-                let _ = ctrl_break_shutdown_tx.send(()).await;
+            if let Ok(mut signal) = tokio::signal::windows::ctrl_break() {
+                signal.recv().await;
+                let _ = tx.send(()).await;
             }
         });
     }
 
     #[cfg(unix)]
     {
-        let sigterm_shutdown_tx = daemon_shutdown_tx.clone();
+        let tx = shutdown_tx.clone();
         tokio::spawn(async move {
             if let Ok(mut sigterm) =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             {
                 sigterm.recv().await;
-                let _ = sigterm_shutdown_tx.send(()).await;
+                let _ = tx.send(()).await;
             }
         });
     }
 
-    let stdin_shutdown_tx = daemon_shutdown_tx.clone();
+    // Stdin "quit" command
+    let tx = shutdown_tx.clone();
     tokio::task::spawn_blocking(move || {
         let stdin = std::io::stdin();
         let mut line = String::new();
@@ -55,14 +79,14 @@ async fn wait_for_termination() {
                 break;
             }
             if line.trim().eq_ignore_ascii_case("quit") {
-                let _ = stdin_shutdown_tx.blocking_send(());
+                let _ = tx.blocking_send(());
                 break;
             }
             line.clear();
         }
     });
 
-    let _ = daemon_shutdown_rx.recv().await;
+    let _ = shutdown_rx.recv().await;
 }
 
 fn main() {

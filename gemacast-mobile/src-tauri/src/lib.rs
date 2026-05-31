@@ -1,7 +1,10 @@
+mod adapters;
 mod domains;
 mod state;
+pub mod traits;
 
-use state::AppState;
+#[cfg(test)]
+mod testing;
 
 /// Seconds after which a sender with no heartbeat is considered offline.
 pub(crate) const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
@@ -12,9 +15,51 @@ pub(crate) const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::new())
         .setup(|app| {
-            domains::ipc::server::spawn_service_command_listener(app.handle().clone());
+            use std::sync::Arc;
+            use tauri::Manager;
+
+            let handle = app.handle().clone();
+
+            // -- Create production adapters ------------------------------
+            let notifier: Arc<dyn traits::FrontendNotifier> =
+                Arc::new(adapters::TauriFrontendNotifier::new(handle.clone()));
+
+            let session_mgr: Arc<dyn traits::SessionManager> =
+                Arc::new(adapters::TokioSessionManager::new(notifier.clone()));
+
+            let client_factory: Arc<dyn traits::SenderControlClientFactory> =
+                Arc::new(adapters::HttpSenderControlClientFactory);
+
+            let platform: Arc<dyn traits::PlatformService> =
+                Arc::new(adapters::NativePlatformService::new(handle.clone()));
+
+            let network: Arc<dyn traits::NetworkInfoProvider> =
+                Arc::new(adapters::NativeNetworkInfoProvider);
+
+            // -- Wire the AudioService -----------------------------------
+            let audio_service = Arc::new(domains::audio::service::AudioService {
+                session: session_mgr,
+                client_factory,
+                notifier: notifier.clone(),
+                platform: platform.clone(),
+            });
+
+            // -- Register managed state ----------------------------------
+            app.manage(state::AppState {
+                audio: audio_service,
+                notifier: notifier.clone(),
+                network,
+                platform,
+                discovery_task: tokio::sync::Mutex::new(None),
+            });
+
+            // -- Spawn IPC listener ----------------------------------
+            let cache_dir = handle.path().app_cache_dir().ok();
+            tauri::async_runtime::spawn(
+                domains::ipc::server::run_service_command_listener(notifier, cache_dir),
+            );
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

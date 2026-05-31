@@ -262,3 +262,77 @@ fn spawn_packet_receive_thread(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use ringbuf::HeapRb;
+    use crate::stream::transport::AudioPacketTransport;
+    use std::net::SocketAddr;
+
+    struct MockTransport {
+        packet_to_send: Option<Vec<u8>>,
+    }
+
+    impl AudioPacketTransport for MockTransport {
+        fn receive_audio_packet(&mut self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            if let Some(data) = self.packet_to_send.take() {
+                let len = data.len();
+                buffer[..len].copy_from_slice(&data);
+                Ok((len, "127.0.0.1:1234".parse().unwrap()))
+            } else {
+                // Return EOF to terminate the loop
+                Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Done"))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn should_push_parsed_packet_to_ring_buffer_and_signal_network_drop() {
+        let packet_rb = HeapRb::<RawPacket>::new(1024);
+        let (producer, mut consumer) = packet_rb.split();
+        let latency_metric = Arc::new(AtomicU32::new(0));
+        let active = Arc::new(AtomicBool::new(true));
+        let sender_port = Arc::new(AtomicU16::new(0));
+        let (network_dropped_tx, mut network_dropped_rx) = mpsc::channel(1);
+
+        // Construct a dummy Opus packet
+        let mut dummy_packet = vec![0u8; crate::audio::SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + 10];
+        // Seq num = 42 (Big Endian)
+        dummy_packet[0..8].copy_from_slice(&42u64.to_be_bytes());
+        // Opus format flag
+        dummy_packet[8] = crate::audio::FORMAT_OPUS;
+        // payload = some data
+        dummy_packet[9..19].copy_from_slice(&[0x1; 10]);
+
+        let transport = Box::new(MockTransport { packet_to_send: Some(dummy_packet) });
+
+        let handle = spawn_packet_receive_thread(
+            transport,
+            producer,
+            latency_metric,
+            None,
+            None,
+            active,
+            sender_port,
+            network_dropped_tx,
+        );
+
+        // Wait for thread to exit
+        let _ = handle.join();
+
+        // Ensure network drop was signaled due to EOF
+        assert!(network_dropped_rx.recv().await.is_some());
+
+        // Check if the packet was pushed to the consumer
+        let received_packet = consumer.try_pop().expect("Packet should have been pushed");
+        assert_eq!(received_packet.seq_num, 42);
+        assert!(!received_packet.is_silence);
+        assert!(!received_packet.is_uncompressed);
+        assert_eq!(received_packet.payload_len, 10);
+        assert_eq!(received_packet.payload_data[0], 0x1);
+    }
+}

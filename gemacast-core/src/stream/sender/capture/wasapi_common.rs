@@ -89,16 +89,27 @@ pub unsafe fn decode_samples_to_f32(
             }
         } else if !format.is_float && format.bits_per_sample == 24 {
             let raw_bytes = std::slice::from_raw_parts(buffer_ptr, num_frames * format.block_align);
-            let bytes_per_sample = 3usize;
+            let bytes_per_chunk = format.block_align / format.native_channels;
             for i in 0..total_samples {
                 let offset = (i / format.native_channels) * format.block_align
-                    + (i % format.native_channels) * bytes_per_sample;
-                if offset + 2 < raw_bytes.len() {
-                    let b0 = raw_bytes[offset] as i32;
-                    let b1 = raw_bytes[offset + 1] as i32;
-                    let b2 = raw_bytes[offset + 2] as i32;
-                    let val = (b2 << 24) | (b1 << 16) | (b0 << 8);
-                    output.push(val as f32 / 2147483648.0);
+                    + (i % format.native_channels) * bytes_per_chunk;
+                
+                if bytes_per_chunk == 3 {
+                    if offset + 2 < raw_bytes.len() {
+                        let bytes = [0, raw_bytes[offset], raw_bytes[offset + 1], raw_bytes[offset + 2]];
+                        let val = i32::from_le_bytes(bytes);
+                        output.push(val as f32 / 2147483648.0);
+                    } else {
+                        output.push(0.0);
+                    }
+                } else if bytes_per_chunk == 4 {
+                    if offset + 3 < raw_bytes.len() {
+                        let bytes = [raw_bytes[offset], raw_bytes[offset + 1], raw_bytes[offset + 2], raw_bytes[offset + 3]];
+                        let val = i32::from_le_bytes(bytes);
+                        output.push(val as f32 / 2147483648.0);
+                    } else {
+                        output.push(0.0);
+                    }
                 } else {
                     output.push(0.0);
                 }
@@ -140,8 +151,44 @@ pub fn downmix_to_stereo(input: &[f32], channels: usize, output: &mut Vec<f32>) 
         _ => {
             output.reserve(frames * 2);
             for frame in input.chunks_exact(channels) {
-                output.push(frame[0]);
-                output.push(frame[1]);
+                // FL (0), FR (1), C (2)
+                let center = frame.get(2).copied().unwrap_or(0.0) * 0.707;
+                
+                let mut left = frame[0] + center;
+                let mut right = frame[1] + center;
+
+                // LFE (3)
+                if channels >= 4 {
+                    let lfe = frame[3] * 0.3;
+                    left += lfe;
+                    right += lfe;
+                }
+                
+                // RL (4), RR (5)
+                if channels >= 6 {
+                    left += frame[4] * 0.707;
+                    right += frame[5] * 0.707;
+                }
+
+                // SL (6), SR (7)
+                if channels >= 8 {
+                    left += frame[6] * 0.707;
+                    right += frame[7] * 0.707;
+                }
+
+                // Prevent clipping
+                let norm = if channels >= 8 {
+                    1.0 + 0.707 + 0.3 + 0.707 + 0.707
+                } else if channels >= 6 {
+                    1.0 + 0.707 + 0.3 + 0.707
+                } else if channels >= 4 {
+                    1.0 + 0.707 + 0.3
+                } else {
+                    1.0 + 0.707
+                };
+
+                output.push(left / norm);
+                output.push(right / norm);
             }
         }
     }

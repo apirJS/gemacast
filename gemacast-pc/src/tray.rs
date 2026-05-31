@@ -1,11 +1,40 @@
+//! System tray icon and menu management.
+//!
+//! [`TrayManager`] owns the system tray icon and dynamically updates its
+//! context menu as devices connect and disconnect.
+
 use std::collections::HashMap;
 
 use gemacast_core::types::{DeviceId, TransportType};
 use tray_icon::{
-    TrayIcon, TrayIconBuilder,
+    Icon, TrayIcon, TrayIconBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
 };
 
+/// Load the tray icon from the embedded PNG.
+fn load_icon() -> Result<Icon, Box<dyn std::error::Error>> {
+    let image_bytes = include_bytes!("../../gemacast-mobile/src-tauri/icons/gemacast-pc.png");
+    let image = image::load_from_memory(image_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    let icon = Icon::from_rgba(rgba, width, height)?;
+    Ok(icon)
+}
+
+/// Manages the system tray icon and its context menu.
+///
+/// The menu layout is:
+/// ```text
+/// ┌──────────────────────┐
+/// │ Stop Stream          │  ← broadcast_toggle_item
+/// │ ──────────────────── │
+/// │ Connected Phones ►   │  ← connected_devices_submenu
+/// │   Phone 1 (IP) [WIFI]│    ← device_menu_items entries
+/// │   Phone 2 (IP) [ADB] │
+/// │ ──────────────────── │
+/// │ quit                 │  ← quit_menu_item
+/// └──────────────────────┘
+/// ```
 pub struct TrayManager {
     _tray_icon: TrayIcon,
     pub device_menu_items: HashMap<DeviceId, CheckMenuItem>,
@@ -16,6 +45,7 @@ pub struct TrayManager {
 }
 
 impl TrayManager {
+    /// Create the tray icon and initial menu.
     pub fn new() -> Result<Self, tray_icon::Error> {
         let tray_menu = Menu::new();
         let broadcast_toggle_item = MenuItem::new("Stop Stream", true, None);
@@ -31,10 +61,18 @@ impl TrayManager {
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&quit_menu_item);
 
-        let tray_icon = TrayIconBuilder::new()
+        let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Gemacast")
-            .build()?;
+            .with_tooltip("Gemacast");
+
+        let icon = load_icon().map_err(|e| {
+            tray_icon::Error::OsError(std::io::Error::other(
+                format!("Icon load failed: {e}"),
+            ))
+        })?;
+
+        builder = builder.with_icon(icon);
+        let tray_icon = builder.build()?;
 
         Ok(Self {
             _tray_icon: tray_icon,
@@ -46,6 +84,7 @@ impl TrayManager {
         })
     }
 
+    /// Add or update a device in the "Connected Phones" submenu.
     pub fn add_device(
         &mut self,
         device_id: DeviceId,
@@ -69,6 +108,7 @@ impl TrayManager {
             addr.ip(),
             connection_type_label
         );
+
         if let Some(existing) = self.device_menu_items.get(&device_id) {
             existing.set_text(&display_text);
             return;
@@ -81,17 +121,18 @@ impl TrayManager {
         }
 
         let new_device_item = CheckMenuItem::new(display_text, true, false, None);
-
         let _ = self.connected_devices_submenu.append(&new_device_item);
         self.device_menu_items.insert(device_id, new_device_item);
     }
 
+    /// Update the check mark for a device (checked = connected).
     pub fn set_device_connected(&self, device_id: &DeviceId, connected: bool) {
         if let Some(item) = self.device_menu_items.get(device_id) {
             item.set_checked(connected);
         }
     }
 
+    /// Remove a device from the "Connected Phones" submenu.
     pub fn remove_device(&mut self, device_id: &DeviceId) {
         if let Some(device) = self.device_menu_items.remove(device_id) {
             let _ = self.connected_devices_submenu.remove(&device);
@@ -102,5 +143,18 @@ impl TrayManager {
                 .connected_devices_submenu
                 .append(&self.no_devices_placeholder);
         }
+    }
+
+    /// Find which device (if any) corresponds to a clicked menu item.
+    pub fn find_device_by_menu_id(
+        &self,
+        menu_id: &tray_icon::menu::MenuId,
+    ) -> Option<DeviceId> {
+        for (device_id, menu_item) in &self.device_menu_items {
+            if *menu_id == menu_item.id() {
+                return Some(device_id.clone());
+            }
+        }
+        None
     }
 }

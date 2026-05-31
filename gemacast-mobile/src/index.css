@@ -1,0 +1,253 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Avenir", "Helvetica", "Arial", sans-serif;
+
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(222.2 84% 4.9%);
+
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(222.2 84% 4.9%);
+
+  --color-popover: hsl(0 0% 100%);
+  --color-popover-foreground: hsl(222.2 84% 4.9%);
+
+  --color-primary: hsl(222.2 47.4% 11.2%);
+  --color-primary-foreground: hsl(210 40% 98%);
+
+  --color-secondary: hsl(210 40% 96.1%);
+  --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
+
+  --color-muted: hsl(210 40% 96.1%);
+  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
+
+  --color-accent: hsl(210 40% 96.1%);
+  --color-accent-foreground: hsl(222.2 47.4% 11.2%);
+
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+  --color-destructive-muted: hsla(0 84.2% 60.2% / 0.1);
+
+  --color-border: hsl(214.3 31.8% 91.4%);
+  --color-input: hsl(214.3 31.8% 91.4%);
+  --color-ring: hsl(222.2 84% 4.9%);
+
+  --color-status-ok: hsl(142 71% 45%);
+  --color-status-ok-bg: hsl(142 71% 95%);
+  --color-status-ok-border: hsl(142 71% 80%);
+
+  --color-status-warn: hsl(38 92% 50%);
+  --color-status-warn-bg: hsl(48 96% 95%);
+  --color-status-warn-border: hsl(38 92% 75%);
+
+  --color-status-lost: hsl(0 72% 51%);
+  --color-status-lost-bg: hsl(0 86% 97%);
+  --color-status-lost-border: hsl(0 86% 85%);
+
+  --color-status-connecting: hsl(217 91% 60%);
+  --color-status-connecting-bg: hsl(217 91% 97%);
+  --color-status-connecting-border: hsl(217 91% 80%);
+
+  --radius-default: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+}
+
+@layer base {
+  :root {
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 400;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .dark {
+    --color-background: hsl(222.2 84% 4.9%);
+    --color-foreground: hsl(210 40% 98%);
+
+    --color-card: hsl(222.2 84% 4.9%);
+    --color-card-foreground: hsl(210 40% 98%);
+
+    --color-popover: hsl(222.2 84% 4.9%);
+    --color-popover-foreground: hsl(210 40% 98%);
+
+    --color-primary: hsl(210 40% 98%);
+    --color-primary-foreground: hsl(222.2 47.4% 11.2%);
+
+    --color-secondary: hsl(217.2 32.6% 17.5%);
+    --color-secondary-foreground: hsl(210 40% 98%);
+
+    --color-muted: hsl(217.2 32.6% 17.5%);
+    --color-muted-foreground: hsl(215 20.2% 65.1%);
+
+    --color-accent: hsl(217.2 32.6% 17.5%);
+    --color-accent-foreground: hsl(210 40% 98%);
+
+    --color-destructive: hsl(0 62.8% 50%);
+    --color-destructive-foreground: hsl(210 40% 98%);
+    --color-destructive-muted: hsla(0 62.8% 50% / 0.15);
+
+    --color-border: hsl(217.2 32.6% 17.5%);
+    --color-input: hsl(217.2 32.6% 17.5%);
+    --color-ring: hsl(212.7 26.8% 83.9%);
+
+    --color-status-ok-bg: hsl(142 71% 10%);
+    --color-status-ok-border: hsl(142 71% 25%);
+
+    --color-status-warn-bg: hsl(48 70% 10%);
+    --color-status-warn-border: hsl(38 80% 30%);
+
+    --color-status-lost-bg: hsl(0 60% 10%);
+    --color-status-lost-border: hsl(0 60% 30%);
+
+    --color-status-connecting-bg: hsl(217 60% 12%);
+    --color-status-connecting-border: hsl(217 80% 35%);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      --color-background: hsl(222.2 84% 4.9%);
+      --color-foreground: hsl(210 40% 98%);
+
+      --color-card: hsl(222.2 84% 4.9%);
+      --color-card-foreground: hsl(210 40% 98%);
+
+      --color-popover: hsl(222.2 84% 4.9%);
+      --color-popover-foreground: hsl(210 40% 98%);
+
+      --color-primary: hsl(210 40% 98%);
+      --color-primary-foreground: hsl(222.2 47.4% 11.2%);
+
+      --color-secondary: hsl(217.2 32.6% 17.5%);
+      --color-secondary-foreground: hsl(210 40% 98%);
+
+      --color-muted: hsl(217.2 32.6% 17.5%);
+      --color-muted-foreground: hsl(215 20.2% 65.1%);
+
+      --color-accent: hsl(217.2 32.6% 17.5%);
+      --color-accent-foreground: hsl(210 40% 98%);
+
+      --color-destructive: hsl(0 62.8% 50%);
+      --color-destructive-foreground: hsl(210 40% 98%);
+      --color-destructive-muted: hsla(0 62.8% 50% / 0.15);
+
+      --color-border: hsl(217.2 32.6% 17.5%);
+      --color-input: hsl(217.2 32.6% 17.5%);
+      --color-ring: hsl(212.7 26.8% 83.9%);
+
+      --color-status-ok-bg: hsl(142 71% 10%);
+      --color-status-ok-border: hsl(142 71% 25%);
+
+      --color-status-warn-bg: hsl(48 70% 10%);
+      --color-status-warn-border: hsl(38 80% 30%);
+
+      --color-status-lost-bg: hsl(0 60% 10%);
+      --color-status-lost-border: hsl(0 60% 30%);
+
+      --color-status-connecting-bg: hsl(217 60% 12%);
+      --color-status-connecting-border: hsl(217 80% 35%);
+    }
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+  
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    border-color: var(--color-border);
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-[var(--radius-default)] px-4 py-2 text-sm font-medium transition-colors duration-150;
+    @apply focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring;
+    @apply disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-primary-foreground hover:opacity-90 active:opacity-80;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary text-secondary-foreground hover:opacity-80;
+  }
+
+  .btn-destructive {
+    @apply bg-destructive text-destructive-foreground hover:opacity-90;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent hover:bg-accent hover:text-accent-foreground;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(8px); }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-out-right {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes toast-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes toast-slide-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(100%); opacity: 0; }
+}
+
+@keyframes slide-from-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-out-left {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}

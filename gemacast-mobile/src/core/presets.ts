@@ -1,11 +1,11 @@
-import { JitterConfig, PresetId } from '../types';
+import type { JitterConfig, PresetId } from './types';
 
-export interface PresetDefinition {
+export type PresetDefinition = {
   id: PresetId;
   name: string;
   description: string;
-  config: JitterConfig | null; // null for custom
-}
+  config: JitterConfig | null;
+};
 
 export const JITTER_PRESETS: PresetDefinition[] = [
   {
@@ -52,8 +52,8 @@ export const JITTER_PRESETS: PresetDefinition[] = [
   },
 ];
 
-export function getPresetConfig(id: PresetId, customConfig: JitterConfig): JitterConfig {
-  if (id === 'custom') return customConfig;
+export function getPresetConfig(id: string, customConfig: JitterConfig): JitterConfig {
+  if (id === 'custom' || id.startsWith('saved-')) return customConfig;
   const def = JITTER_PRESETS.find((p) => p.id === id);
   return def?.config ?? customConfig;
 }

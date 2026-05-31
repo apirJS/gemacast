@@ -56,12 +56,16 @@ unsafe impl Sync for SendClient {}
 struct WasapiLoopbackCapture {
     client: SendClient,
     is_running: Arc<std::sync::atomic::AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for WasapiLoopbackCapture {
     fn drop(&mut self) {
         self.is_running
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -152,7 +156,7 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
             None
         };
 
-        std::thread::spawn(move || {
+        let thread_handle = std::thread::spawn(move || {
             // Force whole-struct capture. Rust 2021+ closures capture individual
             // fields; accessing .0 directly would capture the bare !Send
             // IAudioCaptureClient instead of the Send wrapper.
@@ -257,12 +261,14 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
             }
 
             let _ = windows::Win32::Foundation::CloseHandle(event_handle);
+            notify_clone.notify_waiters();
         });
 
         Ok(CaptureHandle {
             backend: Box::new(WasapiLoopbackCapture {
                 client: SendClient(client_clone),
                 is_running,
+                thread_handle: Some(thread_handle),
             }),
             consumer: rb_consumer,
             notify,

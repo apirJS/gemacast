@@ -261,11 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_pop_in_order() {
+    fn insert_should_accept_and_pop_returns_packets_in_sequence_order() {
         let mut buf = JitterBuffer::new();
-        matches!(buf.insert(make_packet(0)), InsertResult::Accepted);
-        matches!(buf.insert(make_packet(1)), InsertResult::Accepted);
-        matches!(buf.insert(make_packet(2)), InsertResult::Accepted);
+        assert!(matches!(buf.insert(make_packet(0)), InsertResult::Accepted));
+        assert!(matches!(buf.insert(make_packet(1)), InsertResult::Accepted));
+        assert!(matches!(buf.insert(make_packet(2)), InsertResult::Accepted));
 
         assert_eq!(buf.contiguous_depth(), 3);
         assert_eq!(buf.occupied_count(), 3);
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn reorders_when_first_packet_is_earliest() {
+    fn insert_should_reorder_out_of_sequence_packets() {
         let mut buf = JitterBuffer::new();
         buf.insert(make_packet(0));
         buf.insert(make_packet(2));
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_packet_returns_none_and_advances() {
+    fn pop_next_should_return_none_for_missing_seq_and_advance() {
         let mut buf = JitterBuffer::new();
         buf.insert(make_packet(0));
         buf.insert(make_packet(2)); // skip seq 1
@@ -300,14 +300,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_stale_packets() {
+    fn insert_should_reject_packets_behind_play_head() {
         let mut buf = JitterBuffer::new();
         buf.insert(make_packet(5));
-        assert_eq!(InsertResult::Stale, buf.insert(make_packet(3)))
+        assert_eq!(InsertResult::Stale, buf.insert(make_packet(3)));
     }
 
     #[test]
-    fn advance_one_skips_without_corrupting_future_slots() {
+    fn advance_one_should_skip_missing_slot_without_corrupting_future() {
         let mut buf = JitterBuffer::new();
         buf.insert(make_packet(0));
         buf.insert(make_packet(2)); // gap at 1
@@ -317,5 +317,61 @@ mod tests {
 
         buf.advance_one();
         assert!(buf.pop_next().is_some_and(|p| p.seq_num == 2)); // 2 still intact
+    }
+
+    #[test]
+    fn fast_forward_should_clear_skipped_slots_and_update_play_head() {
+        let mut buf = JitterBuffer::new();
+        // Insert packets 0..5
+        for seq in 0..5 {
+            buf.insert(make_packet(seq));
+        }
+        assert_eq!(buf.occupied_count(), 5);
+
+        // Fast-forward past packets 0..3, landing on seq 3
+        buf.fast_forward(3);
+        assert_eq!(buf.next_play_seq(), 3);
+        // Packets 0, 1, 2 were cleared; 3 and 4 remain
+        assert_eq!(buf.occupied_count(), 2);
+        assert!(buf.pop_next().is_some_and(|p| p.seq_num == 3));
+        assert!(buf.pop_next().is_some_and(|p| p.seq_num == 4));
+    }
+
+    #[test]
+    fn insert_should_reset_and_reanchor_when_seq_wraps_far_behind() {
+        let mut buf = JitterBuffer::new();
+        // Start playing at a high sequence number
+        buf.insert(make_packet(1000));
+        buf.pop_next(); // next_play_seq = 1001
+
+        // A sender crash causes sequence to restart at 0 — more than BUFFER_CAPACITY behind
+        let result = buf.insert(make_packet(0));
+        assert_eq!(result, InsertResult::StreamRestarted);
+        assert_eq!(buf.next_play_seq(), 0);
+        assert_eq!(buf.occupied_count(), 1);
+        assert!(buf.pop_next().is_some_and(|p| p.seq_num == 0));
+    }
+
+    #[test]
+    fn occupied_count_should_return_zero_when_uninitialized() {
+        let buf = JitterBuffer::new();
+        assert_eq!(buf.occupied_count(), 0);
+        assert!(!buf.has_next());
+    }
+
+    #[test]
+    fn lowest_available_seq_should_return_minimum_after_insert() {
+        let mut buf = JitterBuffer::new();
+        // Insert in forward order so none are rejected as stale
+        buf.insert(make_packet(5));
+        buf.insert(make_packet(10));
+        buf.insert(make_packet(15));
+
+        assert_eq!(buf.lowest_available_seq(), Some(5));
+
+        // Pop seq 5 (play head initialized to 5)
+        buf.pop_next();
+        // Cache invalidated — should recompute to next minimum
+        assert_eq!(buf.lowest_available_seq(), Some(10));
     }
 }

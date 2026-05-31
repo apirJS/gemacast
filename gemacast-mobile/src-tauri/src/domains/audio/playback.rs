@@ -1,59 +1,33 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use gemacast_core::stream::receiver::AudioStreamReceiver;
 use gemacast_core::types::JitterConfig;
 
-pub fn set_streaming_flag(app_handle: &tauri::AppHandle, active: bool) {
-    if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
-        let flag_path = cache_dir.join(".streaming_active");
-        if active {
-            let _ = std::fs::create_dir_all(&cache_dir);
-            let _ = std::fs::write(&flag_path, "1");
-        } else {
-            let _ = std::fs::remove_file(&flag_path);
-        }
-    }
-}
+use crate::traits::FrontendNotifier;
 
 pub fn setup_event_forwarding(
-    app_handle: tauri::AppHandle,
+    notifier: Arc<dyn FrontendNotifier>,
 ) -> (
     oneshot::Sender<String>,
     tokio::sync::mpsc::Sender<(f32, f32)>,
 ) {
     let (sender_ip_tx, sender_ip_rx) = oneshot::channel::<String>();
-    let handle_conn = app_handle.clone();
+    let notifier_conn = notifier.clone();
     tokio::spawn(async move {
         if let Ok(ip) = sender_ip_rx.await {
-            let _ = handle_conn.emit("sender-connected", ip);
+            notifier_conn.emit_sender_connected(ip);
         }
     });
 
-    #[derive(serde::Serialize, Clone)]
-    #[serde(rename_all = "camelCase")]
-    struct AudioTelemetry {
-        latency: f32,
-        is_active: bool,
-    }
-
     let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32)>(10);
-    let handle_latency = app_handle.clone();
     tokio::spawn(async move {
         let mut last_emit = std::time::Instant::now();
         while let Some((latency, rms)) = latency_rx.recv().await {
             if last_emit.elapsed() >= std::time::Duration::from_millis(200) {
                 last_emit = std::time::Instant::now();
-                let _ = handle_latency.emit(
-                    "audio-telemetry",
-                    AudioTelemetry {
-                        latency,
-                        is_active: rms > 0.0001,
-                    },
-                );
+                notifier.emit_audio_telemetry(latency, rms > 0.0001);
             }
         }
     });
@@ -76,7 +50,7 @@ pub fn spawn_session_receiver(
     jitter_config: JitterConfig,
     is_tcp: bool,
     exclusive_mode: bool,
-    app_handle: tauri::AppHandle,
+    notifier: Arc<dyn FrontendNotifier>,
     target_ip: Option<std::net::IpAddr>,
     mode: gemacast_core::types::ConnectionMode,
     device_id: String,
@@ -87,7 +61,7 @@ pub fn spawn_session_receiver(
     let volume = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let mut receiver = AudioStreamReceiver::new(
+    let mut receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
         config_ref.clone(),
         is_tcp_mode.clone(),
         is_playing.clone(),
@@ -97,11 +71,11 @@ pub fn spawn_session_receiver(
     )
     .map_err(|e| e.to_string())?;
 
-    let (sender_ip_tx, latency_tx) = setup_event_forwarding(app_handle.clone());
+    let (sender_ip_tx, latency_tx) = setup_event_forwarding(notifier.clone());
 
     let task = tokio::spawn(async move {
         if let Err(e) = receiver.activate_playback_stream() {
-            let _ = app_handle.emit("playback-error", e.to_string());
+            notifier.emit_playback_error(e.to_string());
             return;
         }
 
@@ -121,9 +95,9 @@ pub fn spawn_session_receiver(
                     gemacast_core::error::NetworkError::ConnectionLost
                 )
             ) {
-                let _ = app_handle.emit("force-disconnect", ());
+                notifier.emit_force_disconnect();
             } else {
-                let _ = app_handle.emit("playback-error", e.to_string());
+                notifier.emit_playback_error(e.to_string());
             }
         }
     });

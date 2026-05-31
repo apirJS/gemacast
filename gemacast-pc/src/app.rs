@@ -1,9 +1,15 @@
-use crate::events::{DaemonCommand, DaemonEvent};
+//! Tray application event loop.
+//!
+//! Runs the `tao` event loop on the main thread, processing [`TrayEvent`]s
+//! from background tasks and [`MenuEvent`]s from user clicks on the system tray.
+
+use crate::events::{AppCommand, TrayEvent};
 use crate::tray::TrayManager;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::MenuEvent;
 
+/// Display a native error dialog to the user.
 fn display_error_dialog(message: String) {
     rfd::MessageDialog::new()
         .set_title("Gemacast Error!")
@@ -12,114 +18,114 @@ fn display_error_dialog(message: String) {
         .show();
 }
 
+/// Run the tray application event loop (blocks the main thread).
 pub fn run() {
-    let device_list = crate::state::create_shared_device_list();
-    let event_loop = EventLoopBuilder::<DaemonEvent>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<TrayEvent>::with_user_event().build();
 
-    let (daemon_command_tx, daemon_command_rx) = tokio::sync::mpsc::channel::<DaemonCommand>(32);
-    let device_list_for_background = device_list.clone();
+    let (command_tx, command_rx) = tokio::sync::mpsc::channel::<AppCommand>(32);
 
-    crate::network::spawn_background_engine(
-        event_loop.create_proxy(),
-        device_list_for_background,
-        daemon_command_rx,
-    );
+    crate::background::spawn_background_engine(event_loop.create_proxy(), command_rx);
 
-    let _ = daemon_command_tx.try_send(DaemonCommand::StartBroadcasting);
+    let _ = command_tx.try_send(AppCommand::StartBroadcasting);
+
     let mut tray_manager = match TrayManager::new() {
         Ok(t) => t,
         Err(e) => {
-            display_error_dialog(format!("Failed to initialize tray icon: {}", e));
+            display_error_dialog(format!("Failed to initialize tray icon: {e}"));
             std::process::exit(1);
         }
     };
-    let proxy_for_main_thread = event_loop.create_proxy();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
-            Event::UserEvent(daemon_event) => match daemon_event {
-                DaemonEvent::DiscoveredDevice {
-                    device_id,
-                    name,
-                    addr,
-                } => {
-                    let transport = device_list
-                        .lock()
-                        .ok()
-                        .and_then(|map| map.get(&device_id).and_then(|d| d.transport));
-                    tray_manager.add_device(device_id.clone(), &name, addr, transport);
-                    tray_manager.set_device_connected(&device_id, true);
-                }
-                DaemonEvent::DeviceLost(device_id, _addr) => {
-                    tray_manager.set_device_connected(&device_id, false);
-                    tray_manager.remove_device(&device_id);
-                }
-                DaemonEvent::FatalError(error_msg) => {
-                    display_error_dialog(error_msg);
-                    *control_flow = ControlFlow::Exit;
-                }
-            },
+            Event::UserEvent(tray_event) => {
+                handle_tray_event(tray_event, &mut tray_manager);
+            }
             Event::MainEventsCleared => {
                 if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-                    let mut clicked_device_id = None;
-                    for (device_id, menu_item) in &tray_manager.device_menu_items {
-                        if menu_item.id() == menu_event.id() {
-                            clicked_device_id = Some(device_id.clone());
-                            break;
-                        }
-                    }
-
-                    if menu_event.id() == tray_manager.broadcast_toggle_item.id() {
-                        let label = tray_manager.broadcast_toggle_item.text();
-                        let currently_broadcasting = label.contains("Stop");
-
-                        let command = if currently_broadcasting {
-                            DaemonCommand::StopBroadcasting
-                        } else {
-                            DaemonCommand::StartBroadcasting
-                        };
-
-                        if let Err(e) = daemon_command_tx.try_send(command) {
-                            display_error_dialog(format!("Failed to toggle streaming: {}", e));
-                        } else {
-                            if currently_broadcasting {
-                                tray_manager.broadcast_toggle_item.set_text("Start Stream");
-                            } else {
-                                tray_manager.broadcast_toggle_item.set_text("Stop Stream");
-                            }
-                        }
-                    }
-
-                    if let Some(device_id) = clicked_device_id {
-                        let addr_opt = device_list.lock().ok().and_then(|map| {
-                            map.get(&device_id).map(|d| (d.device_id.clone(), d.addr))
-                        });
-
-                        if let Some((_dev_id, addr)) = addr_opt {
-                            if let Err(e) = daemon_command_tx
-                                .try_send(DaemonCommand::KickDevice(device_id.clone()))
-                            {
-                                display_error_dialog(e.to_string());
-                            }
-                            let _ = proxy_for_main_thread
-                                .send_event(DaemonEvent::DeviceLost(device_id, addr));
-                        }
-                    }
-
-                    if menu_event.id() == tray_manager.quit_menu_item.id() {
-                        let _ = daemon_command_tx.try_send(DaemonCommand::StopAllStreams);
-                        std::thread::sleep(std::time::Duration::from_millis(150));
-                        *control_flow = ControlFlow::Exit;
-                    }
+                    handle_menu_event(
+                        menu_event.id(),
+                        &mut tray_manager,
+                        &command_tx,
+                        control_flow,
+                    );
                 }
             }
             Event::LoopDestroyed => {
-                let _ = daemon_command_tx.try_send(DaemonCommand::StopAllStreams);
+                let _ = command_tx.try_send(AppCommand::StopAllStreams);
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             _ => {}
         }
     });
+}
+
+/// Process a [`TrayEvent`] from the background engine.
+fn handle_tray_event(event: TrayEvent, tray: &mut TrayManager) {
+    match event {
+        TrayEvent::DiscoveredDevice {
+            device_id,
+            name,
+            addr,
+            transport,
+        } => {
+            tray.add_device(device_id.clone(), &name, addr, transport);
+            tray.set_device_connected(&device_id, true);
+        }
+        TrayEvent::DeviceLost { device_id, .. } => {
+            tray.set_device_connected(&device_id, false);
+            tray.remove_device(&device_id);
+        }
+        TrayEvent::FatalError(message) => {
+            display_error_dialog(message);
+        }
+    }
+}
+
+/// Process a menu click from the system tray.
+fn handle_menu_event(
+    menu_event: &tray_icon::menu::MenuId,
+    tray: &mut TrayManager,
+    command_tx: &tokio::sync::mpsc::Sender<AppCommand>,
+    control_flow: &mut ControlFlow,
+) {
+    // Check if a device was clicked (to kick it)
+    if let Some(device_id) = tray.find_device_by_menu_id(menu_event) {
+        if let Err(e) = command_tx.try_send(AppCommand::KickDevice(device_id.clone())) {
+            display_error_dialog(e.to_string());
+        }
+        // Update tray immediately for responsive UI
+        tray.set_device_connected(&device_id, false);
+        tray.remove_device(&device_id);
+        return;
+    }
+
+    // Check broadcast toggle
+    if *menu_event == tray.broadcast_toggle_item.id() {
+        let currently_broadcasting = tray.broadcast_toggle_item.text().contains("Stop");
+
+        let command = if currently_broadcasting {
+            AppCommand::StopBroadcasting
+        } else {
+            AppCommand::StartBroadcasting
+        };
+
+        if let Err(e) = command_tx.try_send(command) {
+            display_error_dialog(format!("Failed to toggle streaming: {e}"));
+        } else if currently_broadcasting {
+            tray.broadcast_toggle_item.set_text("Start Stream");
+        } else {
+            tray.broadcast_toggle_item.set_text("Stop Stream");
+        }
+        return;
+    }
+
+    // Check quit
+    if *menu_event == tray.quit_menu_item.id() {
+        let _ = command_tx.try_send(AppCommand::StopAllStreams);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        *control_flow = ControlFlow::Exit;
+    }
 }
