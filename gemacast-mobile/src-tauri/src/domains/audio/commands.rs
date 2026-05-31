@@ -294,17 +294,27 @@ pub async fn establish_websocket(
 
     let app_handle_clone = app_handle.clone();
     tokio::spawn(async move {
-        let event_result = {
-            let client = ws_client_arc.lock().await;
-            client.recv_event().await
-        };
+        #[allow(clippy::never_loop)]
+        loop {
+            let event_result = {
+                let client = ws_client_arc.lock().await;
+                client.recv_event().await
+            };
 
-        match event_result {
-            Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
-                let _ = app_handle_clone.emit("ws-disconnect", ());
-            }
-            Err(e) => {
-                eprintln!("WebSocket error: {}", e);
+            match event_result {
+                Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
+                    let _ = app_handle_clone.emit("ws-disconnect", ());
+                    break;
+                }
+                Ok(gemacast_core::control::types::WsEvent::Error { message }) => {
+                    let _ = app_handle_clone.emit("ws-error", message);
+                    let _ = app_handle_clone.emit("ws-disconnect", ());
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("WebSocket error: {}", e);
+                    break;
+                }
             }
         }
     });

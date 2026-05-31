@@ -100,6 +100,7 @@ impl JitterBufferManager {
         let ema_peak_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
         let smart_decay_stable = 0.5f32.powf(1.0 / (3500.0 / MILLIS_PER_FRAME as f32));
         let smart_decay_unstable = 0.5f32.powf(1.0 / (34600.0 / MILLIS_PER_FRAME as f32));
+
         Self {
             decoder,
             buffer: JitterBuffer::new(),
@@ -717,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prebuffering_outputs_silence_until_target_depth() {
+    fn should_output_silence_while_prebuffering_until_target_depth() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // Push MIN_DEPTH - 1 packets: should still be prebuffering.
@@ -745,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn test_packet_loss_triggers_plc() {
+    fn should_trigger_plc_and_recover_on_single_packet_loss() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // Fill to exactly MIN_DEPTH to exit prebuffering.
@@ -783,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_starvation_triggers_rebuffering() {
+    fn should_enter_prebuffering_after_sustained_starvation() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // Fill enough to exit prebuffering.
@@ -818,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fast_forward_udp_holes() {
+    fn should_fast_forward_past_large_udp_sequence_gap() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // Fill base tracking
@@ -854,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extreme_macro_delay_three_seconds() {
+    fn should_recover_from_three_second_network_drop() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // 1. Initial network fill
@@ -895,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sender_crash_recovery() {
+    fn should_reanchor_playhead_on_sender_crash_restart() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // 1. Initial network fill (e.g. sequence 1000..1005)
@@ -927,5 +928,103 @@ mod tests {
         manager.fill_output(&mut output, 1.0);
         // The playhead must instantly snap back to 1!
         assert_eq!(manager.buffer.next_play_seq(), 1);
+    }
+
+    #[test]
+    fn should_respect_static_target_ms_when_configured() {
+        let decoder = Decoder::new(OPUS_SAMPLE_RATE, Channels::Stereo).unwrap();
+        let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let static_config = JitterConfig {
+            min_depth_ms: 10,
+            comfort_cap_ms: 200,
+            peak_decay_halflife_ms: 1000,
+            resume_threshold_pct: 0.5,
+            static_target_ms: Some(100), // Lock to 100ms = 20 frames
+        };
+        let config_ref = Arc::new(std::sync::RwLock::new(static_config));
+        let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode);
+
+        // Static mode should lock target to ceil(100ms / 5ms) = 20 frames
+        let target = manager.compute_target_depth(None);
+        assert_eq!(
+            target, 20,
+            "Static target should be exactly 20 frames for 100ms"
+        );
+
+        // Even with massive jitter, static target should not change
+        manager.ema_jitter = 50.0;
+        manager.ema_peak = 100.0;
+        let target_after_jitter = manager.compute_target_depth(None);
+        assert_eq!(
+            target_after_jitter, 20,
+            "Static target should ignore jitter"
+        );
+    }
+
+    #[test]
+    fn should_apply_volume_scaling_during_fill_output() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        let make_noisy_packet =
+            |encoder: &mut Encoder, seq: u64, base_time: Instant| -> RawPacket {
+                let mut pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
+                for (i, sample) in pcm.iter_mut().enumerate() {
+                    *sample = if i % 2 == 0 { 0.5 } else { -0.5 };
+                }
+                let d = encoder.encode_vec_float(&pcm, 1500).unwrap();
+                let payload_len = d.len();
+                let mut pkt = RawPacket::zeroed();
+                pkt.seq_num = seq;
+                pkt.payload_data[..payload_len].copy_from_slice(&d);
+                pkt.payload_len = payload_len;
+                pkt.arrival_time = base_time + std::time::Duration::from_millis(seq * 5);
+                pkt
+            };
+
+        // Fill enough to exit prebuffering.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_noisy_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Get output at full volume
+        let mut full_vol = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut full_vol, 1.0);
+
+        // Reset and replay at half volume
+        let (mut manager2, mut encoder2, mut prod2, mut cons2) = setup_env();
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod2
+                    .try_push(make_noisy_packet(&mut encoder2, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager2.ingest_packets(&mut cons2);
+
+        let mut half_vol = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager2.fill_output(&mut half_vol, 0.5);
+
+        // Every non-zero sample at half volume should be ~half of full volume
+        let mut checked = false;
+        for (f, h) in full_vol.iter().zip(half_vol.iter()) {
+            if f.abs() > 0.001 {
+                let ratio = h / f;
+                assert!(
+                    (ratio - 0.5).abs() < 0.01,
+                    "Expected half-volume ratio ~0.5, got {ratio}"
+                );
+                checked = true;
+            }
+        }
+        assert!(
+            checked,
+            "Expected at least one non-zero sample to verify volume scaling"
+        );
     }
 }

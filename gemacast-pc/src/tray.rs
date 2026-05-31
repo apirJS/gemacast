@@ -2,9 +2,18 @@ use std::collections::HashMap;
 
 use gemacast_core::types::{DeviceId, TransportType};
 use tray_icon::{
-    TrayIcon, TrayIconBuilder,
+    Icon, TrayIcon, TrayIconBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
 };
+
+fn load_icon() -> Result<Icon, Box<dyn std::error::Error>> {
+    let image_bytes = include_bytes!("../../gemacast-mobile/src-tauri/icons/gemacast-pc.png");
+    let image = image::load_from_memory(image_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    let icon = Icon::from_rgba(rgba, width, height)?;
+    Ok(icon)
+}
 
 pub struct TrayManager {
     _tray_icon: TrayIcon,
@@ -31,10 +40,19 @@ impl TrayManager {
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&quit_menu_item);
 
-        let tray_icon = TrayIconBuilder::new()
+        let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Gemacast")
-            .build()?;
+            .with_tooltip("Gemacast");
+
+        let icon = load_icon().map_err(|e| {
+            tray_icon::Error::OsError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Icon load failed: {}", e),
+            ))
+        })?;
+
+        builder = builder.with_icon(icon);
+        let tray_icon = builder.build()?;
 
         Ok(Self {
             _tray_icon: tray_icon,

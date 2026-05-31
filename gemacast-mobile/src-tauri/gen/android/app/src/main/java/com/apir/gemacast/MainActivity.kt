@@ -113,10 +113,14 @@ class MainActivity : TauriActivity() {
                     .setTitle("Battery Optimization")
                     .setMessage("To prevent audio stuttering when the screen is off, GemaCast needs to be excluded from battery optimizations. Please disable battery optimization for GemaCast in the next screen.")
                     .setPositiveButton("Allow") { _, _ ->
-                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.parse("package:$packageName")
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
-                        startActivity(intent)
                     }
                     .setNegativeButton("Not Now", null)
                     .show()
@@ -145,6 +149,11 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onStop() {
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+            gemaCastService = null
+        }
         super.onStop() // MUST be called to prevent SuperNotCalledException
     }
 
@@ -170,10 +179,6 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
-        if (serviceBound) {
-            unbindService(serviceConnection)
-            serviceBound = false
-        }
         super.onDestroy()
     }
 }

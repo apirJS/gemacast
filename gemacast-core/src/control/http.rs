@@ -341,3 +341,216 @@ pub async fn send_ws_event(
         Err(NetworkError::DeviceNotConnected(device_id.0.clone()).into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn spawn_test_server() -> (String, mpsc::Receiver<ControlCommand>) {
+        spawn_test_server_with_broadcasting(true).await
+    }
+
+    async fn spawn_test_server_with_broadcasting(
+        broadcasting: bool,
+    ) -> (String, mpsc::Receiver<ControlCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(10);
+        let state = ControlServerState {
+            command_tx,
+            is_broadcasting: Arc::new(AtomicBool::new(broadcasting)),
+            sender_id: DeviceId("test-sender".to_string()),
+            sender_name: "Test Sender".to_string(),
+            ws_connections: Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        (format!("http://127.0.0.1:{}", port), command_rx)
+    }
+
+    #[tokio::test]
+    async fn connect_endpoint_should_dispatch_command_and_return_presence() {
+        let (base_url, mut command_rx) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let req_body = ConnectReq {
+            device_id: DeviceId("test-device".to_string()),
+            device_name: "Test Device".to_string(),
+            source: None,
+            bitrate: None,
+            jitter_config: crate::types::JitterConfig::default(),
+            mode: crate::types::ConnectionMode::Wifi,
+        };
+
+        let request_task = tokio::spawn(async move {
+            client
+                .post(format!("{}/connect", base_url))
+                .json(&req_body)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let cmd = command_rx.recv().await.unwrap();
+        match cmd {
+            ControlCommand::Connect {
+                device_id,
+                device_name,
+                source,
+                bitrate,
+                response_tx,
+                ..
+            } => {
+                assert_eq!(device_id.0, "test-device");
+                assert_eq!(device_name, "Test Device");
+                assert!(source.is_none());
+                assert!(bitrate.is_none());
+                let _ = response_tx.send(PresenceResponse {
+                    device_id,
+                    sender_name: "Test".to_string(),
+                    is_offline: false,
+                });
+            }
+            _ => panic!("Expected ControlCommand::Connect"),
+        }
+
+        let res = request_task.await.unwrap();
+        assert!(res.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn change_source_endpoint_should_dispatch_command() {
+        let (base_url, mut command_rx) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let req_body = ChangeSourceReq {
+            device_id: DeviceId("test-device-2".to_string()),
+            source: AudioSource::Desktop,
+        };
+
+        let res = client
+            .post(format!("{}/change-source", base_url))
+            .json(&req_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let cmd = command_rx.recv().await.unwrap();
+        match cmd {
+            ControlCommand::ChangeSource { device_id, source } => {
+                assert_eq!(device_id.0, "test-device-2");
+                assert_eq!(source, AudioSource::Desktop);
+            }
+            _ => panic!("Expected ControlCommand::ChangeSource"),
+        }
+    }
+
+    #[tokio::test]
+    async fn change_bitrate_endpoint_should_dispatch_command() {
+        let (base_url, mut command_rx) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let req_body = ChangeBitrateReq {
+            device_id: DeviceId("test-device-3".to_string()),
+            bitrate: Some(192000),
+        };
+
+        let res = client
+            .post(format!("{}/change-bitrate", base_url))
+            .json(&req_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let cmd = command_rx.recv().await.unwrap();
+        match cmd {
+            ControlCommand::ChangeBitrate { device_id, bitrate } => {
+                assert_eq!(device_id.0, "test-device-3");
+                assert_eq!(bitrate, Some(192000));
+            }
+            _ => panic!("Expected ControlCommand::ChangeBitrate"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_endpoint_should_reject_when_not_broadcasting() {
+        let (base_url, _command_rx) = spawn_test_server_with_broadcasting(false).await;
+        let client = reqwest::Client::new();
+
+        let req_body = ConnectReq {
+            device_id: DeviceId("test-device".to_string()),
+            device_name: "Test Device".to_string(),
+            source: None,
+            bitrate: None,
+            jitter_config: crate::types::JitterConfig::default(),
+            mode: crate::types::ConnectionMode::Wifi,
+        };
+
+        let res = client
+            .post(format!("{}/connect", base_url))
+            .json(&req_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let body: PresenceResponse = res.json().await.unwrap();
+        assert!(body.is_offline);
+    }
+
+    #[tokio::test]
+    async fn probe_endpoint_should_return_presence() {
+        let (base_url, mut command_rx) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let req_body = ProbeReq { device_id: None };
+
+        let request_task = tokio::spawn(async move {
+            client
+                .post(format!("{}/probe", base_url))
+                .json(&req_body)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let cmd = command_rx.recv().await.unwrap();
+        match cmd {
+            ControlCommand::Probe {
+                device_id,
+                response_tx,
+            } => {
+                assert!(device_id.is_none());
+                let _ = response_tx.send(PresenceResponse {
+                    device_id: DeviceId("test-sender".to_string()),
+                    sender_name: "Test Sender".to_string(),
+                    is_offline: false,
+                });
+            }
+            _ => panic!("Expected ControlCommand::Probe"),
+        }
+
+        let res = request_task.await.unwrap();
+        assert!(res.status().is_success());
+
+        let body: PresenceResponse = res.json().await.unwrap();
+        assert_eq!(body.device_id.0, "test-sender");
+        assert!(!body.is_offline);
+    }
+}
+

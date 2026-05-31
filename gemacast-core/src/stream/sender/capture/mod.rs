@@ -21,3 +21,36 @@ pub struct CaptureHandle {
     pub notify: Arc<Notify>,
     pub stream_error_rx: mpsc::Receiver<cpal::StreamError>,
 }
+
+pub trait CaptureFactory: Send + Sync {
+    fn create_desktop_capture(&self) -> Result<CaptureHandle, GemaCastError>;
+    fn create_process_capture(&self, pid: u32) -> Result<CaptureHandle, GemaCastError>;
+}
+
+pub struct DefaultCaptureFactory;
+
+impl CaptureFactory for DefaultCaptureFactory {
+    fn create_desktop_capture(&self) -> Result<CaptureHandle, GemaCastError> {
+        #[cfg(windows)]
+        {
+            wasapi_desktop::create_wasapi_desktop_loopback()
+        }
+        #[cfg(not(windows))]
+        {
+            cpal_loopback::create_cpal_loopback()
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn create_process_capture(&self, pid: u32) -> Result<CaptureHandle, GemaCastError> {
+        #[cfg(windows)]
+        {
+            wasapi_loopback::create_wasapi_process_loopback(pid)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::AudioError::ProcessCaptureUnavailable.into())
+        }
+    }
+}
+

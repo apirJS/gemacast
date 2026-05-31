@@ -140,4 +140,25 @@ mod tests {
         let seq = u64::from_be_bytes(packet[..8].try_into().unwrap());
         assert_eq!(seq, 0xDEAD);
     }
+
+    #[test]
+    fn encode_frame_should_include_correct_uncompressed_payload_length() {
+        let mut encoder = make_encoder();
+        let mut frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
+        frame[0] = 0.5; // non-silent
+        frame[1] = 0.5;
+        let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
+        let mut packet = Vec::new();
+
+        encode_frame(&frame, &mut encoder, None, 1, &mut opus_out, &mut packet);
+
+        // Uncompressed payload = OPUS_FRAME_SAMPLES * 4 bytes per f32
+        let expected_payload = OPUS_FRAME_SAMPLES * std::mem::size_of::<f32>();
+        let actual_payload = packet.len() - SEQ_NUM_SIZE - FORMAT_FLAG_SIZE;
+        assert_eq!(
+            actual_payload, expected_payload,
+            "Uncompressed payload should be {} bytes, got {}",
+            expected_payload, actual_payload
+        );
+    }
 }
