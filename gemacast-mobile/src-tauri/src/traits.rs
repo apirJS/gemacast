@@ -21,7 +21,7 @@ pub mod types;
 
 pub use frontend_notifier::FrontendNotifier;
 pub use network_info::NetworkInfoProvider;
-pub use platform_service::PlatformService;
+pub use platform_service::{PlatformService, PlaybackState};
 pub use sender_control::{SenderControlClient, SenderControlClientFactory};
 pub use session_manager::SessionManager;
 pub use types::{ConnectParams, InterfaceInfo, ResumeParams, SessionInfo, SessionParams};

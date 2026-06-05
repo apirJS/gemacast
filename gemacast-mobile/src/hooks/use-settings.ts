@@ -29,7 +29,7 @@ export function useSettings() {
       if (patch.bitratePreset !== undefined || patch.customBitrateKbps !== undefined) {
         const state = useAppStore.getState();
         const nextSettings = { ...state.settings, ...patch };
-        if ((state.status === Status.Connected || state.status === Status.Playing) && state.connectedSender) {
+        if ((state.status === Status.Connected || state.status === Status.Playing || state.status === Status.Paused) && state.connectedSender) {
           const ip = state.connectedSender.addr.split(':')[0];
           const deviceId = state.deviceInfo.deviceId;
           const bitrate = resolveBitrate(nextSettings.bitratePreset, nextSettings.customBitrateKbps);
@@ -43,7 +43,7 @@ export function useSettings() {
       if (patch.exclusiveMode !== undefined) {
         const state = useAppStore.getState();
         if (
-          (state.status === Status.Connected || state.status === Status.Playing) &&
+          (state.status === Status.Connected || state.status === Status.Playing || state.status === Status.Paused) &&
           state.connectedSender
         ) {
           const sender = state.connectedSender;

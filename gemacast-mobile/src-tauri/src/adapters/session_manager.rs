@@ -82,6 +82,20 @@ impl SessionManager for TokioSessionManager {
         }
     }
 
+    async fn pause_playback(&self) -> Result<(), String> {
+        let guard = self.session.lock().await;
+        let session = guard.as_ref().ok_or("No active session")?;
+        session.is_playing.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn resume_playback(&self) -> Result<(), String> {
+        let guard = self.session.lock().await;
+        let session = guard.as_ref().ok_or("No active session")?;
+        session.is_playing.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
     async fn update_jitter_config(&self, config: JitterConfig) {
         if let Some(session) = self.session.lock().await.as_ref() {
             if let Ok(mut guard) = session.jitter_config.write() {

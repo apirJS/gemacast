@@ -1,3 +1,10 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Stopped,
+}
+
 /// Platform-specific operations (Android JNI, foreground service, file I/O).
 ///
 /// **Production**: [`crate::adapters::NativePlatformService`]
@@ -8,8 +15,8 @@ pub trait PlatformService: Send + Sync {
     /// Returns `Err` on non-Android platforms or if JNI fails.
     fn get_transport_type(&self) -> Result<String, String>;
 
-    /// Start or stop the Android foreground service.
-    fn sync_service(&self, is_playing: bool, is_exclusive: bool);
+    /// Synchronize the Android foreground service state.
+    fn sync_service(&self, state: PlaybackState, is_exclusive: bool);
 
     /// Set or clear the streaming-active flag file in the app cache directory.
     fn set_streaming_flag(&self, active: bool);

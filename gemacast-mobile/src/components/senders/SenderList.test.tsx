@@ -59,4 +59,26 @@ describe('SenderList', () => {
     render(<SenderList />);
     expect(screen.getByText('ADB (USB Debug)')).toBeTruthy();
   });
+
+  it('shows Pause button when status is Playing', () => {
+    const sender = { deviceId: 'pc-1', deviceName: 'My PC', addr: '192.168.1.10:9000', isOffline: false };
+    useAppStore.getState().patch({
+      status: Status.Playing,
+      connectedSender: sender,
+      discoveredSenders: [sender],
+    });
+    render(<SenderList />);
+    expect(screen.getByRole('button', { name: /Pause/i })).toBeTruthy();
+  });
+
+  it('shows Resume button when status is Paused', () => {
+    const sender = { deviceId: 'pc-1', deviceName: 'My PC', addr: '192.168.1.10:9000', isOffline: false };
+    useAppStore.getState().patch({
+      status: Status.Paused,
+      connectedSender: sender,
+      discoveredSenders: [sender],
+    });
+    render(<SenderList />);
+    expect(screen.getByRole('button', { name: /Resume/i })).toBeTruthy();
+  });
 });

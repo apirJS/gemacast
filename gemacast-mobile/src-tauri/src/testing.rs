@@ -136,6 +136,8 @@ pub mod mocks {
         SetPlaying {
             playing: bool,
         },
+        PausePlayback,
+        ResumePlayback,
         UpdateJitterConfig,
         SessionInfo,
         UpdateBitrate {
@@ -197,6 +199,22 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(SessionCall::SetPlaying { playing });
+        }
+
+        async fn pause_playback(&self) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SessionCall::PausePlayback);
+            Ok(())
+        }
+
+        async fn resume_playback(&self) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SessionCall::ResumePlayback);
+            Ok(())
         }
 
         async fn update_jitter_config(&self, _config: JitterConfig) {
@@ -424,9 +442,9 @@ pub mod mocks {
             self.transport_type.lock().unwrap().clone()
         }
 
-        fn sync_service(&self, is_playing: bool, is_exclusive: bool) {
+        fn sync_service(&self, state: crate::traits::PlaybackState, is_exclusive: bool) {
             self.calls.lock().unwrap().push(PlatformCall::SyncService {
-                is_playing,
+                is_playing: matches!(state, crate::traits::PlaybackState::Playing),
                 is_exclusive,
             });
         }
