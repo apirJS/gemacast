@@ -53,6 +53,10 @@ impl CommandHandler {
             AppCommand::StopAllStreams => {
                 self.handle_stop_all_streams(broadcaster).await;
             }
+            AppCommand::ExitApp => {
+                self.handle_stop_all_streams(broadcaster).await;
+                self.tray.notify_shutdown_complete();
+            }
         }
     }
 
