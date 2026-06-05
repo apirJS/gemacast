@@ -1,0 +1,33 @@
+import { DeviceInfo } from '../device/DeviceInfo';
+import { StatusChip } from '../device/StatusChip';
+import { SenderList } from '../senders/SenderList';
+import { ManualConnect } from '../senders/ManualConnect';
+import { LatencyStats } from '../latency/LatencyStats';
+import { ToastContainer } from '../feedback/ToastContainer';
+import { SettingsDrawer } from '../settings/SettingsDrawer';
+
+export function AppShell() {
+  return (
+    <>
+      <ToastContainer />
+      <SettingsDrawer />
+
+      <main 
+        className="mx-auto flex min-h-[100vh] max-w-lg flex-col gap-6 px-6"
+        style={{
+          paddingTop: 'calc(4rem + env(safe-area-inset-top, 0px))',
+          paddingBottom: 'calc(2rem + env(safe-area-inset-bottom, 0px))',
+        }}
+      >
+        <DeviceInfo />
+        <ManualConnect />
+        <SenderList />
+
+        <section className="mt-auto flex flex-col items-center gap-2 pt-4">
+          <StatusChip />
+          <LatencyStats />
+        </section>
+      </main>
+    </>
+  );
+}
