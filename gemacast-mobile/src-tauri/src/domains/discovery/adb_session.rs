@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use gemacast_core::network::Ports;
 use gemacast_core::types::{ConnectionMode, DeviceId};
-use tauri::Emitter;
+
+use crate::traits::FrontendNotifier;
 
 use super::dispatch::DispatchContext;
 
@@ -8,7 +11,7 @@ pub async fn run_adb_session(
     ctx: DispatchContext,
     device_id: DeviceId,
     mode: ConnectionMode,
-    app_handle: tauri::AppHandle,
+    notifier: Arc<dyn FrontendNotifier>,
 ) {
     if mode != ConnectionMode::Adb {
         return;
@@ -84,11 +87,11 @@ pub async fn run_adb_session(
                     ctx.dispatch(last_msg, loopback, mode);
                 }
 
-                let _ = app_handle.emit("force-disconnect", ());
+                notifier.emit_force_disconnect();
             }
             Err(_) => {
                 if was_connected {
-                    let _ = app_handle.emit("force-disconnect", ());
+                    notifier.emit_force_disconnect();
                     was_connected = false;
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
