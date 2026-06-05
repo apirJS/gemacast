@@ -405,11 +405,10 @@ async fn run_tcp_encode_loop(
 /// Creates a dummy encoder that is never actually used — only exists to satisfy
 /// the borrow checker when current_bitrate is None (uncompressed mode).
 fn create_dummy_encoder() -> opus::Encoder {
-    let dummy_encoder = crate::audio::create_opus_encoder().unwrap_or_else(|e| {
+    crate::audio::create_opus_encoder().unwrap_or_else(|e| {
         tracing::error!("Fatal error: dummy encoder creation failed: {}", e);
         panic!("dummy encoder creation should never fail");
-    });
-    dummy_encoder
+    })
 }
 
 use super::capture::CaptureFactory;

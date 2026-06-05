@@ -47,6 +47,12 @@ describe('StatusChip', () => {
     expect(screen.getByText('Reconnecting (3/5)…')).toBeTruthy();
   });
 
+  it('renders Paused label', () => {
+    useAppStore.getState().setStatus(Status.Paused);
+    render(<StatusChip />);
+    expect(screen.getByText('Paused')).toBeTruthy();
+  });
+
   it('has role="status" for accessibility', () => {
     useAppStore.getState().setStatus(Status.Idle);
     render(<StatusChip />);

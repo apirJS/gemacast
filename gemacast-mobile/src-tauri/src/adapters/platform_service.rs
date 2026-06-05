@@ -1,4 +1,4 @@
-use crate::traits::PlatformService;
+use crate::traits::{PlatformService, PlaybackState};
 
 /// Platform-specific operations backed by the real OS and Tauri APIs.
 pub struct NativePlatformService {
@@ -24,21 +24,19 @@ impl PlatformService for NativePlatformService {
     }
 
     #[allow(unused_variables)]
-    fn sync_service(&self, is_playing: bool, is_exclusive: bool) {
+    fn sync_service(&self, state: PlaybackState, is_exclusive: bool) {
         #[cfg(target_os = "android")]
         {
-            let action = if is_playing { "START" } else { "STOP_STREAM" };
-            let _ = std::process::Command::new("am")
-                .args([
-                    "startservice",
-                    "-a",
-                    action,
-                    "--ez",
-                    "EXCLUSIVE_MODE",
-                    if is_exclusive { "true" } else { "false" },
-                    "com.apir.gemacast/.GemaCastService",
-                ])
-                .spawn();
+            let action = match state {
+                PlaybackState::Playing => "START",
+                PlaybackState::Paused => "STOP_STREAM",
+                PlaybackState::Stopped => "DISCONNECT",
+            };
+            let _ = crate::domains::discovery::native::call_native_sync_service(
+                &self.app_handle,
+                action,
+                is_exclusive,
+            );
         }
     }
 

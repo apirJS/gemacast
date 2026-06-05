@@ -6,10 +6,18 @@ beforeAll(() => {
   if (typeof globalThis.localStorage === 'undefined') {
     (globalThis as any).localStorage = {
       getItem: (key: string) => _store.get(key) ?? null,
-      setItem: (key: string, value: string) => { _store.set(key, value); },
-      removeItem: (key: string) => { _store.delete(key); },
-      clear: () => { _store.clear(); },
-      get length() { return _store.size; },
+      setItem: (key: string, value: string) => {
+        _store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        _store.delete(key);
+      },
+      clear: () => {
+        _store.clear();
+      },
+      get length() {
+        return _store.size;
+      },
       key: (_index: number) => null,
     } as Storage;
   }
@@ -35,9 +43,7 @@ afterEach(() => {
 export let invokeCalls: Array<{ cmd: string; args?: unknown }> = [];
 let currentHandlers: Record<string, unknown | (() => unknown)> = {};
 
-export function setupInvokeMock(
-  handlers: Record<string, unknown | (() => unknown)> = {},
-) {
+export function setupInvokeMock(handlers: Record<string, unknown | (() => unknown)> = {}) {
   invokeCalls = [];
   currentHandlers = handlers;
 }
@@ -66,7 +72,9 @@ mock.module('tauri-plugin-device-info-api', () => ({
   }),
 }));
 
-export function makeDeviceInfo(overrides: Partial<{ deviceId: string; deviceName: string; ip: string }> = {}) {
+export function makeDeviceInfo(
+  overrides: Partial<{ deviceId: string; deviceName: string; ip: string }> = {},
+) {
   return {
     deviceId: 'test-device-id',
     deviceName: 'Test Phone',
@@ -75,7 +83,14 @@ export function makeDeviceInfo(overrides: Partial<{ deviceId: string; deviceName
   };
 }
 
-export function makeDiscoveredSender(overrides: Partial<{ deviceId: string; deviceName: string; addr: string; isOffline: boolean }> = {}) {
+export function makeDiscoveredSender(
+  overrides: Partial<{
+    deviceId: string;
+    deviceName: string;
+    addr: string;
+    isOffline: boolean;
+  }> = {},
+) {
   return {
     deviceId: 'pc-sender-1',
     deviceName: 'Desktop PC',

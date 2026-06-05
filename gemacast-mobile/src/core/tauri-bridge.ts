@@ -50,11 +50,9 @@ export const tauriBridge = {
       transport: args.transport,
     }),
 
-  disconnectFromSender: (args: DisconnectArgs) =>
-    invoke('disconnect_from_sender', args),
+  disconnectFromSender: (args: DisconnectArgs) => invoke('disconnect_from_sender', args),
 
-  startAudioPlayback: (args: PlaybackArgs) =>
-    invoke('start_audio_playback', args),
+  startAudioPlayback: (args: PlaybackArgs) => invoke('start_audio_playback', args),
 
   stopAudioPlayback: (args: Omit<PlaybackArgs, 'deviceName'>) =>
     invoke('stop_audio_playback', args),
@@ -88,8 +86,7 @@ export const tauriBridge = {
   changeAudioSource: (args: { ip: string; deviceId: string; source: AudioSource }) =>
     invoke('change_audio_source', args),
 
-  getProcessList: (args: { ip: string }) =>
-    invoke<ProcessInfo[]>('get_process_list', args),
+  getProcessList: (args: { ip: string }) => invoke<ProcessInfo[]>('get_process_list', args),
 
   updateJitterConfig: (args: { jitterConfig: JitterConfig }) =>
     invoke('update_jitter_config', args),
@@ -97,9 +94,10 @@ export const tauriBridge = {
   changeAudioBitrate: (args: { ip: string; deviceId: string; bitrate: number | null }) =>
     invoke('change_audio_bitrate', args),
 
-  probeSender: (args: { ip: string; deviceId: string }) =>
-    invoke('probe_sender', args),
+  probeSender: (args: { ip: string; deviceId: string }) => invoke('probe_sender', args),
 
   establishWebsocket: (args: { senderIp: string; deviceId: string }) =>
     invoke('establish_websocket', args),
+
+  setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),
 };

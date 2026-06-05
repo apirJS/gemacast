@@ -25,14 +25,14 @@ export function useNetworkMonitor() {
 
         if (
           currentState.settings.mode === ConnectionMode.Wifi &&
-          (currentState.deviceInfo.ip !== localIp ||
-            networkIdRef.current !== networkId)
+          (currentState.deviceInfo.ip !== localIp || networkIdRef.current !== networkId)
         ) {
           networkIdRef.current = networkId;
 
           if (
             currentState.status === Status.Playing ||
-            currentState.status === Status.Connected
+            currentState.status === Status.Connected ||
+            currentState.status === Status.Paused
           ) {
             try {
               await disconnect(true);
@@ -64,14 +64,14 @@ export function useNetworkMonitor() {
         if (
           currentMode === ConnectionMode.Usb &&
           !modes.usb &&
-          currentState.status === Status.Playing
+          (currentState.status === Status.Playing || currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
         } else if (
           currentMode === ConnectionMode.Wifi &&
           !modes.wifi &&
-          currentState.status === Status.Playing
+          (currentState.status === Status.Playing || currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
@@ -104,7 +104,11 @@ export function useNetworkMonitor() {
       });
       useToastStore.getState().show('warning', 'Network offline');
 
-      if (state.connectedSender || state.status === Status.Playing) {
+      if (
+        state.connectedSender ||
+        state.status === Status.Playing ||
+        state.status === Status.Paused
+      ) {
         store.getState().patch({
           status: Status.Listening,
           connectedSender: null,
@@ -144,6 +148,7 @@ export function useNetworkMonitor() {
           if (
             state.status === Status.Connected ||
             state.status === Status.Playing ||
+            state.status === Status.Paused ||
             state.status === Status.Reconnecting
           ) {
             try {

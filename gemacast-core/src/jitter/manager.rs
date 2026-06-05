@@ -328,11 +328,15 @@ impl JitterBufferManager {
             self.compute_target_depth(None)
         };
 
-        let flush_ceiling = target + 80;
+        let is_no_buffer = self.config.static_target_ms == Some(0);
+
+        let flush_ceiling = if is_no_buffer { target + 3 } else { target + 80 };
         if self.buffer.occupied_count() > flush_ceiling {
-            let _ = self.decoder.reset_state();
-            self.opus_next_expected_seq = None;
-            let flush_to = target + 30;
+            let flush_to = if is_no_buffer { target + 1 } else { target + 30 };
+            if !is_no_buffer || self.buffer.occupied_count() > flush_to + 20 {
+                let _ = self.decoder.reset_state();
+                self.opus_next_expected_seq = None;
+            }
             while self.buffer.occupied_count() > flush_to {
                 if self.buffer.pop_next().is_none() {
                     self.buffer.advance_one();
@@ -354,7 +358,7 @@ impl JitterBufferManager {
 
         if self.startup_flush_remaining > 0 {
             self.startup_flush_remaining -= 1;
-            let flush_to = target + 2;
+            let flush_to = if is_no_buffer { target + 1 } else { target + 2 };
             while self.buffer.occupied_count() > flush_to {
                 if let Some(pkt) = self.buffer.pop_next() {
                     self.capture_pcm(&pkt);
@@ -367,20 +371,25 @@ impl JitterBufferManager {
             self.gap_hold_count += 1;
             let mut fast_forward_seq = None;
 
+            let tolerance = if is_no_buffer { 0 } else { REORDER_TOLERANCE };
+
             if let Some(lo) = self.buffer.lowest_available_seq() {
                 let diff = lo.abs_diff(self.buffer.next_play_seq());
-                if diff > 20 || self.gap_hold_count >= REORDER_TOLERANCE {
+                if diff > 20 || self.gap_hold_count >= tolerance {
                     fast_forward_seq = Some(lo);
                 }
-            } else if self.gap_hold_count >= REORDER_TOLERANCE {
+            } else if self.gap_hold_count >= tolerance {
                 self.buffer.advance_one();
                 self.gap_hold_count = 0;
             }
 
             if let Some(lo) = fast_forward_seq {
+                let diff = lo.saturating_sub(self.buffer.next_play_seq());
                 self.buffer.fast_forward(lo);
-                let _ = self.decoder.reset_state();
-                self.opus_next_expected_seq = None;
+                if diff > 20 {
+                    let _ = self.decoder.reset_state();
+                    self.opus_next_expected_seq = None;
+                }
                 self.gap_hold_count = 0;
             }
         }
@@ -401,7 +410,8 @@ impl JitterBufferManager {
             self.latency_metric.store(delay_ms, Ordering::Relaxed);
             self.capture_pcm(&pkt);
             let occupied = self.buffer.occupied_count();
-            if occupied > target + 2 && self.buffer.has_next() {
+            let wsola_threshold = if is_no_buffer { target } else { target + 2 };
+            if occupied > wsola_threshold && self.buffer.has_next() {
                 let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
                 if rms < 0.005 {
                     // Silence fast-forward: append current frame AND pop an extra.
@@ -1026,5 +1036,81 @@ mod tests {
             checked,
             "Expected at least one non-zero sample to verify volume scaling"
         );
+    }
+
+    #[test]
+    fn should_fast_forward_without_decoder_reset_on_small_gaps() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+        // Fill base tracking
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+        // Simulate a small 2 packet UDP loss.
+        // We inject sequence (MIN_DEPTH + 3) into the buffer,
+        // playhead expects (MIN_DEPTH + 1).
+        let future_seq = MIN_DEPTH as u64 + 3;
+        assert!(
+            prod.try_push(make_packet(&mut encoder, future_seq, base_time))
+                .is_ok()
+        );
+        manager.ingest_packets(&mut cons);
+        
+        // Wait for REORDER_TOLERANCE calls so gap_hold_count trips
+        for _ in 0..REORDER_TOLERANCE {
+            manager.fill_output(&mut output, 1.0);
+        }
+        
+        // Now it should have fast-forwarded AND played the packet, so next_play_seq is future_seq + 1.
+        assert_eq!(manager.buffer.next_play_seq(), future_seq + 1);
+        // And the decoder state MUST be preserved (opus_next_expected_seq should not be None).
+        // Since we waited REORDER_TOLERANCE frames, opus_next_expected_seq advanced via PLC!
+        assert!(manager.opus_next_expected_seq.is_some());
+    }
+
+    #[test]
+    fn should_aggressively_flush_in_no_buffer_mode_without_starvation() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        
+        // Enable No Buffer mode
+        let mut no_buffer_cfg = test_config();
+        no_buffer_cfg.static_target_ms = Some(0);
+        no_buffer_cfg.min_depth_ms = 0; // The UI enforces this for No Buffer
+        {
+            let mut w = manager.config_ref.write().unwrap();
+            *w = no_buffer_cfg;
+        }
+        // Force the config update tick
+        manager.config_check_countdown = 100;
+        
+        let base_time = Instant::now();
+        
+        // Inject a 10 packet burst!
+        for i in 1..=10 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        
+        // In No Buffer mode, target is 0. flush_ceiling is 3. We had 10 packets.
+        // It should flush down to flush_to = 1 packet, then decode that 1 packet.
+        // After fill_output, occupied_count should be exactly 0 (it was 1, then got popped and played!).
+        assert_eq!(manager.buffer.occupied_count(), 0);
+        
+        // It should not have starved, because it played the 1 packet.
+        assert_eq!(manager.starvation_count, 0);
     }
 }

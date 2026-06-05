@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -40,6 +40,7 @@ pub type SessionReceiverResult = Result<
         Arc<AtomicBool>,
         Arc<AtomicBool>,
         Arc<RwLock<JitterConfig>>,
+        Arc<AtomicU32>,
         oneshot::Sender<()>,
         JoinHandle<()>,
     ),
@@ -58,14 +59,14 @@ pub fn spawn_session_receiver(
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
     let is_playing = Arc::new(AtomicBool::new(true));
-    let volume = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+    let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let mut receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
         config_ref.clone(),
         is_tcp_mode.clone(),
         is_playing.clone(),
-        volume,
+        volume.clone(),
         exclusive_mode,
         shutdown_rx,
     )
@@ -102,5 +103,5 @@ pub fn spawn_session_receiver(
         }
     });
 
-    Ok((is_playing, is_tcp_mode, config_ref, shutdown_tx, task))
+    Ok((is_playing, is_tcp_mode, config_ref, volume, shutdown_tx, task))
 }

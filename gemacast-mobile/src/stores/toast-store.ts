@@ -48,9 +48,7 @@ export const useToastStore = create<ToastStore>((set, get) => ({
   dismiss: (id) => {
     // Start closing animation
     set((state) => ({
-      toasts: state.toasts.map((t) =>
-        t.id === id ? { ...t, closing: true } : t,
-      ),
+      toasts: state.toasts.map((t) => (t.id === id ? { ...t, closing: true } : t)),
     }));
     // Remove after animation completes
     setTimeout(() => {

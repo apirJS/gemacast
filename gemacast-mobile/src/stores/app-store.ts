@@ -152,11 +152,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   displayError: (error) => {
     const gemacastError = error instanceof GemaCastError ? error : GemaCastError.from(error);
     set({ error: gemacastError });
-    useToastStore.getState().show(
-      'error',
-      gemacastError.userMessage,
-      `Code: ${gemacastError.code}\nMessage: ${gemacastError.message}\nCause: ${String(gemacastError.cause ?? 'Unknown')}`
-    );
+    useToastStore
+      .getState()
+      .show(
+        'error',
+        gemacastError.userMessage,
+        `Code: ${gemacastError.code}\nMessage: ${gemacastError.message}\nCause: ${String(gemacastError.cause ?? 'Unknown')}`,
+      );
   },
 
   dismissError: () => {

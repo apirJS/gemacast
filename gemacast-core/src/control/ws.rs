@@ -31,7 +31,7 @@ pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlSer
                 break;
             }
             Err(e) => {
-                tracing::error!("WebSocket error for device {}: {}", device_id, e);
+                tracing::warn!("WebSocket error for device {}: {}", device_id, e);
                 break;
             }
             _ => {}

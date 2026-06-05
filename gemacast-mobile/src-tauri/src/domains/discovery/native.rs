@@ -52,3 +52,41 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
         .recv()
         .map_err(|e| format!("Failed to receive JNI result: {}", e))?
 }
+
+#[cfg(target_os = "android")]
+/// Calls the Android Activity's `syncServiceState()` method via JNI.
+pub fn call_native_sync_service(
+    app: &tauri::AppHandle,
+    action: &str,
+    is_exclusive: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Failed to find main webview window".to_string())?;
+
+    let action_str = action.to_string();
+
+    window
+        .with_webview(move |webview| {
+            #[cfg(target_os = "android")]
+            {
+                let _ = webview.jni_handle().exec(move |env, context, _webview| {
+                    let action_jstr = env.new_string(&action_str).unwrap();
+                    let _ = env.call_method(
+                        &context,
+                        "syncServiceState",
+                        "(Ljava/lang/String;Z)V",
+                        &[
+                            jni::objects::JValue::from(&action_jstr),
+                            jni::objects::JValue::from(is_exclusive),
+                        ],
+                    );
+                });
+            }
+        })
+        .map_err(|e| format!("WebView JNI execution failed: {}", e))?;
+
+    Ok(())
+}

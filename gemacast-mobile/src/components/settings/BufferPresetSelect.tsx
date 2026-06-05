@@ -1,11 +1,32 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback, useRef, useState } from 'react';
 import { useSettings } from '../../hooks/use-settings';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import { JITTER_PRESETS } from '../../core/presets';
 import type { PresetId } from '../../core/types';
+import { NoBufferWarningDialog } from './NoBufferWarning';
+
+const LS_KEY = 'gemacast_nobuffer_warning_dismissed';
+
+function isWarningDismissed(): boolean {
+  try {
+    return localStorage.getItem(LS_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function dismissWarning() {
+  try {
+    localStorage.setItem(LS_KEY, 'true');
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 export function BufferPresetSelect() {
   const { settings, update } = useSettings();
+  const warningDialogRef = useRef<HTMLDialogElement>(null);
+  const [dontShowAgain, setDontShowAgain] = useState(false);
 
   const options: SelectOption<string>[] = useMemo(() => {
     const builtIn = JITTER_PRESETS.map((p) => ({
@@ -23,7 +44,28 @@ export function BufferPresetSelect() {
     return [...builtIn, ...saved];
   }, [settings.savedPresets]);
 
+  const applyNoBuffer = useCallback(() => {
+    update({ bufferPreset: 'nobuffer' as PresetId });
+  }, [update]);
+
+  const handleWarningOk = useCallback(() => {
+    if (dontShowAgain) {
+      dismissWarning();
+    }
+    warningDialogRef.current?.close();
+    applyNoBuffer();
+  }, [dontShowAgain, applyNoBuffer]);
+
   const handleChange = (value: string) => {
+    if (value === 'nobuffer') {
+      if (isWarningDismissed()) {
+        applyNoBuffer();
+      } else {
+        warningDialogRef.current?.showModal();
+      }
+      return;
+    }
+
     if (value.startsWith('saved-')) {
       const idx = parseInt(value.replace('saved-', ''), 10);
       const savedPreset = settings.savedPresets[idx];
@@ -47,7 +89,7 @@ export function BufferPresetSelect() {
   };
 
   // Determine the selected value for the UI dropdown
-  let selectedValue = settings.bufferPreset as string;
+  const selectedValue = settings.bufferPreset as string;
 
   return (
     <div>
@@ -56,6 +98,23 @@ export function BufferPresetSelect() {
         options={options}
         value={selectedValue}
         onChange={handleChange}
+        renderOption={(option) => (
+          <>
+            <span className={`font-medium ${option.value === 'nobuffer' ? 'text-red-500' : ''}`}>
+              {option.label}
+            </span>
+            {option.description && (
+              <span className="mt-0.5 text-xs text-muted-foreground">{option.description}</span>
+            )}
+          </>
+        )}
+      />
+
+      <NoBufferWarningDialog
+        dialogRef={warningDialogRef}
+        dontShowAgain={dontShowAgain}
+        setDontShowAgain={setDontShowAgain}
+        handleOk={handleWarningOk}
       />
     </div>
   );

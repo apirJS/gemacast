@@ -20,7 +20,7 @@ describe('ExclusiveToggle', () => {
     render(<ExclusiveToggle />);
     const toggle = screen.getByRole('checkbox');
     fireEvent.click(toggle);
-    
+
     expect(useAppStore.getState().settings.exclusiveMode).toBe(false);
   });
 });

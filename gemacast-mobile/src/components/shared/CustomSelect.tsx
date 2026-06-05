@@ -42,12 +42,7 @@ export function CustomSelect<T extends string = string>({
   }, []);
 
   return (
-    <div
-      id={id}
-      ref={containerRef}
-      className="relative"
-      onBlur={handleBlur}
-    >
+    <div id={id} ref={containerRef} className="relative" onBlur={handleBlur}>
       <button
         type="button"
         className={`

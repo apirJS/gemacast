@@ -1,13 +1,17 @@
 [package]
 name = "gemacast-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["ws"] }
 tokio-tungstenite = "0.29.0"
-cpal = { version = "0.17.3", features = ["asio"] }
 mdns-sd = "0.19.1"
 netdev = "0.43.0"
 opus = "0.3.1"
@@ -27,6 +31,7 @@ tracing = "0.1.44"
 url = "2.5.8"
 rubato = "3.0.0"
 audioadapter-buffers = "3.0.0"
+cpal = "0.17.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 oboe = { version = "0.6.1", features = ["shared-stdcxx"] }
@@ -48,3 +53,5 @@ features = [
   "Win32_Security",
   "implement",
 ]
+
+

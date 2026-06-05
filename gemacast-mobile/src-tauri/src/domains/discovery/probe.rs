@@ -8,7 +8,7 @@ pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: C
         return;
     }
 
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(5000));
     let payload = gemacast_core::types::ControlMessage::Probe {
         device_id: Some(device_id),
     };
@@ -20,18 +20,15 @@ pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: C
     loop {
         interval.tick().await;
 
-        for _ in 0..2 {
-            let subnets = collect_local_subnets();
-            for (b0, b1, b2) in subnets {
-                for host in 1..=254u8 {
-                    let target = std::net::SocketAddrV4::new(
-                        std::net::Ipv4Addr::new(b0, b1, b2, host),
-                        Ports::DISCOVERY,
-                    );
-                    let _ = socket.send_to(&json_bytes, target).await;
-                }
+        let subnets = collect_local_subnets();
+        for (b0, b1, b2) in subnets {
+            for host in 1..=254u8 {
+                let target = std::net::SocketAddrV4::new(
+                    std::net::Ipv4Addr::new(b0, b1, b2, host),
+                    Ports::DISCOVERY,
+                );
+                let _ = socket.send_to(&json_bytes, target).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
     }
 }

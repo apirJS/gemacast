@@ -31,6 +31,15 @@ pub async fn start_listening_for_senders(
     }
 
     let (presence_message_tx, presence_message_rx) = tokio::sync::mpsc::channel(8);
+
+    // Spawn mDNS listener
+    let mdns_tx = presence_message_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = gemacast_core::discovery::MdnsListener::run(mdns_tx).await {
+            tracing::warn!("mDNS listener failed or not available: {}", e);
+        }
+    });
+
     let listener = gemacast_core::network::PresenceListener::new(presence_message_tx)
         .await
         .map_err(|e| {

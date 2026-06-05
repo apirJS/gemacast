@@ -15,11 +15,11 @@ pub async fn run_service_command_listener(
         return;
     };
 
-    if let Ok(local_addr) = socket.local_addr() {
-        if let Some(dir) = &cache_dir {
-            let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(dir.join(".ipc_port"), local_addr.port().to_string());
-        }
+    if let Ok(local_addr) = socket.local_addr()
+        && let Some(dir) = &cache_dir
+    {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join(".ipc_port"), local_addr.port().to_string());
     }
 
     let mut buf = vec![0u8; 1024];

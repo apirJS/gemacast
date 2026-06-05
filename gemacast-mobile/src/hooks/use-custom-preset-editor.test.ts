@@ -78,7 +78,12 @@ describe('useCustomPresetEditor', () => {
   it('handleReset returns Auto config when editing unsaved preset', () => {
     useAppStore.getState().updateSettings({
       bufferPreset: 'custom',
-      customJitterConfig: { minDepthMs: 999, comfortCapMs: 999, peakDecayHalflifeMs: 999, resumeThresholdPct: 0.99 },
+      customJitterConfig: {
+        minDepthMs: 999,
+        comfortCapMs: 999,
+        peakDecayHalflifeMs: 999,
+        resumeThresholdPct: 0.99,
+      },
     });
     const { result } = renderHook(() => useCustomPresetEditor());
     act(() => result.current.handleReset());
@@ -158,7 +163,12 @@ describe('useCustomPresetEditor', () => {
   it('isValid is false when config has invalid values', () => {
     useAppStore.getState().updateSettings({
       bufferPreset: 'custom',
-      customJitterConfig: { minDepthMs: NaN, comfortCapMs: 150, peakDecayHalflifeMs: 3500, resumeThresholdPct: 0.4 },
+      customJitterConfig: {
+        minDepthMs: NaN,
+        comfortCapMs: 150,
+        peakDecayHalflifeMs: 3500,
+        resumeThresholdPct: 0.4,
+      },
     });
     const { result } = renderHook(() => useCustomPresetEditor());
     expect(result.current.isValid).toBe(false);

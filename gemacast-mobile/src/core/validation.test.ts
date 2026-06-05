@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import {
-  validateJitterConfig,
-  isJitterConfigEqual,
-  getDefaultResetConfig,
-} from './validation';
+import { validateJitterConfig, isJitterConfigEqual, getDefaultResetConfig } from './validation';
 import type { JitterConfig, AppSettings } from './types';
 import { ConnectionMode } from './types';
 
@@ -127,7 +123,9 @@ describe('isJitterConfigEqual', () => {
   });
 
   it('returns false for different minDepthMs', () => {
-    expect(isJitterConfigEqual(validAdaptiveConfig, { ...validAdaptiveConfig, minDepthMs: 999 })).toBe(false);
+    expect(
+      isJitterConfigEqual(validAdaptiveConfig, { ...validAdaptiveConfig, minDepthMs: 999 }),
+    ).toBe(false);
   });
 
   it('treats undefined and null staticTargetMs as equal', () => {
@@ -153,6 +151,7 @@ describe('getDefaultResetConfig', () => {
     savedPresets: [],
     bitratePreset: '128',
     customBitrateKbps: 128,
+    gainDb: 0,
     ...overrides,
   });
 

@@ -23,25 +23,23 @@ export function Toast({ toast }: { toast: ToastType }) {
         rounded-[var(--radius-default)] border
         px-4 py-3 shadow-[0_4px_6px_-1px_rgb(0_0_0/0.1),0_2px_4px_-2px_rgb(0_0_0/0.1)]
         min-w-[250px] max-w-[350px]
-        ${toast.closing
-          ? 'animate-[toast-slide-out_200ms_ease-in_forwards]'
-          : 'animate-[toast-slide-in_300ms_cubic-bezier(0.16,1,0.3,1)_forwards]'
+        ${
+          toast.closing
+            ? 'animate-[toast-slide-out_200ms_ease-in_forwards]'
+            : 'animate-[toast-slide-in_300ms_cubic-bezier(0.16,1,0.3,1)_forwards]'
         }
-        ${isError
-          ? 'border-status-lost-border bg-status-lost-bg'
-          : 'border-border bg-card text-card-foreground'
+        ${
+          isError
+            ? 'border-status-lost-border bg-status-lost-bg'
+            : 'border-border bg-card text-card-foreground'
         }
       `}
       role="alert"
     >
-      <span className="flex shrink-0 items-center justify-center">
-        {ICON_MAP[toast.type]}
-      </span>
+      <span className="flex shrink-0 items-center justify-center">{ICON_MAP[toast.type]}</span>
 
       <div className="flex flex-1 flex-col gap-1">
-        <span className="text-[0.875rem] font-medium leading-5">
-          {toast.message}
-        </span>
+        <span className="text-[0.875rem] font-medium leading-5">{toast.message}</span>
         {isError && toast.fullLog && (
           <button
             type="button"

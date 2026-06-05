@@ -22,5 +22,4 @@ describe('DeviceInfo', () => {
     render(<DeviceInfo />);
     expect(screen.getByText('IP: 192.168.1.42')).toBeTruthy();
   });
-
 });

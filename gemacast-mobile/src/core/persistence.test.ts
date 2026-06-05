@@ -14,7 +14,12 @@ beforeEach(() => {
 });
 
 describe('lastSender persistence', () => {
-  const sender = { deviceId: 'pc-1', deviceName: 'Desktop', addr: '192.168.1.10:9000', isOffline: false };
+  const sender = {
+    deviceId: 'pc-1',
+    deviceName: 'Desktop',
+    addr: '192.168.1.10:9000',
+    isOffline: false,
+  };
 
   it('saveLastSender writes and loadLastSender reads back', () => {
     saveLastSender(sender);

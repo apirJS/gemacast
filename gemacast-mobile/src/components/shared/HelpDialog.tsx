@@ -39,6 +39,7 @@ export function HelpDialog({
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useHelpDialog() {
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const helpDialogRef = useRef<HTMLDialogElement>(null);

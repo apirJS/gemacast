@@ -21,7 +21,9 @@ export function SegmentedControl<T extends string = string>({
 }: SegmentedControlProps<T>) {
   const isMini = size === 'mini';
   return (
-    <div className={`flex overflow-hidden rounded-lg border border-border bg-muted ${isMini ? 'w-auto' : 'w-full'}`}>
+    <div
+      className={`flex overflow-hidden rounded-lg border border-border bg-muted ${isMini ? 'w-auto' : 'w-full'}`}
+    >
       {options.map((option) => (
         <label
           key={option.value}

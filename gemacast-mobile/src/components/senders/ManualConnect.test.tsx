@@ -21,7 +21,7 @@ describe('ManualConnect', () => {
 
   it('disables connect button when input is empty', () => {
     render(<ManualConnect />);
-    const btn = screen.getByText('Connect');
+    const btn = screen.getByRole('button', { name: /Connect/i });
     expect(btn.hasAttribute('disabled')).toBe(true);
   });
 
@@ -29,12 +29,12 @@ describe('ManualConnect', () => {
     render(<ManualConnect />);
     const input = screen.getByPlaceholderText('192.xx.xx.xx');
     fireEvent.change(input, { target: { value: '10.0.0.1' } });
-    const btn = screen.getByText('Connect');
+    const btn = screen.getByRole('button', { name: /Connect/i });
     expect(btn.hasAttribute('disabled')).toBe(false);
   });
 
-  it('disables input when loading', () => {
-    useAppStore.getState().setLoading(true);
+  it('disables input when loading a manual connection', () => {
+    useAppStore.getState().patch({ isLoading: true, connectingSenderId: 'manual-10.0.0.1' });
     render(<ManualConnect />);
     const input = screen.getByPlaceholderText('192.xx.xx.xx');
     expect(input.hasAttribute('disabled')).toBe(true);

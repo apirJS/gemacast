@@ -24,11 +24,15 @@ function AppInner() {
       if (window.location.hash === '') {
         const now = Date.now();
         if (now - lastBackPressed < 2000) {
-          import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().close()).catch(console.warn);
+          import('@tauri-apps/api/window')
+            .then((m) => m.getCurrentWindow().close())
+            .catch(console.warn);
         } else {
           lastBackPressed = now;
           // useToastStore.getState().show is required, need to import it
-          import('./stores/toast-store').then((m) => m.useToastStore.getState().show('info', 'Press back again to exit'));
+          import('./stores/toast-store').then((m) =>
+            m.useToastStore.getState().show('info', 'Press back again to exit'),
+          );
           window.history.pushState({ root: true }, '', '#root');
         }
       }

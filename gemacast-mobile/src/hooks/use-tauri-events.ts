@@ -8,7 +8,7 @@ import {
   handleForceDisconnect,
   disconnect,
 } from './use-connection';
-import { updateAudioActive } from './use-audio';
+import { updateAudioActive, startPlayback, stopPlayback } from './use-audio';
 import { LatencyTracker } from '../core/latency-tracker';
 import { GemaCastError } from '../core/error';
 import type { DiscoveredSender } from '../core/types';
@@ -41,9 +41,7 @@ export function useTauriEvents() {
 
     unlisteners.push(
       listen<DiscoveredSender>('sender-discovered', (event) => {
-        const autoReconnectTarget = useAppStore
-          .getState()
-          .updateDiscoveredSender(event.payload);
+        const autoReconnectTarget = useAppStore.getState().updateDiscoveredSender(event.payload);
         if (autoReconnectTarget) {
           connectToSender(autoReconnectTarget);
         }
@@ -82,15 +80,9 @@ export function useTauriEvents() {
         if (cmd === 'DISCONNECT') {
           await disconnect(true);
         } else if (cmd === 'STOP_STREAM') {
-          await disconnect(false);
+          await stopPlayback();
         } else if (cmd === 'RESUME') {
-          const state = useAppStore.getState();
-          const target = state.lastConnectedSender;
-          if (target) {
-            await connectToSender(target);
-          } else {
-            useToastStore.getState().show('warning', 'No previous sender to reconnect');
-          }
+          await startPlayback();
         }
       }),
     );

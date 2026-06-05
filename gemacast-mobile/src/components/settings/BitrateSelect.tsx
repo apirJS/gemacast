@@ -13,7 +13,11 @@ const BITRATE_OPTIONS: SelectOption<BitratePreset>[] = [
   { value: '256', label: '256 Kbps', description: 'Very high quality' },
   { value: '450', label: '450 Kbps', description: 'Near-transparent' },
   { value: '512', label: '512 Kbps', description: 'Maximum Opus quality' },
-  { value: 'raw', label: 'Uncompressed PCM', description: 'Zero latency codec path — very high bandwidth' },
+  {
+    value: 'raw',
+    label: 'Uncompressed PCM',
+    description: 'Zero latency codec path — very high bandwidth',
+  },
   { value: 'custom', label: 'Custom Bitrate', description: 'Specify your own bitrate value' },
 ];
 

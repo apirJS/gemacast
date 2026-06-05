@@ -49,8 +49,14 @@ export function ProcessSelect({
     }
     return (
       <div className="flex min-w-0 items-center gap-1.5">
-        {currentSource.hasAudioSession ? <Volume2 className="h-3.5 w-3.5 shrink-0" /> : <Settings className="h-3.5 w-3.5 shrink-0" />}
-        <span className="truncate">{currentSource.name} (PID: {currentSource.pid})</span>
+        {currentSource.hasAudioSession ? (
+          <Volume2 className="h-3.5 w-3.5 shrink-0" />
+        ) : (
+          <Settings className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="truncate">
+          {currentSource.name} (PID: {currentSource.pid})
+        </span>
       </div>
     );
   }, [currentSource]);
@@ -80,10 +86,10 @@ export function ProcessSelect({
         `}
         onClick={() => setOpen(!open)}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          {currentLabel}
-        </div>
-        <span className={`shrink-0 text-muted-foreground transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">{currentLabel}</div>
+        <span
+          className={`shrink-0 text-muted-foreground transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        >
           <ChevronDown className="h-2.5 w-2.5" />
         </span>
       </button>
@@ -122,19 +128,25 @@ export function ProcessSelect({
                 }
               }}
             >
-              <svg 
-                xmlns="http://www.w3.org/2000/svg" 
-                width="14" height="14" viewBox="0 0 24 24" 
-                fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 className={isRefreshing ? 'animate-spin' : ''}
               >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                <path d="M3 3v5h5"/>
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
               </svg>
             </button>
           </div>
 
-          <div className="max-h-[16rem] overflow-y-auto py-1">
+          <div className="max-h-[16rem] min-h-[8rem] overflow-y-auto py-1">
             {hasDesktop && (
               <button
                 type="button"
@@ -149,8 +161,7 @@ export function ProcessSelect({
             )}
 
             {filteredProcesses.map((proc) => {
-              const isSelected =
-                currentSource.type === 'process' && currentSource.pid === proc.pid;
+              const isSelected = currentSource.type === 'process' && currentSource.pid === proc.pid;
               return (
                 <button
                   key={proc.pid}
@@ -168,7 +179,13 @@ export function ProcessSelect({
                     })
                   }
                 >
-                  <span className="w-5 shrink-0">{proc.hasAudioSession ? <Volume2 className="h-3.5 w-3.5" /> : <Settings className="h-3.5 w-3.5 text-muted-foreground" />}</span>
+                  <span className="w-5 shrink-0">
+                    {proc.hasAudioSession ? (
+                      <Volume2 className="h-3.5 w-3.5" />
+                    ) : (
+                      <Settings className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                  </span>
                   <span className="truncate">{proc.name}</span>
                   <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                     PID: {proc.pid}

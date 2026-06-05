@@ -3,6 +3,7 @@ import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
 import type { AudioSource, DiscoveredSender } from '../../core/types';
 import { connectToSender, disconnect, changeAudioSource } from '../../hooks/use-connection';
+import { startPlayback, stopPlayback } from '../../hooks/use-audio';
 import { SenderCard } from './SenderCard';
 import { EmptyState } from './EmptyState';
 
@@ -23,38 +24,56 @@ export function SenderList() {
     Status.Reconnecting,
     Status.Connected,
     Status.Playing,
+    Status.Paused,
   ].includes(status);
 
   const isEmpty = senders.length === 0 && isListening;
 
-  const handleToggle = useCallback(async (sender: DiscoveredSender, isConnected: boolean) => {
-    if (isConnected) {
-      await disconnect();
-      // Remove manual senders from list on disconnect
-      if (sender.deviceId.startsWith('manual-')) {
-        const state = useAppStore.getState();
-        const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
-        state.setDiscoveredSenders(newList);
+  const handleToggle = useCallback(
+    async (sender: DiscoveredSender, isConnected: boolean) => {
+      if (isConnected) {
+        await disconnect();
+        // Remove manual senders from list on disconnect
+        if (sender.deviceId.startsWith('manual-')) {
+          const state = useAppStore.getState();
+          const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
+          state.setDiscoveredSenders(newList);
+        }
+      } else {
+        if (connectedSender) await disconnect();
+        await connectToSender(sender);
       }
-    } else {
-      if (connectedSender) await disconnect();
-      await connectToSender(sender);
+    },
+    [connectedSender],
+  );
+
+  const handlePlayPause = useCallback(async () => {
+    const currentStatus = useAppStore.getState().status;
+    if (currentStatus === Status.Playing || currentStatus === Status.Connected) {
+      await stopPlayback();
+    } else if (currentStatus === Status.Paused) {
+      await startPlayback();
     }
-  }, [connectedSender]);
+  }, []);
 
   const handleSourceChange = useCallback((source: AudioSource) => {
     changeAudioSource(source);
   }, []);
 
   return (
-    <section>
+    <section className="flex-1 min-h-0 flex flex-col">
       {isEmpty && <EmptyState />}
 
-      <ul className="flex flex-col gap-2" aria-label="Discovered senders">
+      <ul
+        className="flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-2 min-h-[20rem]"
+        aria-label="Discovered senders"
+      >
         {senders.map((sender) => {
           const isConnected = connectedSender?.deviceId === sender.deviceId;
           const isConnecting =
             status === Status.Connecting && connectingSenderId === sender.deviceId;
+          const isPlaying =
+            isConnected && (status === Status.Playing || status === Status.Connected);
 
           return (
             <SenderCard
@@ -62,6 +81,7 @@ export function SenderList() {
               sender={sender}
               isConnected={isConnected}
               isConnecting={isConnecting}
+              isPlaying={isPlaying}
               isLoading={isLoading && (isConnected || isConnecting)}
               isDisabled={isLoading || status === Status.Connecting}
               audioSources={isConnected ? audioSources : []}
@@ -69,6 +89,7 @@ export function SenderList() {
               senderCapabilities={isConnected ? senderCapabilities : null}
               currentSource={isConnected ? currentAudioSource : { type: 'desktop' }}
               onToggle={() => handleToggle(sender, isConnected)}
+              onPlayPause={handlePlayPause}
               onSourceChange={handleSourceChange}
             />
           );

@@ -180,6 +180,22 @@ async fn run_background_tasks(
         ws_connections: ws_connections.clone(),
     };
 
+    // --- mDNS broadcaster ---
+    let _mdns_broadcaster = match gemacast_core::discovery::MdnsBroadcaster::new(
+        sender_id.clone(),
+        device_name.clone(),
+        gemacast_core::network::Ports::CONTROL,
+    ) {
+        Ok(b) => {
+            tracing::info!("Started mDNS broadcaster");
+            Some(b)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to start mDNS broadcaster: {}", e);
+            None
+        }
+    };
+
     let (_control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let tray_for_control = tray.clone();
     set.spawn(async move {

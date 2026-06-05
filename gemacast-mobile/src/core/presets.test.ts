@@ -2,7 +2,12 @@ import { describe, it, expect } from 'bun:test';
 import { getPresetConfig, JITTER_PRESETS } from './presets';
 
 describe('getPresetConfig', () => {
-  const fallback = { minDepthMs: 999, comfortCapMs: 999, peakDecayHalflifeMs: 999, resumeThresholdPct: 0.99 };
+  const fallback = {
+    minDepthMs: 999,
+    comfortCapMs: 999,
+    peakDecayHalflifeMs: 999,
+    resumeThresholdPct: 0.99,
+  };
 
   it('returns auto preset config', () => {
     const config = getPresetConfig('auto', fallback);
