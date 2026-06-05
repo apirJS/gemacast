@@ -14,6 +14,7 @@ pub struct PresenceBroadcaster {
 
 impl PresenceBroadcaster {
     pub async fn new(shutdown_rx: oneshot::Receiver<()>) -> Result<Self, GemaCastError> {
+        tracing::info!("Initializing PresenceBroadcaster");
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
         let socket = socket2::Socket::new(
@@ -60,6 +61,7 @@ impl PresenceBroadcaster {
         F: FnMut() -> ControlMessage + Send,
         T: FnMut() -> Vec<SocketAddrV4> + Send,
     {
+        tracing::info!("Starting UDP presence broadcast loop");
         loop {
             let broadcast_addrs: Vec<SocketAddrV4> = crate::network::get_broadcast_addrs()
                 .into_iter()
@@ -94,6 +96,7 @@ impl PresenceBroadcaster {
                 // Wait the remainder of the 1-second interval minus the ~75ms from retries
                 _ = sleep(Duration::from_millis(950)) => {}
                 _ = &mut self.shutdown_rx => {
+                    tracing::info!("PresenceBroadcaster shutting down");
                     if let ControlMessage::Presence { ref mut is_offline, .. } = payload {
                         *is_offline = true;
                     }

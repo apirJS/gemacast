@@ -48,6 +48,7 @@ impl ControlDispatcher {
                 bitrate,
                 response_tx,
             } => {
+                tracing::info!("ControlCommand::Connect from {:?} at {}", device_id, remote_addr);
                 let mut audio_addr = remote_addr;
                 audio_addr.set_port(gemacast_core::network::Ports::AUDIO_UDP);
 
@@ -75,6 +76,7 @@ impl ControlDispatcher {
                 device_id,
                 remote_addr: _,
             } => {
+                tracing::info!("ControlCommand::Disconnect from {:?}", device_id);
                 unregister_device(
                     self.registry.as_ref(),
                     self.tray.as_ref(),
@@ -101,9 +103,11 @@ impl ControlDispatcher {
                 });
             }
             ControlCommand::ChangeSource { device_id, source } => {
+                tracing::info!("ControlCommand::ChangeSource for {:?} to {:?}", device_id, source);
                 self.audio.change_source(device_id, source).await;
             }
             ControlCommand::ChangeBitrate { device_id, bitrate } => {
+                tracing::info!("ControlCommand::ChangeBitrate for {:?} to {:?}", device_id, bitrate);
                 self.audio.change_bitrate(device_id, bitrate).await;
             }
             ControlCommand::Probe {
@@ -175,6 +179,8 @@ pub async fn register_device(
     source: Option<gemacast_core::types::AudioSource>,
     bitrate: Option<i32>,
 ) {
+    tracing::debug!("Registering device: {} ({:?}) at {}", device_name, device_id, audio_addr);
+
     let device = DiscoveredDevice::from_presence(
         device_id.clone(),
         device_name.clone(),
@@ -229,6 +235,8 @@ pub async fn unregister_device(
     notifier: &dyn DeviceNotifier,
     device_id: DeviceId,
 ) {
+    tracing::debug!("Unregistering device: {:?}", device_id);
+
     let Some(removed) = registry.unregister(&device_id) else {
         return;
     };

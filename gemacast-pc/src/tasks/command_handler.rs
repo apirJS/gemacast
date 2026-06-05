@@ -61,6 +61,7 @@ impl CommandHandler {
     }
 
     async fn handle_start_broadcasting(&self, broadcaster: &mut BroadcasterState) {
+        tracing::info!("Executing StartBroadcasting command");
         if broadcaster.shutdown_tx.is_some() {
             return;
         }
@@ -111,6 +112,7 @@ impl CommandHandler {
     }
 
     async fn handle_stop_broadcasting(&self, broadcaster: &mut BroadcasterState) {
+        tracing::info!("Executing StopBroadcasting command");
         self.is_broadcasting.store(false, Ordering::Relaxed);
 
         if let Some(tx) = broadcaster.shutdown_tx.take() {
@@ -124,6 +126,7 @@ impl CommandHandler {
     }
 
     async fn handle_kick_device(&self, device_id: DeviceId) {
+        tracing::info!("Executing KickDevice command for device: {:?}", device_id);
         let addr = self.registry.get_addr(&device_id);
         self.registry.unregister(&device_id);
         self.audio.unsubscribe(&device_id).await;
@@ -131,6 +134,7 @@ impl CommandHandler {
     }
 
     async fn handle_stop_all_streams(&self, broadcaster: &mut BroadcasterState) {
+        tracing::info!("Executing StopAllStreams command");
         self.notifier.signal_adb_shutdown();
 
         if let Some(tx) = broadcaster.shutdown_tx.take() {

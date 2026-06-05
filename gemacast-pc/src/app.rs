@@ -11,6 +11,7 @@ use tray_icon::menu::MenuEvent;
 
 /// Display a native error dialog to the user.
 fn display_error_dialog(message: String) {
+    tracing::error!("FATAL ERROR: {}", message);
     rfd::MessageDialog::new()
         .set_title("Gemacast Error!")
         .set_description(message)
@@ -93,10 +94,16 @@ pub fn run() {
 
     let proxy_for_term = event_loop.create_proxy();
     std::thread::spawn(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("Failed to build Tokio runtime for termination listener");
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Fatal error: Failed to build Tokio runtime for termination listener: {}", e);
+                std::process::exit(1);
+            }
+        };
 
         rt.block_on(async {
             wait_for_termination(proxy_for_term).await;
@@ -164,11 +171,11 @@ fn handle_tray_event(
             display_error_dialog(message);
         }
         TrayEvent::ShutdownRequested => {
-            eprintln!("Shutdown requested. Tearing down gracefully...");
+            tracing::info!("Shutdown requested. Tearing down gracefully...");
             let _ = command_tx.try_send(AppCommand::ExitApp);
         }
         TrayEvent::ShutdownComplete => {
-            eprintln!("Shutdown complete. Exiting.");
+            tracing::info!("Shutdown complete. Exiting.");
             *control_flow = ControlFlow::Exit;
         }
     }

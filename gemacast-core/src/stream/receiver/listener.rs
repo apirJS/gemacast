@@ -250,7 +250,7 @@ fn spawn_packet_receive_thread(
             let is_uncompressed = packet.is_uncompressed;
 
             if packet_producer.try_push(packet).is_err() {
-                eprintln!(
+                tracing::warn!(
                     "[WARN] SPSC ring buffer full, dropped seq {}. Audio callback may be stalled.",
                     seq_num
                 );

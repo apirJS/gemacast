@@ -25,6 +25,7 @@ pub fn spawn_udp_listener(
 ) {
     set.spawn(async move {
         if let Err(e) = listener.run_receive_loop().await {
+            tracing::error!("UDP listener failed: {}", e);
             tray.notify_fatal_error(e.to_string());
         }
     });
