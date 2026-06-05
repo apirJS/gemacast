@@ -41,6 +41,7 @@ export enum Status {
   Connecting = 'connecting',
   Connected = 'connected',
   Playing = 'playing',
+  Paused = 'paused',
   Reconnecting = 'reconnecting',
 }
 

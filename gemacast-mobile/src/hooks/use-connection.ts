@@ -104,9 +104,21 @@ export async function connectToSender(sender: DiscoveredSender): Promise<Result<
 
 export async function disconnect(forgetSender: boolean = true): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
+  
+  // Idempotency guard to prevent echo loops and redundant toasts
+  if (
+    state.status === Status.Listening ||
+    state.status === Status.Idle
+  ) {
+    return ok(true);
+  }
+
   const sender = state.connectedSender;
 
   if (forgetSender) saveLastSender(null);
+  
+  // Optimistically update status to catch echoes during async IPC calls
+  store.getState().patch({ status: Status.Listening });
   store.getState().setLoading(true);
   stopProbing();
 
@@ -176,8 +188,15 @@ export function handleSenderTimeout(deviceId: string) {
 }
 
 export function handleForceDisconnect(forgetSender: boolean = true) {
-  if (forgetSender) saveLastSender(null);
   const state = store.getState();
+  if (
+    state.status === Status.Listening ||
+    state.status === Status.Idle
+  ) {
+    return;
+  }
+
+  if (forgetSender) saveLastSender(null);
   store.getState().patch({
     connectedSender: null,
     lastConnectedSender: forgetSender ? null : state.lastConnectedSender,

@@ -11,7 +11,7 @@ use gemacast_core::control::types::ConnectReq;
 use gemacast_core::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 
 use crate::traits::{
-    ConnectParams, FrontendNotifier, PlatformService, ResumeParams, SenderControlClientFactory,
+    ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams, SenderControlClientFactory,
     SessionManager, SessionParams,
 };
 
@@ -59,7 +59,7 @@ impl AudioService {
             .await?;
 
         self.platform.set_streaming_flag(true);
-        self.platform.sync_service(true, params.exclusive_mode);
+        self.platform.sync_service(PlaybackState::Playing, params.exclusive_mode);
 
         Ok(())
     }
@@ -76,51 +76,39 @@ impl AudioService {
         self.session.stop_session().await;
 
         self.platform.set_streaming_flag(false);
-        self.platform.sync_service(false, false);
+        self.platform.sync_service(PlaybackState::Stopped, false);
         Ok(())
     }
 
-    /// Resume audio playback: set playing flag, optionally reconnect via HTTP.
+    /// Resume audio playback after a pause.
+    ///
+    /// Re-enables the Oboe output callback via `resume_playback()` without
+    /// sending an HTTP reconnect — the network connection stays alive.
     pub async fn start_audio_playback(
         &self,
-        resume: Option<ResumeParams>,
+        _resume: Option<ResumeParams>,
     ) -> Result<(), String> {
-        self.session.set_playing(true).await;
+        self.session.resume_playback().await?;
         let info = self.session.session_info().await;
         let exclusive = info.as_ref().is_some_and(|i| i.exclusive_mode);
 
-        if let (Some(params), Some(info)) = (resume, info) {
-            let client = self.client_factory.create(params.ip);
-            let _ = client
-                .connect(ConnectReq {
-                    device_id: params.device_id,
-                    device_name: params.device_name,
-                    source: None,
-                    mode: info.mode,
-                    jitter_config: info.jitter_config,
-                    bitrate: info.bitrate,
-                })
-                .await;
-        }
-
-        self.platform.sync_service(true, exclusive);
+        self.platform.sync_service(PlaybackState::Playing, exclusive);
         Ok(())
     }
 
-    /// Stop audio playback: optionally send HTTP disconnect, tear down session.
+    /// Pause audio playback without tearing down the session.
+    ///
+    /// Silences the Oboe output callback via `pause_playback()` while
+    /// keeping the network receive thread, heartbeat, and WebSocket alive.
+    /// Does NOT send an HTTP disconnect to the PC.
     pub async fn stop_audio_playback(
         &self,
-        ip: Option<IpAddr>,
-        device_id: Option<DeviceId>,
+        _ip: Option<IpAddr>,
+        _device_id: Option<DeviceId>,
     ) -> Result<(), String> {
-        if let (Some(ip), Some(did)) = (ip, device_id) {
-            let client = self.client_factory.create(ip);
-            let _ = client.disconnect(did).await;
-        }
+        self.session.pause_playback().await?;
 
-        self.session.stop_session().await;
-
-        self.platform.sync_service(false, false);
+        self.platform.sync_service(PlaybackState::Paused, false);
         Ok(())
     }
 
@@ -129,7 +117,7 @@ impl AudioService {
         self.session.stop_session().await;
 
         self.platform.set_streaming_flag(false);
-        self.platform.sync_service(false, false);
+        self.platform.sync_service(PlaybackState::Stopped, false);
         Ok(())
     }
 
@@ -342,7 +330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_playback_should_set_playing_flag() {
+    async fn start_playback_should_call_resume_playback() {
         let session = Arc::new(MockSessionManager::new());
         let client = Arc::new(MockSenderControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
@@ -353,11 +341,11 @@ mod tests {
         let session_calls = session.take_calls();
         assert!(session_calls
             .iter()
-            .any(|c| matches!(c, SessionCall::SetPlaying { playing: true })));
+            .any(|c| matches!(c, SessionCall::ResumePlayback)));
     }
 
     #[tokio::test]
-    async fn start_playback_should_send_reconnect_when_resume_params_and_session_exist() {
+    async fn start_playback_should_not_send_http_reconnect() {
         let session = Arc::new(
             MockSessionManager::new().with_session_info(SessionInfo {
                 exclusive_mode: false,
@@ -379,10 +367,44 @@ mod tests {
             .await
             .unwrap();
 
-        // HTTP connect was re-sent
+        // No HTTP reconnect should be sent — the connection stays alive
         let client_calls = client.take_calls();
-        assert_eq!(client_calls.len(), 1);
-        assert!(matches!(&client_calls[0], ControlClientCall::Connect { .. }));
+        assert_eq!(client_calls.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stop_playback_should_pause_not_stop_session() {
+        let session = Arc::new(MockSessionManager::new());
+        let client = Arc::new(MockSenderControlClient::new());
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(session.clone(), client.clone(), platform.clone());
+
+        service
+            .stop_audio_playback(
+                Some("192.168.1.5".parse().unwrap()),
+                Some(DeviceId("phone-1".into())),
+            )
+            .await
+            .unwrap();
+
+        // Should pause, NOT stop the session
+        let session_calls = session.take_calls();
+        assert!(session_calls
+            .iter()
+            .any(|c| matches!(c, SessionCall::PausePlayback)));
+        assert!(!session_calls
+            .iter()
+            .any(|c| matches!(c, SessionCall::StopSession)));
+
+        // No HTTP disconnect should be sent
+        let client_calls = client.take_calls();
+        assert_eq!(client_calls.len(), 0);
+
+        // Platform service should be notified
+        let platform_calls = platform.take_calls();
+        assert!(platform_calls
+            .iter()
+            .any(|c| matches!(c, PlatformCall::SyncService { is_playing: false, .. })));
     }
 
     #[tokio::test]

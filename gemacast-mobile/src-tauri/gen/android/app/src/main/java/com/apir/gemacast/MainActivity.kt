@@ -96,6 +96,19 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    @Keep
+    fun syncServiceState(action: String, isExclusive: Boolean) {
+        try {
+            val intent = Intent(this, GemaCastService::class.java).apply {
+                this.action = action
+                putExtra("EXCLUSIVE_MODE", isExclusive)
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -137,14 +150,6 @@ class MainActivity : TauriActivity() {
 
     override fun onPause() {
         releaseMulticastLock()
-        if (isStreamingActive()) {
-            val sIntent = Intent(this, GemaCastService::class.java).apply { action = "START" }
-            try {
-                ContextCompat.startForegroundService(this, sIntent)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
         super.onPause() // MUST be called to prevent SuperNotCalledException
     }
 
@@ -160,18 +165,6 @@ class MainActivity : TauriActivity() {
     override fun onResume() {
         super.onResume()
         acquireMulticastLock()
-
-        // If the user disconnected from the notification while the app was in background,
-        // the flag will be gone but the service may still be running. Clean it up.
-        if (GemaCastService.isRunning) {
-            if (isStreamingActive()) {
-                val sIntent = Intent(this, GemaCastService::class.java).apply { action = "HIDE_NOTIFICATION" }
-                try { startService(sIntent) } catch (_: Exception) {}
-            } else {
-                val sIntent = Intent(this, GemaCastService::class.java).apply { action = "STOP" }
-                try { startService(sIntent) } catch (_: Exception) {}
-            }
-        }
     }
 
     override fun onNewIntent(intent: Intent) {

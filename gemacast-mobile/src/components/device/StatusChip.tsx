@@ -7,6 +7,7 @@ const STATUS_CONFIG: Record<Status, { class: string; label: string } | ((attempt
   [Status.Connecting]: { class: 'bg-status-connecting-bg text-status-connecting border border-status-connecting-border', label: 'Connecting…' },
   [Status.Connected]: { class: 'bg-status-ok-bg text-status-ok border border-status-ok-border', label: 'Connected' },
   [Status.Playing]: { class: 'bg-status-ok-bg text-status-ok border border-status-ok-border', label: 'Playing' },
+  [Status.Paused]: { class: 'bg-status-warn-bg text-status-warn border border-status-warn-border', label: 'Paused' },
   [Status.Reconnecting]: (attempts) => ({
     class: 'bg-status-warn-bg text-status-warn border border-status-warn-border',
     label: attempts > 0 ? `Reconnecting (${attempts}/5)…` : 'Reconnecting…',

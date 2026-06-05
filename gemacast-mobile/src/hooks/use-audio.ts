@@ -7,6 +7,9 @@ import { ok, err } from '../core/types';
 const store = useAppStore;
 
 export async function startPlayback(): Promise<Result<true, GemaCastError>> {
+  const { status } = store.getState();
+  if (status === Status.Playing || status === Status.Connected) return ok(true);
+
   store.getState().setLoading(true);
   try {
     const state = store.getState();
@@ -31,6 +34,8 @@ export async function startPlayback(): Promise<Result<true, GemaCastError>> {
 }
 
 export async function stopPlayback(): Promise<Result<true, GemaCastError>> {
+  if (store.getState().status === Status.Paused) return ok(true);
+
   store.getState().setLoading(true);
   try {
     const state = store.getState();
@@ -39,7 +44,9 @@ export async function stopPlayback(): Promise<Result<true, GemaCastError>> {
       ip: sender ? sender.addr.split(':')[0] : null,
       deviceId: state.deviceInfo.deviceId,
     });
-    store.getState().patch({ status: Status.Connected, isLoading: false });
+    // Transition to Paused — the session stays alive, only the Oboe stream
+    // is silenced. connectedSender remains set.
+    store.getState().patch({ status: Status.Paused, isLoading: false });
     return ok(true);
   } catch (e) {
     const error = GemaCastError.failedToStopPlayback(e);
@@ -50,7 +57,16 @@ export async function stopPlayback(): Promise<Result<true, GemaCastError>> {
 
 export function updateAudioActive(isActive: boolean) {
   const state = store.getState();
-  if (state.status === Status.Playing || state.status === Status.Connected) {
+  
+  // If the user explicitly paused, ignore any audio activity telemetry
+  // (both stale isActive: true packets and confirming isActive: false packets).
+  // The state remains Paused until they explicitly resume via startPlayback.
+  if (state.status === Status.Paused) return;
+
+  if (
+    state.status === Status.Playing ||
+    state.status === Status.Connected
+  ) {
     store.getState().setStatus(isActive ? Status.Playing : Status.Connected);
   }
 }

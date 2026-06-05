@@ -14,7 +14,7 @@ export function LatencyStats() {
   const latency = useAppStore((s) => s.latency);
   const status = useAppStore((s) => s.status);
 
-  const visible = status === Status.Connected || status === Status.Playing;
+  const visible = status === Status.Connected || status === Status.Playing || status === Status.Paused;
   if (!visible) return null;
 
   const format = (v: number | null) => (v !== null ? `${v} ms` : '-- ms');
