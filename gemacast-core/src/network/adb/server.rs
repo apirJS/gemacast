@@ -85,10 +85,34 @@ pub fn spawn_adb_audio_tcp_server(
                     return;
                 }
 
-                let broadcaster = match reply_rx.await {
-                    Ok(Some(b)) => b,
+                let mut broadcaster = None;
+                if let Ok(Some(b)) = reply_rx.await {
+                    broadcaster = Some(b);
+                } else {
+                    for _ in 0..20 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        if engine_command_tx
+                            .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                device_id: crate::types::DeviceId(device_id.clone()),
+                                reply: reply_tx,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if let Ok(Some(b)) = reply_rx.await {
+                            broadcaster = Some(b);
+                            break;
+                        }
+                    }
+                }
+
+                let broadcaster = match broadcaster {
+                    Some(b) => b,
                     _ => {
-                        tracing::warn!("[ADB] No active source found for device={:?}", device_id);
+                        tracing::warn!("[ADB] No active source found for device={:?} after retries", device_id);
                         return;
                     }
                 };

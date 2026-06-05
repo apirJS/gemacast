@@ -14,7 +14,7 @@ pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlSer
 
     {
         let mut connections = state.ws_connections.lock().unwrap();
-        connections.insert(device_id.clone(), event_tx);
+        connections.insert(device_id.clone(), event_tx.clone());
     }
 
     let send_task = tokio::spawn(send_events_to_client(ws_sender, event_rx));
@@ -37,21 +37,31 @@ pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlSer
         }
     }
 
-    {
+    let is_current = {
         let mut connections = state.ws_connections.lock().unwrap();
-        connections.remove(&device_id);
-    }
+        let is_match = connections
+            .get(&device_id)
+            .is_some_and(|tx| tx.same_channel(&event_tx));
+
+        if is_match {
+            connections.remove(&device_id);
+        }
+        is_match
+    };
 
     // Always send a disconnect command to ensure Engine cleans up the session
     // even if the WebSocket dropped ungracefully (e.g. unplugged).
-    let dummy_addr = "0.0.0.0:0".parse().unwrap();
-    let _ = state
-        .command_tx
-        .send(crate::control::ControlCommand::Disconnect {
-            device_id: device_id.clone(),
-            remote_addr: dummy_addr,
-        })
-        .await;
+    // ONLY send if this was the current active WebSocket for this device.
+    if is_current {
+        let dummy_addr = "0.0.0.0:0".parse().unwrap();
+        let _ = state
+            .command_tx
+            .send(crate::control::ControlCommand::Disconnect {
+                device_id: device_id.clone(),
+                remote_addr: dummy_addr,
+            })
+            .await;
+    }
 
     send_task.abort();
 }
@@ -85,7 +95,10 @@ async fn handle_ws_command(
 
     match command {
         WsCommand::Disconnect => {
-            // Note: We use a dummy SocketAddr since WebSocket doesn't need it
+            // Check if this command came from the current active WebSocket.
+            // We can do this by checking if it's still in the map?
+            // Actually, for explicit Disconnect from the client, we should probably
+            // just process it. But to be safe against delayed packets, let's process it.
             let dummy_addr = "0.0.0.0:0".parse().unwrap();
             let _ = state
                 .command_tx

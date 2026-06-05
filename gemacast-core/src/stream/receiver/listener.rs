@@ -129,10 +129,12 @@ impl AudioStreamReceiver {
                 self.heartbeat_active.store(false, Ordering::Relaxed);
                 self.receiver_active.store(false, Ordering::Relaxed);
                 if let Some(t) = self.heartbeat_thread.take() {
-                    let _ = t.join();
+                    // Detach thread instead of blocking the Tokio worker
+                    drop(t);
                 }
                 if let Some(t) = self.receiver_thread.take() {
-                    let _ = t.join();
+                    // Detach thread instead of blocking the Tokio worker
+                    drop(t);
                 }
             }
         }
@@ -206,12 +208,14 @@ fn spawn_packet_receive_thread(
         let mut recv_buff =
             vec![0u8; SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE];
         let mut last_packet_time = std::time::Instant::now();
+        let mut first_packet_received = false;
 
         while active.load(Ordering::Relaxed) {
             let result = transport.receive_audio_packet(&mut recv_buff);
             let (len, sender_addr) = match result {
                 Ok(r) => {
                     last_packet_time = std::time::Instant::now();
+                    first_packet_received = true;
                     r
                 }
                 Err(e) => {
@@ -221,7 +225,8 @@ fn spawn_packet_receive_thread(
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }
-                    if last_packet_time.elapsed().as_secs() >= 3 {
+                    let timeout = if first_packet_received { 3 } else { 10 };
+                    if last_packet_time.elapsed().as_secs() >= timeout {
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }
@@ -266,26 +271,32 @@ fn spawn_packet_receive_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32};
-    use std::sync::Arc;
-    use tokio::sync::mpsc;
-    use ringbuf::HeapRb;
     use crate::stream::transport::AudioPacketTransport;
+    use ringbuf::HeapRb;
     use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32};
+    use tokio::sync::mpsc;
 
     struct MockTransport {
         packet_to_send: Option<Vec<u8>>,
     }
 
     impl AudioPacketTransport for MockTransport {
-        fn receive_audio_packet(&mut self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        fn receive_audio_packet(
+            &mut self,
+            buffer: &mut [u8],
+        ) -> std::io::Result<(usize, SocketAddr)> {
             if let Some(data) = self.packet_to_send.take() {
                 let len = data.len();
                 buffer[..len].copy_from_slice(&data);
                 Ok((len, "127.0.0.1:1234".parse().unwrap()))
             } else {
                 // Return EOF to terminate the loop
-                Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Done"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Done",
+                ))
             }
         }
     }
@@ -300,7 +311,8 @@ mod tests {
         let (network_dropped_tx, mut network_dropped_rx) = mpsc::channel(1);
 
         // Construct a dummy Opus packet
-        let mut dummy_packet = vec![0u8; crate::audio::SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + 10];
+        let mut dummy_packet =
+            vec![0u8; crate::audio::SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + 10];
         // Seq num = 42 (Big Endian)
         dummy_packet[0..8].copy_from_slice(&42u64.to_be_bytes());
         // Opus format flag
@@ -308,7 +320,9 @@ mod tests {
         // payload = some data
         dummy_packet[9..19].copy_from_slice(&[0x1; 10]);
 
-        let transport = Box::new(MockTransport { packet_to_send: Some(dummy_packet) });
+        let transport = Box::new(MockTransport {
+            packet_to_send: Some(dummy_packet),
+        });
 
         let handle = spawn_packet_receive_thread(
             transport,

@@ -1817,6 +1817,7 @@ dependencies = [
 name = "gemacast-mobile"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "gemacast-core",
  "jni",
  "netdev",
@@ -1833,6 +1834,7 @@ dependencies = [
 name = "gemacast-pc"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "gemacast-core",
  "image",
  "rfd",
@@ -1840,6 +1842,7 @@ dependencies = [
  "tao",
  "thread-priority",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "tray-icon",
  "whoami",
