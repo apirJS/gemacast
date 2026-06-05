@@ -26,6 +26,10 @@ pub enum TrayEvent {
     },
     /// An unrecoverable error occurred in the background engine.
     FatalError(String),
+    /// The OS or user requested a process shutdown (e.g. Ctrl+C).
+    ShutdownRequested,
+    /// The background engine has finished tearing down resources.
+    ShutdownComplete,
 }
 
 /// Commands sent from the tray UI to the background engine.
@@ -41,4 +45,6 @@ pub enum AppCommand {
     StartBroadcasting,
     /// Stop broadcasting and unsubscribe all devices from audio.
     StopBroadcasting,
+    /// Trigger a complete shutdown of the background engine.
+    ExitApp,
 }

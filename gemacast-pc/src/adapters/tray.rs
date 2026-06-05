@@ -40,4 +40,8 @@ impl TrayNotifier for EventLoopTrayNotifier {
     fn notify_fatal_error(&self, message: String) {
         let _ = self.proxy.send_event(TrayEvent::FatalError(message));
     }
+
+    fn notify_shutdown_complete(&self) {
+        let _ = self.proxy.send_event(TrayEvent::ShutdownComplete);
+    }
 }
