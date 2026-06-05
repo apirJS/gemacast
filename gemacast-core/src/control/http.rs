@@ -86,6 +86,7 @@ pub async fn start_control_server(
     state: ControlServerState,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), GemaCastError> {
+    tracing::info!("Starting HTTP control server on port {}", Ports::CONTROL);
     let app = build_router(state);
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::CONTROL);
     let listener = TcpListener::bind(addr)
@@ -112,6 +113,7 @@ async fn handle_probe(
     State(state): State<ControlServerState>,
     Json(req): Json<ProbeReq>,
 ) -> Json<PresenceResponse> {
+    tracing::info!("HTTP POST /probe from {:?}", req.device_id);
     let (response_tx, response_rx) = oneshot::channel();
     let _ = state
         .command_tx
@@ -134,6 +136,7 @@ async fn handle_connect(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
     Json(req): Json<ConnectReq>,
 ) -> (StatusCode, Json<PresenceResponse>) {
+    tracing::info!("HTTP POST /connect from {:?}", req.device_id);
     if !state.is_broadcasting.load(Ordering::Relaxed) {
         return (
             StatusCode::FORBIDDEN,
@@ -171,6 +174,7 @@ async fn handle_disconnect(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
     Json(req): Json<DisconnectReq>,
 ) -> StatusCode {
+    tracing::info!("HTTP POST /disconnect from {:?}", req.device_id);
     let _ = state
         .command_tx
         .send(ControlCommand::Disconnect {
@@ -182,6 +186,7 @@ async fn handle_disconnect(
 }
 
 async fn handle_get_sources(State(state): State<ControlServerState>) -> Json<SourcesResponse> {
+    tracing::info!("HTTP GET /sources");
     let (response_tx, response_rx) = oneshot::channel();
     let _ = state
         .command_tx
@@ -205,6 +210,7 @@ async fn handle_change_source(
     State(state): State<ControlServerState>,
     Json(req): Json<ChangeSourceReq>,
 ) -> StatusCode {
+    tracing::info!("HTTP POST /change-source from {:?}", req.device_id);
     let _ = state
         .command_tx
         .send(ControlCommand::ChangeSource {
@@ -219,6 +225,7 @@ async fn handle_change_bitrate(
     State(state): State<ControlServerState>,
     Json(req): Json<ChangeBitrateReq>,
 ) -> StatusCode {
+    tracing::info!("HTTP POST /change-bitrate from {:?}", req.device_id);
     let _ = state
         .command_tx
         .send(ControlCommand::ChangeBitrate {
@@ -232,6 +239,7 @@ async fn handle_change_bitrate(
 async fn handle_get_processes(
     State(_state): State<ControlServerState>,
 ) -> Json<ProcessListResponse> {
+    tracing::info!("HTTP GET /processes");
     #[cfg(target_os = "windows")]
     {
         let all_pids =
@@ -312,6 +320,7 @@ async fn handle_ws_upgrade(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<ControlServerState>,
 ) -> impl IntoResponse {
+    tracing::info!("HTTP GET /ws upgrade request with params: {:?}", params);
     let device_id = match params.get("device_id") {
         Some(id) => DeviceId(id.clone()),
         None => {

@@ -20,4 +20,7 @@ pub trait TrayNotifier: Send + Sync {
 
     /// An unrecoverable background error occurred.
     fn notify_fatal_error(&self, message: String);
+
+    /// The background engine has finished shutting down.
+    fn notify_shutdown_complete(&self);
 }

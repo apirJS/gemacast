@@ -32,6 +32,7 @@ pub mod mocks {
             addr: SocketAddr,
         },
         FatalError(String),
+        ShutdownComplete,
     }
 
     /// Records every tray notification for later assertion.
@@ -80,6 +81,10 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(TrayCall::FatalError(message));
+        }
+
+        fn notify_shutdown_complete(&self) {
+            self.calls.lock().unwrap().push(TrayCall::ShutdownComplete);
         }
     }
 

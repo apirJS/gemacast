@@ -15,6 +15,7 @@ impl PresenceListener {
     pub async fn new(
         incoming_message_tx: mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
     ) -> Result<Self, GemaCastError> {
+        tracing::info!("Initializing PresenceListener");
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::DISCOVERY);
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
@@ -62,6 +63,7 @@ impl PresenceListener {
     }
 
     pub async fn run_receive_loop(&self) -> Result<(), GemaCastError> {
+        tracing::info!("Starting UDP presence receive loop");
         let mut buff = vec![0u8; 2048];
 
         loop {

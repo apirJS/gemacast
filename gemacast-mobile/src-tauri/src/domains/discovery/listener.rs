@@ -27,7 +27,7 @@ pub fn spawn_discovery_listener(
         let socket = listener.socket.clone();
         set.spawn(async move {
             if let Err(e) = listener.run_receive_loop().await {
-                eprintln!("Discovery listener failed: {}", e);
+                tracing::error!("Discovery listener failed: {}", e);
                 std::process::exit(1);
             }
         });

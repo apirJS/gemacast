@@ -67,8 +67,11 @@ impl SessionManager for TokioSessionManager {
     async fn stop_session(&self) {
         if let Some(session) = self.session.lock().await.take() {
             let _ = session.shutdown_tx.send(());
-            session.playback_task.abort();
-            let _ = session.playback_task.await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                session.playback_task,
+            )
+            .await;
         }
         self.stop_ws_client().await;
     }

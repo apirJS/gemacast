@@ -87,9 +87,17 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                std::process::exit(0);
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+                let handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    if let Some(state) = handle.try_state::<state::AppState>() {
+                        state.audio.session.stop_session().await;
+                    }
+                    handle.exit(0);
+                });
             }
         });
 }

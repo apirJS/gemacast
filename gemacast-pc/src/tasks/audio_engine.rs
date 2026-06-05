@@ -21,7 +21,9 @@ pub fn spawn_audio_engine(
     set.spawn(async move {
         let mut engine = engine;
         if let Err(e) = engine.run_command_loop(command_rx).await {
-            tray.notify_fatal_error(format!("Audio engine failed: {e}"));
+            let msg = format!("Audio engine failed: {e}");
+            tracing::error!("Fatal error: {}", msg);
+            tray.notify_fatal_error(msg);
         }
     });
 }
