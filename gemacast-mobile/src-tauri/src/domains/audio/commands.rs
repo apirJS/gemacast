@@ -1,13 +1,17 @@
-use super::playback::{set_streaming_flag, spawn_session_receiver};
-use crate::state::{ActiveSession, AppState};
-use gemacast_core::control::types::ConnectReq;
-use gemacast_core::control::HttpControlClient;
+//! Thin Tauri command wrappers that delegate to [`super::service::AudioService`].
+//!
+//! Each `#[tauri::command]` handler extracts the `AudioService` from
+//! [`crate::state::AppState`] and forwards to the corresponding method.
+//! No I/O or business logic lives here.
+
+use crate::state::AppState;
+use crate::traits::{ConnectParams, ResumeParams};
 use gemacast_core::types::{DeviceId, TransportType};
-use tauri::{Emitter, State};
+use tauri::State;
 
 #[tauri::command]
-pub fn notify_streaming_stopped(app_handle: tauri::AppHandle) -> Result<(), String> {
-    set_streaming_flag(&app_handle, false);
+pub fn notify_streaming_stopped(state: State<'_, AppState>) -> Result<(), String> {
+    state.audio.notify_streaming_stopped();
     Ok(())
 }
 
@@ -23,60 +27,19 @@ pub async fn connect_to_sender(
     bitrate: Option<i32>,
     _transport: Option<TransportType>,
     state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-
-    client
-        .send_connect_request(ConnectReq {
-            device_id: device_id.clone(),
-            device_name: device_name.clone(),
-            source: None,
+    state
+        .audio
+        .connect_to_sender(ConnectParams {
+            ip,
+            device_id,
+            device_name,
             mode,
-            jitter_config: jitter_config.clone(),
+            exclusive_mode,
+            jitter_config,
             bitrate,
         })
         .await
-        .map_err(|e| e.to_string())?;
-
-    let is_tcp = mode == gemacast_core::types::ConnectionMode::Adb;
-
-    let mut session_guard = state.session.lock().await;
-
-    if let Some(existing) = session_guard.take() {
-        let _ = existing.shutdown_tx.send(());
-        existing.playback_task.abort();
-    }
-
-    let (is_playing, _is_tcp_mode, jitter_config_ref, shutdown_tx, playback_task) =
-        spawn_session_receiver(
-            jitter_config,
-            is_tcp,
-            exclusive_mode,
-            app_handle.clone(),
-            Some(ip_addr),
-            mode,
-            device_id.to_string(),
-        )?;
-
-    *session_guard = Some(ActiveSession {
-        ip: ip_addr,
-        device_id,
-        device_name,
-        exclusive_mode,
-        mode,
-        bitrate,
-        is_playing,
-        jitter_config: jitter_config_ref,
-        shutdown_tx,
-        playback_task,
-    });
-
-    set_streaming_flag(&app_handle, true);
-    sync_android_service(true, exclusive_mode);
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -84,20 +47,9 @@ pub async fn disconnect_from_sender(
     ip: String,
     device_id: DeviceId,
     state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    let _ = client.send_disconnect_request(device_id).await;
-
-    if let Some(session) = state.session.lock().await.take() {
-        let _ = session.shutdown_tx.send(());
-        session.playback_task.abort();
-    }
-
-    set_streaming_flag(&app_handle, false);
-    sync_android_service(false, false);
-    Ok(())
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.disconnect_from_sender(ip_addr, device_id).await
 }
 
 #[tauri::command]
@@ -106,35 +58,15 @@ pub async fn stop_audio_playback(
     device_id: Option<DeviceId>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let (Some(ip_str), Some(did)) = (ip, device_id) {
-        if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            let client = HttpControlClient::new(ip_addr);
-            let _ = client.send_disconnect_request(did).await;
-        }
-    }
-
-    if let Some(session) = state.session.lock().await.take() {
-        let _ = session.shutdown_tx.send(());
-        session.playback_task.abort();
-    }
-
-    sync_android_service(false, false);
-    Ok(())
+    let ip_parsed = ip
+        .map(|s| s.parse().map_err(|e: std::net::AddrParseError| e.to_string()))
+        .transpose()?;
+    state.audio.stop_audio_playback(ip_parsed, device_id).await
 }
 
 #[tauri::command]
-pub async fn kill_playback(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    if let Some(session) = state.session.lock().await.take() {
-        let _ = session.shutdown_tx.send(());
-        session.playback_task.abort();
-    }
-
-    set_streaming_flag(&app_handle, false);
-    sync_android_service(false, false);
-    Ok(())
+pub async fn kill_playback(state: State<'_, AppState>) -> Result<(), String> {
+    state.audio.kill_playback().await
 }
 
 #[tauri::command]
@@ -144,42 +76,17 @@ pub async fn start_audio_playback(
     device_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut exclusive_mode = false;
-
-    let mut active_mode = gemacast_core::types::ConnectionMode::default();
-    let mut active_jitter = gemacast_core::types::JitterConfig::default();
-    let mut active_bitrate = None;
-
-    if let Some(session) = state.session.lock().await.as_ref() {
-        session
-            .is_playing
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        exclusive_mode = session.exclusive_mode;
-        active_mode = session.mode;
-        active_bitrate = session.bitrate;
-        if let Ok(guard) = session.jitter_config.read() {
-            active_jitter = guard.clone();
-        }
-    }
-
-    if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
-        if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
-            let client = HttpControlClient::new(ip_addr);
-            let _ = client
-                .send_connect_request(ConnectReq {
-                    device_id: did,
-                    device_name: dname,
-                    source: None,
-                    mode: active_mode,
-                    jitter_config: active_jitter,
-                    bitrate: active_bitrate,
-                })
-                .await;
-        }
-    }
-
-    sync_android_service(true, exclusive_mode);
-    Ok(())
+    let resume = if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
+        let ip_addr = ip_str.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+        Some(ResumeParams {
+            ip: ip_addr,
+            device_id: did,
+            device_name: dname,
+        })
+    } else {
+        None
+    };
+    state.audio.start_audio_playback(resume).await
 }
 
 #[tauri::command]
@@ -187,17 +94,13 @@ pub async fn update_jitter_config(
     jitter_config: gemacast_core::types::JitterConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let Some(session) = state.session.lock().await.as_ref() {
-        if let Ok(mut guard) = session.jitter_config.write() {
-            *guard = jitter_config;
-        }
-    }
-    Ok(())
+    state.audio.update_jitter_config(jitter_config).await
 }
 
 #[tauri::command]
 pub async fn get_audio_sources(
     ip: String,
+    state: State<'_, AppState>,
 ) -> Result<
     (
         Vec<gemacast_core::types::AudioSource>,
@@ -205,25 +108,18 @@ pub async fn get_audio_sources(
     ),
     String,
 > {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    client
-        .request_audio_sources()
-        .await
-        .map_err(|e| e.to_string())
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.get_audio_sources(ip_addr).await
 }
 
 #[tauri::command]
 pub async fn probe_sender(
     ip: String,
     device_id: DeviceId,
+    state: State<'_, AppState>,
 ) -> Result<gemacast_core::control::types::PresenceResponse, String> {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    client
-        .send_probe(Some(device_id))
-        .await
-        .map_err(|e| e.to_string())
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.probe_sender(ip_addr, device_id).await
 }
 
 #[tauri::command]
@@ -231,13 +127,13 @@ pub async fn change_audio_source(
     ip: String,
     device_id: DeviceId,
     source: gemacast_core::types::AudioSource,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    client
-        .send_change_source_request(device_id, source)
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state
+        .audio
+        .change_audio_source(ip_addr, device_id, source)
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -245,30 +141,22 @@ pub async fn change_audio_bitrate(
     ip: String,
     device_id: DeviceId,
     bitrate: Option<i32>,
-    state: tauri::State<'_, crate::state::AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let Some(session) = state.session.lock().await.as_mut() {
-        session.bitrate = bitrate;
-    }
-
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    client
-        .send_change_bitrate_request(device_id, bitrate)
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state
+        .audio
+        .change_audio_bitrate(ip_addr, device_id, bitrate)
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn get_process_list(
     ip: String,
+    state: State<'_, AppState>,
 ) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
-    let ip_addr = ip.parse::<std::net::IpAddr>().map_err(|e| e.to_string())?;
-    let client = HttpControlClient::new(ip_addr);
-    client
-        .request_process_list()
-        .await
-        .map_err(|e| e.to_string())
+    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.get_process_list(ip_addr).await
 }
 
 #[tauri::command]
@@ -276,67 +164,7 @@ pub async fn establish_websocket(
     sender_ip: String,
     device_id: String,
     state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let ip_addr = sender_ip
-        .parse::<std::net::IpAddr>()
-        .map_err(|e| e.to_string())?;
-
-    let ws_client = gemacast_core::control::WsControlClient::new(ip_addr, &device_id)
-        .await
-        .map_err(|e| format!("Failed to establish WebSocket: {}", e))?;
-
-    let ws_client_arc = std::sync::Arc::new(tokio::sync::Mutex::new(ws_client));
-
-    let mut ws_guard = state.ws_client.lock().await;
-    *ws_guard = Some(ws_client_arc.clone());
-    drop(ws_guard);
-
-    let app_handle_clone = app_handle.clone();
-    tokio::spawn(async move {
-        #[allow(clippy::never_loop)]
-        loop {
-            let event_result = {
-                let client = ws_client_arc.lock().await;
-                client.recv_event().await
-            };
-
-            match event_result {
-                Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
-                    let _ = app_handle_clone.emit("ws-disconnect", ());
-                    break;
-                }
-                Ok(gemacast_core::control::types::WsEvent::Error { message }) => {
-                    let _ = app_handle_clone.emit("ws-error", message);
-                    let _ = app_handle_clone.emit("ws-disconnect", ());
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("WebSocket error: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[allow(unused_variables)]
-fn sync_android_service(is_playing: bool, is_exclusive: bool) {
-    #[cfg(target_os = "android")]
-    {
-        let action = if is_playing { "START" } else { "STOP_STREAM" };
-        let _ = std::process::Command::new("am")
-            .args([
-                "startservice",
-                "-a",
-                action,
-                "--ez",
-                "EXCLUSIVE_MODE",
-                if is_exclusive { "true" } else { "false" },
-                "com.apir.gemacast/.GemaCastService",
-            ])
-            .spawn();
-    }
+    let ip_addr = sender_ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.establish_websocket(ip_addr, device_id).await
 }
