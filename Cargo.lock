@@ -1828,6 +1828,7 @@ dependencies = [
  "tauri-plugin-device-info",
  "tauri-plugin-opener",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

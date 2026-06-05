@@ -29,6 +29,7 @@ pub async fn evict_stale_devices(
 ) {
     let stale = registry.evict_stale(timeout);
     for (device_id, addr) in stale {
+        tracing::warn!("Evicting stale device: {:?} at {}", device_id, addr);
         tray.notify_device_lost(device_id.clone(), addr);
         audio.unsubscribe(&device_id).await;
     }

@@ -73,6 +73,7 @@ pub fn spawn_background_engine(
     command_rx: mpsc::Receiver<AppCommand>,
 ) {
     std::thread::spawn(move || {
+        tracing::info!("Spawning background engine runtime...");
         let rt = match build_tokio_runtime(&event_loop_proxy) {
             Some(rt) => rt,
             None => return,
@@ -96,6 +97,7 @@ fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runti
     {
         Ok(rt) => Some(rt),
         Err(e) => {
+            tracing::error!("Fatal error: Failed to build background Tokio runtime: {}", e);
             let _ = proxy.send_event(TrayEvent::FatalError(e.to_string()));
             None
         }
@@ -140,6 +142,7 @@ async fn run_background_tasks(
     let tray_for_errors = tray.clone();
     set.spawn(async move {
         while let Some(msg) = fatal_error_rx.recv().await {
+            tracing::error!("Fatal background error received: {}", msg);
             tray_for_errors.notify_fatal_error(msg);
         }
     });
@@ -157,10 +160,12 @@ async fn run_background_tasks(
     let sender_id = DeviceId::new();
 
     // --- Presence listener ---
+    tracing::info!("Initializing UDP Presence Listener...");
     let listener = match gemacast_core::network::PresenceListener::new(presence_tx).await {
         Ok(l) => l,
         Err(e) => {
             let msg = friendly_bind_error(e, "Discovery port");
+            tracing::error!("Fatal error: {}", msg);
             tray.notify_fatal_error(msg);
             return;
         }
@@ -181,7 +186,9 @@ async fn run_background_tasks(
         if let Err(e) =
             gemacast_core::control::start_control_server(control_state, control_shutdown_rx).await
         {
-            tray_for_control.notify_fatal_error(friendly_bind_error(e, "Control port (55559)"));
+            let msg = friendly_bind_error(e, "Control port (55559)");
+            tracing::error!("Fatal error: {}", msg);
+            tray_for_control.notify_fatal_error(msg);
         }
     });
 
@@ -193,6 +200,7 @@ async fn run_background_tasks(
     });
 
     // --- Spawn tasks ---
+    tracing::info!("Spawning all background tasks...");
     let engine = AudioStreamEngine::new(true, ws_connections.clone());
 
     udp_listener::spawn_udp_listener(
@@ -257,6 +265,7 @@ async fn run_background_tasks(
 
     // --- Wait for all tasks ---
     while set.join_next().await.is_some() {}
+    tracing::info!("Background engine has fully shut down");
 }
 
 /// Convert a bind error into a user-friendly message.

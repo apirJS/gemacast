@@ -405,12 +405,11 @@ async fn run_tcp_encode_loop(
 /// Creates a dummy encoder that is never actually used — only exists to satisfy
 /// the borrow checker when current_bitrate is None (uncompressed mode).
 fn create_dummy_encoder() -> opus::Encoder {
-    opus::Encoder::new(
-        crate::audio::OPUS_SAMPLE_RATE,
-        opus::Channels::Stereo,
-        opus::Application::LowDelay,
-    )
-    .expect("dummy encoder creation should never fail")
+    let dummy_encoder = crate::audio::create_opus_encoder().unwrap_or_else(|e| {
+        tracing::error!("Fatal error: dummy encoder creation failed: {}", e);
+        panic!("dummy encoder creation should never fail");
+    });
+    dummy_encoder
 }
 
 use super::capture::CaptureFactory;
@@ -624,7 +623,10 @@ mod tests {
         // 4. Verify capture loop reads and broadcasts PCM (ignoring any silence watchdog frames)
         let mut received_pcm;
         loop {
-            received_pcm = pcm_rx.recv().await.expect("Failed to receive PCM");
+            received_pcm = pcm_rx.recv().await.unwrap_or_else(|_| {
+                tracing::error!("Fatal error: Failed to receive PCM");
+                panic!("Failed to receive PCM");
+            });
             if received_pcm[0] != 0.0 {
                 break;
             }
@@ -637,7 +639,10 @@ mod tests {
         let audio_broadcast_tx = instance
             .spawn_tcp_encoder(device_id.clone(), Some(128000))
             .await
-            .expect("Failed to spawn TCP encoder");
+            .unwrap_or_else(|e| {
+                tracing::error!("Fatal error: Failed to spawn TCP encoder: {}", e);
+                panic!("Failed to spawn TCP encoder: {}", e);
+            });
 
         let mut encoded_rx = audio_broadcast_tx.subscribe();
         
@@ -648,7 +653,10 @@ mod tests {
         // The encoder should eventually emit an opus packet (ignore silence watchdog packets)
         let mut encoded_packet;
         loop {
-            encoded_packet = encoded_rx.recv().await.expect("Failed to receive Opus packet");
+            encoded_packet = encoded_rx.recv().await.unwrap_or_else(|_| {
+                tracing::error!("Fatal error: Failed to receive Opus packet");
+                panic!("Failed to receive Opus packet");
+            });
             // Verify packet contains sequence number (8 bytes) + format flag (1 byte) + some opus payload
             if encoded_packet.len() > 9 {
                 break;
@@ -660,7 +668,10 @@ mod tests {
         if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
             stop_tx.send(()).unwrap();
             // Await the join handle like unsubscribe does, verifying no deadlocks!
-            instance.capture_join_handle.await.expect("Capture loop panicked");
+            instance.capture_join_handle.await.unwrap_or_else(|e| {
+                tracing::error!("Fatal error: Capture loop panicked: {}", e);
+                panic!("Capture loop panicked");
+            });
         }
     }
 

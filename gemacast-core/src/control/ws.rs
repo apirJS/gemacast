@@ -22,15 +22,16 @@ pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlSer
     while let Some(msg_result) = ws_receiver.next().await {
         match msg_result {
             Ok(Message::Text(text)) => {
+                tracing::info!("WS Message received from {}: {}", device_id, text);
                 if let Err(e) = handle_ws_command(&text, &device_id, &state).await {
-                    eprintln!("WebSocket command error for device {}: {}", device_id, e);
+                    tracing::error!("WebSocket command error for device {}: {}", device_id, e);
                 }
             }
             Ok(Message::Close(_)) => {
                 break;
             }
             Err(e) => {
-                eprintln!("WebSocket error for device {}: {}", device_id, e);
+                tracing::error!("WebSocket error for device {}: {}", device_id, e);
                 break;
             }
             _ => {}
@@ -72,9 +73,12 @@ async fn send_events_to_client(
 ) {
     while let Some(event) = event_rx.recv().await {
         let msg = match serde_json::to_string(&event) {
-            Ok(json) => json,
+            Ok(json) => {
+                tracing::info!("WS Event sent: {}", json);
+                json
+            }
             Err(e) => {
-                eprintln!("Failed to serialize WsEvent: {}", e);
+                tracing::error!("Failed to serialize WsEvent: {}", e);
                 continue;
             }
         };
