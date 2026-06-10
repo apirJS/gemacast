@@ -21,15 +21,30 @@ pub fn spawn_adb_audio_tcp_server(
         let listener = {
             let mut attempts = 0;
             loop {
-                let addr = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
-                match tokio::net::TcpListener::bind(&addr).await {
+                let addr_str = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
+                
+                let bind_result = (|| -> Result<tokio::net::TcpListener, std::io::Error> {
+                    let addr = addr_str.parse::<std::net::SocketAddr>().unwrap();
+                    let socket = socket2::Socket::new(
+                        socket2::Domain::IPV4,
+                        socket2::Type::STREAM,
+                        Some(socket2::Protocol::TCP),
+                    )?;
+                    socket.set_reuse_address(true).ok();
+                    socket.bind(&addr.into())?;
+                    socket.listen(128)?;
+                    socket.set_nonblocking(true).ok();
+                    tokio::net::TcpListener::from_std(socket.into())
+                })();
+
+                match bind_result {
                     Ok(l) => break l,
                     Err(e) => {
                         attempts += 1;
                         if attempts >= 10 {
                             let e_str = e.to_string();
                             let msg = if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
-                                "ADB Audio Port (4040) is already in use by another application. Please check your Task Manager.".to_string()
+                                format!("ADB Audio Port ({}) is already in use by another application. Please check your Task Manager.", Ports::ADB_AUDIO_TCP)
                             } else {
                                 format!("Failed to bind ADB audio TCP listener: {}", e)
                             };
@@ -191,15 +206,30 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
         let listener = {
             let mut attempts = 0;
             loop {
-                let addr = format!("127.0.0.1:{}", Ports::ADB_DISCOVERY_TCP);
-                match tokio::net::TcpListener::bind(&addr).await {
+                let addr_str = format!("127.0.0.1:{}", Ports::ADB_DISCOVERY_TCP);
+                
+                let bind_result = (|| -> Result<tokio::net::TcpListener, std::io::Error> {
+                    let addr = addr_str.parse::<std::net::SocketAddr>().unwrap();
+                    let socket = socket2::Socket::new(
+                        socket2::Domain::IPV4,
+                        socket2::Type::STREAM,
+                        Some(socket2::Protocol::TCP),
+                    )?;
+                    socket.set_reuse_address(true).ok();
+                    socket.bind(&addr.into())?;
+                    socket.listen(128)?;
+                    socket.set_nonblocking(true).ok();
+                    tokio::net::TcpListener::from_std(socket.into())
+                })();
+
+                match bind_result {
                     Ok(l) => break l,
                     Err(e) => {
                         attempts += 1;
                         if attempts >= 10 {
                             let e_str = e.to_string();
                             let msg = if e_str.contains("Address already in use") || e_str.contains("10048") || e_str.contains("98") || e_str.contains("WSAEADDRINUSE") {
-                                "ADB Discovery Port (4041) is already in use by another application. Please check your Task Manager.".to_string()
+                                format!("ADB Discovery Port ({}) is already in use by another application. Please check your Task Manager.", Ports::ADB_DISCOVERY_TCP)
                             } else {
                                 format!("Failed to bind ADB discovery TCP listener: {}", e)
                             };
