@@ -250,6 +250,10 @@ pub mod mocks {
                 .unwrap()
                 .push(SessionCall::StopWsClient);
         }
+
+        async fn set_volume(&self, _linear: f32) {
+            // No-op in tests
+        }
     }
 
     // -------------------------------------------------------------------

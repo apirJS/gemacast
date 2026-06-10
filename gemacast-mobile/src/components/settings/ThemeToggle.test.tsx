@@ -24,9 +24,9 @@ describe('ThemeToggle', () => {
   it('updates store and document class when toggled', () => {
     render(<ThemeToggle />);
     const button = screen.getByRole('button');
-    
+
     fireEvent.click(button);
-    
+
     expect(useAppStore.getState().settings.theme).toBe('light');
     expect(document.documentElement.classList.contains('light')).toBe(true);
     expect(document.documentElement.classList.contains('dark')).toBe(false);

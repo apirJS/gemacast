@@ -6,7 +6,7 @@ const LS_LAST_SENDER = 'gemacast_last_sender';
 const LS_SETTINGS = 'gemacast_settings';
 const LS_DEVICE_ID = 'gemacast_device_id';
 
-const DEFAULT_AUTO_CONFIG = JITTER_PRESETS.find(p => p.id === 'auto')!.config!;
+const DEFAULT_AUTO_CONFIG = JITTER_PRESETS.find((p) => p.id === 'auto')!.config!;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   savedPresets: [],
   bitratePreset: '128',
   customBitrateKbps: 128,
+  gainDb: 0,
 };
 
 export function loadLastSender(): DiscoveredSender | null {

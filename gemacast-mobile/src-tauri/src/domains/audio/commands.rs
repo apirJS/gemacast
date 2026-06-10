@@ -168,3 +168,15 @@ pub async fn establish_websocket(
     let ip_addr = sender_ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.establish_websocket(ip_addr, device_id).await
 }
+
+#[tauri::command]
+pub async fn set_audio_gain(
+    gain_db: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Convert dB to linear multiplier: 10^(dB/20)
+    // Clamp to safe range: -24 dB (0.063) to +12 dB (3.98)
+    let clamped_db = gain_db.clamp(-24.0, 12.0);
+    let linear = 10f32.powf(clamped_db / 20.0);
+    state.audio.set_volume(linear).await
+}

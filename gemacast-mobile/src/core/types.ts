@@ -73,9 +73,28 @@ export type SavedPreset = {
   config: JitterConfig;
 };
 
-export type PresetId = 'auto' | 'wired' | 'fast' | 'balanced' | 'stable' | 'resilient' | 'custom';
+export type PresetId =
+  | 'nobuffer'
+  | 'auto'
+  | 'wired'
+  | 'fast'
+  | 'balanced'
+  | 'stable'
+  | 'resilient'
+  | 'custom';
 
-export type BitratePreset = '10' | '24' | '32' | '64' | '96' | '128' | '256' | '450' | '512' | 'raw' | 'custom';
+export type BitratePreset =
+  | '10'
+  | '24'
+  | '32'
+  | '64'
+  | '96'
+  | '128'
+  | '256'
+  | '450'
+  | '512'
+  | 'raw'
+  | 'custom';
 
 export type AppSettings = {
   theme: 'light' | 'dark';
@@ -86,6 +105,7 @@ export type AppSettings = {
   savedPresets: SavedPreset[];
   bitratePreset: BitratePreset;
   customBitrateKbps: number;
+  gainDb: number;
 };
 
 export type AudioSource =

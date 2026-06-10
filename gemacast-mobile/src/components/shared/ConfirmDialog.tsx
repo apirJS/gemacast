@@ -40,18 +40,10 @@ export function ConfirmDialog({
     >
       <p className="mb-4 text-sm">{message}</p>
       <div className="flex gap-2">
-        <button
-          type="button"
-          className="btn btn-secondary flex-1"
-          onClick={onCancel}
-        >
+        <button type="button" className="btn btn-secondary flex-1" onClick={onCancel}>
           {cancelLabel}
         </button>
-        <button
-          type="button"
-          className="btn btn-destructive flex-1"
-          onClick={onConfirm}
-        >
+        <button type="button" className="btn btn-destructive flex-1" onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>

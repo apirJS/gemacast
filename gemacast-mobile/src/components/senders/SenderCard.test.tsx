@@ -3,8 +3,10 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { useAppStore } from '../../stores/app-store';
 import { SenderCard } from './SenderCard';
 
-const makeSender = (overrides: Partial<{ deviceId: string; deviceName: string; addr: string }> = {}) => ({
-  deviceId: 'pc-1', 
+const makeSender = (
+  overrides: Partial<{ deviceId: string; deviceName: string; addr: string }> = {},
+) => ({
+  deviceId: 'pc-1',
   deviceName: 'Desktop PC',
   addr: '192.168.1.10:9000',
   isOffline: false,
@@ -57,8 +59,8 @@ describe('SenderCard', () => {
 
   it('shows spinner when loading and connected', () => {
     render(<SenderCard {...defaultProps()} isConnected isLoading />);
-    expect(screen.queryByText('Disconnect')).toBeNull();
-    expect(screen.queryByText('Connect')).toBeNull();
+    const btn = screen.getByRole('button', { name: /Disconnect/i });
+    expect(btn.querySelector('span:first-child')?.className).toContain('opacity-0');
   });
 
   it('shows ADB icon for localhost senders', () => {
@@ -106,7 +108,9 @@ describe('SenderCard', () => {
 
   it('calls onPlayPause when play/pause button is clicked', () => {
     let called = false;
-    const onPlayPause = () => { called = true; };
+    const onPlayPause = () => {
+      called = true;
+    };
     render(<SenderCard {...defaultProps()} isConnected isPlaying onPlayPause={onPlayPause} />);
     const btn = screen.getByRole('button', { name: /Pause/i });
     fireEvent.click(btn);

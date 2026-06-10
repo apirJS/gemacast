@@ -1,10 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSettings } from './use-settings';
 import type { JitterConfig } from '../core/types';
-import {
-  validateJitterConfig,
-  isJitterConfigEqual,
-} from '../core/validation';
+import { validateJitterConfig, isJitterConfigEqual } from '../core/validation';
 import { JITTER_PRESETS } from '../core/presets';
 
 export type BufferMode = 'static' | 'adaptive';
@@ -48,19 +45,20 @@ export type CustomPresetEditorActions = {
  */
 function getAutoConfig(): JitterConfig {
   const auto = JITTER_PRESETS.find((p) => p.id === 'auto');
-  return auto?.config ?? {
-    minDepthMs: 5,
-    comfortCapMs: 1000,
-    peakDecayHalflifeMs: 0,
-    resumeThresholdPct: 0.25,
-  };
+  return (
+    auto?.config ?? {
+      minDepthMs: 5,
+      comfortCapMs: 1000,
+      peakDecayHalflifeMs: 0,
+      resumeThresholdPct: 0.25,
+    }
+  );
 }
 
 export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetEditorActions {
   const { settings, update } = useSettings();
   const config = settings.customJitterConfig;
-  const isCustom =
-    settings.bufferPreset === 'custom' || settings.bufferPreset.startsWith('saved-');
+  const isCustom = settings.bufferPreset === 'custom' || settings.bufferPreset.startsWith('saved-');
 
   const [presetName, setPresetName] = useState('');
   const [bufferMode, setBufferModeState] = useState<BufferMode>(
@@ -78,6 +76,7 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
   // When creating a new custom preset (not saved), ensure the name field starts empty.
   useEffect(() => {
     if (isEditingSaved) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPresetName(settings.savedPresets[savedMatchIndex]?.name ?? '');
     } else {
       setPresetName('');
@@ -86,8 +85,11 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
 
   // Sync buffer mode when config changes externally (e.g. selecting a saved preset from dropdown)
   useEffect(() => {
-    setBufferModeState(config.staticTargetMs != null && !Number.isNaN(config.staticTargetMs) ? 'static' : 'adaptive');
-  }, [settings.bufferPreset]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBufferModeState(
+      config.staticTargetMs != null && !Number.isNaN(config.staticTargetMs) ? 'static' : 'adaptive',
+    );
+  }, [settings.bufferPreset, config.staticTargetMs]);
 
   const validation = useMemo(() => validateJitterConfig(config), [config]);
   const isValid = validation.valid;
@@ -106,9 +108,7 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
         return false; // No changes to save
       }
     } else {
-      const existingByName = settings.savedPresets.find(
-        (sp) => sp.name === presetName.trim(),
-      );
+      const existingByName = settings.savedPresets.find((sp) => sp.name === presetName.trim());
       if (existingByName && isJitterConfigEqual(existingByName.config, config)) {
         return false; // No changes to save
       }
@@ -140,7 +140,7 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
     if (!canSave) return;
 
     const trimmedName = presetName.trim();
-    let saved = [...settings.savedPresets];
+    const saved = [...settings.savedPresets];
     let newBufferPreset = settings.bufferPreset as string;
 
     if (isEditingSaved && saved[savedMatchIndex]) {
@@ -163,7 +163,16 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       bufferPreset: newBufferPreset,
       customJitterConfig: config,
     });
-  }, [canSave, presetName, config, settings.savedPresets, update, isEditingSaved, savedMatchIndex, settings.bufferPreset]);
+  }, [
+    canSave,
+    presetName,
+    config,
+    settings.savedPresets,
+    update,
+    isEditingSaved,
+    savedMatchIndex,
+    settings.bufferPreset,
+  ]);
 
   /**
    * Reset fields.
@@ -176,13 +185,21 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       const savedConfig = settings.savedPresets[savedMatchIndex].config;
       update({ customJitterConfig: savedConfig });
       setPresetName(settings.savedPresets[savedMatchIndex].name);
-      setBufferModeState(savedConfig.staticTargetMs != null && !Number.isNaN(savedConfig.staticTargetMs) ? 'static' : 'adaptive');
+      setBufferModeState(
+        savedConfig.staticTargetMs != null && !Number.isNaN(savedConfig.staticTargetMs)
+          ? 'static'
+          : 'adaptive',
+      );
     } else {
       // Reset to Auto preset for new custom presets
       const autoConfig = getAutoConfig();
       update({ customJitterConfig: autoConfig });
       setPresetName('');
-      setBufferModeState(autoConfig.staticTargetMs != null && !Number.isNaN(autoConfig.staticTargetMs) ? 'static' : 'adaptive');
+      setBufferModeState(
+        autoConfig.staticTargetMs != null && !Number.isNaN(autoConfig.staticTargetMs)
+          ? 'static'
+          : 'adaptive',
+      );
     }
   }, [isEditingSaved, savedMatchIndex, settings.savedPresets, update]);
 
@@ -206,7 +223,11 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
         customJitterConfig: autoConfig,
       });
       setPresetName('');
-      setBufferModeState(autoConfig.staticTargetMs != null && !Number.isNaN(autoConfig.staticTargetMs) ? 'static' : 'adaptive');
+      setBufferModeState(
+        autoConfig.staticTargetMs != null && !Number.isNaN(autoConfig.staticTargetMs)
+          ? 'static'
+          : 'adaptive',
+      );
     }
     setIsDeleteDialogOpen(false);
   }, [savedMatchIndex, settings.savedPresets, update]);

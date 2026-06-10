@@ -1,7 +1,7 @@
 export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
   'buffer-preset': {
     title: 'Buffer Preset',
-    body: 'Presets configure the adaptive jitter buffer that absorbs network timing variations.\n\n• Auto — Intelligently detects your network quality (5 GHz vs 2.4 GHz) and adapts automatically. Best for most users.\n• Wired — Minimal buffering for USB tethering or ADB. Sub-20ms latency.\n• Fast — Tuned for stable 5 GHz Wi-Fi. Very low latency with light jitter absorption.\n• Balanced — The default. Works well on most networks.\n• Stable — For congested or 2.4 GHz Wi-Fi. Absorbs periodic background scan stutters.\n• Resilient — For unreliable connections or screen-off streaming. Maximum stability.\n• Custom — Define your own parameters manually.',
+    body: 'Presets configure the adaptive jitter buffer that absorbs network timing variations.\n\n• No Buffer — Zero buffering. Plays audio the instant it arrives. Best for wired connections or testing. May crackle on unstable networks.\n• Auto — Intelligently detects your network quality (5 GHz vs 2.4 GHz) and adapts automatically. Best for most users.\n• Wired — Minimal buffering for USB tethering or ADB. Sub-20ms latency.\n• Fast — Tuned for stable 5 GHz Wi-Fi. Very low latency with light jitter absorption.\n• Balanced — The default. Works well on most networks.\n• Stable — For congested or 2.4 GHz Wi-Fi. Absorbs periodic background scan stutters.\n• Resilient — For unreliable connections or screen-off streaming. Maximum stability.\n• Custom — Define your own parameters manually.',
   },
   'buffer-mode': {
     title: 'Buffer Mode',
@@ -38,5 +38,9 @@ export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
   'audio-bitrate': {
     title: 'Audio Bitrate Quality',
     body: 'Controls the Opus encoder bitrate on the PC sender. Higher bitrate = better audio quality but more bandwidth.\n\n• 10–32 Kbps: Voice/FM quality\n• 64–96 Kbps: Good quality\n• 128 Kbps: Recommended default (high quality, low bandwidth)\n• 256–512 Kbps: Transparent quality\n• Uncompressed PCM: Zero codec latency, bypasses Opus entirely. Requires ~1.5 Mbps bandwidth for stereo 48kHz.',
+  },
+  'audio-gain': {
+    title: 'Audio Gain',
+    body: 'Adjusts the playback volume on this device.\n\n• -24 dB: Nearly silent\n• 0 dB: Unity gain (no change)\n• +12 dB: Maximum boost (~4× louder)\n\nThe gain is applied directly to the audio samples before they reach the speaker. Positive values amplify the signal, negative values attenuate it.\n\nYour gain setting is persisted and automatically reapplied when reconnecting.',
   },
 };

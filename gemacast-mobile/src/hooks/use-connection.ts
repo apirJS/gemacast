@@ -32,7 +32,9 @@ async function connectWithRetry(
   throw lastError;
 }
 
-export async function connectToSender(sender: DiscoveredSender): Promise<Result<true, GemaCastError>> {
+export async function connectToSender(
+  sender: DiscoveredSender,
+): Promise<Result<true, GemaCastError>> {
   store.getState().patch({
     isLoading: true,
     status: Status.Connecting,
@@ -48,8 +50,7 @@ export async function connectToSender(sender: DiscoveredSender): Promise<Result<
 
     const isManual = sender.deviceId.startsWith('manual-');
     const connectionMode = isManual ? 'wifi' : settings.mode;
-    const transport =
-      connectionMode === 'usb' ? 'usb' : connectionMode === 'wifi' ? 'wifi' : null;
+    const transport = connectionMode === 'usb' ? 'usb' : connectionMode === 'wifi' ? 'wifi' : null;
 
     const args = {
       ip,
@@ -88,6 +89,14 @@ export async function connectToSender(sender: DiscoveredSender): Promise<Result<
     fetchProcessList(sender);
     startProbing(ip, state.deviceInfo.deviceId);
 
+    // Re-apply persisted audio gain setting
+    const gainDb = store.getState().settings.gainDb;
+    if (gainDb !== 0) {
+      tauriBridge.setAudioGain({ gainDb }).catch((e) => {
+        console.warn('Failed to re-apply audio gain:', e);
+      });
+    }
+
     toast.getState().show('success', 'Connected');
     return ok(true);
   } catch (e) {
@@ -102,21 +111,20 @@ export async function connectToSender(sender: DiscoveredSender): Promise<Result<
   }
 }
 
-export async function disconnect(forgetSender: boolean = true): Promise<Result<true, GemaCastError>> {
+export async function disconnect(
+  forgetSender: boolean = true,
+): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
-  
+
   // Idempotency guard to prevent echo loops and redundant toasts
-  if (
-    state.status === Status.Listening ||
-    state.status === Status.Idle
-  ) {
+  if (state.status === Status.Listening || state.status === Status.Idle) {
     return ok(true);
   }
 
   const sender = state.connectedSender;
 
   if (forgetSender) saveLastSender(null);
-  
+
   // Optimistically update status to catch echoes during async IPC calls
   store.getState().patch({ status: Status.Listening });
   store.getState().setLoading(true);
@@ -144,11 +152,11 @@ export async function disconnect(forgetSender: boolean = true): Promise<Result<t
       ip,
       deviceId: state.deviceInfo.deviceId,
     });
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 150));
     tauriBridge.killPlayback().catch(console.warn);
   } catch (e) {
     console.warn('disconnect_from_sender IPC failed:', e);
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 150));
     tauriBridge.killPlayback().catch(console.warn);
   }
 
@@ -191,7 +199,8 @@ export function handleForceDisconnect(forgetSender: boolean = true) {
   const state = store.getState();
   if (
     state.status === Status.Listening ||
-    state.status === Status.Idle
+    state.status === Status.Idle ||
+    state.status === Status.Connecting
   ) {
     return;
   }

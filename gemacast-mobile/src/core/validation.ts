@@ -87,8 +87,8 @@ export function getDefaultResetConfig(settings: AppSettings): JitterConfig {
   const currentConfig = settings.customJitterConfig;
 
   // Check if current config matches a saved preset
-  const savedMatch = settings.savedPresets.find(
-    (sp) => isJitterConfigEqual(sp.config, currentConfig),
+  const savedMatch = settings.savedPresets.find((sp) =>
+    isJitterConfigEqual(sp.config, currentConfig),
   );
 
   if (savedMatch) {

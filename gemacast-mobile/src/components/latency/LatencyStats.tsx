@@ -4,8 +4,12 @@ import { Status } from '../../core/types';
 function StatItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-center">
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">{label}</span>
-      <span className="text-xs font-medium tabular-nums text-foreground whitespace-nowrap">{value}</span>
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
+        {label}
+      </span>
+      <span className="text-xs font-medium tabular-nums text-foreground whitespace-nowrap">
+        {value}
+      </span>
     </div>
   );
 }
@@ -14,7 +18,8 @@ export function LatencyStats() {
   const latency = useAppStore((s) => s.latency);
   const status = useAppStore((s) => s.status);
 
-  const visible = status === Status.Connected || status === Status.Playing || status === Status.Paused;
+  const visible =
+    status === Status.Connected || status === Status.Playing || status === Status.Paused;
   if (!visible) return null;
 
   const format = (v: number | null) => (v !== null ? `${v} ms` : '-- ms');

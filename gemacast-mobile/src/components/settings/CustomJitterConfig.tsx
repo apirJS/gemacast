@@ -17,6 +17,7 @@ function NumberInput({
   // Sync local state when external value changes
   useEffect(() => {
     if (value == null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLocal('');
     } else {
       // Don't overwrite if the local text evaluates to the same number (e.g. '' == 0 or '02' == 2)
