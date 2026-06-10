@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use crate::traits::types::InterfaceInfo;
+use std::net::IpAddr;
 
 /// Provides network interface and IP information.
 ///

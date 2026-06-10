@@ -181,7 +181,11 @@ mod tests {
         let registry = SharedMapDeviceRegistry::new();
         let mut stale = make_device("stale-dev", "192.168.1.5:5000");
         stale.last_seen = Instant::now() - Duration::from_secs(15);
-        registry.inner.lock().unwrap().insert(stale.device_id.clone(), stale);
+        registry
+            .inner
+            .lock()
+            .unwrap()
+            .insert(stale.device_id.clone(), stale);
 
         let fresh = make_device("fresh-dev", "192.168.1.6:5000");
         registry.register(fresh);
@@ -189,8 +193,12 @@ mod tests {
         let evicted = registry.evict_stale(Duration::from_secs(10));
 
         assert_eq!(evicted.len(), 1);
-        assert_eq!(evicted[0].0 .0, "stale-dev");
-        assert!(registry.get_addr(&DeviceId("fresh-dev".to_string())).is_some());
+        assert_eq!(evicted[0].0.0, "stale-dev");
+        assert!(
+            registry
+                .get_addr(&DeviceId("fresh-dev".to_string()))
+                .is_some()
+        );
     }
 
     #[test]
@@ -198,12 +206,20 @@ mod tests {
         let registry = SharedMapDeviceRegistry::new();
         let mut loopback = make_device("adb-dev", "127.0.0.1:5000");
         loopback.last_seen = Instant::now() - Duration::from_secs(60);
-        registry.inner.lock().unwrap().insert(loopback.device_id.clone(), loopback);
+        registry
+            .inner
+            .lock()
+            .unwrap()
+            .insert(loopback.device_id.clone(), loopback);
 
         let evicted = registry.evict_stale(Duration::from_secs(10));
 
         assert!(evicted.is_empty());
-        assert!(registry.get_addr(&DeviceId("adb-dev".to_string())).is_some());
+        assert!(
+            registry
+                .get_addr(&DeviceId("adb-dev".to_string()))
+                .is_some()
+        );
     }
 
     #[test]

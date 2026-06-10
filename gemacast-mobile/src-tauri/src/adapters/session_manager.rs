@@ -1,10 +1,10 @@
+use crate::traits::{FrontendNotifier, SessionInfo, SessionManager, SessionParams};
+use async_trait::async_trait;
+use gemacast_core::types::{ConnectionMode, JitterConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
-use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use gemacast_core::types::{ConnectionMode, JitterConfig};
-use crate::traits::{FrontendNotifier, SessionInfo, SessionManager, SessionParams};
 
 /// Internal session state, analogous to the old `state::ActiveSession`.
 struct ActiveSession {
@@ -129,7 +129,9 @@ impl SessionManager for TokioSessionManager {
 
     async fn set_volume(&self, linear: f32) {
         if let Some(session) = self.session.lock().await.as_ref() {
-            session.volume.store(f32::to_bits(linear), Ordering::Relaxed);
+            session
+                .volume
+                .store(f32::to_bits(linear), Ordering::Relaxed);
         }
     }
 

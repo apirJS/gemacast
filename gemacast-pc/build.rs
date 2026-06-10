@@ -5,22 +5,19 @@ use std::process::Command;
 
 fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    
+
     let (zip_name, files_to_copy) = match target_os.as_str() {
         "windows" => (
             "platform-tools-latest-windows.zip",
             vec!["adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"],
         ),
-        "macos" => (
-            "platform-tools-latest-darwin.zip",
-            vec!["adb"],
-        ),
-        "linux" => (
-            "platform-tools-latest-linux.zip",
-            vec!["adb"],
-        ),
+        "macos" => ("platform-tools-latest-darwin.zip", vec!["adb"]),
+        "linux" => ("platform-tools-latest-linux.zip", vec!["adb"]),
         _ => {
-            println!("cargo:warning=Unsupported OS for ADB bundling: {}", target_os);
+            println!(
+                "cargo:warning=Unsupported OS for ADB bundling: {}",
+                target_os
+            );
             return;
         }
     };
@@ -38,7 +35,10 @@ fn main() {
         return;
     }
 
-    println!("cargo:warning=Downloading Android platform-tools (ADB) for {}...", target_os);
+    println!(
+        "cargo:warning=Downloading Android platform-tools (ADB) for {}...",
+        target_os
+    );
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -46,12 +46,7 @@ fn main() {
     let download_url = format!("https://dl.google.com/android/repository/{}", zip_name);
 
     let status = Command::new("curl")
-        .args([
-            "-L",
-            "-o",
-            zip_path.to_str().unwrap(),
-            &download_url,
-        ])
+        .args(["-L", "-o", zip_path.to_str().unwrap(), &download_url])
         .status()
         .expect("Failed to execute curl");
 
@@ -76,12 +71,15 @@ fn main() {
     }
 
     let extracted_dir = out_path.join("platform-tools");
-    
+
     for file in files_to_copy {
         let src = extracted_dir.join(file);
         let dest = bin_dir.join(file);
         fs::copy(&src, &dest).unwrap_or_else(|_| panic!("Failed to copy {}", file));
     }
 
-    println!("cargo:warning=ADB successfully bundled in bin/ directory for {}", target_os);
+    println!(
+        "cargo:warning=ADB successfully bundled in bin/ directory for {}",
+        target_os
+    );
 }

@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use crate::traits::{InterfaceInfo, NetworkInfoProvider};
+use std::net::IpAddr;
 
 /// Network info from the real OS via `netdev` and `gemacast_core::network`.
 pub struct NativeNetworkInfoProvider;

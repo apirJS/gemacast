@@ -6,8 +6,8 @@
 //!    (connect, disconnect, change source, change bitrate, get sources, probe).
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gemacast_core::control::http::ControlCommand;
 use gemacast_core::control::types::PresenceResponse;
@@ -48,7 +48,11 @@ impl ControlDispatcher {
                 bitrate,
                 response_tx,
             } => {
-                tracing::info!("ControlCommand::Connect from {:?} at {}", device_id, remote_addr);
+                tracing::info!(
+                    "ControlCommand::Connect from {:?} at {}",
+                    device_id,
+                    remote_addr
+                );
                 let mut audio_addr = remote_addr;
                 audio_addr.set_port(gemacast_core::network::Ports::AUDIO_UDP);
 
@@ -103,11 +107,19 @@ impl ControlDispatcher {
                 });
             }
             ControlCommand::ChangeSource { device_id, source } => {
-                tracing::info!("ControlCommand::ChangeSource for {:?} to {:?}", device_id, source);
+                tracing::info!(
+                    "ControlCommand::ChangeSource for {:?} to {:?}",
+                    device_id,
+                    source
+                );
                 self.audio.change_source(device_id, source).await;
             }
             ControlCommand::ChangeBitrate { device_id, bitrate } => {
-                tracing::info!("ControlCommand::ChangeBitrate for {:?} to {:?}", device_id, bitrate);
+                tracing::info!(
+                    "ControlCommand::ChangeBitrate for {:?} to {:?}",
+                    device_id,
+                    bitrate
+                );
                 self.audio.change_bitrate(device_id, bitrate).await;
             }
             ControlCommand::Probe {
@@ -179,7 +191,12 @@ pub async fn register_device(
     source: Option<gemacast_core::types::AudioSource>,
     bitrate: Option<i32>,
 ) {
-    tracing::debug!("Registering device: {} ({:?}) at {}", device_name, device_id, audio_addr);
+    tracing::debug!(
+        "Registering device: {} ({:?}) at {}",
+        device_name,
+        device_id,
+        audio_addr
+    );
 
     let device = DiscoveredDevice::from_presence(
         device_id.clone(),
@@ -195,20 +212,10 @@ pub async fn register_device(
         RegistrationOutcome::AddressChanged { old_addr } => {
             tray.notify_device_lost(device_id.clone(), old_addr);
             audio.unsubscribe(&device_id).await;
-            tray.notify_device_discovered(
-                device_id.clone(),
-                device_name,
-                audio_addr,
-                transport,
-            );
+            tray.notify_device_discovered(device_id.clone(), device_name, audio_addr, transport);
         }
         RegistrationOutcome::NewDevice => {
-            tray.notify_device_discovered(
-                device_id.clone(),
-                device_name,
-                audio_addr,
-                transport,
-            );
+            tray.notify_device_discovered(device_id.clone(), device_name, audio_addr, transport);
         }
         RegistrationOutcome::AlreadyRegistered => {
             // No tray notification needed — device is already shown.
@@ -242,7 +249,9 @@ pub async fn unregister_device(
     };
 
     tray.notify_device_lost(device_id.clone(), removed.addr);
-    notifier.notify_disconnect(&device_id, Some(removed.addr)).await;
+    notifier
+        .notify_disconnect(&device_id, Some(removed.addr))
+        .await;
     audio.unsubscribe(&device_id).await;
 }
 
@@ -296,7 +305,9 @@ mod tests {
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);
-        assert!(matches!(&audio_calls[0], AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1"));
+        assert!(
+            matches!(&audio_calls[0], AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1")
+        );
     }
 
     #[tokio::test]
@@ -322,14 +333,22 @@ mod tests {
         let tray_calls = tray.take_calls();
         // Should get: Lost (old IP) + Discovered (new IP)
         assert_eq!(tray_calls.len(), 2);
-        assert!(matches!(&tray_calls[0], TrayCall::Lost { device_id, addr } if device_id.0 == "phone-1" && *addr == make_addr("192.168.1.1:9000")));
-        assert!(matches!(&tray_calls[1], TrayCall::Discovered { device_id, .. } if device_id.0 == "phone-1"));
+        assert!(
+            matches!(&tray_calls[0], TrayCall::Lost { device_id, addr } if device_id.0 == "phone-1" && *addr == make_addr("192.168.1.1:9000"))
+        );
+        assert!(
+            matches!(&tray_calls[1], TrayCall::Discovered { device_id, .. } if device_id.0 == "phone-1")
+        );
 
         let audio_calls = audio.take_calls();
         // Should get: Unsubscribe (old) + Subscribe (new)
         assert_eq!(audio_calls.len(), 2);
-        assert!(matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "phone-1"));
-        assert!(matches!(&audio_calls[1], AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1"));
+        assert!(
+            matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "phone-1")
+        );
+        assert!(
+            matches!(&audio_calls[1], AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1")
+        );
     }
 
     #[tokio::test]
@@ -356,7 +375,10 @@ mod tests {
         assert_eq!(audio_calls.len(), 1);
         assert!(matches!(
             &audio_calls[0],
-            AudioCall::Subscribe { target_addr: None, .. }
+            AudioCall::Subscribe {
+                target_addr: None,
+                ..
+            }
         ));
     }
 
@@ -404,11 +426,15 @@ mod tests {
 
         let tray_calls = tray.take_calls();
         assert_eq!(tray_calls.len(), 1);
-        assert!(matches!(&tray_calls[0], TrayCall::Lost { device_id, .. } if device_id.0 == "phone-1"));
+        assert!(
+            matches!(&tray_calls[0], TrayCall::Lost { device_id, .. } if device_id.0 == "phone-1")
+        );
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);
-        assert!(matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "phone-1"));
+        assert!(
+            matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "phone-1")
+        );
 
         assert!(!registry.contains("phone-1"));
     }

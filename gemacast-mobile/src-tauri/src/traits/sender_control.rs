@@ -1,10 +1,8 @@
-use std::net::IpAddr;
-use std::sync::Arc;
 use async_trait::async_trait;
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
-use gemacast_core::types::{
-    AudioSource, DeviceId, ProcessInfo, SenderCapabilities,
-};
+use gemacast_core::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
+use std::net::IpAddr;
+use std::sync::Arc;
 
 /// Sends control commands to a PC sender over HTTP.
 ///
@@ -28,11 +26,8 @@ pub trait SenderControlClient: Send + Sync {
     async fn change_source(&self, device_id: DeviceId, source: AudioSource) -> Result<(), String>;
 
     /// Request the sender to change the encoding bitrate for a device.
-    async fn change_bitrate(
-        &self,
-        device_id: DeviceId,
-        bitrate: Option<i32>,
-    ) -> Result<(), String>;
+    async fn change_bitrate(&self, device_id: DeviceId, bitrate: Option<i32>)
+    -> Result<(), String>;
 
     /// Request the list of capturable processes from the sender.
     async fn get_process_list(&self) -> Result<Vec<ProcessInfo>, String>;

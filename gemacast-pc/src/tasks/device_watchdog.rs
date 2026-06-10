@@ -46,8 +46,13 @@ pub fn spawn_device_watchdog(
         let mut interval = tokio::time::interval(CHECK_INTERVAL);
         loop {
             interval.tick().await;
-            evict_stale_devices(registry.as_ref(), tray.as_ref(), audio.as_ref(), STALE_TIMEOUT)
-                .await;
+            evict_stale_devices(
+                registry.as_ref(),
+                tray.as_ref(),
+                audio.as_ref(),
+                STALE_TIMEOUT,
+            )
+            .await;
         }
     });
 }
@@ -55,7 +60,9 @@ pub fn spawn_device_watchdog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::mocks::{AudioCall, MockAudioController, MockDeviceRegistry, MockTrayNotifier, TrayCall};
+    use crate::testing::mocks::{
+        AudioCall, MockAudioController, MockDeviceRegistry, MockTrayNotifier, TrayCall,
+    };
     use std::time::Instant;
 
     #[tokio::test]
@@ -75,11 +82,15 @@ mod tests {
 
         let tray_calls = tray.take_calls();
         assert_eq!(tray_calls.len(), 1);
-        assert!(matches!(&tray_calls[0], TrayCall::Lost { device_id, .. } if device_id.0 == "stale"));
+        assert!(
+            matches!(&tray_calls[0], TrayCall::Lost { device_id, .. } if device_id.0 == "stale")
+        );
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);
-        assert!(matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "stale"));
+        assert!(
+            matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "stale")
+        );
 
         assert!(registry.contains("fresh"));
         assert!(!registry.contains("stale"));

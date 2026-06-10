@@ -128,7 +128,10 @@ mod tests {
             let parsed: ConnectReq = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed.device_id, req.device_id);
             assert_eq!(parsed.bitrate, Some(256_000));
-            assert!(matches!(parsed.source, Some(AudioSource::Process { pid: 42, .. })));
+            assert!(matches!(
+                parsed.source,
+                Some(AudioSource::Process { pid: 42, .. })
+            ));
         }
     }
 

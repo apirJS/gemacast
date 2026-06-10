@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use gemacast_core::types::{ConnectionMode, DeviceId, DiscoveredDevice, TransportType};
 
-use crate::traits::FrontendNotifier;
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
+use crate::traits::FrontendNotifier;
 
 pub struct DispatchContext {
     pub sender_last_seen: Arc<Mutex<HashMap<DeviceId, Instant>>>,
@@ -208,11 +208,12 @@ mod tests {
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
         // Sender was removed from tracker
-        assert!(!ctx
-            .sender_last_seen
-            .lock()
-            .unwrap()
-            .contains_key(&DeviceId("pc1".into())));
+        assert!(
+            !ctx.sender_last_seen
+                .lock()
+                .unwrap()
+                .contains_key(&DeviceId("pc1".into()))
+        );
 
         // Offline event was still emitted
         let events = notifier.take_events();

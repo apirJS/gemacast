@@ -97,7 +97,10 @@ fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runti
     {
         Ok(rt) => Some(rt),
         Err(e) => {
-            tracing::error!("Fatal error: Failed to build background Tokio runtime: {}", e);
+            tracing::error!(
+                "Fatal error: Failed to build background Tokio runtime: {}",
+                e
+            );
             let _ = proxy.send_event(TrayEvent::FatalError(e.to_string()));
             None
         }
