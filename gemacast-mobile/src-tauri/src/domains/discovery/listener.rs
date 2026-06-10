@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-use crate::traits::FrontendNotifier;
 use crate::HEARTBEAT_CHECK_INTERVAL_SECS;
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
+use crate::traits::FrontendNotifier;
 
 use gemacast_core::types::{ConnectionMode, DeviceId};
 

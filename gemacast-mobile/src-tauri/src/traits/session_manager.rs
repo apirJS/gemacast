@@ -41,6 +41,9 @@ pub trait SessionManager: Send + Sync {
     /// Update the stored bitrate on the active session.
     async fn update_bitrate(&self, bitrate: Option<i32>);
 
+    /// Set the audio output volume as a linear multiplier (1.0 = unity gain).
+    async fn set_volume(&self, linear: f32);
+
     /// Track a WebSocket client task. Aborts any previous WS task.
     async fn start_ws_client(&self, task: tokio::task::JoinHandle<()>);
 

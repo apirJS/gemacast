@@ -132,6 +132,12 @@ impl AudioService {
         Ok(())
     }
 
+    /// Set the audio output volume as a linear multiplier.
+    pub async fn set_volume(&self, linear: f32) -> Result<(), String> {
+        self.session.set_volume(linear).await;
+        Ok(())
+    }
+
     /// Request audio sources from the sender.
     pub async fn get_audio_sources(
         &self,

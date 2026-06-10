@@ -41,9 +41,7 @@ export function useTauriEvents() {
 
     unlisteners.push(
       listen<DiscoveredSender>('sender-discovered', (event) => {
-        const autoReconnectTarget = useAppStore
-          .getState()
-          .updateDiscoveredSender(event.payload);
+        const autoReconnectTarget = useAppStore.getState().updateDiscoveredSender(event.payload);
         if (autoReconnectTarget) {
           connectToSender(autoReconnectTarget);
         }

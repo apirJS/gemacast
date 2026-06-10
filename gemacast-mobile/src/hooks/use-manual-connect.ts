@@ -3,6 +3,7 @@ import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
 import { connectToSender, disconnect } from './use-connection';
+import { Ports } from '../core/constants';
 
 /**
  * Hook that encapsulates the "connect by IP address" business logic:
@@ -16,7 +17,11 @@ import { connectToSender, disconnect } from './use-connection';
  */
 export function useManualConnect() {
   const [ip, setIp] = useState('');
+  const [isProbing, setIsProbing] = useState(false);
   const isLoading = useAppStore((s) => s.isLoading);
+  const connectingSenderId = useAppStore((s) => s.connectingSenderId);
+
+  const isManualConnecting = isProbing || (isLoading && connectingSenderId?.startsWith('manual-'));
 
   const handleConnect = useCallback(async () => {
     const trimmed = ip.trim();
@@ -28,6 +33,7 @@ export function useManualConnect() {
       return;
     }
 
+    setIsProbing(true);
     useAppStore.getState().patch({ isLoading: true });
 
     try {
@@ -35,13 +41,15 @@ export function useManualConnect() {
     } catch {
       useToastStore.getState().show('warning', 'This IP is unreachable');
       useAppStore.getState().patch({ isLoading: false });
+      setIsProbing(false);
       return;
     }
+    setIsProbing(false);
 
     const manualSender = {
       deviceId: `manual-${trimmed}`,
       deviceName: `Manual: ${trimmed}`,
-      addr: `${trimmed}:55555`,
+      addr: `${trimmed}:${Ports.DISCOVERY}`,
       isOffline: false,
     };
 
@@ -54,7 +62,7 @@ export function useManualConnect() {
     if (result.ok) {
       const state = useAppStore.getState();
       const existsIndex = state.discoveredSenders.findIndex(
-        (s) => s.deviceId === manualSender.deviceId
+        (s) => s.deviceId === manualSender.deviceId,
       );
       const newList = [...state.discoveredSenders];
       if (existsIndex >= 0) newList.splice(existsIndex, 1);
@@ -67,8 +75,8 @@ export function useManualConnect() {
   return {
     ip,
     setIp,
-    isLoading,
+    isLoading: isManualConnecting,
     handleConnect,
-    isDisabled: isLoading || !ip.trim(),
+    isDisabled: isLoading || !ip.trim() || isProbing,
   };
 }

@@ -25,8 +25,7 @@ export function useNetworkMonitor() {
 
         if (
           currentState.settings.mode === ConnectionMode.Wifi &&
-          (currentState.deviceInfo.ip !== localIp ||
-            networkIdRef.current !== networkId)
+          (currentState.deviceInfo.ip !== localIp || networkIdRef.current !== networkId)
         ) {
           networkIdRef.current = networkId;
 
@@ -65,16 +64,14 @@ export function useNetworkMonitor() {
         if (
           currentMode === ConnectionMode.Usb &&
           !modes.usb &&
-          (currentState.status === Status.Playing ||
-          currentState.status === Status.Paused)
+          (currentState.status === Status.Playing || currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
         } else if (
           currentMode === ConnectionMode.Wifi &&
           !modes.wifi &&
-          (currentState.status === Status.Playing ||
-          currentState.status === Status.Paused)
+          (currentState.status === Status.Playing || currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
@@ -107,7 +104,11 @@ export function useNetworkMonitor() {
       });
       useToastStore.getState().show('warning', 'Network offline');
 
-      if (state.connectedSender || state.status === Status.Playing || state.status === Status.Paused) {
+      if (
+        state.connectedSender ||
+        state.status === Status.Playing ||
+        state.status === Status.Paused
+      ) {
         store.getState().patch({
           status: Status.Listening,
           connectedSender: null,

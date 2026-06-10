@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { setupInvokeMock, invokeCalls, makeDeviceInfo, makeDiscoveredSender } from '../__tests__/setup';
+import {
+  setupInvokeMock,
+  invokeCalls,
+  makeDeviceInfo,
+  makeDiscoveredSender,
+} from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
 import { startPlayback, stopPlayback, updateAudioActive } from './use-audio';
@@ -42,7 +47,9 @@ describe('startPlayback', () => {
 
   it('returns err on IPC failure', async () => {
     setupInvokeMock({
-      start_audio_playback: () => { throw new Error('no device'); },
+      start_audio_playback: () => {
+        throw new Error('no device');
+      },
     });
     const result = await startPlayback();
     expect(result.ok).toBe(false);
@@ -104,7 +111,7 @@ describe('updateAudioActive', () => {
     useAppStore.getState().setStatus(Status.Paused);
     updateAudioActive(true); // Stale telemetry from before pause
     expect(useAppStore.getState().status).toBe(Status.Paused);
-    
+
     updateAudioActive(false); // Confirmation telemetry after pause
     expect(useAppStore.getState().status).toBe(Status.Paused);
   });

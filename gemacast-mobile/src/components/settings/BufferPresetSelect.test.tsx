@@ -7,8 +7,8 @@ const defaultSettings = {
   bufferPreset: 'auto',
   customJitterConfig: { adaptive: true, targetMs: 150 },
   savedPresets: [
-    { name: 'My Preset', config: { adaptive: false, targetMs: 50, staticTargetMs: 50 } }
-  ]
+    { name: 'My Preset', config: { adaptive: false, targetMs: 50, staticTargetMs: 50 } },
+  ],
 };
 
 beforeEach(() => {
@@ -26,7 +26,7 @@ describe('BufferPresetSelect', () => {
     render(<BufferPresetSelect />);
     const trigger = screen.getAllByRole('button')[0];
     fireEvent.click(trigger);
-    
+
     // Built-in presets
     expect(screen.getByText('Wired')).toBeTruthy();
     expect(screen.getByText('Custom')).toBeTruthy();
@@ -38,9 +38,9 @@ describe('BufferPresetSelect', () => {
     render(<BufferPresetSelect />);
     const trigger = screen.getAllByRole('button')[0];
     fireEvent.click(trigger);
-    
+
     fireEvent.click(screen.getByText('Wired'));
-    
+
     expect(useAppStore.getState().settings.bufferPreset).toBe('wired');
   });
 
@@ -48,9 +48,9 @@ describe('BufferPresetSelect', () => {
     render(<BufferPresetSelect />);
     const trigger = screen.getAllByRole('button')[0];
     fireEvent.click(trigger);
-    
+
     fireEvent.click(screen.getByText('Custom'));
-    
+
     expect(useAppStore.getState().settings.bufferPreset).toBe('custom');
     expect(useAppStore.getState().settings.customJitterConfig.minDepthMs).toBe(5);
     expect(useAppStore.getState().settings.customJitterConfig.comfortCapMs).toBe(1000);
@@ -60,10 +60,14 @@ describe('BufferPresetSelect', () => {
     render(<BufferPresetSelect />);
     const trigger = screen.getAllByRole('button')[0];
     fireEvent.click(trigger);
-    
+
     fireEvent.click(screen.getByText('My Preset'));
-    
+
     expect(useAppStore.getState().settings.bufferPreset).toBe('saved-0');
-    expect(useAppStore.getState().settings.customJitterConfig).toMatchObject({ adaptive: false, targetMs: 50, staticTargetMs: 50 });
+    expect(useAppStore.getState().settings.customJitterConfig).toMatchObject({
+      adaptive: false,
+      targetMs: 50,
+      staticTargetMs: 50,
+    });
   });
 });

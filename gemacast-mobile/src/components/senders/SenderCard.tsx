@@ -1,5 +1,10 @@
 import { Monitor, Usb, Play, Pause } from 'lucide-react';
-import type { AudioSource, DiscoveredSender, ProcessInfo, SenderCapabilities } from '../../core/types';
+import type {
+  AudioSource,
+  DiscoveredSender,
+  ProcessInfo,
+  SenderCapabilities,
+} from '../../core/types';
 import { ProcessSelect } from './ProcessSelect';
 
 type SenderCardProps = {
@@ -50,15 +55,15 @@ export function SenderCard({
         ${isConnected ? 'border-primary shadow-[0_0_0_1px_var(--color-primary)]' : 'border-border hover:border-primary'}
       `}
     >
-      <div className={`flex items-center gap-3 overflow-hidden ${hasSource ? 'min-w-0 flex-1' : 'min-w-0'}`}>
+      <div
+        className={`flex items-center gap-3 overflow-hidden ${hasSource ? 'min-w-0 flex-1' : 'min-w-0'}`}
+      >
         <div className={`flex shrink-0 ${isConnected ? 'text-primary' : 'text-muted-foreground'}`}>
           {isAdb ? <Usb className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
         </div>
 
         <div className="flex min-w-0 flex-col gap-0.5">
-          <p className="truncate text-sm font-medium text-card-foreground">
-            {sender.deviceName}
-          </p>
+          <p className="truncate text-sm font-medium text-card-foreground">{sender.deviceName}</p>
           <p className="truncate text-xs text-muted-foreground">
             {isAdb ? 'ADB (USB Debug)' : sender.addr.split(':')[0]}
           </p>
@@ -70,8 +75,9 @@ export function SenderCard({
           type="button"
           disabled={isDisabled}
           className={`
-            inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[calc(var(--radius-default)-0.2rem)] border border-transparent px-3 py-1.5 text-xs font-semibold transition-all duration-150
+            relative inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-[calc(var(--radius-default)-0.2rem)] border border-transparent px-3 py-1.5 text-xs font-semibold transition-all duration-150
             ${showLoading ? 'pointer-events-none' : ''}
+            ${isDisabled && !showLoading ? 'opacity-50 pointer-events-none' : ''}
             ${
               isConnected
                 ? 'bg-destructive text-destructive-foreground hover:opacity-90'
@@ -81,12 +87,13 @@ export function SenderCard({
           onClick={onToggle}
           aria-label={`${isConnected ? 'Disconnect from' : 'Connect to'} ${sender.deviceName}`}
         >
-          {showLoading ? (
-            <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
-          ) : isConnected ? (
-            'Disconnect'
-          ) : (
-            'Connect'
+          <span
+            className={`transition-opacity duration-150 ${showLoading ? 'opacity-0' : 'opacity-100'}`}
+          >
+            {isConnected ? 'Disconnect' : 'Connect'}
+          </span>
+          {showLoading && (
+            <span className="absolute left-1/2 top-1/2 inline-block h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
           )}
         </button>
 

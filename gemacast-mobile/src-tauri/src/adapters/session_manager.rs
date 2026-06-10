@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
@@ -12,6 +12,7 @@ struct ActiveSession {
     mode: ConnectionMode,
     bitrate: Option<i32>,
     is_playing: Arc<AtomicBool>,
+    volume: Arc<AtomicU32>,
     jitter_config: Arc<RwLock<JitterConfig>>,
     shutdown_tx: oneshot::Sender<()>,
     playback_task: JoinHandle<()>,
@@ -40,7 +41,7 @@ impl SessionManager for TokioSessionManager {
         // Tear down any existing session first
         self.stop_session().await;
 
-        let (is_playing, _is_tcp_mode, config_ref, shutdown_tx, playback_task) =
+        let (is_playing, _is_tcp_mode, config_ref, volume, shutdown_tx, playback_task) =
             crate::domains::audio::playback::spawn_session_receiver(
                 params.jitter_config.clone(),
                 params.is_tcp,
@@ -56,6 +57,7 @@ impl SessionManager for TokioSessionManager {
             mode: params.mode,
             bitrate: params.bitrate,
             is_playing,
+            volume,
             jitter_config: config_ref,
             shutdown_tx,
             playback_task,
@@ -97,10 +99,10 @@ impl SessionManager for TokioSessionManager {
     }
 
     async fn update_jitter_config(&self, config: JitterConfig) {
-        if let Some(session) = self.session.lock().await.as_ref() {
-            if let Ok(mut guard) = session.jitter_config.write() {
-                *guard = config;
-            }
+        if let Some(session) = self.session.lock().await.as_ref()
+            && let Ok(mut guard) = session.jitter_config.write()
+        {
+            *guard = config;
         }
     }
 
@@ -122,6 +124,12 @@ impl SessionManager for TokioSessionManager {
     async fn update_bitrate(&self, bitrate: Option<i32>) {
         if let Some(session) = self.session.lock().await.as_mut() {
             session.bitrate = bitrate;
+        }
+    }
+
+    async fn set_volume(&self, linear: f32) {
+        if let Some(session) = self.session.lock().await.as_ref() {
+            session.volume.store(f32::to_bits(linear), Ordering::Relaxed);
         }
     }
 

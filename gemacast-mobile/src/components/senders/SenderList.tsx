@@ -29,20 +29,23 @@ export function SenderList() {
 
   const isEmpty = senders.length === 0 && isListening;
 
-  const handleToggle = useCallback(async (sender: DiscoveredSender, isConnected: boolean) => {
-    if (isConnected) {
-      await disconnect();
-      // Remove manual senders from list on disconnect
-      if (sender.deviceId.startsWith('manual-')) {
-        const state = useAppStore.getState();
-        const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
-        state.setDiscoveredSenders(newList);
+  const handleToggle = useCallback(
+    async (sender: DiscoveredSender, isConnected: boolean) => {
+      if (isConnected) {
+        await disconnect();
+        // Remove manual senders from list on disconnect
+        if (sender.deviceId.startsWith('manual-')) {
+          const state = useAppStore.getState();
+          const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
+          state.setDiscoveredSenders(newList);
+        }
+      } else {
+        if (connectedSender) await disconnect();
+        await connectToSender(sender);
       }
-    } else {
-      if (connectedSender) await disconnect();
-      await connectToSender(sender);
-    }
-  }, [connectedSender]);
+    },
+    [connectedSender],
+  );
 
   const handlePlayPause = useCallback(async () => {
     const currentStatus = useAppStore.getState().status;
@@ -58,15 +61,19 @@ export function SenderList() {
   }, []);
 
   return (
-    <section>
+    <section className="flex-1 min-h-0 flex flex-col">
       {isEmpty && <EmptyState />}
 
-      <ul className="flex flex-col gap-2" aria-label="Discovered senders">
+      <ul
+        className="flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-2 min-h-[20rem]"
+        aria-label="Discovered senders"
+      >
         {senders.map((sender) => {
           const isConnected = connectedSender?.deviceId === sender.deviceId;
           const isConnecting =
             status === Status.Connecting && connectingSenderId === sender.deviceId;
-          const isPlaying = isConnected && (status === Status.Playing || status === Status.Connected);
+          const isPlaying =
+            isConnected && (status === Status.Playing || status === Status.Connected);
 
           return (
             <SenderCard

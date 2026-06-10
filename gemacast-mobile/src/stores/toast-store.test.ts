@@ -24,15 +24,15 @@ describe('toast-store', () => {
     useToastStore.getState().show('info', 'Keep');
     useToastStore.getState().show('warning', 'Remove');
     const removeId = useToastStore.getState().toasts[1].id;
-    
+
     useToastStore.getState().dismiss(removeId);
-    
+
     // It should be marked as closing immediately
     expect(useToastStore.getState().toasts[1].closing).toBe(true);
-    
+
     // Wait for the 200ms removal timeout
-    await new Promise(resolve => setTimeout(resolve, 250));
-    
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
     const remaining = useToastStore.getState().toasts;
     expect(remaining).toHaveLength(1);
     expect(remaining[0].message).toBe('Keep');
@@ -55,7 +55,7 @@ describe('toast-store', () => {
     useToastStore.getState().show('error', 'Error 1');
     useToastStore.getState().show('info', 'Some info');
     useToastStore.getState().show('error', 'Error 2');
-    
+
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(2);
     expect(toasts[0].type).toBe('info');

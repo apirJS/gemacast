@@ -11,14 +11,14 @@ beforeEach(() => {
 describe('ConfirmDialog', () => {
   it('calls showModal when open is true', () => {
     render(
-      <ConfirmDialog open={true} message="Are you sure?" onConfirm={mock()} onCancel={mock()} />
+      <ConfirmDialog open={true} message="Are you sure?" onConfirm={mock()} onCancel={mock()} />,
     );
     expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled();
   });
 
   it('renders message and buttons', () => {
     render(
-      <ConfirmDialog open={true} message="Are you sure?" onConfirm={mock()} onCancel={mock()} />
+      <ConfirmDialog open={true} message="Are you sure?" onConfirm={mock()} onCancel={mock()} />,
     );
     expect(screen.getByText('Are you sure?')).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();
@@ -27,32 +27,29 @@ describe('ConfirmDialog', () => {
 
   it('calls onConfirm when confirm button clicked', () => {
     const onConfirm = mock();
-    render(
-      <ConfirmDialog open={true} message="Test" onConfirm={onConfirm} onCancel={mock()} />
-    );
+    render(<ConfirmDialog open={true} message="Test" onConfirm={onConfirm} onCancel={mock()} />);
     fireEvent.click(screen.getByText('Delete'));
     expect(onConfirm).toHaveBeenCalled();
   });
 
   it('calls onCancel when cancel button clicked', () => {
     const onCancel = mock();
-    render(
-      <ConfirmDialog open={true} message="Test" onConfirm={mock()} onCancel={onCancel} />
-    );
+    render(<ConfirmDialog open={true} message="Test" onConfirm={mock()} onCancel={onCancel} />);
     fireEvent.click(screen.getByText('Cancel'));
     expect(onCancel).toHaveBeenCalled();
   });
 
   it('calls close when open becomes false', () => {
     const { rerender } = render(
-      <ConfirmDialog open={true} message="Test" onConfirm={mock()} onCancel={mock()} />
+      <ConfirmDialog open={true} message="Test" onConfirm={mock()} onCancel={mock()} />,
     );
     // Mock open property on dialog
-    Object.defineProperty(HTMLDialogElement.prototype, 'open', { get: () => true, configurable: true });
-    
-    rerender(
-      <ConfirmDialog open={false} message="Test" onConfirm={mock()} onCancel={mock()} />
-    );
+    Object.defineProperty(HTMLDialogElement.prototype, 'open', {
+      get: () => true,
+      configurable: true,
+    });
+
+    rerender(<ConfirmDialog open={false} message="Test" onConfirm={mock()} onCancel={mock()} />);
     expect(HTMLDialogElement.prototype.close).toHaveBeenCalled();
   });
 });

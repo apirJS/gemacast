@@ -57,16 +57,13 @@ export async function stopPlayback(): Promise<Result<true, GemaCastError>> {
 
 export function updateAudioActive(isActive: boolean) {
   const state = store.getState();
-  
+
   // If the user explicitly paused, ignore any audio activity telemetry
   // (both stale isActive: true packets and confirming isActive: false packets).
   // The state remains Paused until they explicitly resume via startPlayback.
   if (state.status === Status.Paused) return;
 
-  if (
-    state.status === Status.Playing ||
-    state.status === Status.Connected
-  ) {
+  if (state.status === Status.Playing || state.status === Status.Connected) {
     store.getState().setStatus(isActive ? Status.Playing : Status.Connected);
   }
 }

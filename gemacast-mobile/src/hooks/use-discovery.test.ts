@@ -31,7 +31,9 @@ describe('startListening', () => {
 
   it('returns err on IPC failure and stores error', async () => {
     setupInvokeMock({
-      start_listening_for_senders: () => { throw new Error('bind failed'); },
+      start_listening_for_senders: () => {
+        throw new Error('bind failed');
+      },
     });
     const result = await startListening(ConnectionMode.Wifi);
     expect(result.ok).toBe(false);

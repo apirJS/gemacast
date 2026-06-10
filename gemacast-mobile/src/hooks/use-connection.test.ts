@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { setupInvokeMock, invokeCalls, makeDeviceInfo, makeDiscoveredSender } from '../__tests__/setup';
+import {
+  setupInvokeMock,
+  invokeCalls,
+  makeDeviceInfo,
+  makeDiscoveredSender,
+} from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
 import {
@@ -52,7 +57,9 @@ describe('connectToSender', () => {
 
   it('returns err and reverts to Listening on IPC failure', async () => {
     setupInvokeMock({
-      connect_to_sender: () => { throw new Error('refused'); },
+      connect_to_sender: () => {
+        throw new Error('refused');
+      },
     });
     const result = await connectToSender(makeDiscoveredSender());
     expect(result.ok).toBe(false);
@@ -83,6 +90,7 @@ describe('disconnect', () => {
   it('invokes disconnect_from_sender IPC', async () => {
     useAppStore.getState().patch({
       connectedSender: makeDiscoveredSender({ addr: '10.0.0.2:9000' }),
+      status: Status.Connected,
     });
     await disconnect();
     expect(invokeCalls.some((c) => c.cmd === 'disconnect_from_sender')).toBe(true);
@@ -96,6 +104,7 @@ describe('disconnect', () => {
   it('resets latency to all-null', async () => {
     useAppStore.getState().patch({
       connectedSender: makeDiscoveredSender(),
+      status: Status.Connected,
     });
     useAppStore.getState().updateLatency({ current: 10, avg: 12, max: 20, min: 5 });
     await disconnect();
@@ -150,7 +159,10 @@ describe('handleForceDisconnect', () => {
 
   it('forgets lastConnectedSender when forgetSender=true', () => {
     const sender = makeDiscoveredSender();
-    useAppStore.getState().patch({ lastConnectedSender: sender });
+    useAppStore.getState().patch({
+      lastConnectedSender: sender,
+      status: Status.Connected,
+    });
     handleForceDisconnect(true);
     expect(useAppStore.getState().lastConnectedSender).toBeNull();
   });
@@ -160,6 +172,7 @@ describe('handleForceDisconnect', () => {
     useAppStore.getState().patch({
       connectedSender: sender,
       lastConnectedSender: sender,
+      status: Status.Connected,
     });
     handleForceDisconnect(false);
     expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
@@ -176,6 +189,7 @@ describe('changeAudioSource', () => {
     setupInvokeMock({ change_audio_source: undefined });
     useAppStore.getState().patch({
       connectedSender: makeDiscoveredSender({ addr: '10.0.0.5:9000' }),
+      status: Status.Connected,
     });
     const result = await changeAudioSource({ type: 'desktop' });
     expect(result.ok).toBe(true);
@@ -186,10 +200,13 @@ describe('changeAudioSource', () => {
 
   it('returns err on IPC failure', async () => {
     setupInvokeMock({
-      change_audio_source: () => { throw new Error('denied'); },
+      change_audio_source: () => {
+        throw new Error('denied');
+      },
     });
     useAppStore.getState().patch({
       connectedSender: makeDiscoveredSender(),
+      status: Status.Connected,
     });
     const result = await changeAudioSource({ type: 'desktop' });
     expect(result.ok).toBe(false);

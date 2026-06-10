@@ -17,12 +17,17 @@ describe('tauriBridge', () => {
       deviceName: 'Device',
       mode: ConnectionMode.Wifi,
       exclusiveMode: true,
-      jitterConfig: { minDepthMs: 5, comfortCapMs: 100, peakDecayHalflifeMs: 250, resumeThresholdPct: 0.95 },
+      jitterConfig: {
+        minDepthMs: 5,
+        comfortCapMs: 100,
+        peakDecayHalflifeMs: 250,
+        resumeThresholdPct: 0.95,
+      },
       bitratePreset: 'raw',
       customBitrateKbps: 0,
       transport: null,
     });
-    
+
     expect(invokeCalls).toHaveLength(1);
     expect(invokeCalls[0].cmd).toBe('connect_to_sender');
     expect((invokeCalls[0].args as Record<string, unknown>).bitrate).toBeNull();
@@ -35,12 +40,17 @@ describe('tauriBridge', () => {
       deviceName: 'Device',
       mode: ConnectionMode.Wifi,
       exclusiveMode: true,
-      jitterConfig: { minDepthMs: 5, comfortCapMs: 100, peakDecayHalflifeMs: 250, resumeThresholdPct: 0.95 },
+      jitterConfig: {
+        minDepthMs: 5,
+        comfortCapMs: 100,
+        peakDecayHalflifeMs: 250,
+        resumeThresholdPct: 0.95,
+      },
       bitratePreset: 'custom',
       customBitrateKbps: 128,
       transport: null,
     });
-    
+
     expect(invokeCalls[0].cmd).toBe('connect_to_sender');
     expect((invokeCalls[0].args as Record<string, unknown>).bitrate).toBe(128000); // 128 kbps -> 128000 bps
   });
@@ -62,11 +72,17 @@ describe('tauriBridge', () => {
     expect((invokeCalls[0].args as Record<string, unknown>).deviceId).toBe('dev1');
     expect((invokeCalls[0].args as Record<string, unknown>).mode).toBe(ConnectionMode.Wifi);
   });
-  
+
   it('changeAudioSource passes correct args', async () => {
-    await tauriBridge.changeAudioSource({ ip: '10.0.0.1', deviceId: 'dev1', source: { type: 'desktop' } });
+    await tauriBridge.changeAudioSource({
+      ip: '10.0.0.1',
+      deviceId: 'dev1',
+      source: { type: 'desktop' },
+    });
     expect(invokeCalls[0].cmd).toBe('change_audio_source');
-    expect(((invokeCalls[0].args as Record<string, unknown>).source as Record<string, unknown>).type).toBe('desktop');
+    expect(
+      ((invokeCalls[0].args as Record<string, unknown>).source as Record<string, unknown>).type,
+    ).toBe('desktop');
   });
 
   it('getNetworkIdentifier invokes correct command', async () => {
@@ -75,14 +91,23 @@ describe('tauriBridge', () => {
   });
 
   it('updateJitterConfig passes correct args', async () => {
-    const jitterConfig = { minDepthMs: 5, comfortCapMs: 100, peakDecayHalflifeMs: 250, resumeThresholdPct: 0.95 };
+    const jitterConfig = {
+      minDepthMs: 5,
+      comfortCapMs: 100,
+      peakDecayHalflifeMs: 250,
+      resumeThresholdPct: 0.95,
+    };
     await tauriBridge.updateJitterConfig({ jitterConfig });
     expect(invokeCalls[0].cmd).toBe('update_jitter_config');
     expect((invokeCalls[0].args as Record<string, unknown>).jitterConfig).toEqual(jitterConfig);
   });
 
   it('changeAudioBitrate passes correct args', async () => {
-    await tauriBridge.changeAudioBitrate({ ip: '127.0.0.1', deviceId: 'test-device', bitrate: 128000 });
+    await tauriBridge.changeAudioBitrate({
+      ip: '127.0.0.1',
+      deviceId: 'test-device',
+      bitrate: 128000,
+    });
     expect(invokeCalls[0].cmd).toBe('change_audio_bitrate');
     expect((invokeCalls[0].args as Record<string, unknown>).ip).toBe('127.0.0.1');
     expect((invokeCalls[0].args as Record<string, unknown>).deviceId).toBe('test-device');
