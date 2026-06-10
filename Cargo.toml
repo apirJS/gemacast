@@ -24,4 +24,8 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 
-
+[patch.crates-io]
+audiopus_sys = { path = "vendor/audiopus_sys" }
+ 
+[workspace.metadata.dist]
+allow-dirty = ["wix/main.wxs"]
