@@ -56,15 +56,28 @@ fn main() {
 
     println!("cargo:warning=Extracting ADB...");
 
-    let status = Command::new("tar")
-        .args([
-            "-xf",
-            zip_path.to_str().unwrap(),
-            "-C",
-            out_path.to_str().unwrap(),
-        ])
-        .status()
-        .expect("Failed to execute tar");
+    let status = if target_os == "windows" {
+        Command::new("tar")
+            .args([
+                "-xf",
+                zip_path.to_str().unwrap(),
+                "-C",
+                out_path.to_str().unwrap(),
+            ])
+            .status()
+            .expect("Failed to execute tar")
+    } else {
+        Command::new("unzip")
+            .args([
+                "-q",
+                "-o",
+                zip_path.to_str().unwrap(),
+                "-d",
+                out_path.to_str().unwrap(),
+            ])
+            .status()
+            .expect("Failed to execute unzip")
+    };
 
     if !status.success() {
         panic!("Failed to extract platform-tools");
