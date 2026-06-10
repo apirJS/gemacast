@@ -1,2 +1,23 @@
-# /docs
+# Build artifacts
 /target
+node_modules/
+dist/
+
+# Android / Keystore secrets
+*.jks*
+*.keystore
+keystore_b64.txt
+*.apk
+*.aab
+
+# Tauri generated
+gemacast-mobile/src-tauri/gen/
+
+# Environment
+.env
+.env.*
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
