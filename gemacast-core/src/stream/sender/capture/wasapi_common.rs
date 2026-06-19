@@ -93,10 +93,15 @@ pub unsafe fn decode_samples_to_f32(
             for i in 0..total_samples {
                 let offset = (i / format.native_channels) * format.block_align
                     + (i % format.native_channels) * bytes_per_chunk;
-                
+
                 if bytes_per_chunk == 3 {
                     if offset + 2 < raw_bytes.len() {
-                        let bytes = [0, raw_bytes[offset], raw_bytes[offset + 1], raw_bytes[offset + 2]];
+                        let bytes = [
+                            0,
+                            raw_bytes[offset],
+                            raw_bytes[offset + 1],
+                            raw_bytes[offset + 2],
+                        ];
                         let val = i32::from_le_bytes(bytes);
                         output.push(val as f32 / 2147483648.0);
                     } else {
@@ -104,7 +109,12 @@ pub unsafe fn decode_samples_to_f32(
                     }
                 } else if bytes_per_chunk == 4 {
                     if offset + 3 < raw_bytes.len() {
-                        let bytes = [raw_bytes[offset], raw_bytes[offset + 1], raw_bytes[offset + 2], raw_bytes[offset + 3]];
+                        let bytes = [
+                            raw_bytes[offset],
+                            raw_bytes[offset + 1],
+                            raw_bytes[offset + 2],
+                            raw_bytes[offset + 3],
+                        ];
                         let val = i32::from_le_bytes(bytes);
                         output.push(val as f32 / 2147483648.0);
                     } else {
@@ -153,7 +163,7 @@ pub fn downmix_to_stereo(input: &[f32], channels: usize, output: &mut Vec<f32>) 
             for frame in input.chunks_exact(channels) {
                 // FL (0), FR (1), C (2)
                 let center = frame.get(2).copied().unwrap_or(0.0) * 0.707;
-                
+
                 let mut left = frame[0] + center;
                 let mut right = frame[1] + center;
 
@@ -163,7 +173,7 @@ pub fn downmix_to_stereo(input: &[f32], channels: usize, output: &mut Vec<f32>) 
                     left += lfe;
                     right += lfe;
                 }
-                
+
                 // RL (4), RR (5)
                 if channels >= 6 {
                     left += frame[4] * 0.707;

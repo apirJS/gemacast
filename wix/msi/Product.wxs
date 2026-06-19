@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fire="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!--
+    Silent MSI payload for Gemacast.
+    This MSI is driven by the Burn bootstrapper (Bundle.wxs) and has no user-facing UI.
+    The CREATEDESKTOPSHORTCUT property is set by Burn via MsiProperty.
+
+    UpgradeCode preserved from the old cargo-wix MSI for upgrade compatibility.
+  -->
+
+  <Package Name="Gemacast"
+           Manufacturer="Echa Apriliyanto"
+           Version="$(var.Version)"
+           UpgradeCode="6D490F3C-E477-4FC8-ABF4-71D7CFEA7B53"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Public property for desktop shortcut toggle -->
+    <Property Id="CREATEDESKTOPSHORTCUT" Value="1" Secure="yes" />
+
+    <!-- ===== UI Configuration ===== -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.IconDir)\LICENSE.rtf" />
+
+    <Property Id="LAUNCHAPP" Value="1" />
+    <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
+
+    <!-- Kill the app before uninstallation or upgrade to prevent FilesInUse errors -->
+    <util:CloseApplication Id="CloseGemacast" Target="gemacast-pc.exe" CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" TerminateProcess="5" />
+    <util:CloseApplication Id="CloseAdb" Target="adb.exe" CloseMessage="no" PromptToContinue="no" RebootPrompt="no" TerminateProcess="3" />
+
+    <!-- Forcefully delete ANY firewall rules associated with the executable on uninstall (catches Windows Defender auto-generated rules) -->
+    <CustomAction Id="RemoveFirewallRules" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]cmd.exe /c netsh advfirewall firewall delete rule name=all program=&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RemoveFirewallRules" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <!-- Reference our custom WixUI sequence from CustomUI.wxs -->
+    <UIRef Id="WixUI_InstallDir_Custom" />
+
+    <!-- ===== Directory Structure ===== -->
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Gemacast" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Gemacast" />
+    </StandardDirectory>
+
+    <!-- ===== Application Files ===== -->
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+
+      <!-- Main executable with firewall exception -->
+      <Component Id="MainExecutable" Guid="*">
+        <File Id="GemacastExe"
+              Source="$(var.SourceDir)\gemacast-pc.exe"
+              KeyPath="yes">
+          <fire:FirewallException Id="GemacastFirewallTcp"
+                                  Name="Gemacast (TCP)"
+                                  Description="Allow Gemacast inbound TCP for audio streaming"
+                                  Protocol="tcp"
+                                  Scope="any"
+                                  Profile="all" />
+          <fire:FirewallException Id="GemacastFirewallUdp"
+                                  Name="Gemacast (UDP)"
+                                  Description="Allow Gemacast inbound UDP for device discovery"
+                                  Protocol="udp"
+                                  Scope="any"
+                                  Profile="all" />
+        </File>
+      </Component>
+
+      <!-- ADB binaries -->
+      <Component Id="AdbExe" Guid="*">
+        <File Id="adb_exe"
+              Source="$(var.SourceDir)\adb.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="AdbWinApi" Guid="*">
+        <File Id="adbwinapi_dll"
+              Source="$(var.SourceDir)\AdbWinApi.dll"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="AdbWinUsbApi" Guid="*">
+        <File Id="adbwinusbapi_dll"
+              Source="$(var.SourceDir)\AdbWinUsbApi.dll"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- Clean up leftover bin/ folder from previous installations -->
+      <Component Id="CleanupBinFolder" Guid="*">
+        <RemoveFolder Id="RemoveBinDir" Directory="BinSubfolder" On="both" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="BinCleanup"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Directory Id="BinSubfolder" Name="bin" />
+    </DirectoryRef>
+
+    <!-- ===== Start Menu Shortcut (always installed) ===== -->
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="AppStartMenuShortcut"
+                  Name="Gemacast"
+                  Description="Low-latency real-time audio streaming from PC to Android"
+                  Target="[INSTALLFOLDER]gemacast-pc.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="ProductICO" />
+        <RemoveFolder Id="CleanStartMenu" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="StartMenuInstalled"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- ===== Desktop Shortcut (conditional) ===== -->
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="*" Condition="CREATEDESKTOPSHORTCUT = 1">
+        <Shortcut Id="AppDesktopShortcut"
+                  Name="Gemacast"
+                  Description="Low-latency real-time audio streaming from PC to Android"
+                  Target="[INSTALLFOLDER]gemacast-pc.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="ProductICO" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="DesktopInstalled"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- ===== Features ===== -->
+
+    <Feature Id="Main" Title="Gemacast" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- ===== Add/Remove Programs ===== -->
+
+    <Icon Id="ProductICO" SourceFile="$(var.IconDir)\Product.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ProductICO" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/apirJS/gemacast" />
+
+  </Package>
+
+</Wix>

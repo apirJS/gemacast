@@ -16,7 +16,7 @@
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@style/Theme.mobile_app"
+        android:theme="@style/Theme.GemacastMobile"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <service
             android:name=".GemaCastService"

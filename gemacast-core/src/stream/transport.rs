@@ -35,10 +35,11 @@ impl AudioPacketTransport for TcpTransport {
 
         self.stream.read_exact(&mut buffer[0..length])?;
 
-        let addr = self
-            .stream
-            .peer_addr()
-            .unwrap_or_else(|_| format!("127.0.0.1:{}", crate::network::Ports::ADB_AUDIO_TCP).parse().unwrap());
+        let addr = self.stream.peer_addr().unwrap_or_else(|_| {
+            format!("127.0.0.1:{}", crate::network::Ports::ADB_AUDIO_TCP)
+                .parse()
+                .unwrap()
+        });
 
         Ok((length, addr))
     }

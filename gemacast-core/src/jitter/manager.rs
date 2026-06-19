@@ -330,9 +330,17 @@ impl JitterBufferManager {
 
         let is_no_buffer = self.config.static_target_ms == Some(0);
 
-        let flush_ceiling = if is_no_buffer { target + 3 } else { target + 80 };
+        let flush_ceiling = if is_no_buffer {
+            target + 3
+        } else {
+            target + 80
+        };
         if self.buffer.occupied_count() > flush_ceiling {
-            let flush_to = if is_no_buffer { target + 1 } else { target + 30 };
+            let flush_to = if is_no_buffer {
+                target + 1
+            } else {
+                target + 30
+            };
             if !is_no_buffer || self.buffer.occupied_count() > flush_to + 20 {
                 let _ = self.decoder.reset_state();
                 self.opus_next_expected_seq = None;
@@ -1063,12 +1071,12 @@ mod tests {
                 .is_ok()
         );
         manager.ingest_packets(&mut cons);
-        
+
         // Wait for REORDER_TOLERANCE calls so gap_hold_count trips
         for _ in 0..REORDER_TOLERANCE {
             manager.fill_output(&mut output, 1.0);
         }
-        
+
         // Now it should have fast-forwarded AND played the packet, so next_play_seq is future_seq + 1.
         assert_eq!(manager.buffer.next_play_seq(), future_seq + 1);
         // And the decoder state MUST be preserved (opus_next_expected_seq should not be None).
@@ -1079,7 +1087,7 @@ mod tests {
     #[test]
     fn should_aggressively_flush_in_no_buffer_mode_without_starvation() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        
+
         // Enable No Buffer mode
         let mut no_buffer_cfg = test_config();
         no_buffer_cfg.static_target_ms = Some(0);
@@ -1090,9 +1098,9 @@ mod tests {
         }
         // Force the config update tick
         manager.config_check_countdown = 100;
-        
+
         let base_time = Instant::now();
-        
+
         // Inject a 10 packet burst!
         for i in 1..=10 {
             assert!(
@@ -1101,15 +1109,15 @@ mod tests {
             );
         }
         manager.ingest_packets(&mut cons);
-        
+
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
         manager.fill_output(&mut output, 1.0);
-        
+
         // In No Buffer mode, target is 0. flush_ceiling is 3. We had 10 packets.
         // It should flush down to flush_to = 1 packet, then decode that 1 packet.
         // After fill_output, occupied_count should be exactly 0 (it was 1, then got popped and played!).
         assert_eq!(manager.buffer.occupied_count(), 0);
-        
+
         // It should not have starved, because it played the 1 packet.
         assert_eq!(manager.starvation_count, 0);
     }

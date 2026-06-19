@@ -11,8 +11,8 @@ use gemacast_core::control::types::ConnectReq;
 use gemacast_core::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 
 use crate::traits::{
-    ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams, SenderControlClientFactory,
-    SessionManager, SessionParams,
+    ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams,
+    SenderControlClientFactory, SessionManager, SessionParams,
 };
 
 /// Handles all audio-related operations: connect, disconnect, playback
@@ -30,7 +30,10 @@ pub struct AudioService {
 impl AudioService {
     /// Connect to a sender: HTTP handshake → spawn audio receiver → sync service.
     pub async fn connect_to_sender(&self, params: ConnectParams) -> Result<(), String> {
-        let ip_addr: IpAddr = params.ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+        let ip_addr: IpAddr = params
+            .ip
+            .parse()
+            .map_err(|e: std::net::AddrParseError| e.to_string())?;
         let client = self.client_factory.create(ip_addr);
 
         client
@@ -59,7 +62,8 @@ impl AudioService {
             .await?;
 
         self.platform.set_streaming_flag(true);
-        self.platform.sync_service(PlaybackState::Playing, params.exclusive_mode);
+        self.platform
+            .sync_service(PlaybackState::Playing, params.exclusive_mode);
 
         Ok(())
     }
@@ -84,15 +88,13 @@ impl AudioService {
     ///
     /// Re-enables the Oboe output callback via `resume_playback()` without
     /// sending an HTTP reconnect — the network connection stays alive.
-    pub async fn start_audio_playback(
-        &self,
-        _resume: Option<ResumeParams>,
-    ) -> Result<(), String> {
+    pub async fn start_audio_playback(&self, _resume: Option<ResumeParams>) -> Result<(), String> {
         self.session.resume_playback().await?;
         let info = self.session.session_info().await;
         let exclusive = info.as_ref().is_some_and(|i| i.exclusive_mode);
 
-        self.platform.sync_service(PlaybackState::Playing, exclusive);
+        self.platform
+            .sync_service(PlaybackState::Playing, exclusive);
         Ok(())
     }
 
@@ -142,13 +144,7 @@ impl AudioService {
     pub async fn get_audio_sources(
         &self,
         ip: IpAddr,
-    ) -> Result<
-        (
-            Vec<AudioSource>,
-            gemacast_core::types::SenderCapabilities,
-        ),
-        String,
-    > {
+    ) -> Result<(Vec<AudioSource>, gemacast_core::types::SenderCapabilities), String> {
         let client = self.client_factory.create(ip);
         client.get_audio_sources().await
     }
@@ -204,10 +200,9 @@ impl AudioService {
         sender_ip: IpAddr,
         device_id: String,
     ) -> Result<(), String> {
-        let ws_client =
-            gemacast_core::control::WsControlClient::new(sender_ip, &device_id)
-                .await
-                .map_err(|e| format!("Failed to establish WebSocket: {}", e))?;
+        let ws_client = gemacast_core::control::WsControlClient::new(sender_ip, &device_id)
+            .await
+            .map_err(|e| format!("Failed to establish WebSocket: {}", e))?;
 
         let notifier = self.notifier.clone();
         let task = tokio::spawn(async move {
@@ -286,18 +281,26 @@ mod tests {
 
         // Session was started
         let session_calls = session.take_calls();
-        assert!(session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::StartSession { .. })));
+        assert!(
+            session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::StartSession { .. }))
+        );
 
         // Platform was synced
         let platform_calls = platform.take_calls();
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: true })));
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SyncService { is_playing: true, .. })));
+        assert!(
+            platform_calls
+                .iter()
+                .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: true }))
+        );
+        assert!(platform_calls.iter().any(|c| matches!(
+            c,
+            PlatformCall::SyncService {
+                is_playing: true,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -308,10 +311,7 @@ mod tests {
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
         service
-            .disconnect_from_sender(
-                "192.168.1.5".parse().unwrap(),
-                DeviceId("phone-1".into()),
-            )
+            .disconnect_from_sender("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
             .await
             .unwrap();
 
@@ -324,15 +324,19 @@ mod tests {
 
         // Session was stopped
         let session_calls = session.take_calls();
-        assert!(session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::StopSession)));
+        assert!(
+            session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::StopSession))
+        );
 
         // Platform streaming flag cleared
         let platform_calls = platform.take_calls();
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false })));
+        assert!(
+            platform_calls
+                .iter()
+                .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false }))
+        );
     }
 
     #[tokio::test]
@@ -345,21 +349,21 @@ mod tests {
         service.start_audio_playback(None).await.unwrap();
 
         let session_calls = session.take_calls();
-        assert!(session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::ResumePlayback)));
+        assert!(
+            session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::ResumePlayback))
+        );
     }
 
     #[tokio::test]
     async fn start_playback_should_not_send_http_reconnect() {
-        let session = Arc::new(
-            MockSessionManager::new().with_session_info(SessionInfo {
-                exclusive_mode: false,
-                mode: ConnectionMode::Wifi,
-                bitrate: Some(128000),
-                jitter_config: JitterConfig::default(),
-            }),
-        );
+        let session = Arc::new(MockSessionManager::new().with_session_info(SessionInfo {
+            exclusive_mode: false,
+            mode: ConnectionMode::Wifi,
+            bitrate: Some(128000),
+            jitter_config: JitterConfig::default(),
+        }));
         let client = Arc::new(MockSenderControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
@@ -395,12 +399,16 @@ mod tests {
 
         // Should pause, NOT stop the session
         let session_calls = session.take_calls();
-        assert!(session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::PausePlayback)));
-        assert!(!session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::StopSession)));
+        assert!(
+            session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::PausePlayback))
+        );
+        assert!(
+            !session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::StopSession))
+        );
 
         // No HTTP disconnect should be sent
         let client_calls = client.take_calls();
@@ -408,9 +416,13 @@ mod tests {
 
         // Platform service should be notified
         let platform_calls = platform.take_calls();
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SyncService { is_playing: false, .. })));
+        assert!(platform_calls.iter().any(|c| matches!(
+            c,
+            PlatformCall::SyncService {
+                is_playing: false,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -423,17 +435,25 @@ mod tests {
         service.kill_playback().await.unwrap();
 
         let session_calls = session.take_calls();
-        assert!(session_calls
-            .iter()
-            .any(|c| matches!(c, SessionCall::StopSession)));
+        assert!(
+            session_calls
+                .iter()
+                .any(|c| matches!(c, SessionCall::StopSession))
+        );
 
         let platform_calls = platform.take_calls();
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false })));
-        assert!(platform_calls
-            .iter()
-            .any(|c| matches!(c, PlatformCall::SyncService { is_playing: false, .. })));
+        assert!(
+            platform_calls
+                .iter()
+                .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false }))
+        );
+        assert!(platform_calls.iter().any(|c| matches!(
+            c,
+            PlatformCall::SyncService {
+                is_playing: false,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -453,14 +473,20 @@ mod tests {
             .unwrap();
 
         let session_calls = session.take_calls();
-        assert!(session_calls.iter().any(
-            |c| matches!(c, SessionCall::UpdateBitrate { bitrate: Some(256000) })
-        ));
+        assert!(session_calls.iter().any(|c| matches!(
+            c,
+            SessionCall::UpdateBitrate {
+                bitrate: Some(256000)
+            }
+        )));
 
         let client_calls = client.take_calls();
         assert!(matches!(
             &client_calls[0],
-            ControlClientCall::ChangeBitrate { bitrate: Some(256000), .. }
+            ControlClientCall::ChangeBitrate {
+                bitrate: Some(256000),
+                ..
+            }
         ));
     }
 }

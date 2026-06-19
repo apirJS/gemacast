@@ -90,11 +90,13 @@ mod tests {
             let expected_len = (payload.len() as u32).to_be_bytes();
             let batch = &framer.batch;
             assert_eq!(
-                &batch[..4], &expected_len,
+                &batch[..4],
+                &expected_len,
                 "First 4 bytes should be big-endian length"
             );
             assert_eq!(
-                &batch[4..], &payload,
+                &batch[4..],
+                &payload,
                 "Remaining bytes should be the payload"
             );
         }
@@ -110,7 +112,11 @@ mod tests {
             let batch = &framer.batch;
             // First packet: 4-byte header + 2-byte payload = 6 bytes
             // Second packet: 4-byte header + 3-byte payload = 7 bytes
-            assert_eq!(batch.len(), 6 + 7, "Batch should contain both framed packets");
+            assert_eq!(
+                batch.len(),
+                6 + 7,
+                "Batch should contain both framed packets"
+            );
 
             // Verify first packet frame
             let len1 = u32::from_be_bytes(batch[0..4].try_into().unwrap());

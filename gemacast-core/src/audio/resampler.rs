@@ -83,15 +83,19 @@ impl CaptureResampler {
         let samples_per_chunk = self.frames_needed * self.channels;
 
         while self.remainder.len() >= samples_per_chunk {
-            let output_frames_avail = self.output_capacity_frames.saturating_sub(total_output_samples / self.channels);
-            
+            let output_frames_avail = self
+                .output_capacity_frames
+                .saturating_sub(total_output_samples / self.channels);
+
             // Dynamically resize output buffer if WASAPI delivered a massive backlog (e.g., CPU spike)
             if output_frames_avail < self.inner.output_frames_next() {
                 self.output_capacity_frames += self.inner.output_frames_next() * 8;
-                self.output_buf.resize(self.output_capacity_frames * self.channels, 0.0);
+                self.output_buf
+                    .resize(self.output_capacity_frames * self.channels, 0.0);
             }
 
-            let output_frames_avail_now = self.output_capacity_frames - (total_output_samples / self.channels);
+            let output_frames_avail_now =
+                self.output_capacity_frames - (total_output_samples / self.channels);
 
             let input_adapter =
                 InterleavedSlice::new(&self.remainder, self.channels, self.frames_needed)

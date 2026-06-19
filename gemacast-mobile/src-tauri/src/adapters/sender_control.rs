@@ -1,11 +1,9 @@
+use async_trait::async_trait;
 use std::net::IpAddr;
 use std::sync::Arc;
-use async_trait::async_trait;
 
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
-use gemacast_core::types::{
-    AudioSource, DeviceId, ProcessInfo, SenderCapabilities,
-};
+use gemacast_core::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
 
 use crate::traits::{SenderControlClient, SenderControlClientFactory};
 

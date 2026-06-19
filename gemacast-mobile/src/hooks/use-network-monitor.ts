@@ -112,8 +112,11 @@ export function useNetworkMonitor() {
         store.getState().patch({
           status: Status.Listening,
           connectedSender: null,
+          lastConnectedSender: null,
         });
         store.getState().resetLatency();
+        killPlayback();
+        saveLastSender(null);
       }
     };
 

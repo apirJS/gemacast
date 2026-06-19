@@ -56,9 +56,9 @@ pub fn run() {
 
             // -- Spawn IPC listener ----------------------------------
             let cache_dir = handle.path().app_cache_dir().ok();
-            tauri::async_runtime::spawn(
-                domains::ipc::server::run_service_command_listener(notifier, cache_dir),
-            );
+            tauri::async_runtime::spawn(domains::ipc::server::run_service_command_listener(
+                notifier, cache_dir,
+            ));
 
             Ok(())
         })

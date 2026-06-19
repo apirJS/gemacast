@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
 use async_trait::async_trait;
 use gemacast_core::types::DeviceId;
+use std::net::SocketAddr;
 
 /// Notifies a connected device to disconnect, using the best available transport.
 ///

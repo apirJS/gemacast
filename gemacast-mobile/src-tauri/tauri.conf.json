@@ -1,6 +1,6 @@
 {
   "$schema": "tauri.schema.json",
-  "productName": "gemacast-mobile",
+  "productName": "Gemacast",
   "version": "0.1.0",
   "identifier": "com.apir.gemacast",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "gemacast-mobile",
+        "title": "Gemacast",
         "width": 800,
         "height": 600
       }

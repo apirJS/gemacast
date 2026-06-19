@@ -15,9 +15,8 @@ pub mod mocks {
     };
 
     use crate::traits::{
-        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService,
-        SenderControlClient, SenderControlClientFactory, SessionInfo, SessionManager,
-        SessionParams,
+        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SenderControlClient,
+        SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
     };
 
     // -------------------------------------------------------------------
@@ -202,18 +201,12 @@ pub mod mocks {
         }
 
         async fn pause_playback(&self) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(SessionCall::PausePlayback);
+            self.calls.lock().unwrap().push(SessionCall::PausePlayback);
             Ok(())
         }
 
         async fn resume_playback(&self) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(SessionCall::ResumePlayback);
+            self.calls.lock().unwrap().push(SessionCall::ResumePlayback);
             Ok(())
         }
 
@@ -238,17 +231,11 @@ pub mod mocks {
 
         async fn start_ws_client(&self, task: tokio::task::JoinHandle<()>) {
             task.abort(); // don't run anything in tests
-            self.calls
-                .lock()
-                .unwrap()
-                .push(SessionCall::StartWsClient);
+            self.calls.lock().unwrap().push(SessionCall::StartWsClient);
         }
 
         async fn stop_ws_client(&self) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(SessionCall::StopWsClient);
+            self.calls.lock().unwrap().push(SessionCall::StopWsClient);
         }
 
         async fn set_volume(&self, _linear: f32) {
@@ -263,12 +250,24 @@ pub mod mocks {
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
     pub enum ControlClientCall {
-        Connect { device_id: DeviceId },
-        Disconnect { device_id: DeviceId },
+        Connect {
+            device_id: DeviceId,
+        },
+        Disconnect {
+            device_id: DeviceId,
+        },
         GetAudioSources,
-        Probe { device_id: Option<DeviceId> },
-        ChangeSource { device_id: DeviceId, source: AudioSource },
-        ChangeBitrate { device_id: DeviceId, bitrate: Option<i32> },
+        Probe {
+            device_id: Option<DeviceId>,
+        },
+        ChangeSource {
+            device_id: DeviceId,
+            source: AudioSource,
+        },
+        ChangeBitrate {
+            device_id: DeviceId,
+            bitrate: Option<i32>,
+        },
         GetProcessList,
     }
 
@@ -302,12 +301,9 @@ pub mod mocks {
     #[async_trait]
     impl SenderControlClient for MockSenderControlClient {
         async fn connect(&self, req: ConnectReq) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(ControlClientCall::Connect {
-                    device_id: req.device_id.clone(),
-                });
+            self.calls.lock().unwrap().push(ControlClientCall::Connect {
+                device_id: req.device_id.clone(),
+            });
             self.connect_result.lock().unwrap().clone()
         }
 
@@ -337,12 +333,9 @@ pub mod mocks {
         }
 
         async fn probe(&self, device_id: Option<DeviceId>) -> Result<PresenceResponse, String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(ControlClientCall::Probe {
-                    device_id: device_id.clone(),
-                });
+            self.calls.lock().unwrap().push(ControlClientCall::Probe {
+                device_id: device_id.clone(),
+            });
             Ok(PresenceResponse {
                 device_id: DeviceId("test-sender".to_string()),
                 sender_name: "Test Sender".to_string(),
@@ -409,8 +402,13 @@ pub mod mocks {
     #[derive(Debug, Clone)]
     pub enum PlatformCall {
         GetTransportType,
-        SyncService { is_playing: bool, is_exclusive: bool },
-        SetStreamingFlag { active: bool },
+        SyncService {
+            is_playing: bool,
+            is_exclusive: bool,
+        },
+        SetStreamingFlag {
+            active: bool,
+        },
     }
 
     /// Records every platform call and returns configurable results.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Gemacast
+Comment=Low-latency real-time audio streaming from PC to Android
+Exec=gemacast-pc
+Icon=gemacast-pc
+Categories=AudioVideo;Audio;Network;
+Terminal=false
+StartupNotify=false
+Keywords=audio;streaming;android;

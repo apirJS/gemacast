@@ -251,7 +251,11 @@ pub mod mocks {
                 addr.parse().unwrap(),
                 None,
             );
-            registry.inner.lock().unwrap().insert(device.device_id.clone(), device);
+            registry
+                .inner
+                .lock()
+                .unwrap()
+                .insert(device.device_id.clone(), device);
             registry
         }
 
@@ -314,11 +318,7 @@ pub mod mocks {
         }
 
         fn get_addr(&self, device_id: &DeviceId) -> Option<SocketAddr> {
-            self.inner
-                .lock()
-                .unwrap()
-                .get(device_id)
-                .map(|d| d.addr)
+            self.inner.lock().unwrap().get(device_id).map(|d| d.addr)
         }
 
         fn all_devices(&self) -> Vec<(DeviceId, DiscoveredDevice)> {
@@ -331,19 +331,14 @@ pub mod mocks {
         }
 
         fn drain_all(&self) -> Vec<(DeviceId, DiscoveredDevice)> {
-            self.inner
-                .lock()
-                .unwrap()
-                .drain()
-                .collect()
+            self.inner.lock().unwrap().drain().collect()
         }
 
         fn evict_stale(&self, timeout: Duration) -> Vec<(DeviceId, SocketAddr)> {
             let mut evicted = Vec::new();
             let now = std::time::Instant::now();
             self.inner.lock().unwrap().retain(|id, device| {
-                if now.duration_since(device.last_seen) > timeout
-                    && !device.addr.ip().is_loopback()
+                if now.duration_since(device.last_seen) > timeout && !device.addr.ip().is_loopback()
                 {
                     evicted.push((id.clone(), device.addr));
                     false

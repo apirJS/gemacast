@@ -22,7 +22,7 @@ pub fn spawn_adb_audio_tcp_server(
             let mut attempts = 0;
             loop {
                 let addr_str = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
-                
+
                 let bind_result = (|| -> Result<tokio::net::TcpListener, std::io::Error> {
                     let addr = addr_str.parse::<std::net::SocketAddr>().unwrap();
                     let socket = socket2::Socket::new(
@@ -207,7 +207,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
             let mut attempts = 0;
             loop {
                 let addr_str = format!("127.0.0.1:{}", Ports::ADB_DISCOVERY_TCP);
-                
+
                 let bind_result = (|| -> Result<tokio::net::TcpListener, std::io::Error> {
                     let addr = addr_str.parse::<std::net::SocketAddr>().unwrap();
                     let socket = socket2::Socket::new(

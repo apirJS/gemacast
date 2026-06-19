@@ -1,2 +1,31 @@
-# /docs
+# Build artifacts
 /target
+node_modules/
+dist/
+
+# Android / Keystore secrets
+*.jks*
+*.keystore
+keystore_b64.txt
+*.apk
+*.aab
+
+# Environment
+.env
+.env.*
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated docs
+docs/
+
+# WiX build artifacts
+wix/**/staging/
+wix/**/obj/
+wix/**/bin/
+
+# Playground pwsl scripts
+**/*.ps1

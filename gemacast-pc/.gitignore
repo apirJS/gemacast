@@ -1,2 +1,5 @@
 /target
-/bin
+adb
+adb.exe
+AdbWinApi.dll
+AdbWinUsbApi.dll

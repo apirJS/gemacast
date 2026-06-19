@@ -111,15 +111,19 @@ export async function connectToSender(
   }
 }
 
+let isDisconnecting = false;
+
 export async function disconnect(
   forgetSender: boolean = true,
 ): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
 
   // Idempotency guard to prevent echo loops and redundant toasts
-  if (state.status === Status.Listening || state.status === Status.Idle) {
+  if (state.status === Status.Listening || state.status === Status.Idle || isDisconnecting) {
     return ok(true);
   }
+
+  isDisconnecting = true;
 
   const sender = state.connectedSender;
 
@@ -130,52 +134,56 @@ export async function disconnect(
   store.getState().setLoading(true);
   stopProbing();
 
-  if (!sender) {
+  try {
+    if (!sender) {
+      store.getState().patch({
+        connectedSender: null,
+        lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
+        status: Status.Listening,
+        connectionHealth: 'ok',
+        reconnectAttempts: 0,
+        isLoading: false,
+        isSuspended: !forgetSender,
+      });
+      store.getState().resetLatency();
+      tauriBridge.notifyStreamingStopped().catch(console.warn);
+      if (forgetSender) toast.getState().show('info', 'Disconnected');
+      return ok(true);
+    }
+
+    try {
+      const ip = sender.addr.split(':')[0];
+      await tauriBridge.disconnectFromSender({
+        ip,
+        deviceId: state.deviceInfo.deviceId,
+      });
+      await new Promise((r) => setTimeout(r, 150));
+      tauriBridge.killPlayback().catch(console.warn);
+    } catch (e) {
+      console.warn('disconnect_from_sender IPC failed:', e);
+      await new Promise((r) => setTimeout(r, 150));
+      tauriBridge.killPlayback().catch(console.warn);
+    }
+
     store.getState().patch({
       connectedSender: null,
-      lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
+      lastConnectedSender: forgetSender ? null : sender,
       status: Status.Listening,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
       isLoading: false,
       isSuspended: !forgetSender,
+      audioSources: [],
+      currentAudioSource: { type: 'desktop' },
+      senderCapabilities: null,
+      processList: [],
     });
     store.getState().resetLatency();
-    tauriBridge.notifyStreamingStopped().catch(console.warn);
     if (forgetSender) toast.getState().show('info', 'Disconnected');
     return ok(true);
+  } finally {
+    isDisconnecting = false;
   }
-
-  try {
-    const ip = sender.addr.split(':')[0];
-    await tauriBridge.disconnectFromSender({
-      ip,
-      deviceId: state.deviceInfo.deviceId,
-    });
-    await new Promise((r) => setTimeout(r, 150));
-    tauriBridge.killPlayback().catch(console.warn);
-  } catch (e) {
-    console.warn('disconnect_from_sender IPC failed:', e);
-    await new Promise((r) => setTimeout(r, 150));
-    tauriBridge.killPlayback().catch(console.warn);
-  }
-
-  store.getState().patch({
-    connectedSender: null,
-    lastConnectedSender: forgetSender ? null : sender,
-    status: Status.Listening,
-    connectionHealth: 'ok',
-    reconnectAttempts: 0,
-    isLoading: false,
-    isSuspended: !forgetSender,
-    audioSources: [],
-    currentAudioSource: { type: 'desktop' },
-    senderCapabilities: null,
-    processList: [],
-  });
-  store.getState().resetLatency();
-  if (forgetSender) toast.getState().show('info', 'Disconnected');
-  return ok(true);
 }
 
 export function handleSenderTimeout(deviceId: string) {

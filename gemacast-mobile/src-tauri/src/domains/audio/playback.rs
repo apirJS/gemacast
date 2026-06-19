@@ -103,5 +103,12 @@ pub fn spawn_session_receiver(
         }
     });
 
-    Ok((is_playing, is_tcp_mode, config_ref, volume, shutdown_tx, task))
+    Ok((
+        is_playing,
+        is_tcp_mode,
+        config_ref,
+        volume,
+        shutdown_tx,
+        task,
+    ))
 }

@@ -53,10 +53,10 @@ mod tests {
     fn should_evict_stale_senders() {
         let notifier = MockFrontendNotifier::new();
         let tracker = Mutex::new(HashMap::new());
-        tracker
-            .lock()
-            .unwrap()
-            .insert(DeviceId("stale".into()), Instant::now() - Duration::from_secs(60));
+        tracker.lock().unwrap().insert(
+            DeviceId("stale".into()),
+            Instant::now() - Duration::from_secs(60),
+        );
         tracker
             .lock()
             .unwrap()
@@ -75,8 +75,18 @@ mod tests {
         ));
 
         // Fresh sender remains in tracker
-        assert!(tracker.lock().unwrap().contains_key(&DeviceId("fresh".into())));
-        assert!(!tracker.lock().unwrap().contains_key(&DeviceId("stale".into())));
+        assert!(
+            tracker
+                .lock()
+                .unwrap()
+                .contains_key(&DeviceId("fresh".into()))
+        );
+        assert!(
+            !tracker
+                .lock()
+                .unwrap()
+                .contains_key(&DeviceId("stale".into()))
+        );
     }
 
     #[test]
@@ -98,14 +108,14 @@ mod tests {
     fn should_evict_multiple_stale_senders() {
         let notifier = MockFrontendNotifier::new();
         let tracker = Mutex::new(HashMap::new());
-        tracker
-            .lock()
-            .unwrap()
-            .insert(DeviceId("s1".into()), Instant::now() - Duration::from_secs(60));
-        tracker
-            .lock()
-            .unwrap()
-            .insert(DeviceId("s2".into()), Instant::now() - Duration::from_secs(45));
+        tracker.lock().unwrap().insert(
+            DeviceId("s1".into()),
+            Instant::now() - Duration::from_secs(60),
+        );
+        tracker.lock().unwrap().insert(
+            DeviceId("s2".into()),
+            Instant::now() - Duration::from_secs(45),
+        );
 
         let evicted = evict_stale_senders(&notifier, &tracker, Duration::from_secs(30));
 

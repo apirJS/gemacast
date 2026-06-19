@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
+use crate::traits::AudioController;
 use async_trait::async_trait;
-use tokio::sync::mpsc;
 use gemacast_core::stream::sender::AudioStreamCommand;
 use gemacast_core::types::{AudioSource, DeviceId};
-use crate::traits::AudioController;
+use std::net::SocketAddr;
+use tokio::sync::mpsc;
 
 /// Sends [`AudioStreamCommand`]s to the audio engine via an `mpsc` channel.
 pub struct ChannelAudioController {

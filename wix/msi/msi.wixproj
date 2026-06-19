@@ -1,0 +1,19 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+
+  <PropertyGroup>
+    <OutputName>gemacast-pc-x86_64-pc-windows-msvc</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- Default paths for local development; overridden in CI -->
+    <SourceDir Condition="'$(SourceDir)' == ''">$(MSBuildProjectDirectory)\staging</SourceDir>
+    <IconDir Condition="'$(IconDir)' == ''">$(MSBuildProjectDirectory)\..\assets</IconDir>
+    <!-- Pass preprocessor variables to WiX -->
+    <DefineConstants>SourceDir=$(SourceDir);IconDir=$(IconDir);Version=$(Version)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Firewall.wixext" Version="6.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="6.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
+  </ItemGroup>
+
+</Project>

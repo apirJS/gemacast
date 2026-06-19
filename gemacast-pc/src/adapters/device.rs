@@ -1,12 +1,12 @@
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
 
+use gemacast_core::control::HttpControlClient;
 use gemacast_core::control::http::send_ws_event;
 use gemacast_core::control::types::WsEvent;
-use gemacast_core::control::HttpControlClient;
 use gemacast_core::types::{ControlMessage, DeviceId};
 
 use crate::traits::DeviceNotifier;
@@ -48,11 +48,9 @@ impl DeviceNotifier for MultiTransportDeviceNotifier {
         // Fallback if WebSocket didn't reach the device
         if !ws_ok && let Some(addr) = addr {
             if addr.ip().is_loopback() {
-                let _ = self
-                    .adb_outbound_control
-                    .send(ControlMessage::Disconnect {
-                        device_id: device_id.clone(),
-                    });
+                let _ = self.adb_outbound_control.send(ControlMessage::Disconnect {
+                    device_id: device_id.clone(),
+                });
             } else {
                 let client = HttpControlClient::new(addr.ip());
                 let _ = client.send_disconnect_request(device_id.clone()).await;
