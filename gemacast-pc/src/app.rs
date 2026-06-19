@@ -100,7 +100,10 @@ pub fn run() {
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!("Fatal error: Failed to build Tokio runtime for termination listener: {}", e);
+                tracing::error!(
+                    "Fatal error: Failed to build Tokio runtime for termination listener: {}",
+                    e
+                );
                 std::process::exit(1);
             }
         };

@@ -60,6 +60,54 @@ impl PresenceProvider for PcPresenceProvider {
     }
 }
 
+/// Resolve the path to the bundled ADB binary next to our own executable.
+///
+/// On Windows this is `<exe_dir>/adb.exe`, on other platforms `<exe_dir>/adb`.
+/// Falls back to bare `"adb"` (PATH lookup) if the exe directory cannot be determined.
+fn local_adb_path() -> std::path::PathBuf {
+    let adb_name = if cfg!(target_os = "windows") {
+        "adb.exe"
+    } else {
+        "adb"
+    };
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let local = dir.join(adb_name);
+        if local.exists() {
+            return local;
+        }
+    }
+    // Fallback: bare name (will search PATH)
+    std::path::PathBuf::from(adb_name)
+}
+
+/// Returns a Tokio Command for the bundled ADB.
+///
+/// On Windows the process is configured with CREATE_NO_WINDOW so no console
+/// window flashes when ADB commands run in the background.
+#[cfg(target_os = "windows")]
+fn adb_command() -> tokio::process::Command {
+    let mut std_cmd = std::process::Command::new(local_adb_path());
+    use std::os::windows::process::CommandExt;
+    std_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    tokio::process::Command::from(std_cmd)
+}
+
+/// Returns a Tokio Command for the bundled ADB.
+#[cfg(not(target_os = "windows"))]
+fn adb_command() -> tokio::process::Command {
+    let std_cmd = std::process::Command::new(local_adb_path());
+    tokio::process::Command::from(std_cmd)
+}
+
+/// Gracefully shut down the ADB server that we started.
+async fn shutdown_adb() {
+    tracing::info!("Shutting down bundled ADB server...");
+    let _ = adb_command().args(["kill-server"]).output().await;
+    tracing::info!("ADB server shut down.");
+}
+
 // ---------------------------------------------------------------------------
 // Background engine entry point
 // ---------------------------------------------------------------------------
@@ -97,7 +145,10 @@ fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runti
     {
         Ok(rt) => Some(rt),
         Err(e) => {
-            tracing::error!("Fatal error: Failed to build background Tokio runtime: {}", e);
+            tracing::error!(
+                "Fatal error: Failed to build background Tokio runtime: {}",
+                e
+            );
             let _ = proxy.send_event(TrayEvent::FatalError(e.to_string()));
             None
         }
@@ -147,11 +198,17 @@ async fn run_background_tasks(
         }
     });
 
+    // --- Verify ADB availability ---
+    if adb_command().arg("version").output().await.is_err() {
+        let msg =
+            "Failed to launch bundled ADB! Please ensure the application was installed correctly.";
+        tracing::error!("{}", msg);
+        tray.notify_fatal_error(msg.to_string());
+        return;
+    }
+
     // --- Kill any existing ADB server to get a clean state ---
-    let _ = tokio::process::Command::new("adb")
-        .arg("kill-server")
-        .output()
-        .await;
+    let _ = adb_command().arg("kill-server").output().await;
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -281,6 +338,10 @@ async fn run_background_tasks(
 
     // --- Wait for all tasks ---
     while set.join_next().await.is_some() {}
+
+    // --- Gracefully shut down ADB server so it doesn't linger ---
+    shutdown_adb().await;
+
     tracing::info!("Background engine has fully shut down");
 }
 

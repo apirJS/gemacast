@@ -53,4 +53,3 @@ impl CaptureFactory for DefaultCaptureFactory {
         }
     }
 }
-

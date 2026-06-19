@@ -9,14 +9,14 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[package.metadata.wix]
-upgrade-guid = "6D490F3C-E477-4FC8-ABF4-71D7CFEA7B53"
-path-guid = "332414CF-4B78-48E4-B364-C698596B71A3"
-license = false
-eula = false
-
 [package.metadata.dist]
-include = ["bin/"]
+# Bundle ADB binaries (downloaded by build.rs) into release archives
+# Files are at the crate root so they appear beside gemacast-pc(.exe) in the archive
+# build.rs creates placeholder stubs for cross-platform filenames so cargo-dist doesn't fail
+include = ["adb", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"]
+
+[build-dependencies]
+embed-manifest = "1"
 
 [dependencies]
 gemacast-core = { path = "../gemacast-core" }
@@ -31,3 +31,23 @@ tracing = "0.1"
 tracing-subscriber = "0.3.23"
 image = "0.25.10"
 
+# ── Linux .deb packaging (cargo-deb) ─────────────────────────────────────────
+[package.metadata.deb]
+maintainer = "Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>"
+section = "sound"
+depends = "$auto"
+assets = [
+    ["target/release/gemacast-pc", "usr/bin/", "755"],
+    ["target/release/adb", "usr/lib/gemacast/adb", "755"],
+    ["linux/gemacast-pc.desktop", "usr/share/applications/", "644"],
+    ["linux/gemacast-pc.png", "usr/share/icons/hicolor/256x256/apps/gemacast-pc.png", "644"],
+]
+
+# ── Linux .rpm packaging (cargo-generate-rpm) ────────────────────────────────
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/gemacast-pc", dest = "/usr/bin/gemacast-pc", mode = "0755" },
+    { source = "target/release/adb", dest = "/usr/lib/gemacast/adb", mode = "0755" },
+    { source = "linux/gemacast-pc.desktop", dest = "/usr/share/applications/gemacast-pc.desktop", mode = "0644" },
+    { source = "linux/gemacast-pc.png", dest = "/usr/share/icons/hicolor/256x256/apps/gemacast-pc.png", mode = "0644" },
+]

@@ -1,5 +1,5 @@
-use std::net::SocketAddr;
 use gemacast_core::types::{DeviceId, TransportType};
+use std::net::SocketAddr;
 
 /// Sends UI events to the tray event loop.
 ///

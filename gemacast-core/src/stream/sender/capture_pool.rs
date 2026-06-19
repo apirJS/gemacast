@@ -94,7 +94,7 @@ impl AudioCaptureInstance {
                 join_handle,
             },
         );
-        
+
         Ok(())
     }
 
@@ -116,12 +116,15 @@ impl AudioCaptureInstance {
             let _ = run_tcp_encode_loop(pcm_rx, bitrate, tcp_broadcast_tx, shutdown_rx).await;
         });
 
-        self.tcp_encoders.insert(device_id, TcpEncoder {
-            _bitrate: bitrate,
-            shutdown_tx,
-            join_handle,
-            _audio_broadcast_tx: audio_broadcast_tx.clone(),
-        });
+        self.tcp_encoders.insert(
+            device_id,
+            TcpEncoder {
+                _bitrate: bitrate,
+                shutdown_tx,
+                join_handle,
+                _audio_broadcast_tx: audio_broadcast_tx.clone(),
+            },
+        );
 
         Ok(audio_broadcast_tx)
     }
@@ -468,9 +471,7 @@ impl CapturePool {
                     .await;
                 None
             }
-            TargetId::Tcp(device_id) => {
-                Some(instance.spawn_tcp_encoder(device_id, bitrate).await?)
-            }
+            TargetId::Tcp(device_id) => Some(instance.spawn_tcp_encoder(device_id, bitrate).await?),
         };
 
         Ok(ret)
@@ -573,10 +574,10 @@ impl CapturePool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DeviceId;
     use crate::stream::sender::capture::CaptureBackend;
-    use ringbuf::traits::*;
+    use crate::types::DeviceId;
     use ringbuf::HeapRb;
+    use ringbuf::traits::*;
     use tokio::sync::Notify;
 
     struct MockBackend;
@@ -644,7 +645,7 @@ mod tests {
             });
 
         let mut encoded_rx = audio_broadcast_tx.subscribe();
-        
+
         // Push another frame so the encoder has something to encode
         producer.push_slice(&fake_audio);
         notify.notify_one();
@@ -713,18 +714,19 @@ mod tests {
         // The encoder should eventually emit an opus packet over UDP
         let mut buf = vec![0u8; 1500];
         let mut len;
-              
+
         loop {
             // Keep pushing audio because UDP packets could be dropped (e.g. ARP/startup delays)
             producer.push_slice(&fake_audio);
             notify.notify_one();
 
             let recv_future = receiver_socket.recv_from(&mut buf);
-            let (recv_len, _) = tokio::time::timeout(std::time::Duration::from_millis(500), recv_future)
-                .await
-                .expect("Timed out waiting for UDP packet")
-                .expect("Failed to receive UDP packet");
-            
+            let (recv_len, _) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), recv_future)
+                    .await
+                    .expect("Timed out waiting for UDP packet")
+                    .expect("Failed to receive UDP packet");
+
             len = recv_len;
             if len > 9 {
                 break;
@@ -738,7 +740,10 @@ mod tests {
         instance.remove_target_encoder(&target_addr).await;
         if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
             stop_tx.send(()).unwrap();
-            instance.capture_join_handle.await.expect("Capture loop panicked");
+            instance
+                .capture_join_handle
+                .await
+                .expect("Capture loop panicked");
         }
     }
 
@@ -771,15 +776,23 @@ mod tests {
         let target = TargetId::Tcp(DeviceId("dev1".into()));
 
         // 1. Subscribe to desktop
-        let _tx = pool.subscribe(AudioSource::Desktop, target.clone(), Some(128000)).await.expect("Subscribe failed");
+        let _tx = pool
+            .subscribe(AudioSource::Desktop, target.clone(), Some(128000))
+            .await
+            .expect("Subscribe failed");
         assert_eq!(pool.instances.len(), 1);
 
         // 2. Subscribe again (should reuse the instance)
-        let _tx2 = pool.subscribe(AudioSource::Desktop, target.clone(), Some(128000)).await.expect("Subscribe failed");
+        let _tx2 = pool
+            .subscribe(AudioSource::Desktop, target.clone(), Some(128000))
+            .await
+            .expect("Subscribe failed");
         assert_eq!(pool.instances.len(), 1);
 
         // 3. Unsubscribe (should teardown)
-        pool.unsubscribe(&AudioSource::Desktop, target).await.expect("Unsubscribe failed");
+        pool.unsubscribe(&AudioSource::Desktop, target)
+            .await
+            .expect("Unsubscribe failed");
         assert_eq!(pool.instances.len(), 0);
     }
 
@@ -790,13 +803,25 @@ mod tests {
         let target = TargetId::Tcp(DeviceId("dev1".into()));
 
         // Subscribe to desktop
-        pool.subscribe(AudioSource::Desktop, target.clone(), Some(128000)).await.expect("Subscribe failed");
+        pool.subscribe(AudioSource::Desktop, target.clone(), Some(128000))
+            .await
+            .expect("Subscribe failed");
         assert_eq!(pool.instances.len(), 1);
 
         // Change source to process
-        let new_source = AudioSource::Process { pid: 1234, name: "test".into() };
-        pool.change_source(&AudioSource::Desktop, new_source.clone(), target, Some(128000)).await.expect("Change source failed");
-        
+        let new_source = AudioSource::Process {
+            pid: 1234,
+            name: "test".into(),
+        };
+        pool.change_source(
+            &AudioSource::Desktop,
+            new_source.clone(),
+            target,
+            Some(128000),
+        )
+        .await
+        .expect("Change source failed");
+
         // Old instance should be gone, new instance should be created
         assert_eq!(pool.instances.len(), 1);
         assert!(pool.instances.contains_key(&new_source));
@@ -809,21 +834,29 @@ mod tests {
         let target1 = TargetId::Tcp(DeviceId("dev1".into()));
         let target2 = TargetId::Tcp(DeviceId("dev2".into()));
 
-        pool.subscribe(AudioSource::Desktop, target1.clone(), Some(128000)).await.expect("Subscribe 1 failed");
-        pool.subscribe(AudioSource::Desktop, target2.clone(), Some(256000)).await.expect("Subscribe 2 failed");
+        pool.subscribe(AudioSource::Desktop, target1.clone(), Some(128000))
+            .await
+            .expect("Subscribe 1 failed");
+        pool.subscribe(AudioSource::Desktop, target2.clone(), Some(256000))
+            .await
+            .expect("Subscribe 2 failed");
 
         let instance = pool.instances.get(&AudioSource::Desktop).unwrap();
         assert_eq!(instance.tcp_encoders.len(), 2);
 
-        pool.unsubscribe(&AudioSource::Desktop, target1).await.expect("Unsubscribe 1 failed");
-        
+        pool.unsubscribe(&AudioSource::Desktop, target1)
+            .await
+            .expect("Unsubscribe 1 failed");
+
         // Teardown should not happen yet
         assert_eq!(pool.instances.len(), 1);
         let instance = pool.instances.get(&AudioSource::Desktop).unwrap();
         assert_eq!(instance.tcp_encoders.len(), 1);
 
-        pool.unsubscribe(&AudioSource::Desktop, target2).await.expect("Unsubscribe 2 failed");
-        
+        pool.unsubscribe(&AudioSource::Desktop, target2)
+            .await
+            .expect("Unsubscribe 2 failed");
+
         // Now it should teardown
         assert_eq!(pool.instances.len(), 0);
     }
@@ -832,25 +865,33 @@ mod tests {
     async fn pool_should_support_multiple_udp_encoders_per_source() {
         let factory = Box::new(MockCaptureFactory);
         let mut pool = CapturePool::new(factory, true);
-        
+
         let target1 = TargetId::Udp("127.0.0.1:1111".parse().unwrap());
         let target2 = TargetId::Udp("127.0.0.1:2222".parse().unwrap());
 
-        pool.subscribe(AudioSource::Desktop, target1.clone(), Some(128000)).await.expect("Subscribe 1 failed");
-        pool.subscribe(AudioSource::Desktop, target2.clone(), Some(256000)).await.expect("Subscribe 2 failed");
+        pool.subscribe(AudioSource::Desktop, target1.clone(), Some(128000))
+            .await
+            .expect("Subscribe 1 failed");
+        pool.subscribe(AudioSource::Desktop, target2.clone(), Some(256000))
+            .await
+            .expect("Subscribe 2 failed");
 
         let instance = pool.instances.get(&AudioSource::Desktop).unwrap();
         assert_eq!(instance.per_target_encoders.len(), 2);
 
-        pool.unsubscribe(&AudioSource::Desktop, target1).await.expect("Unsubscribe 1 failed");
-        
+        pool.unsubscribe(&AudioSource::Desktop, target1)
+            .await
+            .expect("Unsubscribe 1 failed");
+
         // Teardown should not happen yet
         assert_eq!(pool.instances.len(), 1);
         let instance = pool.instances.get(&AudioSource::Desktop).unwrap();
         assert_eq!(instance.per_target_encoders.len(), 1);
 
-        pool.unsubscribe(&AudioSource::Desktop, target2).await.expect("Unsubscribe 2 failed");
-        
+        pool.unsubscribe(&AudioSource::Desktop, target2)
+            .await
+            .expect("Unsubscribe 2 failed");
+
         // Now it should teardown
         assert_eq!(pool.instances.len(), 0);
     }

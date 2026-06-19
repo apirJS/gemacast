@@ -66,9 +66,7 @@ impl TrayManager {
             .with_tooltip("Gemacast");
 
         let icon = load_icon().map_err(|e| {
-            tray_icon::Error::OsError(std::io::Error::other(
-                format!("Icon load failed: {e}"),
-            ))
+            tray_icon::Error::OsError(std::io::Error::other(format!("Icon load failed: {e}")))
         })?;
 
         builder = builder.with_icon(icon);
@@ -146,10 +144,7 @@ impl TrayManager {
     }
 
     /// Find which device (if any) corresponds to a clicked menu item.
-    pub fn find_device_by_menu_id(
-        &self,
-        menu_id: &tray_icon::menu::MenuId,
-    ) -> Option<DeviceId> {
+    pub fn find_device_by_menu_id(&self, menu_id: &tray_icon::menu::MenuId) -> Option<DeviceId> {
         for (device_id, menu_item) in &self.device_menu_items {
             if *menu_id == menu_item.id() {
                 return Some(device_id.clone());

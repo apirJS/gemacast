@@ -562,4 +562,3 @@ mod tests {
         assert!(!body.is_offline);
     }
 }
-

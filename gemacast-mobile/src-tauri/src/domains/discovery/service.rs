@@ -117,15 +117,14 @@ mod tests {
 
     #[test]
     fn get_network_identifier_formats_correctly() {
-        let network =
-            MockNetworkInfoProvider::new().with_default_interface(InterfaceInfo {
-                name: "wlan0".to_string(),
-                mac_addr: Some("AA:BB:CC:DD:EE:FF".to_string()),
-                ipv4: vec!["192.168.1.100".parse().unwrap()],
-                ipv6: vec![],
-                is_wifi: true,
-                is_usb: false,
-            });
+        let network = MockNetworkInfoProvider::new().with_default_interface(InterfaceInfo {
+            name: "wlan0".to_string(),
+            mac_addr: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            ipv4: vec!["192.168.1.100".parse().unwrap()],
+            ipv6: vec![],
+            is_wifi: true,
+            is_usb: false,
+        });
 
         let result = get_network_identifier(&network).unwrap();
         assert_eq!(result, "wlan0_AA:BB:CC:DD:EE:FF_192.168.1.100");
@@ -133,15 +132,14 @@ mod tests {
 
     #[test]
     fn get_network_identifier_uses_default_mac_when_missing() {
-        let network =
-            MockNetworkInfoProvider::new().with_default_interface(InterfaceInfo {
-                name: "eth0".to_string(),
-                mac_addr: None,
-                ipv4: vec!["10.0.0.1".parse().unwrap()],
-                ipv6: vec![],
-                is_wifi: false,
-                is_usb: false,
-            });
+        let network = MockNetworkInfoProvider::new().with_default_interface(InterfaceInfo {
+            name: "eth0".to_string(),
+            mac_addr: None,
+            ipv4: vec!["10.0.0.1".parse().unwrap()],
+            ipv6: vec![],
+            is_wifi: false,
+            is_usb: false,
+        });
 
         let result = get_network_identifier(&network).unwrap();
         assert!(result.contains("00:00:00:00:00:00"));
@@ -197,8 +195,7 @@ mod tests {
     #[test]
     fn get_connection_status_parses_combined_transports() {
         let network = MockNetworkInfoProvider::new();
-        let platform =
-            MockPlatformService::new().with_transport_type("WIFI,ETHERNET|ADB_ON");
+        let platform = MockPlatformService::new().with_transport_type("WIFI,ETHERNET|ADB_ON");
 
         let modes = get_connection_status(&network, &platform).unwrap();
         assert!(modes.wifi);

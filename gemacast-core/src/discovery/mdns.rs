@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use std::collections::HashMap;
 
+use crate::control::messages::ControlMessage;
 use crate::error::GemaCastError;
 use crate::types::{DeviceId, TransportType};
-use crate::control::messages::ControlMessage;
 
 pub struct MdnsBroadcaster {
     _daemon: ServiceDaemon,
@@ -11,7 +11,9 @@ pub struct MdnsBroadcaster {
 
 impl MdnsBroadcaster {
     pub fn new(device_id: DeviceId, device_name: String, port: u16) -> Result<Self, GemaCastError> {
-        let daemon = ServiceDaemon::new().map_err(|e| GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e)))?;
+        let daemon = ServiceDaemon::new().map_err(|e| {
+            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e))
+        })?;
 
         let service_type = "_gemacast._tcp.local.";
         // The instance name is the device_id.
@@ -37,12 +39,14 @@ impl MdnsBroadcaster {
         )
         .map_err(|_| {
             // ServiceInfo::new only fails if the service type or instance name is invalid.
-            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(mdns_sd::Error::Again)) // fallback map
+            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(
+                mdns_sd::Error::Again,
+            )) // fallback map
         })?;
 
-        daemon
-            .register(service_info)
-            .map_err(|e| GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e)))?;
+        daemon.register(service_info).map_err(|e| {
+            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e))
+        })?;
 
         Ok(Self { _daemon: daemon })
     }
@@ -54,10 +58,12 @@ impl MdnsListener {
     pub async fn run(
         incoming_message_tx: tokio::sync::mpsc::Sender<(ControlMessage, std::net::SocketAddr)>,
     ) -> Result<(), GemaCastError> {
-        let daemon = ServiceDaemon::new().map_err(|e| GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e)))?;
-        let receiver = daemon
-            .browse("_gemacast._tcp.local.")
-            .map_err(|e| GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e)))?;
+        let daemon = ServiceDaemon::new().map_err(|e| {
+            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e))
+        })?;
+        let receiver = daemon.browse("_gemacast._tcp.local.").map_err(|e| {
+            GemaCastError::Network(crate::error::NetworkError::MdnsRegisterFailed(e))
+        })?;
 
         while let Ok(event) = receiver.recv_async().await {
             match event {

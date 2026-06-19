@@ -1,6 +1,6 @@
+use gemacast_core::types::{DeviceId, DiscoveredDevice};
 use std::net::SocketAddr;
 use std::time::Duration;
-use gemacast_core::types::{DeviceId, DiscoveredDevice};
 
 /// Outcome of a [`DeviceRegistry::register`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]

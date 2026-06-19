@@ -1,8 +1,8 @@
-use std::net::SocketAddr;
-use tao::event_loop::EventLoopProxy;
-use gemacast_core::types::{DeviceId, TransportType};
 use crate::events::TrayEvent;
 use crate::traits::TrayNotifier;
+use gemacast_core::types::{DeviceId, TransportType};
+use std::net::SocketAddr;
+use tao::event_loop::EventLoopProxy;
 
 /// Sends [`TrayEvent`]s to the tray event loop via `EventLoopProxy`.
 pub struct EventLoopTrayNotifier {

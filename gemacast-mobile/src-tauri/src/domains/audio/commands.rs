@@ -48,7 +48,9 @@ pub async fn disconnect_from_sender(
     device_id: DeviceId,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.disconnect_from_sender(ip_addr, device_id).await
 }
 
@@ -59,7 +61,10 @@ pub async fn stop_audio_playback(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let ip_parsed = ip
-        .map(|s| s.parse().map_err(|e: std::net::AddrParseError| e.to_string()))
+        .map(|s| {
+            s.parse()
+                .map_err(|e: std::net::AddrParseError| e.to_string())
+        })
         .transpose()?;
     state.audio.stop_audio_playback(ip_parsed, device_id).await
 }
@@ -77,7 +82,9 @@ pub async fn start_audio_playback(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let resume = if let (Some(ip_str), Some(did), Some(dname)) = (ip, device_id, device_name) {
-        let ip_addr = ip_str.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+        let ip_addr = ip_str
+            .parse()
+            .map_err(|e: std::net::AddrParseError| e.to_string())?;
         Some(ResumeParams {
             ip: ip_addr,
             device_id: did,
@@ -108,7 +115,9 @@ pub async fn get_audio_sources(
     ),
     String,
 > {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.get_audio_sources(ip_addr).await
 }
 
@@ -118,7 +127,9 @@ pub async fn probe_sender(
     device_id: DeviceId,
     state: State<'_, AppState>,
 ) -> Result<gemacast_core::control::types::PresenceResponse, String> {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.probe_sender(ip_addr, device_id).await
 }
 
@@ -129,7 +140,9 @@ pub async fn change_audio_source(
     source: gemacast_core::types::AudioSource,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state
         .audio
         .change_audio_source(ip_addr, device_id, source)
@@ -143,7 +156,9 @@ pub async fn change_audio_bitrate(
     bitrate: Option<i32>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state
         .audio
         .change_audio_bitrate(ip_addr, device_id, bitrate)
@@ -155,7 +170,9 @@ pub async fn get_process_list(
     ip: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
-    let ip_addr = ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.get_process_list(ip_addr).await
 }
 
@@ -165,15 +182,14 @@ pub async fn establish_websocket(
     device_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ip_addr = sender_ip.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let ip_addr = sender_ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.establish_websocket(ip_addr, device_id).await
 }
 
 #[tauri::command]
-pub async fn set_audio_gain(
-    gain_db: f32,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn set_audio_gain(gain_db: f32, state: State<'_, AppState>) -> Result<(), String> {
     // Convert dB to linear multiplier: 10^(dB/20)
     // Clamp to safe range: -24 dB (0.063) to +12 dB (3.98)
     let clamped_db = gain_db.clamp(-24.0, 12.0);

@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use gemacast_core::types::{ConnectionMode, DeviceId, JitterConfig};
+use std::net::IpAddr;
 
 /// Parameters for starting a new audio playback session.
 #[derive(Debug, Clone)]
