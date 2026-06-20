@@ -40,7 +40,11 @@ fn main() {
     let lock_file = match std::fs::File::create(&lock_path) {
         Ok(f) => f,
         Err(e) => {
-            tracing::error!("Failed to create lock file at {}: {}", lock_path.display(), e);
+            tracing::error!(
+                "Failed to create lock file at {}: {}",
+                lock_path.display(),
+                e
+            );
             app::run();
             return;
         }
