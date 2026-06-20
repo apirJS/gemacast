@@ -22,10 +22,14 @@ commit_parsers = [
 # Only release the distributable binary (gemacast-pc).
 # gemacast-core is a library and gemacast-mobile is built by the Android job in release.yml.
 
+git_tag_name = "v{{ version }}"
+
 [[package]]
 name = "gemacast-core"
-release = false
+git_tag_enable = false
+changelog_update = false
 
 [[package]]
 name = "gemacast-mobile"
-release = false
+git_tag_enable = false
+changelog_update = false
