@@ -1,27 +1,9 @@
 [workspace]
 publish = false
 changelog_update = true
-# release-plz creates git tags; cargo-dist's Release workflow handles GitHub Releases.
-# This prevents the dual-release problem (two GitHub Releases for the same version).
 git_release_enable = false
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
-
-[changelog]
-commit_parsers = [
-  { message = "^feat", group = "Features" },
-  { message = "^fix", group = "Bug Fixes" },
-  { message = "^perf", group = "Performance" },
-  { message = "^refactor", group = "Refactoring" },
-  { message = "^docs", group = "Documentation" },
-  { message = "^ci", group = "CI/CD" },
-  { message = "^chore", group = "Chore" },
-  { message = "^style", group = "Style" },
-  { message = "^test", group = "Test" },
-]
-
-# Only release the distributable binary (gemacast-pc).
-# gemacast-core is a library and gemacast-mobile is built by the Android job in release.yml.
 
 [[package]]
 name = "gemacast-core"
