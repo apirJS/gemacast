@@ -5,6 +5,7 @@ changelog_update = true
 # This prevents the dual-release problem (two GitHub Releases for the same version).
 git_release_enable = false
 git_tag_enable = true
+git_tag_name = "v{{ version }}"
 
 [changelog]
 commit_parsers = [
@@ -21,8 +22,6 @@ commit_parsers = [
 
 # Only release the distributable binary (gemacast-pc).
 # gemacast-core is a library and gemacast-mobile is built by the Android job in release.yml.
-
-git_tag_name = "v{{ version }}"
 
 [[package]]
 name = "gemacast-core"
