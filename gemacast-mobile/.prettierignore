@@ -1,3 +1,5 @@
 src-tauri
 node_modules
 dist
+ABOUT.md
+BLUEPRINT.md
