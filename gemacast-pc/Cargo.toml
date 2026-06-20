@@ -30,6 +30,7 @@ async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3.23"
 image = "0.25.10"
+fs2 = "0.4"
 
 # ── Linux .deb packaging (cargo-deb) ─────────────────────────────────────────
 [package.metadata.deb]
