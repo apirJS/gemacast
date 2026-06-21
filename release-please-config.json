@@ -5,7 +5,6 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "component": "gemacast",
       "extra-files": [
         {
           "type": "toml",
