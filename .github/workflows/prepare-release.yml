@@ -1,17 +1,27 @@
 name: Release Please (Semantic Versioning)
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI Validation"]
+    types: [completed]
     branches: [main]
 
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     name: Create Release PR / Tag
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' }}
     runs-on: ubuntu-latest
+    environment: Production
     steps:
       - uses: googleapis/release-please-action@v4
         with:
