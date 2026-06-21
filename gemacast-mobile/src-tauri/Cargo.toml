@@ -29,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 
-gemacast-core = {path = "../../gemacast-core"}
+gemacast-core = {path = "../../gemacast-core", version = "0.1.0"}
 tokio = { version = "1.50.0", features = ["full"] }
 tauri-plugin-device-info = "1.0.1"
 netdev = "0.43.0"

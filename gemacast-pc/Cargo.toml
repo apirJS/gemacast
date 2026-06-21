@@ -19,7 +19,7 @@ include = ["adb", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"]
 embed-manifest = "1"
 
 [dependencies]
-gemacast-core = { path = "../gemacast-core" }
+gemacast-core = { path = "../gemacast-core", version = "0.1.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "signal"] }
 tao = "0.34.6"
 tray-icon = "0.21.3"
