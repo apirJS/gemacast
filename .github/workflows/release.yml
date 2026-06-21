@@ -295,7 +295,13 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          # Upload artifacts to the release created by release-please
+          gh release upload "${{ needs.plan.outputs.tag }}" artifacts/* --clobber
+          
+          # Append the cargo-dist checksum table to the release-please changelog
+          OLD_BODY=$(gh release view "${{ needs.plan.outputs.tag }}" --json body -q .body)
+          echo -e "$OLD_BODY\n\n$(cat $RUNNER_TEMP/notes.txt)" > $RUNNER_TEMP/combined_notes.txt
+          gh release edit "${{ needs.plan.outputs.tag }}" --notes-file "$RUNNER_TEMP/combined_notes.txt"
 
   # Build and upload WiX MSI installer for Windows
   build-msi:
