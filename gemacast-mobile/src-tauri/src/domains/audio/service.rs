@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use gemacast_core::control::types::ConnectReq;
-use gemacast_core::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
+use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 
 use crate::traits::{
     ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams,
@@ -144,7 +144,13 @@ impl AudioService {
     pub async fn get_audio_sources(
         &self,
         ip: IpAddr,
-    ) -> Result<(Vec<AudioSource>, gemacast_core::types::SenderCapabilities), String> {
+    ) -> Result<
+        (
+            Vec<AudioSource>,
+            gemacast_core::domain::types::SenderCapabilities,
+        ),
+        String,
+    > {
         let client = self.client_factory.create(ip);
         client.get_audio_sources().await
     }
@@ -186,7 +192,7 @@ impl AudioService {
     pub async fn get_process_list(
         &self,
         ip: IpAddr,
-    ) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
+    ) -> Result<Vec<gemacast_core::domain::types::ProcessInfo>, String> {
         let client = self.client_factory.create(ip);
         client.get_process_list().await
     }

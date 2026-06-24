@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use gemacast_core::types::{ConnectionMode, DeviceId, DiscoveredDevice, TransportType};
+use gemacast_core::domain::types::{ConnectionMode, DeviceId, DiscoveredDevice, TransportType};
 
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
 use crate::traits::FrontendNotifier;
@@ -34,12 +34,12 @@ impl DispatchContext {
 
     pub fn dispatch(
         &self,
-        message: gemacast_core::types::ControlMessage,
+        message: gemacast_core::control::messages::ControlMessage,
         addr: std::net::SocketAddr,
         mode: ConnectionMode,
     ) {
         match message {
-            gemacast_core::types::ControlMessage::Presence {
+            gemacast_core::control::messages::ControlMessage::Presence {
                 device_id,
                 sender_name,
                 is_offline,
@@ -47,7 +47,7 @@ impl DispatchContext {
             } => {
                 self.handle_presence(device_id, sender_name, is_offline, transport, addr, mode);
             }
-            gemacast_core::types::ControlMessage::Disconnect { .. } => {
+            gemacast_core::control::messages::ControlMessage::Disconnect { .. } => {
                 self.notifier.emit_force_disconnect();
             }
             _ => {}
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn wifi_mode_should_emit_wifi_sender() {
         let (ctx, notifier) = make_ctx();
-        let msg = gemacast_core::types::ControlMessage::Presence {
+        let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
             sender_name: "PC".into(),
             is_offline: false,
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn wifi_mode_should_ignore_usb_sender() {
         let (ctx, notifier) = make_ctx();
-        let msg = gemacast_core::types::ControlMessage::Presence {
+        let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
             sender_name: "PC".into(),
             is_offline: false,
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn disconnect_message_should_emit_force_disconnect() {
         let (ctx, notifier) = make_ctx();
-        let msg = gemacast_core::types::ControlMessage::Disconnect {
+        let msg = gemacast_core::control::messages::ControlMessage::Disconnect {
             device_id: DeviceId("phone".into()),
         };
         let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
@@ -198,7 +198,7 @@ mod tests {
             .unwrap()
             .insert(DeviceId("pc1".into()), Instant::now());
 
-        let msg = gemacast_core::types::ControlMessage::Presence {
+        let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
             sender_name: "PC".into(),
             is_offline: true,
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn adb_mode_should_only_accept_loopback() {
         let (ctx, notifier) = make_ctx();
-        let msg = gemacast_core::types::ControlMessage::Presence {
+        let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
             sender_name: "PC".into(),
             is_offline: false,

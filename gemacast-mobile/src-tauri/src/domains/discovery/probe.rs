@@ -1,5 +1,5 @@
+use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 use gemacast_core::network::Ports;
-use gemacast_core::types::{ConnectionMode, DeviceId};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
@@ -9,7 +9,7 @@ pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: C
     }
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(5000));
-    let payload = gemacast_core::types::ControlMessage::Probe {
+    let payload = gemacast_core::control::messages::ControlMessage::Probe {
         device_id: Some(device_id),
     };
 

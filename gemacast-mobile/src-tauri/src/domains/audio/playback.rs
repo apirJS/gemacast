@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use gemacast_core::types::JitterConfig;
+use gemacast_core::domain::types::JitterConfig;
 
 use crate::traits::FrontendNotifier;
 
@@ -53,7 +53,7 @@ pub fn spawn_session_receiver(
     exclusive_mode: bool,
     notifier: Arc<dyn FrontendNotifier>,
     target_ip: Option<std::net::IpAddr>,
-    mode: gemacast_core::types::ConnectionMode,
+    mode: gemacast_core::domain::types::ConnectionMode,
     device_id: String,
 ) -> SessionReceiverResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
@@ -92,8 +92,8 @@ pub fn spawn_session_receiver(
         {
             if matches!(
                 e,
-                gemacast_core::error::GemaCastError::Network(
-                    gemacast_core::error::NetworkError::ConnectionLost
+                gemacast_core::domain::error::GemaCastError::Network(
+                    gemacast_core::domain::error::NetworkError::ConnectionLost
                 )
             ) {
                 notifier.emit_force_disconnect();

@@ -1,6 +1,6 @@
 use crate::traits::{FrontendNotifier, SessionInfo, SessionManager, SessionParams};
 use async_trait::async_trait;
-use gemacast_core::types::{ConnectionMode, JitterConfig};
+use gemacast_core::domain::types::{ConnectionMode, JitterConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;

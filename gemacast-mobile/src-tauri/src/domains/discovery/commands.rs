@@ -3,7 +3,7 @@
 //! Each `#[tauri::command]` handler extracts dependencies from
 //! [`crate::state::AppState`] and delegates to [`super::service`].
 
-use gemacast_core::types::{ConnectionMode, DeviceId};
+use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 use tauri::State;
 
 use crate::state::AppState;
@@ -78,7 +78,7 @@ pub async fn stop_listening_for_senders(state: State<'_, AppState>) -> Result<()
 #[tauri::command]
 pub fn get_connection_status(
     state: State<'_, AppState>,
-) -> Result<gemacast_core::types::ConnectionModes, String> {
+) -> Result<gemacast_core::domain::types::ConnectionModes, String> {
     super::service::get_connection_status(state.network.as_ref(), state.platform.as_ref())
 }
 

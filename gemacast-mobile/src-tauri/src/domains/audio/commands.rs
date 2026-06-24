@@ -6,7 +6,7 @@
 
 use crate::state::AppState;
 use crate::traits::{ConnectParams, ResumeParams};
-use gemacast_core::types::{DeviceId, TransportType};
+use gemacast_core::domain::types::{DeviceId, TransportType};
 use tauri::State;
 
 #[tauri::command]
@@ -21,9 +21,9 @@ pub async fn connect_to_sender(
     ip: String,
     device_id: DeviceId,
     device_name: String,
-    mode: gemacast_core::types::ConnectionMode,
+    mode: gemacast_core::domain::types::ConnectionMode,
     exclusive_mode: bool,
-    jitter_config: gemacast_core::types::JitterConfig,
+    jitter_config: gemacast_core::domain::types::JitterConfig,
     bitrate: Option<i32>,
     _transport: Option<TransportType>,
     state: State<'_, AppState>,
@@ -98,7 +98,7 @@ pub async fn start_audio_playback(
 
 #[tauri::command]
 pub async fn update_jitter_config(
-    jitter_config: gemacast_core::types::JitterConfig,
+    jitter_config: gemacast_core::domain::types::JitterConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.audio.update_jitter_config(jitter_config).await
@@ -110,8 +110,8 @@ pub async fn get_audio_sources(
     state: State<'_, AppState>,
 ) -> Result<
     (
-        Vec<gemacast_core::types::AudioSource>,
-        gemacast_core::types::SenderCapabilities,
+        Vec<gemacast_core::domain::types::AudioSource>,
+        gemacast_core::domain::types::SenderCapabilities,
     ),
     String,
 > {
@@ -137,7 +137,7 @@ pub async fn probe_sender(
 pub async fn change_audio_source(
     ip: String,
     device_id: DeviceId,
-    source: gemacast_core::types::AudioSource,
+    source: gemacast_core::domain::types::AudioSource,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let ip_addr = ip
@@ -169,7 +169,7 @@ pub async fn change_audio_bitrate(
 pub async fn get_process_list(
     ip: String,
     state: State<'_, AppState>,
-) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
+) -> Result<Vec<gemacast_core::domain::types::ProcessInfo>, String> {
     let ip_addr = ip
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
