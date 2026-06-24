@@ -1,4 +1,4 @@
-use crate::error::{AudioError, GemaCastError, StreamDirection};
+use crate::domain::error::{AudioError, GemaCastError, StreamDirection};
 use crate::ports::capture::CaptureBackend;
 
 pub struct CpalLoopbackCapture {
@@ -25,7 +25,8 @@ impl CaptureBackend for CpalLoopbackCapture {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn create_cpal_loopback() -> Result<crate::ports::capture::CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
+pub fn create_cpal_loopback()
+-> Result<crate::ports::capture::CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
     use crate::ports::capture::CaptureHandle;
     use cpal::traits::{DeviceTrait, HostTrait};

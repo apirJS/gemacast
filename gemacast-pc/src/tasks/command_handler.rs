@@ -8,8 +8,9 @@ use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::discovery::PresenceBroadcaster;
-use gemacast_core::types::{ControlMessage, DeviceId};
+use gemacast_core::domain::types::DeviceId;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -250,14 +251,14 @@ mod tests {
         let registry = Arc::new(MockDeviceRegistry::new());
         // Add two devices
         {
-            let d1 = gemacast_core::types::DiscoveredDevice::from_presence(
+            let d1 = gemacast_core::domain::types::DiscoveredDevice::from_presence(
                 DeviceId("phone-1".into()),
                 "Phone 1".into(),
                 false,
                 "192.168.1.5:9000".parse().unwrap(),
                 None,
             );
-            let d2 = gemacast_core::types::DiscoveredDevice::from_presence(
+            let d2 = gemacast_core::domain::types::DiscoveredDevice::from_presence(
                 DeviceId("phone-2".into()),
                 "Phone 2".into(),
                 false,

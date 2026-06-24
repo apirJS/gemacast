@@ -2,7 +2,7 @@
 
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
-    error::{AudioError, GemaCastError},
+    domain::error::{AudioError, GemaCastError},
     ports::capture::{CaptureBackend, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
@@ -70,7 +70,8 @@ impl Drop for WasapiDesktopCapture {
 ///
 /// Returns [`AudioError::WindowsApi`] if any WASAPI call fails, or
 /// [`AudioError::ResampleFailed`] if the Rubato resampler cannot be created.
-pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
+pub fn create_wasapi_desktop_loopback()
+-> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).map_err(AudioError::WindowsApi)?;
 

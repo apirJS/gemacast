@@ -1,7 +1,7 @@
 use super::buffer::JitterBuffer;
 use super::types::RawPacket;
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE};
-use crate::types::JitterConfig;
+use crate::domain::types::JitterConfig;
 use opus::Decoder;
 use ringbuf::{HeapCons, traits::*};
 use std::collections::VecDeque;

@@ -2,7 +2,7 @@
 
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
-    error::{AudioError, GemaCastError},
+    domain::error::{AudioError, GemaCastError},
     ports::capture::{CaptureBackend, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
@@ -85,7 +85,9 @@ impl CaptureBackend for WasapiLoopbackCapture {
     }
 }
 
-pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
+pub fn create_wasapi_process_loopback(
+    pid: u32,
+) -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
         let audio_client = activate_process_loopback(pid)?;
 

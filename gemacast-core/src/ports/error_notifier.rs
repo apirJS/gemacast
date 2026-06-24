@@ -12,7 +12,7 @@
 //! acceptable. This avoids async trait complexity and keeps the trait
 //! fully static-dispatch compatible without `Pin<Box<dyn Future>>`.
 
-use crate::types::DeviceId;
+use crate::domain::types::DeviceId;
 
 /// Notifies a connected receiver about engine-side errors.
 ///

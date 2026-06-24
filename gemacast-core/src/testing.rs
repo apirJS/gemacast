@@ -18,12 +18,12 @@
 pub mod mocks {
     use std::sync::{Arc, Mutex};
 
-    use crate::error::GemaCastError;
+    use crate::domain::error::GemaCastError;
+    use crate::domain::types::{DeviceId, ProcessInfo};
     use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
     use crate::ports::error_notifier::ErrorNotifier;
     use crate::ports::process_lister::ProcessLister;
     use crate::ports::transport::AudioPacketTransport;
-    use crate::types::{DeviceId, ProcessInfo};
     use ringbuf::traits::Split;
 
     // -----------------------------------------------------------------------
@@ -90,10 +90,7 @@ pub mod mocks {
         type Backend = MockCaptureBackend;
 
         fn create_desktop_capture(&self) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(Call::CreateDesktopCapture);
+            self.calls.lock().unwrap().push(Call::CreateDesktopCapture);
 
             let rb = ringbuf::HeapRb::<f32>::new(960 * 4);
             let (_, consumer) = rb.split();

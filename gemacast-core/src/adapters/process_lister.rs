@@ -9,8 +9,8 @@
 //! - Deduplication by executable name with audio-session preference
 //! - Sorting: audio-active processes first, then alphabetically
 
+use crate::domain::types::ProcessInfo;
 use crate::ports::process_lister::ProcessLister;
-use crate::types::ProcessInfo;
 
 /// Default process lister that delegates to platform-specific APIs.
 ///
@@ -57,8 +57,7 @@ fn windows_list_processes() -> Vec<ProcessInfo> {
     let mut audio_root_pids = HashSet::<u32>::new();
     for &audio_pid in &audio_pids {
         if let Some(name) = all_pids.get(&audio_pid) {
-            let root_pid =
-                wasapi_loopback::get_root_ancestor_pid(audio_pid, &name.to_lowercase());
+            let root_pid = wasapi_loopback::get_root_ancestor_pid(audio_pid, &name.to_lowercase());
             audio_root_pids.insert(root_pid);
         }
         // Also mark the original audio PID itself

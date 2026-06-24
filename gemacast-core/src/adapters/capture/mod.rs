@@ -3,7 +3,7 @@
 //! Re-exports port traits from [`crate::ports::capture`] and provides the
 //! production [`DefaultCaptureFactory`] that selects platform-specific backends.
 
-use crate::error::GemaCastError;
+use crate::domain::error::GemaCastError;
 
 pub mod cpal_loopback;
 #[cfg(target_os = "windows")]
@@ -86,14 +86,17 @@ impl CaptureFactory for DefaultCaptureFactory {
     }
 
     #[allow(unused_variables)]
-    fn create_process_capture(&self, pid: u32) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
+    fn create_process_capture(
+        &self,
+        pid: u32,
+    ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
         #[cfg(windows)]
         {
             wasapi_loopback::create_wasapi_process_loopback(pid)
         }
         #[cfg(not(windows))]
         {
-            Err(crate::error::AudioError::ProcessCaptureUnavailable.into())
+            Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
         }
     }
 }

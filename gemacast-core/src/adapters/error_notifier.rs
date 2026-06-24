@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::control::types::WsEvent;
+use crate::domain::types::DeviceId;
 use crate::ports::error_notifier::ErrorNotifier;
-use crate::types::DeviceId;
 
 /// Type alias for the shared WebSocket connection map.
 ///

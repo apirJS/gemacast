@@ -13,7 +13,7 @@
 //! - [`crate::adapters::capture::DefaultCaptureFactory`] — WASAPI (Windows) / CPAL (other)
 //! - Mock factories in `#[cfg(test)]` blocks
 
-use crate::error::GemaCastError;
+use crate::domain::error::GemaCastError;
 use ringbuf::HeapCons;
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
@@ -30,7 +30,7 @@ pub trait CaptureBackend: Send {
     fn pause(&mut self) -> Result<(), GemaCastError>;
 }
 
-/// A constructed capture pipeline ready to be driven by [`CapturePool`](crate::stream::sender::capture_pool::CapturePool).
+/// A constructed capture pipeline ready to be driven by [`CapturePool`](crate::adapters::capture_pool::CapturePool).
 ///
 /// Generic over `B` so the backend is known at compile time (static dispatch).
 /// The `CapturePool` erases `B` at the point of spawning the capture task,
@@ -74,6 +74,9 @@ pub trait CaptureFactory: Send + Sync {
     /// # Platform support
     ///
     /// Only available on Windows (WASAPI process loopback). Other platforms
-    /// should return [`AudioError::ProcessCaptureUnavailable`](crate::error::AudioError::ProcessCaptureUnavailable).
-    fn create_process_capture(&self, pid: u32) -> Result<CaptureHandle<Self::Backend>, GemaCastError>;
+    /// should return [`AudioError::ProcessCaptureUnavailable`](crate::domain::error::AudioError::ProcessCaptureUnavailable).
+    fn create_process_capture(
+        &self,
+        pid: u32,
+    ) -> Result<CaptureHandle<Self::Backend>, GemaCastError>;
 }

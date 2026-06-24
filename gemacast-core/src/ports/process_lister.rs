@@ -4,7 +4,7 @@
 //! On Windows this uses WASAPI session enumeration + Toolhelp32; on other
 //! platforms it returns an empty list.
 
-use crate::types::ProcessInfo;
+use crate::domain::types::ProcessInfo;
 
 /// Lists capturable audio processes on the host OS.
 ///

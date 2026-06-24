@@ -5,11 +5,9 @@
 //! structs live in [`crate::adapters::transport`].
 
 use crate::adapters::transport::{AudioTransport, TcpTransport, UdpTransport};
-use crate::error::NetworkError;
+use crate::domain::error::NetworkError;
 use crate::network::Ports;
 use std::net::{Ipv4Addr, SocketAddrV4};
-
-
 
 pub fn create_udp_audio_transport(
     target_ip: Option<std::net::IpAddr>,
@@ -83,7 +81,7 @@ pub fn create_udp_audio_transport(
 }
 
 pub fn create_tcp_audio_transport(
-    device_id: &crate::types::DeviceId,
+    device_id: &crate::domain::types::DeviceId,
 ) -> Result<TcpTransport, NetworkError> {
     let adb_addr = format!("127.0.0.1:{}", Ports::ADB_AUDIO_TCP);
     let stream_addr: std::net::SocketAddr = adb_addr
@@ -122,11 +120,11 @@ pub fn create_tcp_audio_transport(
 /// - `AudioTransport`: Enum-dispatched transport (UDP or TCP)
 /// - `Option<UdpSocket>`: Heartbeat socket (only for UDP/WiFi mode)
 pub fn create_audio_transport(
-    mode: crate::types::ConnectionMode,
+    mode: crate::domain::types::ConnectionMode,
     target_ip: Option<std::net::IpAddr>,
-    device_id: &crate::types::DeviceId,
+    device_id: &crate::domain::types::DeviceId,
 ) -> Result<(AudioTransport, Option<std::net::UdpSocket>), NetworkError> {
-    if mode == crate::types::ConnectionMode::Adb {
+    if mode == crate::domain::types::ConnectionMode::Adb {
         let t = create_tcp_audio_transport(device_id)?;
         return Ok((AudioTransport::Tcp(t), None));
     }

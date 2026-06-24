@@ -86,7 +86,6 @@ pub struct SenderCapabilities {
     pub supports_process_capture: bool,
 }
 
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredDevice {

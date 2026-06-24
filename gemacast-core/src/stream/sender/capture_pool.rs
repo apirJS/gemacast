@@ -5,14 +5,14 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::ports::capture::{CaptureBackend, CaptureHandle};
 use super::encode::{EncodeResult, encode_frame};
 use super::engine::CaptureCommand;
 use crate::audio::{
     MAX_OPUS_PACKET_SIZE, OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE, create_opus_encoder_with_bitrate,
 };
-use crate::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
-use crate::types::{AudioSource, TargetId};
+use crate::domain::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
+use crate::domain::types::{AudioSource, TargetId};
+use crate::ports::capture::{CaptureBackend, CaptureHandle};
 
 /// Tracks one per-target encoder task. Each connected receiver gets its own encoder
 /// at its requested bitrate, running in a dedicated tokio task.
@@ -35,7 +35,7 @@ pub struct AudioCaptureInstance {
     /// Per-target encoders keyed by socket address (for UDP/WiFi targets).
     per_target_encoders: HashMap<SocketAddr, PerTargetEncoder>,
     /// TCP/ADB encoders keyed by DeviceId.
-    tcp_encoders: HashMap<crate::types::DeviceId, TcpEncoder>,
+    tcp_encoders: HashMap<crate::domain::types::DeviceId, TcpEncoder>,
     /// Broadcast channel for raw PCM frames from the capture thread.
     pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
     pub capture_command_tx: mpsc::Sender<CaptureCommand>,
@@ -44,7 +44,9 @@ pub struct AudioCaptureInstance {
 }
 
 impl AudioCaptureInstance {
-    pub fn new<B: CaptureBackend + 'static>(capture: CaptureHandle<B>) -> Result<Self, GemaCastError> {
+    pub fn new<B: CaptureBackend + 'static>(
+        capture: CaptureHandle<B>,
+    ) -> Result<Self, GemaCastError> {
         let (pcm_broadcast_tx, _) = broadcast::channel(4000);
         let (capture_command_tx, capture_command_rx) = mpsc::channel(32);
         let (capture_shutdown_tx, capture_shutdown_rx) = oneshot::channel();
@@ -102,7 +104,7 @@ impl AudioCaptureInstance {
     /// encodes at the given bitrate, and returns the dedicated broadcast channel.
     async fn spawn_tcp_encoder(
         &mut self,
-        device_id: crate::types::DeviceId,
+        device_id: crate::domain::types::DeviceId,
         bitrate: Option<i32>,
     ) -> Result<broadcast::Sender<Arc<Vec<u8>>>, GemaCastError> {
         self.remove_tcp_encoder(&device_id).await;
@@ -138,7 +140,7 @@ impl AudioCaptureInstance {
     }
 
     /// Removes a TCP encoder for a specific device, shutting down its task.
-    async fn remove_tcp_encoder(&mut self, device_id: &crate::types::DeviceId) {
+    async fn remove_tcp_encoder(&mut self, device_id: &crate::domain::types::DeviceId) {
         if let Some(encoder) = self.tcp_encoders.remove(device_id) {
             let _ = encoder.shutdown_tx.send(());
             let _ = encoder.join_handle.await;
@@ -574,8 +576,8 @@ impl<F: CaptureFactory> CapturePool<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::types::DeviceId;
     use crate::ports::capture::CaptureBackend;
-    use crate::types::DeviceId;
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
     use tokio::sync::Notify;
@@ -766,7 +768,10 @@ mod tests {
             })
         }
 
-        fn create_process_capture(&self, _pid: u32) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
+        fn create_process_capture(
+            &self,
+            _pid: u32,
+        ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             self.create_desktop_capture() // Just reuse the mock for tests
         }
     }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
+use crate::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +52,7 @@ pub struct ChangeBitrateReq {
 #[serde(rename_all = "camelCase")]
 pub struct SourcesResponse {
     pub sources: Vec<AudioSource>,
-    pub capabilities: crate::types::SenderCapabilities,
+    pub capabilities: crate::domain::types::SenderCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub struct PresenceResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessListResponse {
-    pub processes: Vec<crate::types::ProcessInfo>,
+    pub processes: Vec<crate::domain::types::ProcessInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +85,9 @@ pub enum WsCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, SenderCapabilities};
+    use crate::domain::types::{
+        AudioSource, ConnectionMode, DeviceId, JitterConfig, SenderCapabilities,
+    };
 
     mod connect_req {
         use super::*;

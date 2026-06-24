@@ -1,9 +1,9 @@
 use crate::{
     audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE},
-    error::{AudioError, GemaCastError, StreamDirection},
+    domain::error::{AudioError, GemaCastError, StreamDirection},
+    domain::types::JitterConfig,
     jitter::RawPacket,
     network::Ports,
-    types::JitterConfig,
 };
 use cpal::StreamError;
 #[cfg(not(target_os = "android"))]
@@ -81,13 +81,13 @@ impl AudioStreamReceiver {
         sender_ip_tx: Option<oneshot::Sender<String>>,
         latency_tx: Option<mpsc::Sender<(f32, f32)>>,
         target_ip: Option<std::net::IpAddr>,
-        mode: crate::types::ConnectionMode,
+        mode: crate::domain::types::ConnectionMode,
         device_id: String,
     ) -> Result<(), GemaCastError> {
         let (transport, heartbeat_socket) = super::transport::create_audio_transport(
             mode,
             target_ip,
-            &crate::types::DeviceId(device_id),
+            &crate::domain::types::DeviceId(device_id),
         )?;
         let heartbeat_active = Arc::new(AtomicBool::new(true));
         let sender_port = Arc::new(AtomicU16::new(Ports::AUDIO_UDP));
@@ -151,7 +151,7 @@ impl AudioStreamReceiver {
                 return Err(AudioError::StreamError(stream_err).into());
             }
             _ = network_dropped_rx.recv() => {
-                return Err(crate::error::NetworkError::ConnectionLost.into());
+                return Err(crate::domain::error::NetworkError::ConnectionLost.into());
             }
             _ = &mut self.playback_shutdown_rx => {}
         }
@@ -271,7 +271,7 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::transport::AudioPacketTransport;
+    use crate::adapters::transport::AudioPacketTransport;
     use ringbuf::HeapRb;
     use std::net::SocketAddr;
     use std::sync::Arc;

@@ -1,6 +1,5 @@
 //! Sender-side audio capture, encoding, and streaming.
 
-pub mod capture;
 pub mod capture_pool;
 pub mod encode;
 pub mod engine;

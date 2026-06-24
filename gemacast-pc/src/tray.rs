@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use gemacast_core::types::{DeviceId, TransportType};
+use gemacast_core::domain::types::{DeviceId, TransportType};
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},

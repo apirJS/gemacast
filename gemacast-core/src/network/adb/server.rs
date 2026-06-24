@@ -1,5 +1,6 @@
+use crate::control::messages::ControlMessage;
+use crate::domain::types::DeviceId;
 use crate::network::Ports;
-use crate::types::{ControlMessage, DeviceId};
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
@@ -84,7 +85,7 @@ pub fn spawn_adb_audio_tcp_server(
                 if socket.read_exact(&mut id_buf).await.is_err() {
                     return;
                 }
-                
+
                 let device_id = match String::from_utf8(id_buf) {
                     Ok(id) => id,
                     Err(_) => return,
@@ -93,7 +94,7 @@ pub fn spawn_adb_audio_tcp_server(
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 if engine_command_tx
                     .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                        device_id: crate::types::DeviceId(device_id.clone()),
+                        device_id: crate::domain::types::DeviceId(device_id.clone()),
                         reply: reply_tx,
                     })
                     .await
@@ -112,7 +113,7 @@ pub fn spawn_adb_audio_tcp_server(
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         if engine_command_tx
                             .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                device_id: crate::types::DeviceId(device_id.clone()),
+                                device_id: crate::domain::types::DeviceId(device_id.clone()),
                                 reply: reply_tx,
                             })
                             .await
@@ -168,7 +169,7 @@ pub fn spawn_adb_audio_tcp_server(
                                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                                     if engine_command_tx
                                         .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                            device_id: crate::types::DeviceId(device_id.clone()),
+                                            device_id: crate::domain::types::DeviceId(device_id.clone()),
                                             reply: reply_tx,
                                         })
                                         .await

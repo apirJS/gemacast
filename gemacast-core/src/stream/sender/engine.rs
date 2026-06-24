@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::error::GemaCastError;
+use crate::domain::error::GemaCastError;
+use crate::domain::types::{AudioSource, DeviceId, TargetId};
 use crate::ports::capture::CaptureFactory;
 use crate::ports::error_notifier::ErrorNotifier;
-use crate::types::{AudioSource, DeviceId, TargetId};
 
 use super::capture_pool::CapturePool;
 
@@ -321,7 +321,10 @@ mod tests {
             })
         }
 
-        fn create_process_capture(&self, _pid: u32) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
+        fn create_process_capture(
+            &self,
+            _pid: u32,
+        ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             self.create_desktop_capture()
         }
     }

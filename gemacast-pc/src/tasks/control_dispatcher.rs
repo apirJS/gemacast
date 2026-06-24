@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gemacast_core::control::http::ControlCommand;
+use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::control::types::PresenceResponse;
-use gemacast_core::types::{ControlMessage, DeviceId, DiscoveredDevice};
+use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -95,8 +96,8 @@ impl ControlDispatcher {
                 let (sources, caps) = get_windows_sources();
                 #[cfg(not(target_os = "windows"))]
                 let (sources, caps) = (
-                    vec![gemacast_core::types::AudioSource::Desktop],
-                    gemacast_core::types::SenderCapabilities {
+                    vec![gemacast_core::domain::types::AudioSource::Desktop],
+                    gemacast_core::domain::types::SenderCapabilities {
                         supports_process_capture: false,
                     },
                 );
@@ -187,8 +188,8 @@ pub async fn register_device(
     device_name: String,
     audio_addr: SocketAddr,
     remote_addr: SocketAddr,
-    transport: Option<gemacast_core::types::TransportType>,
-    source: Option<gemacast_core::types::AudioSource>,
+    transport: Option<gemacast_core::domain::types::TransportType>,
+    source: Option<gemacast_core::domain::types::AudioSource>,
     bitrate: Option<i32>,
 ) {
     tracing::debug!(
@@ -257,12 +258,12 @@ pub async fn unregister_device(
 
 #[cfg(target_os = "windows")]
 fn get_windows_sources() -> (
-    Vec<gemacast_core::types::AudioSource>,
-    gemacast_core::types::SenderCapabilities,
+    Vec<gemacast_core::domain::types::AudioSource>,
+    gemacast_core::domain::types::SenderCapabilities,
 ) {
     (
-        vec![gemacast_core::types::AudioSource::Desktop],
-        gemacast_core::types::SenderCapabilities {
+        vec![gemacast_core::domain::types::AudioSource::Desktop],
+        gemacast_core::domain::types::SenderCapabilities {
             supports_process_capture: true,
         },
     )

@@ -1,6 +1,6 @@
-use crate::error::{GemaCastError, NetworkError};
+use crate::control::messages::ControlMessage;
+use crate::domain::error::{GemaCastError, NetworkError};
 use crate::network::Ports;
-use crate::types::ControlMessage;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::net::UdpSocket;

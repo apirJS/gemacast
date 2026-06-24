@@ -15,10 +15,10 @@ use crate::control::types::{
     ChangeBitrateReq, ChangeSourceReq, ConnectReq, DisconnectReq, PresenceResponse, ProbeReq,
     ProcessListResponse, SourcesResponse, WsEvent,
 };
-use crate::error::{ControlError, GemaCastError, NetworkError};
+use crate::domain::error::{ControlError, GemaCastError, NetworkError};
+use crate::domain::types::{AudioSource, DeviceId, SenderCapabilities};
 use crate::network::Ports;
 use crate::ports::process_lister::ProcessLister;
-use crate::types::{AudioSource, DeviceId, SenderCapabilities};
 
 #[derive(Debug)]
 pub enum ControlCommand {
@@ -187,7 +187,9 @@ async fn handle_disconnect<P: ProcessLister + 'static>(
     StatusCode::OK
 }
 
-async fn handle_get_sources<P: ProcessLister + 'static>(State(state): State<ControlServerState<P>>) -> Json<SourcesResponse> {
+async fn handle_get_sources<P: ProcessLister + 'static>(
+    State(state): State<ControlServerState<P>>,
+) -> Json<SourcesResponse> {
     tracing::info!("HTTP GET /sources");
     let (response_tx, response_rx) = oneshot::channel();
     let _ = state
@@ -289,7 +291,7 @@ mod tests {
     #[derive(Clone)]
     struct MockProcessLister;
     impl ProcessLister for MockProcessLister {
-        fn list_processes(&self) -> Vec<crate::types::ProcessInfo> {
+        fn list_processes(&self) -> Vec<crate::domain::types::ProcessInfo> {
             Vec::new()
         }
     }
@@ -337,8 +339,8 @@ mod tests {
             device_name: "Test Device".to_string(),
             source: None,
             bitrate: None,
-            jitter_config: crate::types::JitterConfig::default(),
-            mode: crate::types::ConnectionMode::Wifi,
+            jitter_config: crate::domain::types::JitterConfig::default(),
+            mode: crate::domain::types::ConnectionMode::Wifi,
         };
 
         let request_task = tokio::spawn(async move {
@@ -445,8 +447,8 @@ mod tests {
             device_name: "Test Device".to_string(),
             source: None,
             bitrate: None,
-            jitter_config: crate::types::JitterConfig::default(),
-            mode: crate::types::ConnectionMode::Wifi,
+            jitter_config: crate::domain::types::JitterConfig::default(),
+            mode: crate::domain::types::ConnectionMode::Wifi,
         };
 
         let res = client

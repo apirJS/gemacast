@@ -6,7 +6,7 @@
 //! # Strategy Pattern
 //!
 //! `AudioPacketTransport` is the Strategy interface for network transport.
-//! The receiver selects the strategy at startup based on [`ConnectionMode`](crate::types::ConnectionMode):
+//! The receiver selects the strategy at startup based on [`ConnectionMode`](crate::domain::types::ConnectionMode):
 //!
 //! | Strategy | Transport | Use Case |
 //! |---|---|---|
@@ -30,8 +30,5 @@ use std::net::SocketAddr;
 /// - Returns `ErrorKind::WouldBlock` / `ErrorKind::TimedOut` on timeout (not fatal).
 /// - Returns `ErrorKind::UnexpectedEof` / `ErrorKind::ConnectionReset` on disconnect (fatal).
 pub trait AudioPacketTransport: Send {
-    fn receive_audio_packet(
-        &mut self,
-        buffer: &mut [u8],
-    ) -> std::io::Result<(usize, SocketAddr)>;
+    fn receive_audio_packet(&mut self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
 }
