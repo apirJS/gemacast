@@ -188,8 +188,8 @@ impl AudioStreamReceiver {
     clippy::too_many_arguments,
     reason = "internal thread-spawn helper; struct wrapping adds no clarity"
 )]
-fn spawn_packet_receive_thread(
-    mut transport: Box<dyn crate::stream::transport::AudioPacketTransport>,
+fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport + 'static>(
+    mut transport: T,
     mut packet_producer: HeapProd<RawPacket>,
     latency_metric: Arc<AtomicU32>,
     mut sender_ip_tx: Option<oneshot::Sender<String>>,
@@ -320,9 +320,9 @@ mod tests {
         // payload = some data
         dummy_packet[9..19].copy_from_slice(&[0x1; 10]);
 
-        let transport = Box::new(MockTransport {
+        let transport = MockTransport {
             packet_to_send: Some(dummy_packet),
-        });
+        };
 
         let handle = spawn_packet_receive_thread(
             transport,

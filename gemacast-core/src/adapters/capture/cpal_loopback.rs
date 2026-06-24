@@ -1,12 +1,7 @@
-use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
 use crate::error::{AudioError, GemaCastError, StreamDirection};
-use crate::stream::sender::capture::{CaptureBackend, CaptureHandle};
-use cpal::traits::{DeviceTrait, HostTrait};
-use ringbuf::{HeapRb, traits::*};
-use std::sync::Arc;
-use tokio::sync::{Notify, mpsc};
+use crate::ports::capture::CaptureBackend;
 
-struct CpalLoopbackCapture {
+pub struct CpalLoopbackCapture {
     stream: cpal::Stream,
 }
 
@@ -29,7 +24,15 @@ impl CaptureBackend for CpalLoopbackCapture {
     }
 }
 
-pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
+#[cfg(not(target_os = "windows"))]
+pub fn create_cpal_loopback() -> Result<crate::ports::capture::CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
+    use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+    use crate::ports::capture::CaptureHandle;
+    use cpal::traits::{DeviceTrait, HostTrait};
+    use ringbuf::{HeapRb, traits::*};
+    use std::sync::Arc;
+    use tokio::sync::{Notify, mpsc};
+
     let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
     let (mut rb_producer, rb_consumer) = rb.split();
     let (stream_error_tx, stream_error_rx) = mpsc::channel::<cpal::StreamError>(1);
@@ -83,7 +86,7 @@ pub fn create_cpal_loopback() -> Result<CaptureHandle, GemaCastError> {
         })?;
 
     Ok(CaptureHandle {
-        backend: Box::new(CpalLoopbackCapture {
+        backend: super::PlatformCaptureBackend::Cpal(CpalLoopbackCapture {
             stream: audio_stream,
         }),
         consumer: rb_consumer,

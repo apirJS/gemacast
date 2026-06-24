@@ -3,7 +3,7 @@
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
     error::{AudioError, GemaCastError},
-    stream::sender::capture::{CaptureBackend, CaptureHandle},
+    ports::capture::{CaptureBackend, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ struct SendClient(IAudioClient);
 unsafe impl Send for SendClient {}
 unsafe impl Sync for SendClient {}
 
-struct WasapiDesktopCapture {
+pub struct WasapiDesktopCapture {
     client: SendClient,
     is_running: Arc<std::sync::atomic::AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -70,7 +70,7 @@ impl Drop for WasapiDesktopCapture {
 ///
 /// Returns [`AudioError::WindowsApi`] if any WASAPI call fails, or
 /// [`AudioError::ResampleFailed`] if the Rubato resampler cannot be created.
-pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle, GemaCastError> {
+pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).map_err(AudioError::WindowsApi)?;
 
@@ -273,7 +273,7 @@ pub fn create_wasapi_desktop_loopback() -> Result<CaptureHandle, GemaCastError> 
         });
 
         Ok(CaptureHandle {
-            backend: Box::new(WasapiDesktopCapture {
+            backend: super::PlatformCaptureBackend::WasapiDesktop(WasapiDesktopCapture {
                 client: SendClient(client_clone),
                 is_running,
                 thread_handle: Some(thread_handle),

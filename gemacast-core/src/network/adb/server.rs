@@ -74,14 +74,17 @@ pub fn spawn_adb_audio_tcp_server(
                 if socket.read_exact(&mut len_buf).await.is_err() {
                     return;
                 }
+
                 let len = len_buf[0] as usize;
                 if len == 0 || len > 128 {
                     return;
                 }
+
                 let mut id_buf = vec![0u8; len];
                 if socket.read_exact(&mut id_buf).await.is_err() {
                     return;
                 }
+                
                 let device_id = match String::from_utf8(id_buf) {
                     Ok(id) => id,
                     Err(_) => return,

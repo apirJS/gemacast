@@ -24,6 +24,9 @@ use gemacast_core::network::adb::{
     spawn_adb_port_forwarding_watchdog,
 };
 use gemacast_core::stream::sender::engine::AudioStreamEngine;
+use gemacast_core::stream::sender::capture::DefaultCaptureFactory;
+use gemacast_core::adapters::error_notifier::WsErrorNotifier;
+use gemacast_core::adapters::process_lister::DefaultProcessLister;
 use gemacast_core::types::{ControlMessage, DeviceId};
 
 use crate::adapters::{
@@ -235,6 +238,7 @@ async fn run_background_tasks(
         sender_id: sender_id.clone(),
         sender_name: device_name.clone(),
         ws_connections: ws_connections.clone(),
+        process_lister: DefaultProcessLister,
     };
 
     // --- mDNS broadcaster ---
@@ -274,7 +278,8 @@ async fn run_background_tasks(
 
     // --- Spawn tasks ---
     tracing::info!("Spawning all background tasks...");
-    let engine = AudioStreamEngine::new(true, ws_connections.clone());
+    let error_notifier = WsErrorNotifier::new(ws_connections.clone());
+    let engine = AudioStreamEngine::new(DefaultCaptureFactory, true, error_notifier);
 
     udp_listener::spawn_udp_listener(
         &mut set,

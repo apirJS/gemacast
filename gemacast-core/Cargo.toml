@@ -9,6 +9,13 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+## Enables `Box<dyn Trait>` wrappers for port traits, allowing runtime-loaded
+## backends (e.g., plugin systems). Not needed for normal builds — all
+## production paths use static dispatch via generics.
+dynamic-dispatch = []
+
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
 tokio-tungstenite = "0.29.0"

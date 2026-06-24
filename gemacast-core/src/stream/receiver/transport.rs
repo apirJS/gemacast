@@ -1,7 +1,15 @@
+//! Receiver-side transport orchestration.
+//!
+//! Creates and configures audio transport connections (UDP/TCP) for the
+//! receiver. The `AudioTransport` enum adapter and underlying transport
+//! structs live in [`crate::adapters::transport`].
+
+use crate::adapters::transport::{AudioTransport, TcpTransport, UdpTransport};
 use crate::error::NetworkError;
 use crate::network::Ports;
-use crate::stream::transport::{TcpTransport, UdpTransport};
 use std::net::{Ipv4Addr, SocketAddrV4};
+
+
 
 pub fn create_udp_audio_transport(
     target_ip: Option<std::net::IpAddr>,
@@ -108,22 +116,21 @@ pub fn create_tcp_audio_transport(
     Ok(TcpTransport { stream })
 }
 
+/// Creates the appropriate audio transport based on the connection mode.
+///
+/// Returns `(AudioTransport, Option<UdpSocket>)`:
+/// - `AudioTransport`: Enum-dispatched transport (UDP or TCP)
+/// - `Option<UdpSocket>`: Heartbeat socket (only for UDP/WiFi mode)
 pub fn create_audio_transport(
     mode: crate::types::ConnectionMode,
     target_ip: Option<std::net::IpAddr>,
     device_id: &crate::types::DeviceId,
-) -> Result<
-    (
-        Box<dyn crate::stream::transport::AudioPacketTransport>,
-        Option<std::net::UdpSocket>,
-    ),
-    NetworkError,
-> {
+) -> Result<(AudioTransport, Option<std::net::UdpSocket>), NetworkError> {
     if mode == crate::types::ConnectionMode::Adb {
         let t = create_tcp_audio_transport(device_id)?;
-        return Ok((Box::new(t), None));
+        return Ok((AudioTransport::Tcp(t), None));
     }
 
     let (udp, heartbeat_socket) = create_udp_audio_transport(target_ip)?;
-    Ok((Box::new(udp), Some(heartbeat_socket)))
+    Ok((AudioTransport::Udp(udp), Some(heartbeat_socket)))
 }

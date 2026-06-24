@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::control::http::send_ws_event;
-use crate::control::types::WsEvent;
 use crate::error::GemaCastError;
+use crate::ports::capture::CaptureFactory;
+use crate::ports::error_notifier::ErrorNotifier;
 use crate::types::{AudioSource, DeviceId, TargetId};
 
-use super::capture::DefaultCaptureFactory;
 use super::capture_pool::CapturePool;
 
 #[derive(Debug)]
@@ -20,12 +18,10 @@ pub enum CaptureCommand {
     RemoveTarget(SocketAddr),
 }
 
-pub type WsConnectionMap = Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>;
-
-pub struct AudioStreamEngine {
-    pub pool: CapturePool,
+pub struct AudioStreamEngine<F: CaptureFactory, N: ErrorNotifier> {
+    pub pool: CapturePool<F>,
     pub active_receiver_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource, Option<i32>)>,
-    ws_connections: WsConnectionMap,
+    error_notifier: N,
 }
 
 pub enum AudioStreamCommand {
@@ -48,29 +44,17 @@ pub enum AudioStreamCommand {
     },
     GetTcpBroadcaster {
         device_id: DeviceId,
-        reply: tokio::sync::oneshot::Sender<Option<broadcast::Sender<Arc<Vec<u8>>>>>,
+        reply: tokio::sync::oneshot::Sender<Option<broadcast::Sender<std::sync::Arc<Vec<u8>>>>>,
     },
     Shutdown,
 }
 
-impl AudioStreamEngine {
-    pub fn new(supports_process_capture: bool, ws_connections: WsConnectionMap) -> Self {
-        Self::new_with_factory(
-            Box::new(DefaultCaptureFactory),
-            supports_process_capture,
-            ws_connections,
-        )
-    }
-
-    pub fn new_with_factory(
-        factory: Box<dyn crate::stream::sender::capture::CaptureFactory>,
-        supports_process_capture: bool,
-        ws_connections: WsConnectionMap,
-    ) -> Self {
+impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
+    pub fn new(factory: F, supports_process_capture: bool, error_notifier: N) -> Self {
         Self {
             pool: CapturePool::new(factory, supports_process_capture),
             active_receiver_sessions: HashMap::new(),
-            ws_connections,
+            error_notifier,
         }
     }
 
@@ -128,12 +112,7 @@ impl AudioStreamEngine {
                         Err(e) => {
                             let msg = format!("Audio capture failed: {}", e);
                             tracing::error!("[Engine] Subscribe failed: {}", msg);
-                            let _ = send_ws_event(
-                                &self.ws_connections,
-                                &device_id,
-                                WsEvent::Error { message: msg },
-                            )
-                            .await;
+                            self.error_notifier.notify_error(&device_id, msg);
                         }
                     }
                 }
@@ -198,12 +177,7 @@ impl AudioStreamEngine {
                                     source,
                                     msg
                                 );
-                                let _ = send_ws_event(
-                                    &self.ws_connections,
-                                    &device_id,
-                                    WsEvent::Error { message: msg },
-                                )
-                                .await;
+                                self.error_notifier.notify_error(&device_id, msg);
                             }
                         }
                     } else {
@@ -256,12 +230,7 @@ impl AudioStreamEngine {
                             Err(e) => {
                                 let msg = format!("Failed to change bitrate: {}", e);
                                 tracing::error!("[Engine] Bitrate change failed: {}", msg);
-                                let _ = send_ws_event(
-                                    &self.ws_connections,
-                                    &device_id,
-                                    WsEvent::Error { message: msg },
-                                )
-                                .await;
+                                self.error_notifier.notify_error(&device_id, msg);
                             }
                         }
                     }
@@ -318,9 +287,10 @@ impl AudioStreamEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::sender::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
+    use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
+    use std::sync::Arc;
     use tokio::sync::Notify;
 
     struct MockBackend;
@@ -335,30 +305,37 @@ mod tests {
 
     struct MockCaptureFactory;
     impl CaptureFactory for MockCaptureFactory {
-        fn create_desktop_capture(&self) -> Result<CaptureHandle, GemaCastError> {
+        type Backend = MockBackend;
+
+        fn create_desktop_capture(&self) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             let ring_buffer = HeapRb::<f32>::new(48000 * 2);
             let (_producer, consumer) = ring_buffer.split();
             let notify = Arc::new(Notify::new());
             let (_err_tx, err_rx) = mpsc::channel(1);
 
             Ok(CaptureHandle {
-                backend: Box::new(MockBackend),
+                backend: MockBackend,
                 consumer,
                 notify,
                 stream_error_rx: err_rx,
             })
         }
 
-        fn create_process_capture(&self, _pid: u32) -> Result<CaptureHandle, GemaCastError> {
+        fn create_process_capture(&self, _pid: u32) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             self.create_desktop_capture()
+        }
+    }
+
+    struct MockErrorNotifier;
+    impl ErrorNotifier for MockErrorNotifier {
+        fn notify_error(&self, _device_id: &DeviceId, _message: String) {
+            // No-op for tests
         }
     }
 
     #[tokio::test]
     async fn should_register_session_on_subscribe() {
-        let ws_connections = Arc::new(Mutex::new(HashMap::new()));
-        let mut engine =
-            AudioStreamEngine::new_with_factory(Box::new(MockCaptureFactory), true, ws_connections);
+        let mut engine = AudioStreamEngine::new(MockCaptureFactory, true, MockErrorNotifier);
         let (tx, rx) = mpsc::channel(10);
         let device_id = DeviceId("test-device".to_string());
 
@@ -387,9 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_update_session_source_on_change_source() {
-        let ws_connections = Arc::new(Mutex::new(HashMap::new()));
-        let mut engine =
-            AudioStreamEngine::new_with_factory(Box::new(MockCaptureFactory), true, ws_connections);
+        let mut engine = AudioStreamEngine::new(MockCaptureFactory, true, MockErrorNotifier);
         let (tx, rx) = mpsc::channel(10);
         let device_id = DeviceId("test-device-2".to_string());
 
@@ -429,9 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_remove_session_on_unsubscribe() {
-        let ws_connections = Arc::new(Mutex::new(HashMap::new()));
-        let mut engine =
-            AudioStreamEngine::new_with_factory(Box::new(MockCaptureFactory), true, ws_connections);
+        let mut engine = AudioStreamEngine::new(MockCaptureFactory, true, MockErrorNotifier);
         let (tx, rx) = mpsc::channel(10);
         let device_id = DeviceId("test-device-3".to_string());
 

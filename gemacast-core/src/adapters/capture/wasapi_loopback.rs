@@ -3,7 +3,7 @@
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
     error::{AudioError, GemaCastError},
-    stream::sender::capture::{CaptureBackend, CaptureHandle},
+    ports::capture::{CaptureBackend, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
@@ -53,7 +53,7 @@ struct SendClient(IAudioClient);
 unsafe impl Send for SendClient {}
 unsafe impl Sync for SendClient {}
 
-struct WasapiLoopbackCapture {
+pub struct WasapiLoopbackCapture {
     client: SendClient,
     is_running: Arc<std::sync::atomic::AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -85,7 +85,7 @@ impl CaptureBackend for WasapiLoopbackCapture {
     }
 }
 
-pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCastError> {
+pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
         let audio_client = activate_process_loopback(pid)?;
 
@@ -265,7 +265,7 @@ pub fn create_wasapi_process_loopback(pid: u32) -> Result<CaptureHandle, GemaCas
         });
 
         Ok(CaptureHandle {
-            backend: Box::new(WasapiLoopbackCapture {
+            backend: super::PlatformCaptureBackend::WasapiProcess(WasapiLoopbackCapture {
                 client: SendClient(client_clone),
                 is_running,
                 thread_handle: Some(thread_handle),
