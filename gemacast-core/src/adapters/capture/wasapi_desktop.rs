@@ -9,22 +9,14 @@ use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 
-use super::wasapi_common::{decode_samples_to_f32, downmix_to_stereo, parse_mix_format};
-
-use windows::Win32::{
-    Foundation::CloseHandle,
-    Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole,
-        eRender,
-    },
-    System::{
-        Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx},
-        Threading::CreateEventW,
-    },
+use super::wasapi_common::{
+    activate_process_loopback, decode_samples_to_f32, downmix_to_stereo, get_default_mix_format,
+    parse_mix_format,
 };
 
-struct SendClient(IAudioClient);
+use windows::Win32::Media::Audio::PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE;
+
+struct SendClient(windows::Win32::Media::Audio::IAudioClient);
 unsafe impl Send for SendClient {}
 unsafe impl Sync for SendClient {}
 
@@ -60,11 +52,16 @@ impl Drop for WasapiDesktopCapture {
     }
 }
 
-/// Create a raw WASAPI desktop loopback capture handle.
+/// Create a desktop loopback capture handle using the modern Application Loopback API.
 ///
-/// Activates the default render endpoint in shared-mode loopback,
-/// discovers the native mix format, and spawns a background thread
-/// to pump audio into a ring buffer at 48kHz stereo.
+/// Uses `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` with Gemacast's own PID
+/// as the target. This captures all system audio **except** Gemacast's own process tree,
+/// which:
+/// 1. Bypasses OEM Audio Processing Objects (APOs) for clean, unprocessed audio
+/// 2. Prevents feedback loops from Gemacast's own audio
+///
+/// Requires Windows 10 Build 20348+. Falls back to CPAL via the factory layer
+/// on older Windows versions.
 ///
 /// # Errors
 ///
@@ -73,31 +70,19 @@ impl Drop for WasapiDesktopCapture {
 pub fn create_wasapi_desktop_loopback()
 -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).map_err(AudioError::WindowsApi)?;
+        // Use the modern Application Loopback API with EXCLUDE mode.
+        // Target our own PID so we capture everything except Gemacast itself.
+        let own_pid = std::process::id();
+        let audio_client =
+            activate_process_loopback(own_pid, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE)?;
 
-        // Get default render endpoint
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(AudioError::WindowsApi)?;
-
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eRender, eConsole)
-            .map_err(AudioError::WindowsApi)?;
-
-        // Activate IAudioClient directly (no async activation needed for endpoints)
-        let audio_client: IAudioClient = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(AudioError::WindowsApi)?;
-
-        // Query the native mix format
-        let mix_format_ptr = audio_client
-            .GetMixFormat()
-            .map_err(AudioError::WindowsApi)?;
-
+        // Process loopback IAudioClients don't support GetMixFormat() (returns E_NOTIMPL).
+        // We must query the system's shared-mode mix format from the default render endpoint.
+        let mix_format_ptr = get_default_mix_format()?;
         let format = parse_mix_format(mix_format_ptr);
 
         tracing::info!(
-            "[WASAPI Desktop] native_rate={}, native_channels={}, bits={}, block_align={}, is_float={}",
+            "[WASAPI Desktop] Application Loopback (EXCLUDE mode): native_rate={}, native_channels={}, bits={}, block_align={}, is_float={}",
             format.native_rate,
             format.native_channels,
             format.bits_per_sample,
@@ -105,10 +90,10 @@ pub fn create_wasapi_desktop_loopback()
             format.is_float
         );
 
-        // Initialize in shared-mode loopback
         let init_result = audio_client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED,
+            windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_LOOPBACK
+                | windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             10_000_000, // 1 second buffer in 100ns units
             0,
             mix_format_ptr,
@@ -122,16 +107,17 @@ pub fn create_wasapi_desktop_loopback()
 
         // Event-driven capture
         let event_handle =
-            CreateEventW(None, false, false, None).map_err(AudioError::WindowsApi)?;
+            windows::Win32::System::Threading::CreateEventW(None, false, false, None)
+                .map_err(AudioError::WindowsApi)?;
 
         audio_client
             .SetEventHandle(event_handle)
             .map_err(AudioError::WindowsApi)?;
 
-        let capture_client: IAudioCaptureClient =
+        let capture_client: windows::Win32::Media::Audio::IAudioCaptureClient =
             audio_client.GetService().map_err(AudioError::WindowsApi)?;
 
-        struct SendCaptureClient(IAudioCaptureClient);
+        struct SendCaptureClient(windows::Win32::Media::Audio::IAudioCaptureClient);
         unsafe impl Send for SendCaptureClient {}
 
         let send_capture_client = SendCaptureClient(capture_client);
@@ -269,7 +255,7 @@ pub fn create_wasapi_desktop_loopback()
                 notify_clone.notify_one();
             }
 
-            let _ = CloseHandle(event_handle);
+            let _ = windows::Win32::Foundation::CloseHandle(event_handle);
             notify_clone.notify_waiters();
         });
 

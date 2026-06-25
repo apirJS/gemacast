@@ -37,6 +37,7 @@ export function SenderCard({
   isDisabled,
   audioSources,
   processList,
+  senderCapabilities,
   currentSource,
   onToggle,
   onPlayPause,
@@ -117,6 +118,7 @@ export function SenderCard({
           currentSource={currentSource}
           onSourceChange={onSourceChange}
           sender={sender}
+          supportsProcessCapture={senderCapabilities?.supportsProcessCapture ?? true}
         />
       )}
     </li>

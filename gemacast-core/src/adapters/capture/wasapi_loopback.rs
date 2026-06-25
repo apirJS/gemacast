@@ -9,44 +9,21 @@ use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 
-use super::wasapi_common::{decode_samples_to_f32, downmix_to_stereo, parse_mix_format};
-
-use windows::{
-    Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPPROCESS},
-    core::ComInterface,
+use super::wasapi_common::{
+    activate_process_loopback, decode_samples_to_f32, downmix_to_stereo, get_default_mix_format,
+    parse_mix_format,
 };
+
 use windows::{
     Win32::{
         Foundation::CloseHandle,
-        Media::Audio::{
-            IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
+        Media::Audio::{IAudioClient, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next,
+            TH32CS_SNAPPROCESS,
         },
     },
-    core::IUnknown,
-};
-use windows::{
-    Win32::{
-        Media::Audio::IActivateAudioInterfaceAsyncOperation,
-        System::Diagnostics::ToolHelp::{Process32First, Process32Next},
-    },
-    core::implement,
-};
-use windows::{
-    Win32::{
-        Media::Audio::{
-            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-            ActivateAudioInterfaceAsync, IAudioClient,
-            PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-        },
-        System::{
-            Com::{COINIT_MULTITHREADED, CoInitializeEx, StructuredStorage::PROPVARIANT},
-            Diagnostics::ToolHelp::PROCESSENTRY32,
-            Variant::VT_BLOB,
-        },
-    },
-    core::PCWSTR,
+    core::ComInterface,
 };
 
 struct SendClient(IAudioClient);
@@ -89,7 +66,8 @@ pub fn create_wasapi_process_loopback(
     pid: u32,
 ) -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     unsafe {
-        let audio_client = activate_process_loopback(pid)?;
+        let audio_client =
+            activate_process_loopback(pid, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE)?;
 
         // Process loopback IAudioClients don't support GetMixFormat() (returns E_NOTIMPL).
         // We must query the system's shared-mode mix format from the default render endpoint,
@@ -279,120 +257,8 @@ pub fn create_wasapi_process_loopback(
     }
 }
 
-#[implement(IActivateAudioInterfaceCompletionHandler)]
-struct AudioActivator {
-    sender: std::sync::mpsc::Sender<Result<IAudioClient, GemaCastError>>,
-}
-
-impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivator {
-    fn ActivateCompleted(
-        &self,
-        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
-    ) -> windows::core::Result<()> {
-        let get_client = || -> windows::core::Result<IAudioClient> {
-            let op = activateoperation
-                .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER))?;
-
-            let mut status = windows::core::HRESULT(0);
-            let mut unknown: Option<IUnknown> = None;
-
-            unsafe {
-                op.GetActivateResult(&mut status, &mut unknown)?;
-            }
-
-            status.ok()?;
-
-            let unknown = unknown
-                .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER))?;
-
-            unknown.cast::<IAudioClient>()
-        };
-
-        let payload = get_client().map_err(|e| AudioError::WindowsApi(e).into());
-        let _ = self.sender.send(payload);
-
-        Ok(())
-    }
-}
-
-unsafe fn activate_process_loopback(pid: u32) -> Result<IAudioClient, GemaCastError> {
-    unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).map_err(AudioError::WindowsApi)?;
-    };
-    let loopback_params = AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-        ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-        TargetProcessId: pid,
-    };
-
-    let mut activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
-        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-            ProcessLoopbackParams: loopback_params,
-        },
-    };
-
-    let mut prop_variant = PROPVARIANT::default();
-    unsafe {
-        (*prop_variant.Anonymous.Anonymous).vt = VT_BLOB;
-        (*prop_variant.Anonymous.Anonymous).Anonymous.blob.cbSize =
-            std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-        (*prop_variant.Anonymous.Anonymous).Anonymous.blob.pBlobData =
-            &mut activation_params as *mut _ as *mut u8;
-    };
-
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let activator: IActivateAudioInterfaceCompletionHandler = AudioActivator { sender }.into();
-
-    unsafe {
-        ActivateAudioInterfaceAsync(
-            PCWSTR::from_raw(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK.as_ptr()),
-            &IAudioClient::IID,
-            Some(&prop_variant),
-            Some(&activator),
-        )
-        .map_err(AudioError::WindowsApi)?;
-    };
-
-    let result = receiver.recv().unwrap_or_else(|_| {
-        Err(AudioError::WindowsApi(windows::core::Error::from(
-            windows::Win32::Foundation::E_FAIL,
-        ))
-        .into())
-    })?;
-
-    Ok(result)
-}
-
-/// Query the default render endpoint's mix format.
-/// Process loopback streams use the same shared-mode format as the system mixer,
-/// so this gives us the correct format to pass to IAudioClient::Initialize.
-unsafe fn get_default_mix_format()
--> Result<*mut windows::Win32::Media::Audio::WAVEFORMATEX, GemaCastError> {
-    use windows::Win32::Media::Audio::{
-        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
-    };
-    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
-
-    unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(AudioError::WindowsApi)?;
-
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eRender, eConsole)
-            .map_err(AudioError::WindowsApi)?;
-
-        let audio_client: IAudioClient = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(AudioError::WindowsApi)?;
-
-        let mix_format_ptr = audio_client
-            .GetMixFormat()
-            .map_err(AudioError::WindowsApi)?;
-
-        Ok(mix_format_ptr)
-    }
-}
+// AudioActivator, activate_process_loopback, and get_default_mix_format
+// are now shared from wasapi_common.rs
 
 const SYSTEM_PROCESS_FILTER: &[&str] = &[
     "audiodg.exe",
