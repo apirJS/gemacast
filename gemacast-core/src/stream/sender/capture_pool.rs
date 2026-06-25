@@ -5,14 +5,14 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::capture::CaptureHandle;
 use super::encode::{EncodeResult, encode_frame};
 use super::engine::CaptureCommand;
 use crate::audio::{
     MAX_OPUS_PACKET_SIZE, OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE, create_opus_encoder_with_bitrate,
 };
-use crate::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
-use crate::types::{AudioSource, TargetId};
+use crate::domain::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
+use crate::domain::types::{AudioSource, TargetId};
+use crate::ports::capture::{CaptureBackend, CaptureHandle};
 
 /// Tracks one per-target encoder task. Each connected receiver gets its own encoder
 /// at its requested bitrate, running in a dedicated tokio task.
@@ -35,7 +35,7 @@ pub struct AudioCaptureInstance {
     /// Per-target encoders keyed by socket address (for UDP/WiFi targets).
     per_target_encoders: HashMap<SocketAddr, PerTargetEncoder>,
     /// TCP/ADB encoders keyed by DeviceId.
-    tcp_encoders: HashMap<crate::types::DeviceId, TcpEncoder>,
+    tcp_encoders: HashMap<crate::domain::types::DeviceId, TcpEncoder>,
     /// Broadcast channel for raw PCM frames from the capture thread.
     pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
     pub capture_command_tx: mpsc::Sender<CaptureCommand>,
@@ -44,7 +44,9 @@ pub struct AudioCaptureInstance {
 }
 
 impl AudioCaptureInstance {
-    pub fn new(capture: CaptureHandle) -> Result<Self, GemaCastError> {
+    pub fn new<B: CaptureBackend + 'static>(
+        capture: CaptureHandle<B>,
+    ) -> Result<Self, GemaCastError> {
         let (pcm_broadcast_tx, _) = broadcast::channel(4000);
         let (capture_command_tx, capture_command_rx) = mpsc::channel(32);
         let (capture_shutdown_tx, capture_shutdown_rx) = oneshot::channel();
@@ -102,7 +104,7 @@ impl AudioCaptureInstance {
     /// encodes at the given bitrate, and returns the dedicated broadcast channel.
     async fn spawn_tcp_encoder(
         &mut self,
-        device_id: crate::types::DeviceId,
+        device_id: crate::domain::types::DeviceId,
         bitrate: Option<i32>,
     ) -> Result<broadcast::Sender<Arc<Vec<u8>>>, GemaCastError> {
         self.remove_tcp_encoder(&device_id).await;
@@ -138,7 +140,7 @@ impl AudioCaptureInstance {
     }
 
     /// Removes a TCP encoder for a specific device, shutting down its task.
-    async fn remove_tcp_encoder(&mut self, device_id: &crate::types::DeviceId) {
+    async fn remove_tcp_encoder(&mut self, device_id: &crate::domain::types::DeviceId) {
         if let Some(encoder) = self.tcp_encoders.remove(device_id) {
             let _ = encoder.shutdown_tx.send(());
             let _ = encoder.join_handle.await;
@@ -147,8 +149,8 @@ impl AudioCaptureInstance {
 
     /// The capture loop: reads raw PCM from the audio backend and broadcasts
     /// raw frames. No encoding happens here.
-    async fn run_capture_loop(
-        mut capture: CaptureHandle,
+    async fn run_capture_loop<B: CaptureBackend>(
+        mut capture: CaptureHandle<B>,
         mut capture_command_rx: mpsc::Receiver<CaptureCommand>,
         mut capture_shutdown_rx: oneshot::Receiver<()>,
         pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
@@ -414,17 +416,17 @@ fn create_dummy_encoder() -> opus::Encoder {
     })
 }
 
-use super::capture::CaptureFactory;
+use crate::ports::capture::CaptureFactory;
 
-pub struct CapturePool {
+pub struct CapturePool<F: CaptureFactory> {
     instances: HashMap<AudioSource, AudioCaptureInstance>,
     max_instances: usize,
     pub supports_process_capture: bool,
-    factory: Box<dyn CaptureFactory>,
+    factory: F,
 }
 
-impl CapturePool {
-    pub fn new(factory: Box<dyn CaptureFactory>, supports_process_capture: bool) -> Self {
+impl<F: CaptureFactory> CapturePool<F> {
+    pub fn new(factory: F, supports_process_capture: bool) -> Self {
         Self {
             instances: HashMap::new(),
             max_instances: 8,
@@ -574,8 +576,8 @@ impl CapturePool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::sender::capture::CaptureBackend;
-    use crate::types::DeviceId;
+    use crate::domain::types::DeviceId;
+    use crate::ports::capture::CaptureBackend;
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
     use tokio::sync::Notify;
@@ -599,7 +601,7 @@ mod tests {
         let (_err_tx, err_rx) = mpsc::channel(1);
 
         let capture_handle = CaptureHandle {
-            backend: Box::new(MockBackend),
+            backend: MockBackend,
             consumer,
             notify: notify.clone(),
             stream_error_rx: err_rx,
@@ -684,7 +686,7 @@ mod tests {
         let (_err_tx, err_rx) = mpsc::channel(1);
 
         let capture_handle = CaptureHandle {
-            backend: Box::new(MockBackend),
+            backend: MockBackend,
             consumer,
             notify: notify.clone(),
             stream_error_rx: err_rx,
@@ -750,28 +752,33 @@ mod tests {
     struct MockCaptureFactory;
 
     impl CaptureFactory for MockCaptureFactory {
-        fn create_desktop_capture(&self) -> Result<CaptureHandle, GemaCastError> {
+        type Backend = MockBackend;
+
+        fn create_desktop_capture(&self) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             let ring_buffer = HeapRb::<f32>::new(48000 * 2);
             let (_producer, consumer) = ring_buffer.split();
             let notify = Arc::new(Notify::new());
             let (_err_tx, err_rx) = mpsc::channel(1);
 
             Ok(CaptureHandle {
-                backend: Box::new(MockBackend),
+                backend: MockBackend,
                 consumer,
                 notify,
                 stream_error_rx: err_rx,
             })
         }
 
-        fn create_process_capture(&self, _pid: u32) -> Result<CaptureHandle, GemaCastError> {
+        fn create_process_capture(
+            &self,
+            _pid: u32,
+        ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
             self.create_desktop_capture() // Just reuse the mock for tests
         }
     }
 
     #[tokio::test]
     async fn pool_should_create_and_teardown_instances_on_subscribe_unsubscribe() {
-        let factory = Box::new(MockCaptureFactory);
+        let factory = MockCaptureFactory;
         let mut pool = CapturePool::new(factory, true);
         let target = TargetId::Tcp(DeviceId("dev1".into()));
 
@@ -798,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn pool_should_migrate_target_when_changing_source() {
-        let factory = Box::new(MockCaptureFactory);
+        let factory = MockCaptureFactory;
         let mut pool = CapturePool::new(factory, true);
         let target = TargetId::Tcp(DeviceId("dev1".into()));
 
@@ -829,7 +836,7 @@ mod tests {
 
     #[tokio::test]
     async fn pool_should_support_multiple_tcp_encoders_per_source() {
-        let factory = Box::new(MockCaptureFactory);
+        let factory = MockCaptureFactory;
         let mut pool = CapturePool::new(factory, true);
         let target1 = TargetId::Tcp(DeviceId("dev1".into()));
         let target2 = TargetId::Tcp(DeviceId("dev2".into()));
@@ -863,7 +870,7 @@ mod tests {
 
     #[tokio::test]
     async fn pool_should_support_multiple_udp_encoders_per_source() {
-        let factory = Box::new(MockCaptureFactory);
+        let factory = MockCaptureFactory;
         let mut pool = CapturePool::new(factory, true);
 
         let target1 = TargetId::Udp("127.0.0.1:1111".parse().unwrap());

@@ -4,7 +4,7 @@
 //! transport classification and network identity logic fully testable.
 
 use crate::traits::{NetworkInfoProvider, PlatformService};
-use gemacast_core::types::ConnectionModes;
+use gemacast_core::domain::types::ConnectionModes;
 
 /// Network state returned to the frontend.
 #[derive(serde::Serialize)]
@@ -46,7 +46,7 @@ pub fn get_connection_status(
     network: &dyn NetworkInfoProvider,
     platform: &dyn PlatformService,
 ) -> Result<ConnectionModes, String> {
-    let mut modes = gemacast_core::types::get_available_connection_modes();
+    let mut modes = gemacast_core::domain::types::get_available_connection_modes();
 
     // Platform-specific transport detection (Android JNI)
     if let Ok(transport_str) = platform.get_transport_type() {

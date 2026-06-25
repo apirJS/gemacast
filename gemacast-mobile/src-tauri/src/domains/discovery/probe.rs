@@ -1,15 +1,21 @@
+use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 use gemacast_core::network::Ports;
-use gemacast_core::types::{ConnectionMode, DeviceId};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
 
-pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: ConnectionMode) {
+pub async fn run_probe_loop(
+    socket: Arc<UdpSocket>,
+    device_id: DeviceId,
+    mode: ConnectionMode,
+    is_streaming: Arc<AtomicBool>,
+) {
     if mode == ConnectionMode::Adb {
         return;
     }
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(5000));
-    let payload = gemacast_core::types::ControlMessage::Probe {
+    let payload = gemacast_core::control::messages::ControlMessage::Probe {
         device_id: Some(device_id),
     };
 
@@ -19,6 +25,13 @@ pub async fn run_probe_loop(socket: Arc<UdpSocket>, device_id: DeviceId, mode: C
 
     loop {
         interval.tick().await;
+
+        // Skip subnet scan while streaming: the phone already knows the
+        // sender's IP, and the 254-packet burst floods the 2.4 GHz channel
+        // causing 200ms+ jitter spikes on audio packets.
+        if is_streaming.load(Ordering::Relaxed) {
+            continue;
+        }
 
         let subnets = collect_local_subnets();
         for (b0, b1, b2) in subnets {

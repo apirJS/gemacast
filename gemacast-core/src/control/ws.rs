@@ -2,13 +2,18 @@ use crate::control::{
     ControlServerState,
     types::{WsCommand, WsEvent},
 };
-use crate::types::DeviceId;
+use crate::domain::types::DeviceId;
+use crate::ports::process_lister::ProcessLister;
 use axum::extract::ws::{Message, WebSocket};
 use futures::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
 use tokio::sync::mpsc;
 
-pub async fn handle_ws(socket: WebSocket, device_id: DeviceId, state: ControlServerState) {
+pub async fn handle_ws<P: ProcessLister + 'static>(
+    socket: WebSocket,
+    device_id: DeviceId,
+    state: ControlServerState<P>,
+) {
     let (ws_sender, mut ws_receiver) = socket.split();
     let (event_tx, event_rx) = mpsc::channel::<WsEvent>(32);
 
@@ -89,10 +94,10 @@ async fn send_events_to_client(
     }
 }
 
-async fn handle_ws_command(
+async fn handle_ws_command<P: ProcessLister + 'static>(
     text: &str,
     device_id: &DeviceId,
-    state: &ControlServerState,
+    state: &ControlServerState<P>,
 ) -> Result<(), String> {
     let command: WsCommand =
         serde_json::from_str(text).map_err(|e| format!("Failed to parse WsCommand: {}", e))?;

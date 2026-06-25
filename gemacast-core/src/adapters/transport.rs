@@ -1,9 +1,13 @@
+//! Adapter: Network transport implementations for audio packet I/O.
+//!
+//! Production implementations of [`AudioPacketTransport`](crate::ports::transport::AudioPacketTransport):
+//! - [`UdpTransport`] — UDP socket for WiFi streaming
+//! - [`TcpTransport`] — TCP stream for ADB/USB streaming
+
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 
-pub trait AudioPacketTransport: Send {
-    fn receive_audio_packet(&mut self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
-}
+use crate::ports::transport::AudioPacketTransport;
 
 pub struct UdpTransport {
     pub socket: UdpSocket,
@@ -42,6 +46,33 @@ impl AudioPacketTransport for TcpTransport {
         });
 
         Ok((length, addr))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enum dispatch transport (Strategy Pattern — static dispatch)
+// ---------------------------------------------------------------------------
+
+/// Static-dispatch audio transport using enum variants.
+///
+/// The compiler devirtualizes match arms into direct calls, eliminating
+/// vtable pointer indirection on the receiver hot path (~4800 calls/sec).
+///
+/// This replaces the previous `Box<dyn AudioPacketTransport>` approach.
+pub enum AudioTransport {
+    Udp(UdpTransport),
+    Tcp(TcpTransport),
+}
+
+impl AudioPacketTransport for AudioTransport {
+    fn receive_audio_packet(
+        &mut self,
+        buffer: &mut [u8],
+    ) -> std::io::Result<(usize, std::net::SocketAddr)> {
+        match self {
+            Self::Udp(t) => t.receive_audio_packet(buffer),
+            Self::Tcp(t) => t.receive_audio_packet(buffer),
+        }
     }
 }
 

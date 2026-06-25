@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 use gemacast_core::network::Ports;
-use gemacast_core::types::{ConnectionMode, DeviceId};
 
 use crate::traits::FrontendNotifier;
 
@@ -28,7 +28,7 @@ pub async fn run_adb_session(
                 retry_delay = 500;
 
                 if let Ok(ident_bytes) =
-                    serde_json::to_vec(&gemacast_core::types::ControlMessage::Probe {
+                    serde_json::to_vec(&gemacast_core::control::messages::ControlMessage::Probe {
                         device_id: Some(device_id.clone()),
                     })
                 {
@@ -53,10 +53,10 @@ pub async fn run_adb_session(
                     {
                         Ok(Ok(n)) if n > 0 => {
                             if let Ok(msg) = serde_json::from_str::<
-                                gemacast_core::types::ControlMessage,
+                                gemacast_core::control::messages::ControlMessage,
                             >(line_buf.trim_end())
                             {
-                                if let gemacast_core::types::ControlMessage::Presence { .. } = &msg
+                                if let gemacast_core::control::messages::ControlMessage::Presence { .. } = &msg
                                 {
                                     last_presence = Some(msg.clone());
                                 }
@@ -73,7 +73,7 @@ pub async fn run_adb_session(
                 }
 
                 if let Some(mut last_msg) = last_presence.take() {
-                    if let gemacast_core::types::ControlMessage::Presence {
+                    if let gemacast_core::control::messages::ControlMessage::Presence {
                         ref mut is_offline,
                         ..
                     } = last_msg

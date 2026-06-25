@@ -1,6 +1,6 @@
-use crate::error::{GemaCastError, NetworkError};
+use crate::control::messages::ControlMessage;
+use crate::domain::error::{GemaCastError, NetworkError};
 use crate::network::Ports;
-use crate::types::ControlMessage;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -75,8 +75,14 @@ impl PresenceBroadcaster {
             let mut payload = presence_payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
 
-            // Rapid-fire 3 packets for reliability on congested bands like 2.4 GHz
-            for _ in 0..3 {
+            // Adaptive rate: when a receiver is connected, reduce broadcast
+            // frequency to avoid flooding 2.4 GHz channels with presence
+            // packets that compete with audio for airtime.
+            let has_receivers = !unicast_addrs.is_empty();
+            let retry_count = if has_receivers { 1 } else { 3 };
+            let remainder_sleep_ms = if has_receivers { 4900 } else { 950 };
+
+            for _ in 0..retry_count {
                 for addr in &broadcast_addrs {
                     let _ = self.socket.send_to(&json_bytes, *addr).await;
                 }
@@ -89,12 +95,13 @@ impl PresenceBroadcaster {
                     .await;
                 let _ = self.socket.send_to(&json_bytes, multicast_addr).await;
 
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                if !has_receivers {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
             }
 
             tokio::select! {
-                // Wait the remainder of the 1-second interval minus the ~75ms from retries
-                _ = sleep(Duration::from_millis(950)) => {}
+                _ = sleep(Duration::from_millis(remainder_sleep_ms)) => {}
                 _ = &mut self.shutdown_rx => {
                     tracing::info!("PresenceBroadcaster shutting down");
                     if let ControlMessage::Presence { ref mut is_offline, .. } = payload {

@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use gemacast_core::ports::capture::CaptureFactory;
+use gemacast_core::ports::error_notifier::ErrorNotifier;
 use gemacast_core::stream::sender::AudioStreamCommand;
 use gemacast_core::stream::sender::engine::AudioStreamEngine;
 use tokio::task::JoinSet;
@@ -12,9 +14,9 @@ use tokio::task::JoinSet;
 use crate::traits::TrayNotifier;
 
 /// Spawn the audio stream engine, forwarding fatal errors to the tray.
-pub fn spawn_audio_engine(
+pub fn spawn_audio_engine<F: CaptureFactory + 'static, N: ErrorNotifier + 'static>(
     set: &mut JoinSet<()>,
-    engine: AudioStreamEngine,
+    engine: AudioStreamEngine<F, N>,
     command_rx: tokio::sync::mpsc::Receiver<AudioStreamCommand>,
     tray: Arc<dyn TrayNotifier>,
 ) {

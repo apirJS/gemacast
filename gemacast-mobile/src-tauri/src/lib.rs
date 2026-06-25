@@ -17,9 +17,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             use std::sync::Arc;
+            use std::sync::atomic::AtomicBool;
             use tauri::Manager;
 
             let handle = app.handle().clone();
+
+            // -- Shared streaming flag -----------------------------------
+            let is_streaming = Arc::new(AtomicBool::new(false));
 
             // -- Create production adapters ------------------------------
             let notifier: Arc<dyn traits::FrontendNotifier> =
@@ -43,6 +47,7 @@ pub fn run() {
                 client_factory,
                 notifier: notifier.clone(),
                 platform: platform.clone(),
+                is_streaming: is_streaming.clone(),
             });
 
             // -- Register managed state ----------------------------------
@@ -52,6 +57,7 @@ pub fn run() {
                 network,
                 platform,
                 discovery_task: tokio::sync::Mutex::new(None),
+                is_streaming,
             });
 
             // -- Spawn IPC listener ----------------------------------

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use gemacast_core::types::DeviceId;
+use gemacast_core::domain::types::DeviceId;
 
 use crate::traits::FrontendNotifier;
 

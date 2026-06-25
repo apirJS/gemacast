@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -6,19 +7,20 @@ use crate::HEARTBEAT_CHECK_INTERVAL_SECS;
 use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
 use crate::traits::FrontendNotifier;
 
-use gemacast_core::types::{ConnectionMode, DeviceId};
+use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 
 use super::dispatch::DispatchContext;
 
 pub fn spawn_discovery_listener(
     listener: gemacast_core::network::PresenceListener,
     mut presence_message_rx: tokio::sync::mpsc::Receiver<(
-        gemacast_core::types::ControlMessage,
+        gemacast_core::control::messages::ControlMessage,
         std::net::SocketAddr,
     )>,
     notifier: Arc<dyn FrontendNotifier>,
     device_id: DeviceId,
     mode: ConnectionMode,
+    is_streaming: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut set = tokio::task::JoinSet::new();
@@ -56,6 +58,7 @@ pub fn spawn_discovery_listener(
             socket,
             device_id.clone(),
             mode,
+            is_streaming,
         ));
 
         set.spawn(super::adb_session::run_adb_session(

@@ -1,4 +1,4 @@
-use gemacast_core::types::{DeviceId, DiscoveredDevice};
+use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 
 /// Emits events to the web frontend.
 ///

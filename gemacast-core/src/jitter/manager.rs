@@ -1,7 +1,7 @@
 use super::buffer::JitterBuffer;
 use super::types::RawPacket;
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE};
-use crate::types::JitterConfig;
+use crate::domain::types::JitterConfig;
 use opus::Decoder;
 use ringbuf::{HeapCons, traits::*};
 use std::collections::VecDeque;
@@ -62,10 +62,14 @@ pub struct JitterBufferManager {
     last_macro_spike: Option<Instant>,
     /// Unstable network (e.g. 2.4GHz scan cycle) regime expiration.
     unstable_regime_until: Option<Instant>,
-    /// Precomputed smart-mode decay alpha for stable networks (3.5s half-life).
-    smart_decay_stable: f32,
-    /// Precomputed smart-mode decay alpha for unstable networks (34.6s half-life).
-    smart_decay_unstable: f32,
+
+    /// Consecutive packets with jitter < 1 frame (5ms).
+    /// Used to infer network quality: high streak = stable 5GHz-like link.
+    clean_streak: u32,
+    /// EWMA of jitter² for variance tracking.
+    /// Combined with `ema_jitter`, yields coefficient of variation (CV = σ/μ)
+    /// to distinguish stable-low-jitter from spiky-bursty networks.
+    ema_jitter_var: f32,
     config: JitterConfig,
     config_ref: Arc<RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
@@ -98,8 +102,6 @@ impl JitterBufferManager {
         let halflife_ticks =
             (initial_config.peak_decay_halflife_ms.max(10) as f32) / (MILLIS_PER_FRAME as f32);
         let ema_peak_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
-        let smart_decay_stable = 0.5f32.powf(1.0 / (3500.0 / MILLIS_PER_FRAME as f32));
-        let smart_decay_unstable = 0.5f32.powf(1.0 / (34600.0 / MILLIS_PER_FRAME as f32));
 
         Self {
             decoder,
@@ -128,8 +130,8 @@ impl JitterBufferManager {
             ema_peak_decay_alpha,
             last_macro_spike: None,
             unstable_regime_until: None,
-            smart_decay_stable,
-            smart_decay_unstable,
+            clean_streak: 0,
+            ema_jitter_var: 0.0,
         }
     }
 
@@ -143,13 +145,24 @@ impl JitterBufferManager {
         Self::ms_to_frames_ceil(self.config.comfort_cap_ms) as f32
     }
 
+    /// Compute the stability ratio from the clean streak counter.
+    /// Returns 0.0 (unstable) to 1.0 (highly stable).
+    /// Ramps linearly over 400 consecutive clean packets (~2 seconds).
+    fn stability_ratio(&self) -> f32 {
+        self.clean_streak.min(400) as f32 / 400.0
+    }
+
     /// Pure computation of the target buffer depth from observed jitter statistics.
     fn compute_target_depth(&self, tcp_cap_override: Option<f32>) -> u32 {
         // Static mode: lock buffer to exact user-specified depth, bypass all adaptive math.
         if let Some(static_ms) = self.config.static_target_ms {
             return Self::ms_to_frames_ceil(static_ms).max(self.min_depth_frames());
         }
-        let jitter_margin = self.ema_jitter * 2.0 + self.ema_peak;
+        // When the network is demonstrably stable (high clean_streak), reduce the
+        // jitter_margin contribution so the target converges to min_depth faster.
+        let stability = self.stability_ratio();
+        let margin_scale = 1.0 - stability * 0.4; // At full stability: 60% of raw margin
+        let jitter_margin = (self.ema_jitter * 2.0 + self.ema_peak) * margin_scale;
         // Target is natively built on top of the user's requested minimum floor.
         // We do not add artificial hardcoded safety margins here.
         let target = self.min_depth_frames() as f32 + jitter_margin + self.starvation_bump;
@@ -180,29 +193,61 @@ impl JitterBufferManager {
                     let iat_expected = (seq_diff as f32) * (MILLIS_PER_FRAME as f32);
                     let jitter_ms = (iat_actual - iat_expected).max(0.0);
                     let jitter_frames = jitter_ms / MILLIS_PER_FRAME as f32;
-                    // Asymmetric EMA: fast attack (α=0.15) for sudden deterioration,
-                    // slow decay (α=0.005) to prevent over-shedding during brief clean windows.
+
+                    // --- Clean streak tracking ---
+                    // A packet with jitter < 1 frame (5ms) is "clean".
+                    // Consecutive clean packets indicate a stable network (5GHz-like).
+                    if jitter_frames < 1.0 {
+                        self.clean_streak = self.clean_streak.saturating_add(1);
+                    } else {
+                        // Any spike resets the streak. Spikes > 4 frames (20ms)
+                        // are severe — slam to zero. Moderate spikes decay gently.
+                        if jitter_frames > 4.0 {
+                            self.clean_streak = 0;
+                        } else {
+                            self.clean_streak /= 2;
+                        }
+                    }
+
+                    // --- Jitter variance tracking (EWMA of jitter²) ---
+                    let jitter_sq = jitter_frames * jitter_frames;
+                    self.ema_jitter_var = self.ema_jitter_var * 0.95 + jitter_sq * 0.05;
+
+                    // --- Stability-aware jitter EMA decay ---
+                    // Fast attack (α=0.15) on spikes, stability-scaled decay on clean packets.
+                    // Stable 5GHz: α_decay ≈ 0.04 → halves in ~85 callbacks (~425ms)
+                    // Unstable 2.4GHz: α_decay ≈ 0.005 → halves in ~700 callbacks (~3.5s)
+                    let stability = self.stability_ratio();
                     let alpha = if jitter_frames > self.ema_jitter {
                         0.15 // Fast attack
                     } else {
-                        0.001 // Slow decay
+                        Self::lerp(0.005, 0.04, stability)
                     };
                     self.ema_jitter = self.ema_jitter * (1.0 - alpha) + jitter_frames * alpha;
-                    // Adjusts the peak decay speed on the fly based on repetitive spike density.
+
+                    // --- Peak decay: stability-aware continuous interpolation ---
                     let mut current_decay_alpha = self.ema_peak_decay_alpha;
                     if self.config.peak_decay_halflife_ms == 0 {
-                        // Smart Mode (Auto)
+                        // Smart Mode (Auto): interpolate half-life based on stability.
+                        // Stable network: 1.5s half-life (aggressive shedding)
+                        // Unstable network: 34.6s half-life (cautious retention)
                         let mut is_unstable = false;
                         if let Some(unstable_until) = self.unstable_regime_until
                             && pkt.arrival_time < unstable_until
                         {
                             is_unstable = true;
                         }
-                        current_decay_alpha = if is_unstable {
-                            self.smart_decay_unstable
+
+                        let halflife_ms = if is_unstable {
+                            // In unstable regime, clamp to slow decay regardless of streak
+                            34600.0
                         } else {
-                            self.smart_decay_stable
+                            // Continuous interpolation: 34.6s → 1.5s based on stability
+                            Self::lerp(34600.0, 1500.0, stability)
                         };
+                        let halflife_ticks = halflife_ms / MILLIS_PER_FRAME as f32;
+                        current_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
+
                         // Track spikes > 50ms (10 frames)
                         if jitter_frames >= 10.0 {
                             let mut is_new_macro_spike = false;
@@ -273,8 +318,12 @@ impl JitterBufferManager {
 
     /// Process one Opus frame from the jitter buffer into the playback buffer.
     fn process_next_frame(&mut self) {
-        // Fast bleed for starvation bump: 0.05 frames per callback (25ms per second bleed)
-        self.starvation_bump = (self.starvation_bump - 0.05).max(0.0);
+        // Proportional bleed for starvation bump: bigger bumps recover faster.
+        // Base rate 0.05 + 3% of current bump per callback.
+        // 20-frame bump: bleeds at ~0.65 frames/cb → recovers in ~30 callbacks (150ms)
+        // 2-frame bump:  bleeds at ~0.11 frames/cb → recovers in ~18 callbacks (90ms)
+        let bleed = 0.05 + self.starvation_bump * 0.03;
+        self.starvation_bump = (self.starvation_bump - bleed).max(0.0);
         let mut pending_flush: Option<u32> = None;
         self.config_check_countdown += 1;
         let should_check_config = self.config_check_countdown >= 100;
@@ -289,6 +338,8 @@ impl JitterBufferManager {
                 self.ema_jitter = 0.0;
                 self.ema_peak = 0.0;
                 self.starvation_bump = 0.0;
+                self.clean_streak = 0;
+                self.ema_jitter_var = 0.0;
                 let new_target = Self::ms_to_frames_ceil(new_config.min_depth_ms).max(2);
                 let flush_target = new_target + new_target / 2;
                 if self.buffer.occupied_count() > flush_target {
@@ -422,13 +473,19 @@ impl JitterBufferManager {
             if occupied > wsola_threshold && self.buffer.has_next() {
                 let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
                 if rms < 0.005 {
-                    // Silence fast-forward: append current frame AND pop an extra.
+                    // Silence fast-forward: append current frame AND pop extra(s).
+                    // When buffer is far above target (>4 excess), shed up to 2 extra
+                    // frames per callback for faster convergence.
                     self.playback_buf
                         .extend(&self.decode_buf[..self.decode_len]);
-                    if self.buffer.has_next() {
-                        let extra = self.buffer.pop_next().unwrap();
-                        self.capture_pcm(&extra);
-                        // Extra frame is decoded (keeps Opus state) but discarded from output.
+                    let excess = occupied.saturating_sub(wsola_threshold);
+                    let shed_count = if excess > 4 { 2u32 } else { 1 };
+                    for _ in 0..shed_count {
+                        if self.buffer.has_next() {
+                            let extra = self.buffer.pop_next().unwrap();
+                            self.capture_pcm(&extra);
+                            // Extra frame is decoded (keeps Opus state) but discarded from output.
+                        }
                     }
                     return;
                 }
@@ -579,6 +636,14 @@ impl JitterBufferManager {
         self.starvation_bump = 0.0;
         self.last_ingest_seq = None;
         self.startup_flush_remaining = 0;
+        self.clean_streak = 0;
+        self.ema_jitter_var = 0.0;
+    }
+
+    /// Linear interpolation between two values.
+    #[inline]
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + (b - a) * t
     }
 
     fn get_rms(samples: &[f32]) -> f32 {
@@ -694,8 +759,8 @@ mod tests {
     use ringbuf::HeapRb;
     use std::time::Instant;
 
-    /// MIN_DEPTH = ceil(40ms / 5ms) = 8 frames.
-    const MIN_DEPTH: u32 = 8;
+    /// MIN_DEPTH = ceil(40ms / MILLIS_PER_FRAME)
+    const MIN_DEPTH: u32 = 40 / MILLIS_PER_FRAME;
     fn test_config() -> JitterConfig {
         JitterConfig {
             min_depth_ms: 40,
@@ -731,7 +796,8 @@ mod tests {
         pkt.seq_num = seq;
         pkt.payload_data[..payload_len].copy_from_slice(&d);
         pkt.payload_len = payload_len;
-        pkt.arrival_time = base_time + std::time::Duration::from_millis(seq * 5);
+        pkt.arrival_time =
+            base_time + std::time::Duration::from_millis(seq * MILLIS_PER_FRAME as u64);
         pkt
     }
 
@@ -957,17 +1023,19 @@ mod tests {
             comfort_cap_ms: 200,
             peak_decay_halflife_ms: 1000,
             resume_threshold_pct: 0.5,
-            static_target_ms: Some(100), // Lock to 100ms = 20 frames
+            static_target_ms: Some(100), // Lock to 100ms
         };
         let config_ref = Arc::new(std::sync::RwLock::new(static_config));
         let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode);
 
-        // Static mode should lock target to ceil(100ms / 5ms) = 20 frames
+        // Static mode should lock target to ceil(100ms / MILLIS_PER_FRAME)
+        let expected = 100 / MILLIS_PER_FRAME;
         let target = manager.compute_target_depth(None);
         assert_eq!(
-            target, 20,
-            "Static target should be exactly 20 frames for 100ms"
+            target, expected,
+            "Static target should be exactly {} frames for 100ms",
+            expected
         );
 
         // Even with massive jitter, static target should not change
@@ -975,7 +1043,7 @@ mod tests {
         manager.ema_peak = 100.0;
         let target_after_jitter = manager.compute_target_depth(None);
         assert_eq!(
-            target_after_jitter, 20,
+            target_after_jitter, expected,
             "Static target should ignore jitter"
         );
     }
@@ -1120,5 +1188,128 @@ mod tests {
 
         // It should not have starved, because it played the 1 packet.
         assert_eq!(manager.starvation_count, 0);
+    }
+
+    #[test]
+    fn clean_streak_should_build_on_stable_packets_and_reset_on_spikes() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Feed 100 clean packets with perfect 5ms inter-arrival (zero jitter).
+        for i in 1..=100 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // clean_streak should be high (all packets had jitter < 1 frame)
+        assert!(
+            manager.clean_streak >= 90,
+            "Expected clean_streak >= 90 after 100 clean packets, got {}",
+            manager.clean_streak
+        );
+
+        // stability_ratio should be meaningfully positive
+        assert!(
+            manager.stability_ratio() > 0.2,
+            "Expected stability_ratio > 0.2, got {}",
+            manager.stability_ratio()
+        );
+
+        // Now inject a severe spike: a packet with 200ms delay (40 frames of jitter)
+        let mut spike_pkt = make_packet(&mut encoder, 101, base_time);
+        spike_pkt.arrival_time =
+            base_time + std::time::Duration::from_millis(101 * MILLIS_PER_FRAME as u64 + 200);
+        assert!(prod.try_push(spike_pkt).is_ok());
+        manager.ingest_packets(&mut cons);
+
+        // Severe spike (>4 frames) should slam clean_streak to 0
+        assert_eq!(
+            manager.clean_streak, 0,
+            "Expected clean_streak = 0 after severe spike"
+        );
+    }
+
+    #[test]
+    fn stable_network_should_decay_jitter_faster_than_unstable() {
+        let (mut manager1, mut encoder1, mut prod1, mut cons1) = setup_env();
+        let (mut manager2, mut encoder2, mut prod2, mut cons2) = setup_env();
+        let base_time = Instant::now();
+
+        // Both managers: inject a spike to raise ema_jitter
+        let spike_offset = std::time::Duration::from_millis(100); // 100ms jitter
+        for i in 1..=2 {
+            let mut pkt1 = make_packet(&mut encoder1, i, base_time);
+            let mut pkt2 = make_packet(&mut encoder2, i, base_time);
+            if i == 2 {
+                pkt1.arrival_time += spike_offset;
+                pkt2.arrival_time += spike_offset;
+            }
+            assert!(prod1.try_push(pkt1).is_ok());
+            assert!(prod2.try_push(pkt2).is_ok());
+        }
+        manager1.ingest_packets(&mut cons1);
+        manager2.ingest_packets(&mut cons2);
+
+        let spike_jitter1 = manager1.ema_jitter;
+        let spike_jitter2 = manager2.ema_jitter;
+        assert!(
+            (spike_jitter1 - spike_jitter2).abs() < 0.01,
+            "Both managers should have the same jitter after the spike"
+        );
+
+        // Manager 1: simulate a stable network (400 clean packets → full stability)
+        manager1.clean_streak = 400;
+        // Manager 2: simulate an unstable network (0 clean streak)
+        manager2.clean_streak = 0;
+
+        // Feed 200 clean packets to both (zero jitter)
+        for i in 3..=202 {
+            let pkt1 = make_packet(&mut encoder1, i, base_time);
+            let pkt2 = make_packet(&mut encoder2, i, base_time);
+            assert!(prod1.try_push(pkt1).is_ok());
+            assert!(prod2.try_push(pkt2).is_ok());
+        }
+        manager1.ingest_packets(&mut cons1);
+        manager2.ingest_packets(&mut cons2);
+
+        // The stable manager should have decayed significantly faster
+        assert!(
+            manager1.ema_jitter < manager2.ema_jitter,
+            "Stable network jitter ({}) should be less than unstable ({})",
+            manager1.ema_jitter,
+            manager2.ema_jitter
+        );
+    }
+
+    #[test]
+    fn proportional_bleed_should_recover_large_bumps_faster() {
+        let (mut manager, _, _, _) = setup_env();
+
+        // Simulate a large starvation bump
+        manager.starvation_bump = 20.0;
+        manager.is_prebuffering = false;
+
+        // Record the bleed rate at 20.0
+        let initial = manager.starvation_bump;
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        let after_one = manager.starvation_bump;
+        let bleed_large = initial - after_one;
+
+        // Now set a small bump and measure bleed rate
+        manager.starvation_bump = 2.0;
+        let initial_small = manager.starvation_bump;
+        manager.fill_output(&mut output, 1.0);
+        let after_one_small = manager.starvation_bump;
+        let bleed_small = initial_small - after_one_small;
+
+        // The large bump should bleed faster (proportional bleed)
+        assert!(
+            bleed_large > bleed_small * 2.0,
+            "Large bump bleed ({bleed_large}) should be > 2x small bump bleed ({bleed_small})"
+        );
     }
 }
