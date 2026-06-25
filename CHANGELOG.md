@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/apirJS/gemacast/compare/v0.1.2...v0.1.3) (2026-06-25)
+
+
+### Refactoring
+
+* gemacast core with hexagon pattern ([#8](https://github.com/apirJS/gemacast/issues/8)) ([fadfb82](https://github.com/apirJS/gemacast/commit/fadfb82a3f8fc9c50ce530e05fc6bfaf2f5e571e))
+
 ## [0.1.2](https://github.com/apirJS/gemacast/compare/v0.1.1...v0.1.2) (2026-06-21)
 
 
