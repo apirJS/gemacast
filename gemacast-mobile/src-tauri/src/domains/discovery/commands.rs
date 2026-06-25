@@ -62,6 +62,7 @@ pub async fn start_listening_for_senders(
         state.notifier.clone(),
         device_id,
         mode,
+        state.is_streaming.clone(),
     );
     *state.discovery_task.lock().await = Some(handle);
     Ok(())

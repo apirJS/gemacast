@@ -12,7 +12,7 @@ export const JITTER_PRESETS: PresetDefinition[] = [
     id: 'auto',
     name: 'Auto',
     description: 'Automatically discovers the lowest stable latency for your connection.',
-    config: { minDepthMs: 5, comfortCapMs: 1000, peakDecayHalflifeMs: 0, resumeThresholdPct: 0.25 },
+    config: { minDepthMs: 8, comfortCapMs: 1500, peakDecayHalflifeMs: 0, resumeThresholdPct: 0.25 },
   },
   {
     id: 'wired',
@@ -25,10 +25,10 @@ export const JITTER_PRESETS: PresetDefinition[] = [
     name: 'Fast',
     description: 'Good 5 GHz Wi-Fi. Very low latency with light buffering for minor hiccups.',
     config: {
-      minDepthMs: 10,
-      comfortCapMs: 80,
-      peakDecayHalflifeMs: 1000,
-      resumeThresholdPct: 0.3,
+      minDepthMs: 5,
+      comfortCapMs: 40,
+      peakDecayHalflifeMs: 800,
+      resumeThresholdPct: 0.25,
     },
   },
   {

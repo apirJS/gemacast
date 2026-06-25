@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -19,6 +20,7 @@ pub fn spawn_discovery_listener(
     notifier: Arc<dyn FrontendNotifier>,
     device_id: DeviceId,
     mode: ConnectionMode,
+    is_streaming: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut set = tokio::task::JoinSet::new();
@@ -56,6 +58,7 @@ pub fn spawn_discovery_listener(
             socket,
             device_id.clone(),
             mode,
+            is_streaming,
         ));
 
         set.spawn(super::adb_session::run_adb_session(

@@ -271,7 +271,7 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::transport::AudioPacketTransport;
+    use crate::ports::transport::AudioPacketTransport;
     use ringbuf::HeapRb;
     use std::net::SocketAddr;
     use std::sync::Arc;

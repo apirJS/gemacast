@@ -78,6 +78,12 @@ pub mod mocks {
         pub calls: CallLog,
     }
 
+    impl Default for MockCaptureFactory {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MockCaptureFactory {
         pub fn new() -> Self {
             Self {
@@ -141,6 +147,12 @@ pub mod mocks {
         pub calls: CallLog,
     }
 
+    impl Default for MockErrorNotifier {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MockErrorNotifier {
         pub fn new() -> Self {
             Self {
@@ -166,6 +178,12 @@ pub mod mocks {
     pub struct MockProcessLister {
         pub calls: CallLog,
         pub processes: Vec<ProcessInfo>,
+    }
+
+    impl Default for MockProcessLister {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl MockProcessLister {
