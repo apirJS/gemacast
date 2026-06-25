@@ -1,7 +1,7 @@
 use audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler as RubatoResampler};
 
-use crate::error::{AudioError, GemaCastError};
+use crate::domain::error::{AudioError, GemaCastError};
 
 /// High-quality audio resampler using FFT-based interpolation (Rubato v3).
 ///

@@ -9,7 +9,7 @@ pub mod mocks {
 
     use async_trait::async_trait;
     use gemacast_core::control::types::{ConnectReq, PresenceResponse};
-    use gemacast_core::types::{
+    use gemacast_core::domain::types::{
         AudioSource, ConnectionMode, DeviceId, DiscoveredDevice, JitterConfig, ProcessInfo,
         SenderCapabilities,
     };

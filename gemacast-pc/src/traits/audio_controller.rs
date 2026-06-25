@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use gemacast_core::types::{AudioSource, DeviceId};
+use gemacast_core::domain::types::{AudioSource, DeviceId};
 use std::net::SocketAddr;
 
 /// Sends commands to the audio stream engine.

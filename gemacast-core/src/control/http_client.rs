@@ -4,9 +4,9 @@ use std::time::Duration;
 use crate::control::types::{
     ConnectReq, DisconnectReq, PresenceResponse, ProbeReq, ProcessListResponse, SourcesResponse,
 };
-use crate::error::{ControlError, GemaCastError};
+use crate::domain::error::{ControlError, GemaCastError};
+use crate::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
 use crate::network::Ports;
-use crate::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
 
 pub struct HttpControlClient {
     client: reqwest::Client,

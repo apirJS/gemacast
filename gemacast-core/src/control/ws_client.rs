@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::control::types::{WsCommand, WsEvent};
 use crate::{
-    error::{ControlError, GemaCastError},
+    domain::error::{ControlError, GemaCastError},
     network::Ports,
 };
 

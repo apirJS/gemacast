@@ -1,6 +1,6 @@
 use crate::events::TrayEvent;
 use crate::traits::TrayNotifier;
-use gemacast_core::types::{DeviceId, TransportType};
+use gemacast_core::domain::types::{DeviceId, TransportType};
 use std::net::SocketAddr;
 use tao::event_loop::EventLoopProxy;
 

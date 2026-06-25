@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gemacast_core::types::{DeviceId, DiscoveredDevice};
+use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 
 use crate::traits::{DeviceRegistry, RegistrationOutcome};
 

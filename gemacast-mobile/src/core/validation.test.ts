@@ -159,8 +159,8 @@ describe('getDefaultResetConfig', () => {
     const settings = makeSettings();
     const result = getDefaultResetConfig(settings);
     // Auto preset values from presets.ts
-    expect(result.minDepthMs).toBe(5);
-    expect(result.comfortCapMs).toBe(1000);
+    expect(result.minDepthMs).toBe(8);
+    expect(result.comfortCapMs).toBe(1500);
   });
 
   it('returns saved preset config when current config matches a saved preset', () => {

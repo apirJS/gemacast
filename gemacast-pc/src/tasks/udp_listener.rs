@@ -8,8 +8,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::network::PresenceListener;
-use gemacast_core::types::ControlMessage;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 

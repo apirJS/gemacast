@@ -13,6 +13,8 @@ keystore_b64.txt
 # Environment
 .env
 .env.*
+.cargo/
+*.cmake
 
 # OS junk
 .DS_Store

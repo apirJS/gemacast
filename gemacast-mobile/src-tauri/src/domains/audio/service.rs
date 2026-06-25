@@ -6,9 +6,10 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gemacast_core::control::types::ConnectReq;
-use gemacast_core::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
+use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
 
 use crate::traits::{
     ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams,
@@ -25,6 +26,8 @@ pub struct AudioService {
     pub client_factory: Arc<dyn SenderControlClientFactory>,
     pub notifier: Arc<dyn FrontendNotifier>,
     pub platform: Arc<dyn PlatformService>,
+    /// Shared flag read by the probe loop to skip subnet scans while streaming.
+    pub is_streaming: Arc<AtomicBool>,
 }
 
 impl AudioService {
@@ -61,6 +64,7 @@ impl AudioService {
             })
             .await?;
 
+        self.is_streaming.store(true, Ordering::Relaxed);
         self.platform.set_streaming_flag(true);
         self.platform
             .sync_service(PlaybackState::Playing, params.exclusive_mode);
@@ -79,6 +83,7 @@ impl AudioService {
 
         self.session.stop_session().await;
 
+        self.is_streaming.store(false, Ordering::Relaxed);
         self.platform.set_streaming_flag(false);
         self.platform.sync_service(PlaybackState::Stopped, false);
         Ok(())
@@ -118,6 +123,7 @@ impl AudioService {
     pub async fn kill_playback(&self) -> Result<(), String> {
         self.session.stop_session().await;
 
+        self.is_streaming.store(false, Ordering::Relaxed);
         self.platform.set_streaming_flag(false);
         self.platform.sync_service(PlaybackState::Stopped, false);
         Ok(())
@@ -125,6 +131,7 @@ impl AudioService {
 
     /// Notify that streaming has stopped (called by frontend).
     pub fn notify_streaming_stopped(&self) {
+        self.is_streaming.store(false, Ordering::Relaxed);
         self.platform.set_streaming_flag(false);
     }
 
@@ -144,7 +151,13 @@ impl AudioService {
     pub async fn get_audio_sources(
         &self,
         ip: IpAddr,
-    ) -> Result<(Vec<AudioSource>, gemacast_core::types::SenderCapabilities), String> {
+    ) -> Result<
+        (
+            Vec<AudioSource>,
+            gemacast_core::domain::types::SenderCapabilities,
+        ),
+        String,
+    > {
         let client = self.client_factory.create(ip);
         client.get_audio_sources().await
     }
@@ -186,7 +199,7 @@ impl AudioService {
     pub async fn get_process_list(
         &self,
         ip: IpAddr,
-    ) -> Result<Vec<gemacast_core::types::ProcessInfo>, String> {
+    ) -> Result<Vec<gemacast_core::domain::types::ProcessInfo>, String> {
         let client = self.client_factory.create(ip);
         client.get_process_list().await
     }
@@ -248,6 +261,7 @@ mod tests {
             client_factory: factory,
             notifier,
             platform,
+            is_streaming: Arc::new(AtomicBool::new(false)),
         }
     }
 

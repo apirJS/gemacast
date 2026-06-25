@@ -9,7 +9,7 @@ pub mod mocks {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use gemacast_core::types::{AudioSource, DeviceId, DiscoveredDevice, TransportType};
+    use gemacast_core::domain::types::{AudioSource, DeviceId, DiscoveredDevice, TransportType};
 
     use crate::traits::{
         AudioController, DeviceNotifier, DeviceRegistry, RegistrationOutcome, TrayNotifier,

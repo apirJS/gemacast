@@ -1,6 +1,6 @@
 use crate::traits::types::{SessionInfo, SessionParams};
 use async_trait::async_trait;
-use gemacast_core::types::JitterConfig;
+use gemacast_core::domain::types::JitterConfig;
 
 /// Manages the lifecycle of audio playback sessions and WebSocket clients.
 ///

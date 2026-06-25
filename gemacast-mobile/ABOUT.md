@@ -65,6 +65,188 @@ flowchart TD
 
 ## File Tree & Explanation
 
+```text
+gemacast-mobile
+├── .gitignore
+├── .prettierignore
+├── .prettierrc
+├── ABOUT.md
+├── README.md
+├── bun.lock
+├── bunfig.toml
+├── eslint.config.js
+├── index.html
+├── package.json
+├── src
+│   ├── App.tsx
+│   ├── __tests__
+│   │   ├── dom-setup.ts
+│   │   └── setup.ts
+│   ├── assets
+│   │   ├── tauri.svg
+│   │   ├── typescript.svg
+│   │   └── vite.svg
+│   ├── components
+│   │   ├── device
+│   │   │   ├── DeviceInfo.test.tsx
+│   │   │   ├── DeviceInfo.tsx
+│   │   │   ├── StatusChip.test.tsx
+│   │   │   └── StatusChip.tsx
+│   │   ├── feedback
+│   │   │   ├── Toast.test.tsx
+│   │   │   ├── Toast.tsx
+│   │   │   ├── ToastContainer.test.tsx
+│   │   │   └── ToastContainer.tsx
+│   │   ├── latency
+│   │   │   ├── LatencyStats.test.tsx
+│   │   │   └── LatencyStats.tsx
+│   │   ├── layout
+│   │   │   └── AppShell.tsx
+│   │   ├── senders
+│   │   │   ├── EmptyState.tsx
+│   │   │   ├── ManualConnect.test.tsx
+│   │   │   ├── ManualConnect.tsx
+│   │   │   ├── ProcessSelect.test.tsx
+│   │   │   ├── ProcessSelect.tsx
+│   │   │   ├── SenderCard.test.tsx
+│   │   │   ├── SenderCard.tsx
+│   │   │   ├── SenderList.test.tsx
+│   │   │   └── SenderList.tsx
+│   │   ├── settings
+│   │   │   ├── BitrateSelect.test.tsx
+│   │   │   ├── BitrateSelect.tsx
+│   │   │   ├── BufferPresetSelect.test.tsx
+│   │   │   ├── BufferPresetSelect.tsx
+│   │   │   ├── CustomJitterConfig.test.tsx
+│   │   │   ├── CustomJitterConfig.tsx
+│   │   │   ├── ExclusiveToggle.test.tsx
+│   │   │   ├── ExclusiveToggle.tsx
+│   │   │   ├── GainSlider.tsx
+│   │   │   ├── ModeSelector.test.tsx
+│   │   │   ├── ModeSelector.tsx
+│   │   │   ├── NoBufferWarning.tsx
+│   │   │   ├── SettingsDrawer.test.tsx
+│   │   │   ├── SettingsDrawer.tsx
+│   │   │   ├── ThemeToggle.test.tsx
+│   │   │   └── ThemeToggle.tsx
+│   │   └── shared
+│   │       ├── ConfirmDialog.test.tsx
+│   │       ├── ConfirmDialog.tsx
+│   │       ├── CustomSelect.test.tsx
+│   │       ├── CustomSelect.tsx
+│   │       ├── HelpDialog.test.tsx
+│   │       ├── HelpDialog.tsx
+│   │       ├── SegmentedControl.tsx
+│   │       └── Toggle.tsx
+│   ├── core
+│   │   ├── constants.ts
+│   │   ├── error.test.ts
+│   │   ├── error.ts
+│   │   ├── help-content.ts
+│   │   ├── latency-tracker.test.ts
+│   │   ├── latency-tracker.ts
+│   │   ├── persistence.test.ts
+│   │   ├── persistence.ts
+│   │   ├── presets.test.ts
+│   │   ├── presets.ts
+│   │   ├── tauri-bridge.test.ts
+│   │   ├── tauri-bridge.ts
+│   │   ├── types.ts
+│   │   ├── validation.test.ts
+│   │   └── validation.ts
+│   ├── hooks
+│   │   ├── use-audio.test.ts
+│   │   ├── use-audio.ts
+│   │   ├── use-connection.test.ts
+│   │   ├── use-connection.ts
+│   │   ├── use-custom-preset-editor.test.ts
+│   │   ├── use-custom-preset-editor.ts
+│   │   ├── use-discovery.test.ts
+│   │   ├── use-discovery.ts
+│   │   ├── use-drawer.ts
+│   │   ├── use-manual-connect.ts
+│   │   ├── use-network-monitor.ts
+│   │   ├── use-settings.ts
+│   │   └── use-tauri-events.ts
+│   ├── index.css
+│   ├── main.tsx
+│   └── stores
+│       ├── app-store.test.ts
+│       ├── app-store.ts
+│       ├── toast-store.test.ts
+│       └── toast-store.ts
+├── src-tauri
+│   ├── .gitignore
+│   ├── Cargo.toml
+│   ├── build.rs
+│   ├── capabilities
+│   │   └── default.json
+│   ├── icons
+│   │   ├── 128x128.png
+│   │   ├── 128x128@2x.png
+│   │   ├── 32x32.png
+│   │   ├── 64x64.png
+│   │   ├── Square107x107Logo.png
+│   │   ├── Square142x142Logo.png
+│   │   ├── Square150x150Logo.png
+│   │   ├── Square284x284Logo.png
+│   │   ├── Square30x30Logo.png
+│   │   ├── Square310x310Logo.png
+│   │   ├── Square44x44Logo.png
+│   │   ├── Square71x71Logo.png
+│   │   ├── Square89x89Logo.png
+│   │   ├── StoreLogo.png
+│   │   ├── gemacast-pc.png
+│   │   ├── gemacast.png
+│   │   ├── icon.icns
+│   │   ├── icon.ico
+│   │   └── icon.png
+│   ├── src
+│   │   ├── adapters
+│   │   │   ├── frontend_notifier.rs
+│   │   │   ├── network_info.rs
+│   │   │   ├── platform_service.rs
+│   │   │   ├── sender_control.rs
+│   │   │   └── session_manager.rs
+│   │   ├── adapters.rs
+│   │   ├── domains
+│   │   │   ├── audio
+│   │   │   │   ├── commands.rs
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── playback.rs
+│   │   │   │   └── service.rs
+│   │   │   ├── discovery
+│   │   │   │   ├── adb_session.rs
+│   │   │   │   ├── commands.rs
+│   │   │   │   ├── dispatch.rs
+│   │   │   │   ├── heartbeat.rs
+│   │   │   │   ├── listener.rs
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── native.rs
+│   │   │   │   ├── probe.rs
+│   │   │   │   └── service.rs
+│   │   │   ├── ipc
+│   │   │   │   ├── mod.rs
+│   │   │   │   └── server.rs
+│   │   │   └── mod.rs
+│   │   ├── lib.rs
+│   │   ├── main.rs
+│   │   ├── state.rs
+│   │   ├── testing.rs
+│   │   ├── traits
+│   │   │   ├── frontend_notifier.rs
+│   │   │   ├── network_info.rs
+│   │   │   ├── platform_service.rs
+│   │   │   ├── sender_control.rs
+│   │   │   ├── session_manager.rs
+│   │   │   └── types.rs
+│   │   └── traits.rs
+│   ├── tauri.conf.json
+│   └── tauri.schema.json
+├── tsconfig.json
+└── vite.config.ts
+```
+
 ### Root Configurations
 - **`package.json` / `vite.config.ts`**: Standard Vite + React configuration. It includes scripts for linting, testing (`bun test`), and building.
 - **`src-tauri/Cargo.toml`**: Defines the Rust dependencies, including Tauri v2, Tokio, and the local workspace crate `gemacast-core`.

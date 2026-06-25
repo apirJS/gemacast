@@ -3,7 +3,7 @@
 //! - [`TrayEvent`]: Sent *from* background tasks *to* the tray event loop.
 //! - [`AppCommand`]: Sent *from* the tray UI *to* the background engine.
 
-use gemacast_core::types::{DeviceId, TransportType};
+use gemacast_core::domain::types::{DeviceId, TransportType};
 use std::net::SocketAddr;
 
 /// Events sent to the tray UI from background tasks.

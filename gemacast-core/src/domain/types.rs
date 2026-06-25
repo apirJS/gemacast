@@ -86,8 +86,6 @@ pub struct SenderCapabilities {
     pub supports_process_capture: bool,
 }
 
-pub use crate::control::messages::ControlMessage;
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredDevice {

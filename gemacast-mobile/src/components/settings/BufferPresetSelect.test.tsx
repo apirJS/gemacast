@@ -52,8 +52,8 @@ describe('BufferPresetSelect', () => {
     fireEvent.click(screen.getByText('Custom'));
 
     expect(useAppStore.getState().settings.bufferPreset).toBe('custom');
-    expect(useAppStore.getState().settings.customJitterConfig.minDepthMs).toBe(5);
-    expect(useAppStore.getState().settings.customJitterConfig.comfortCapMs).toBe(1000);
+    expect(useAppStore.getState().settings.customJitterConfig.minDepthMs).toBe(8);
+    expect(useAppStore.getState().settings.customJitterConfig.comfortCapMs).toBe(1500);
   });
 
   it('updates from saved preset', () => {

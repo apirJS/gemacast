@@ -1,5 +1,5 @@
 use crate::traits::FrontendNotifier;
-use gemacast_core::types::{DeviceId, DiscoveredDevice};
+use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 use tauri::Emitter;
 
 /// Emits events to the Tauri webview frontend via `AppHandle::emit()`.

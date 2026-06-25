@@ -5,6 +5,7 @@
 //! lives inside `TokioSessionManager` (the production [`SessionManager`] adapter).
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -18,4 +19,8 @@ pub struct AppState {
     pub network: Arc<dyn NetworkInfoProvider>,
     pub platform: Arc<dyn PlatformService>,
     pub discovery_task: Mutex<Option<JoinHandle<()>>>,
+    /// Shared flag: `true` while an audio session is active.
+    /// The probe loop checks this to skip subnet scans during streaming,
+    /// preventing 254 UDP packets from flooding the 2.4 GHz channel.
+    pub is_streaming: Arc<AtomicBool>,
 }

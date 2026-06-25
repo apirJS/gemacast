@@ -11,8 +11,8 @@ describe('getPresetConfig', () => {
 
   it('returns auto preset config', () => {
     const config = getPresetConfig('auto', fallback);
-    expect(config.minDepthMs).toBe(5);
-    expect(config.comfortCapMs).toBe(1000);
+    expect(config.minDepthMs).toBe(8);
+    expect(config.comfortCapMs).toBe(1500);
   });
 
   it('returns wired preset config', () => {

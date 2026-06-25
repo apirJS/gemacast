@@ -2,9 +2,9 @@
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
 use crate::{
     audio::{OPUS_SAMPLE_RATE, create_opus_decoder},
-    error::{AudioError, CodecDirection, GemaCastError, StreamDirection},
+    domain::error::{AudioError, CodecDirection, GemaCastError, StreamDirection},
+    domain::types::JitterConfig,
     jitter::{JitterBufferManager, RawPacket},
-    types::JitterConfig,
 };
 #[cfg(not(target_os = "android"))]
 use cpal::StreamError;

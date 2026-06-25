@@ -5,8 +5,8 @@ import { useCustomPresetEditor } from './use-custom-preset-editor';
 import type { JitterConfig } from '../core/types';
 
 const autoConfig: JitterConfig = {
-  minDepthMs: 5,
-  comfortCapMs: 1000,
+  minDepthMs: 8,
+  comfortCapMs: 1500,
   peakDecayHalflifeMs: 0,
   resumeThresholdPct: 0.25,
 };
@@ -88,8 +88,8 @@ describe('useCustomPresetEditor', () => {
     const { result } = renderHook(() => useCustomPresetEditor());
     act(() => result.current.handleReset());
     const config = useAppStore.getState().settings.customJitterConfig;
-    expect(config.minDepthMs).toBe(5); // Auto preset value
-    expect(config.comfortCapMs).toBe(1000); // Auto preset value
+    expect(config.minDepthMs).toBe(8); // Auto preset value
+    expect(config.comfortCapMs).toBe(1500); // Auto preset value
   });
 
   it('handleReset returns saved config when editing a saved preset', () => {
@@ -136,7 +136,7 @@ describe('useCustomPresetEditor', () => {
     const settings = useAppStore.getState().settings;
     expect(settings.savedPresets.length).toBe(0);
     expect(settings.bufferPreset).toBe('custom');
-    expect(settings.customJitterConfig.minDepthMs).toBe(5); // Auto
+    expect(settings.customJitterConfig.minDepthMs).toBe(8); // Auto
   });
 
   it('setBufferMode to static sets staticTargetMs', () => {

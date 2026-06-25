@@ -6,8 +6,9 @@ use tokio::sync::{broadcast, mpsc};
 
 use gemacast_core::control::HttpControlClient;
 use gemacast_core::control::http::send_ws_event;
+use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::control::types::WsEvent;
-use gemacast_core::types::{ControlMessage, DeviceId};
+use gemacast_core::domain::types::DeviceId;
 
 use crate::traits::DeviceNotifier;
 
