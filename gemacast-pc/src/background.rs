@@ -105,11 +105,46 @@ fn adb_command() -> tokio::process::Command {
     tokio::process::Command::from(std_cmd)
 }
 
-/// Gracefully shut down the ADB server that we started.
+/// Gracefully shut down the ADB server that we started, then force-kill
+/// any lingering `adb.exe` processes so they don't outlive GemaCast.
 async fn shutdown_adb() {
     tracing::info!("Shutting down bundled ADB server...");
     let _ = adb_command().args(["kill-server"]).output().await;
     tracing::info!("ADB server shut down.");
+
+    // Force-kill any remaining adb.exe processes that survived kill-server.
+    // This covers edge cases where adb.exe lingers (e.g. stuck fork-server,
+    // concurrent adb sessions, or slow daemon teardown).
+    #[cfg(target_os = "windows")]
+    {
+        let mut kill_cmd = std::process::Command::new("taskkill");
+        kill_cmd.args(["/F", "/IM", "adb.exe"]);
+        use std::os::windows::process::CommandExt;
+        kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let mut cmd = tokio::process::Command::from(kill_cmd);
+        match cmd.output().await {
+            Ok(output) if output.status.success() => {
+                tracing::info!("Force-killed lingering adb.exe processes");
+            }
+            _ => {
+                tracing::debug!("No lingering adb.exe processes to kill (or already exited)");
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = tokio::process::Command::new("pkill");
+        cmd.args(["-9", "adb"]);
+        match cmd.output().await {
+            Ok(output) if output.status.success() => {
+                tracing::info!("Force-killed lingering adb processes");
+            }
+            _ => {
+                tracing::debug!("No lingering adb processes to kill (or already exited)");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

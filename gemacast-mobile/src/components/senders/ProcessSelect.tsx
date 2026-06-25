@@ -9,6 +9,7 @@ type ProcessSelectProps = {
   currentSource: AudioSource;
   onSourceChange: (source: AudioSource) => void;
   sender: DiscoveredSender;
+  supportsProcessCapture: boolean;
 };
 
 export function ProcessSelect({
@@ -17,6 +18,7 @@ export function ProcessSelect({
   currentSource,
   onSourceChange,
   sender,
+  supportsProcessCapture,
 }: ProcessSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -162,13 +164,21 @@ export function ProcessSelect({
 
             {filteredProcesses.map((proc) => {
               const isSelected = currentSource.type === 'process' && currentSource.pid === proc.pid;
+              const isProcessDisabled = !supportsProcessCapture;
               return (
                 <button
                   key={proc.pid}
                   type="button"
+                  disabled={isProcessDisabled}
+                  title={
+                    isProcessDisabled
+                      ? 'Per-process capture is not available on this PC'
+                      : undefined
+                  }
                   className={`
                     flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors
-                    ${isSelected ? 'bg-accent text-accent-foreground' : 'hover:bg-secondary'}
+                    ${isProcessDisabled ? 'cursor-not-allowed opacity-40' : ''}
+                    ${isSelected && !isProcessDisabled ? 'bg-accent text-accent-foreground' : isProcessDisabled ? '' : 'hover:bg-secondary'}
                   `}
                   onClick={() =>
                     handleSelect({
@@ -193,6 +203,12 @@ export function ProcessSelect({
                 </button>
               );
             })}
+
+            {!supportsProcessCapture && filteredProcesses.length > 0 && (
+              <p className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground">
+                Per-process capture unavailable on this PC
+              </p>
+            )}
 
             {filteredProcesses.length === 0 && (
               <p className="px-3 py-2 text-xs text-muted-foreground">No processes found</p>

@@ -33,7 +33,6 @@ pub enum PlatformCaptureBackend {
     WasapiDesktop(wasapi_desktop::WasapiDesktopCapture),
     #[cfg(target_os = "windows")]
     WasapiProcess(wasapi_loopback::WasapiLoopbackCapture),
-    #[cfg(not(target_os = "windows"))]
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
@@ -44,7 +43,6 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::WasapiDesktop(b) => b.play(),
             #[cfg(target_os = "windows")]
             Self::WasapiProcess(b) => b.play(),
-            #[cfg(not(target_os = "windows"))]
             Self::Cpal(b) => b.play(),
         }
     }
@@ -55,7 +53,6 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::WasapiDesktop(b) => b.pause(),
             #[cfg(target_os = "windows")]
             Self::WasapiProcess(b) => b.pause(),
-            #[cfg(not(target_os = "windows"))]
             Self::Cpal(b) => b.pause(),
         }
     }
@@ -69,6 +66,11 @@ impl CaptureBackend for PlatformCaptureBackend {
 ///
 /// Implements [`CaptureFactory`] with `Backend = PlatformCaptureBackend`,
 /// so the entire pipeline monomorphizes at compile time.
+///
+/// On Windows, the factory first attempts the modern WASAPI Application Loopback
+/// API (which bypasses OEM Audio Processing Objects for clean audio). If WASAPI
+/// fails (e.g., on older Windows builds < 20348), it falls back to CPAL with
+/// a warning log.
 pub struct DefaultCaptureFactory;
 
 impl CaptureFactory for DefaultCaptureFactory {
@@ -77,7 +79,12 @@ impl CaptureFactory for DefaultCaptureFactory {
     fn create_desktop_capture(&self) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
         #[cfg(windows)]
         {
-            wasapi_desktop::create_wasapi_desktop_loopback()
+            wasapi_desktop::create_wasapi_desktop_loopback().or_else(|e| {
+                tracing::warn!(
+                    "WASAPI desktop capture failed ({e}), falling back to CPAL loopback"
+                );
+                cpal_loopback::create_cpal_loopback()
+            })
         }
         #[cfg(not(windows))]
         {

@@ -26,6 +26,7 @@ describe('ProcessSelect', () => {
     currentSource: { type: 'desktop' as const },
     onSourceChange: mock(),
     sender: { deviceId: '123', deviceName: 'PC', addr: '10.0.0.1:9000', isOffline: false },
+    supportsProcessCapture: true,
   };
 
   it('renders current source label', () => {

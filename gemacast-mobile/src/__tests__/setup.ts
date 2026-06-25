@@ -4,6 +4,7 @@ const _store: Map<string, string> = new Map();
 
 beforeAll(() => {
   if (typeof globalThis.localStorage === 'undefined') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).localStorage = {
       getItem: (key: string) => _store.get(key) ?? null,
       setItem: (key: string, value: string) => {
@@ -23,15 +24,18 @@ beforeAll(() => {
   }
 
   if (typeof globalThis.navigator === 'undefined') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).navigator = { onLine: true } as Navigator;
   }
 
   if (typeof globalThis.window === 'undefined') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).window = {
       addEventListener: () => {},
       removeEventListener: () => {},
       setInterval: globalThis.setInterval,
       clearInterval: globalThis.clearInterval,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
   }
 });

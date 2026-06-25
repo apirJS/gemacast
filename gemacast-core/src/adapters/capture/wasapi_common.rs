@@ -203,3 +203,165 @@ pub fn downmix_to_stereo(input: &[f32], channels: usize, output: &mut Vec<f32>) 
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared async activation helpers
+// ---------------------------------------------------------------------------
+
+use crate::domain::error::{AudioError, GemaCastError};
+use windows::Win32::Media::Audio::PROCESS_LOOPBACK_MODE;
+use windows::{
+    Win32::{
+        Media::Audio::{
+            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+            ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+            IActivateAudioInterfaceCompletionHandler,
+            IActivateAudioInterfaceCompletionHandler_Impl, IAudioClient,
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        },
+        System::{
+            Com::{COINIT_MULTITHREADED, CoInitializeEx, StructuredStorage::PROPVARIANT},
+            Variant::VT_BLOB,
+        },
+    },
+    core::{ComInterface, IUnknown, PCWSTR, implement},
+};
+
+/// Completion handler for `ActivateAudioInterfaceAsync`.
+///
+/// Receives the activated `IAudioClient` (or error) and sends it back
+/// to the calling thread via a `std::sync::mpsc` channel.
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+pub(crate) struct AudioActivator {
+    pub sender: std::sync::mpsc::Sender<Result<IAudioClient, GemaCastError>>,
+}
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivator {
+    fn ActivateCompleted(
+        &self,
+        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
+    ) -> windows::core::Result<()> {
+        let get_client = || -> windows::core::Result<IAudioClient> {
+            let op = activateoperation
+                .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER))?;
+
+            let mut status = windows::core::HRESULT(0);
+            let mut unknown: Option<IUnknown> = None;
+
+            unsafe {
+                op.GetActivateResult(&mut status, &mut unknown)?;
+            }
+
+            status.ok()?;
+
+            let unknown = unknown
+                .ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER))?;
+
+            unknown.cast::<IAudioClient>()
+        };
+
+        let payload = get_client().map_err(|e| AudioError::WindowsApi(e).into());
+        let _ = self.sender.send(payload);
+
+        Ok(())
+    }
+}
+
+/// Activate a process loopback `IAudioClient` via `ActivateAudioInterfaceAsync`.
+///
+/// # Arguments
+/// - `pid`: The target process ID.
+/// - `mode`: `INCLUDE` to capture only the target tree, `EXCLUDE` to capture everything except it.
+///
+/// # Safety
+///
+/// Calls COM interfaces. COM must be initialized on the calling thread.
+pub unsafe fn activate_process_loopback(
+    pid: u32,
+    mode: PROCESS_LOOPBACK_MODE,
+) -> Result<IAudioClient, GemaCastError> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    };
+
+    let loopback_params = AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+        ProcessLoopbackMode: mode,
+        TargetProcessId: pid,
+    };
+
+    let mut activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: loopback_params,
+        },
+    };
+
+    let mut prop_variant = PROPVARIANT::default();
+    unsafe {
+        (*prop_variant.Anonymous.Anonymous).vt = VT_BLOB;
+        (*prop_variant.Anonymous.Anonymous).Anonymous.blob.cbSize =
+            std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
+        (*prop_variant.Anonymous.Anonymous).Anonymous.blob.pBlobData =
+            &mut activation_params as *mut _ as *mut u8;
+    };
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let activator: IActivateAudioInterfaceCompletionHandler = AudioActivator { sender }.into();
+
+    unsafe {
+        ActivateAudioInterfaceAsync(
+            PCWSTR::from_raw(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK.as_ptr()),
+            &IAudioClient::IID,
+            Some(&prop_variant),
+            Some(&activator),
+        )
+        .map_err(AudioError::WindowsApi)?;
+    };
+
+    let result = receiver.recv().unwrap_or_else(|_| {
+        Err(AudioError::WindowsApi(windows::core::Error::from(
+            windows::Win32::Foundation::E_FAIL,
+        ))
+        .into())
+    })?;
+
+    Ok(result)
+}
+
+/// Query the default render endpoint's mix format.
+///
+/// Process loopback streams use the same shared-mode format as the system mixer,
+/// so this gives us the correct format to pass to `IAudioClient::Initialize`.
+///
+/// # Safety
+///
+/// Calls COM interfaces. The returned pointer is CoTaskMem-allocated and must
+/// be freed by the caller via `CoTaskMemFree`.
+pub unsafe fn get_default_mix_format()
+-> Result<*mut windows::Win32::Media::Audio::WAVEFORMATEX, GemaCastError> {
+    use windows::Win32::Media::Audio::{
+        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
+    };
+    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(AudioError::WindowsApi)?;
+
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(AudioError::WindowsApi)?;
+
+        let audio_client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(AudioError::WindowsApi)?;
+
+        let mix_format_ptr = audio_client
+            .GetMixFormat()
+            .map_err(AudioError::WindowsApi)?;
+
+        Ok(mix_format_ptr)
+    }
+}
