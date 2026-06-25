@@ -13,6 +13,7 @@ const defaultSettings = {
 
 beforeEach(() => {
   cleanup();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useAppStore.getState().updateSettings(defaultSettings as any);
 });
 
