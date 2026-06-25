@@ -910,8 +910,8 @@ jobs:
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           
           # Extract the changelog for the current version from release-plz generated CHANGELOG.md
-          if [ -f "gemacast-pc/CHANGELOG.md" ]; then
-            awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" gemacast-pc/CHANGELOG.md > current_changelog.md
+          if [ -f "CHANGELOG.md" ]; then
+            awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" CHANGELOG.md > current_changelog.md
           else
             echo "" > current_changelog.md
           fi
