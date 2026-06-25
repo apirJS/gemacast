@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/apirJS/gemacast/compare/v0.1.3...v0.1.4) (2026-06-25)
+
+
+### Performance
+
+* migrate wasapi to newer api and fallback to cpal ([b4242a2](https://github.com/apirJS/gemacast/commit/b4242a242d8c953534f8ecccfcef5e02c5ffe15f))
+
 ## [0.1.3](https://github.com/apirJS/gemacast/compare/v0.1.2...v0.1.3) (2026-06-25)
 
 
