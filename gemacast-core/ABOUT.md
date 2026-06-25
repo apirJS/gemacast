@@ -1,131 +1,207 @@
-# GemaCast Core Blueprint
+# Gemacast Core Blueprint
 
-This blueprint outlines the architecture, data flow, and file structure of the `gemacast-core` crate.
+## Description
+`gemacast-core` is the foundational library for the Gemacast project. It implements the core networking, audio streaming, control logic, and device discovery required to transmit and receive low-latency desktop audio. The library is completely decoupled from UI frameworks, allowing it to be seamlessly embedded in both `gemacast-pc` (Tauri/Desktop UI) and `gemacast-mobile` (Tauri/Android UI).
 
-## Overview
+## Architecture & Patterns
 
-The `gemacast-core` crate is the heart of the GemaCast ecosystem. It is a cross-platform Rust library containing the core engine logic for both the Sender (PC) and the Receiver (Android/Mobile) applications. It abstracts away the complex, low-level details of audio streaming, allowing the `gemacast-pc` and `gemacast-mobile` applications to focus on UI and platform integration.
+The crate strictly adheres to **Hexagonal Architecture (Ports and Adapters)** to decouple pure business logic from I/O mechanisms like audio hardware interfaces and network sockets.
 
-Key responsibilities include:
-- **Audio Capture & Encoding**: Windows WASAPI loopback capture (system-wide and per-process) and Opus encoding.
-- **Audio Decoding & Playback**: Advanced adaptive jitter buffering, packet loss concealment (PLC), and WSOLA-based time stretching, followed by Opus decoding.
-- **Control Signaling**: An embedded HTTP server (via `axum`) and WebSocket server for connection handshaking, source changing, and real-time event broadcasting.
-- **Service Discovery**: Multicast DNS (mDNS) and ADB reverse port forwarding mechanisms to discover peers automatically over Wi-Fi, USB, or ADB.
-- **Network Transport**: Transporting raw audio packets over UDP (low latency) or multiplexed TCP (for ADB/USB tunneling).
+### Key Patterns Used
 
-## Architecture & Data Flow
+1. **Ports and Adapters (Hexagonal)**:
+   - **Ports (`src/ports`)**: Define interfaces (traits) for external dependencies (e.g., `CaptureBackend`, `ProcessLister`, `ErrorNotifier`).
+   - **Adapters (`src/adapters`)**: Provide the production implementations of these ports (e.g., WASAPI/CPAL for capture, OS-specific process listing).
+   - **Domain (`src/domain`)**: Contains pure value objects, domain errors, and core algorithms that have zero I/O dependencies.
+
+2. **Strategy Pattern**:
+   - The `CaptureFactory` trait is a strategy pattern allowing the engine to spawn different platform backends (`WasapiDesktopCapture`, `WasapiLoopbackCapture`, `CpalLoopbackCapture`) without changing the core streaming orchestration.
+
+3. **Concurrency via Message Passing (Actor Model)**:
+   - Shared mutable state is minimized. Instead, subsystems (like the `AudioStreamEngine` or the `ControlServer`) run isolated `tokio` tasks and communicate strictly via `mpsc` channels and commands (e.g., `AudioStreamCommand`, `ControlCommand`).
+
+4. **Zero-Allocation Data Paths**:
+   - The audio hot path (capture -> encode -> network -> decode -> playback) is highly optimized.
+   - It utilizes `ringbuf` for lock-free SPSC (Single Producer Single Consumer) queues.
+   - The `JitterBufferManager` utilizes pre-allocated vectors (`decode_buf`, `wsola_buf`) to prevent any heap allocations during the high-frequency audio callback loop.
+
+## Component Interaction Diagram
 
 ```mermaid
-graph TD
-    subgraph gemacast-core [Core Engine]
-        
-        subgraph Capture Pipeline
-            WASAPI[WASAPI Loopback]
-            Resampler[rubato Resampler]
-            Encoder[Opus Encoder]
-            WASAPI --> Resampler --> Encoder
-        end
-
-        subgraph Network Layer
-            Engine[AudioStreamEngine]
-            UDP_Tx[UDP Sender]
-            TCP_Tx[TCP Broadcaster]
-            Encoder --> Engine
-            Engine --> UDP_Tx
-            Engine --> TCP_Tx
-        end
-
-        subgraph Playback Pipeline
-            JitterBuf[JitterBufferManager]
-            PLC[WSOLA / PLC]
-            Decoder[Opus Decoder]
-            UDP_Rx[UDP Receiver] --> JitterBuf
-            TCP_Rx[TCP Receiver] --> JitterBuf
-            JitterBuf <--> PLC
-            JitterBuf --> Decoder
-        end
-
-        subgraph Control & Discovery
-            HTTP[Axum HTTP API]
-            WS[WebSocket Server]
-            mDNS[mDNS Broadcaster/Listener]
-            ADB[ADB TCP Proxy]
-        end
+flowchart TD
+    subgraph UI App [PC / Mobile Applications]
+        UI[App UI/Tray]
     end
+
+    subgraph gemacast-core [gemacast-core Crate]
+        direction TB
+        
+        %% Discovery
+        Discovery[Discovery / mDNS]
+        
+        %% Control
+        ControlHttp[Control Server (HTTP/WS)]
+        
+        %% Audio Pipeline
+        subgraph Stream [Stream Engine]
+            CapturePool[Capture Pool]
+            Encoder[Opus Encoder]
+            NetworkTx[UDP/TCP Transport]
+        end
+        
+        subgraph Receiver [Audio Receiver]
+            NetworkRx[Packet Listener]
+            JitterBuffer[Jitter Buffer & WSOLA]
+            Decoder[Opus Decoder / PLC]
+        end
+        
+        %% Ports and Adapters
+        Adapters(Platform Adapters: WASAPI / CPAL)
+    end
+
+    UI --> ControlHttp
+    ControlHttp -- MPSC Commands --> Stream
+    CapturePool --> Adapters
+    Receiver --> Adapters
 ```
 
-### 1. Sender (Capture) Flow
-- The `AudioStreamEngine` orchestrates streams. When a device subscribes, the engine spins up a `CapturePool` targeting a specific `AudioSource` (either full `Desktop` or a specific `Process`).
-- `wasapi_loopback` captures the PCM float data from the Windows audio subsystem. 
-- The data is optionally passed through the `CaptureResampler` (to normalize sample rates to 48kHz).
-- The `Opus` encoder compresses the PCM into tiny payloads.
-- The compressed payload is wrapped in a `RawPacket` (with sequence numbers and timestamps) and sent to the requested target (UDP for Wi-Fi, or TCP for ADB).
+## Key Workflows
 
-### 2. Receiver (Playback) Flow
-- Packets arrive from the network (UDP or TCP transport) and are fed into the `JitterBufferManager` via a lock-free SPSC ring buffer.
-- The Jitter Buffer computes dual-EMA jitter statistics to dynamically adjust the target buffer depth.
-- **WSOLA & PLC**: When packets are lost or network conditions fluctuate, the manager uses Packet Loss Concealment (PLC) to mask drops, and Waveform Similarity Based Overlap-Add (WSOLA) for high-quality audio time-stretching, keeping playback smooth without audible clicks.
-- The jitter buffer outputs PCM data decoupled from the original packet boundaries, ready for the native audio backend (CPAL/Oboe) to pull.
+### 1. Control Server & Handshake Flow
+- The PC runs the **HTTP Control Server** (`src/control/http.rs`).
+- The Mobile device sends an HTTP `POST /connect` with its `DeviceId` and requested `ConnectionMode` (Wifi/USB/ADB).
+- The `handle_connect` endpoint dispatches a `ControlCommand::Connect` via an `mpsc` channel to the host application's dispatcher.
+- The host application validates the connection and instructs the `AudioStreamEngine` to start streaming to the receiver's IP address.
 
-### 3. Control & Discovery Flow
-- **Sender Side**: Starts an `axum` HTTP server (`/connect`, `/disconnect`, `/sources`) and a WebSocket server (`/ws`). It advertises itself via `mdns-sd`. It also starts an ADB Reverse proxy server on localhost.
-- **Receiver Side**: Listens to mDNS for sender announcements. Once discovered, it sends a `POST /connect` to the sender's HTTP API to negotiate the stream (sending its `JitterConfig`, `bitrate`, etc.), and opens a WebSocket to receive real-time errors or disconnect events.
+### 2. Audio Sender Flow
+- The `AudioStreamEngine` receives a `Subscribe` command.
+- It asks the `CaptureFactory` (Adapter) for a `CaptureHandle` (Desktop or per-process).
+- The Platform Capture backend (e.g., WASAPI) begins pushing raw `f32` PCM samples into a lock-free `HeapProd` ring buffer.
+- The async `CapturePool` loops, pulling samples from the `HeapCons` ring buffer, encoding them using the `Opus` codec.
+- The encoded frames are packed into a `RawPacket` with sequence numbers and sent over the UDP/TCP transport to the subscribed devices.
+
+### 3. Audio Receiver Flow & Jitter Buffer
+- The `AudioStreamReceiver` listens on a bound socket and ingests `RawPacket`s.
+- Packets are inserted into the `JitterBufferManager` (`src/jitter/manager.rs`).
+- The jitter buffer performs advanced latency management:
+  - **Dynamic Depth Calculation**: Calculates target buffer depth based on EWMA (Exponential Weighted Moving Average) of network inter-arrival jitter.
+  - **Packet Loss Concealment (PLC)**: Instructs the Opus decoder to synthesize audio if packets are missing.
+  - **Time-Stretching (WSOLA)**: Uses Waveform Similarity Overlap-Add to seamlessly speed up or slow down audio playback to manage buffer depth without pitch-shifting or popping artifacts.
+- Finally, the PCM samples are pulled by the CPAL audio callback and sent to the DAC for playback.
 
 ## File Tree & Explanation
 
 ```text
-gemacast-core/
-├── src/
-│   ├── audio/           # Core audio definitions
-│   │   ├── mod.rs       # Constants (OPUS_SAMPLE_RATE, FRAME_SIZE)
-│   │   └── resampler.rs # FFT-based resampling (rubato)
-│   │
-│   ├── control/         # Control plane and signaling
-│   │   ├── http.rs      # Axum REST server
-│   │   ├── http_client.rs
-│   │   ├── messages.rs  
-│   │   ├── types.rs     # Control payloads (ConnectReq, ChangeSourceReq)
-│   │   ├── ws.rs        # WebSocket event broadcaster
-│   │   └── ws_client.rs 
-│   │
-│   ├── discovery/       # Service discovery protocols
-│   │   ├── mdns.rs      # Multicast DNS (Bonjour/Zeroconf) implementation
-│   │   ├── broadcaster.rs
-│   │   └── listener.rs
-│   │
-│   ├── jitter/          # Advanced playback pipeline
-│   │   ├── manager.rs   # JitterBufferManager (Dynamic depths, PLC, WSOLA)
-│   │   ├── buffer.rs    # Underlying sorted ring buffer
-│   │   └── types.rs
-│   │
-│   ├── network/         # Network utilities
-│   │   ├── adb/         # ADB reverse tunneling servers and framing
-│   │   │   ├── framer.rs
-│   │   │   ├── reverse.rs
-│   │   │   └── server.rs
-│   │   ├── interface.rs # IP and interface classification (WiFi vs Cellular)
-│   │   └── ports.rs     # Shared port constants (TCP/UDP)
-│   │
-│   ├── stream/          # High-level streaming abstraction
-│   │   ├── sender/      # Capture side
-│   │   │   ├── capture/ # WASAPI and Process audio capture implementations
-│   │   │   ├── capture_pool.rs
-│   │   │   ├── encode.rs
-│   │   │   └── engine.rs# AudioStreamEngine
-│   │   ├── receiver/    # Playback side
-│   │   │   ├── listener.rs
-│   │   │   ├── stream.rs
-│   │   │   └── heartbeat.rs
-│   │   └── transport.rs # UDP/TCP traits
-│   │
-│   ├── error.rs         # Unified GemaCastError definitions
-│   ├── types.rs         # Shared domain types (DeviceId, AudioSource, JitterConfig)
-│   └── lib.rs
+gemacast-core
+├── .gitignore
+├── ABOUT.md
+├── CHANGELOG.md
 ├── Cargo.toml
-└── BLUEPRINT.md         # You are here
+└── src
+    ├── adapters
+    │   ├── capture
+    │   │   ├── cpal_loopback.rs
+    │   │   ├── mod.rs
+    │   │   ├── wasapi_common.rs
+    │   │   ├── wasapi_desktop.rs
+    │   │   └── wasapi_loopback.rs
+    │   ├── error_notifier.rs
+    │   ├── mod.rs
+    │   ├── process_lister.rs
+    │   └── transport.rs
+    ├── audio
+    │   ├── mod.rs
+    │   └── resampler.rs
+    ├── control
+    │   ├── http.rs
+    │   ├── http_client.rs
+    │   ├── messages.rs
+    │   ├── mod.rs
+    │   ├── types.rs
+    │   ├── ws.rs
+    │   └── ws_client.rs
+    ├── discovery
+    │   ├── broadcaster.rs
+    │   ├── listener.rs
+    │   ├── mdns.rs
+    │   └── mod.rs
+    ├── domain
+    │   ├── error.rs
+    │   ├── mod.rs
+    │   └── types.rs
+    ├── jitter
+    │   ├── buffer.rs
+    │   ├── manager.rs
+    │   ├── mod.rs
+    │   └── types.rs
+    ├── lib.rs
+    ├── network
+    │   ├── interface.rs
+    │   ├── mod.rs
+    │   └── ports.rs
+    ├── ports
+    │   ├── capture.rs
+    │   ├── error_notifier.rs
+    │   ├── mod.rs
+    │   ├── process_lister.rs
+    │   └── transport.rs
+    ├── stream
+    │   ├── mod.rs
+    │   ├── receiver
+    │   │   ├── heartbeat.rs
+    │   │   ├── listener.rs
+    │   │   ├── mod.rs
+    │   │   ├── packet.rs
+    │   │   ├── stream.rs
+    │   │   └── transport.rs
+    │   └── sender
+    │       ├── capture_pool.rs
+    │       ├── encode.rs
+    │       ├── engine.rs
+    │       └── mod.rs
+    └── testing.rs
 ```
 
-### Notable Complexities
-- **Jitter Buffer (`jitter/manager.rs`)**: This is arguably the most complex mathematical component. It uses Exponential Moving Averages (EMA) to track inter-arrival time spikes, runs SIMD-friendly cross-correlation for WSOLA phase alignment, and prevents starvation during network fluctuations.
-- **Process Capture (`stream/sender/capture/wasapi_loopback.rs`)**: Implements undocumented Windows Audio Session API features (like `AUDIOCLIENT_ACTIVATION_PARAMS` and `INCLUDE_PROCESS_TREE`) to isolate audio from a specific application tree without capturing the whole desktop.
-- **ADB Reverse Multiplexing (`network/adb/server.rs`)**: Because Android allows `adb reverse` over USB, `gemacast-core` starts a TCP server on the PC. Android forwards its local port to the PC's TCP server, bypassing the need for Wi-Fi routing.
+### `src/domain/`
+Pure logic, zero I/O dependencies.
+- `types.rs`: Core value objects (`DeviceId`, `AudioSource`, `JitterConfig`, `TransportType`).
+- `error.rs`: Domain-specific error hierarchies (`GemaCastError`, `AudioError`, `NetworkError`).
+
+### `src/ports/`
+Hexagonal boundary traits defining what the core needs from the outside world.
+- `capture.rs`: Defines `CaptureBackend`, `CaptureHandle`, and `CaptureFactory`.
+- `process_lister.rs`: Interface for listing active OS processes (for per-process audio capture).
+- `error_notifier.rs`: Abstraction for bubbling up fatal errors to the host application.
+
+### `src/adapters/`
+Concrete production implementations of the port traits.
+- `capture/`: Contains OS-specific audio capture backends (`wasapi_desktop`, `wasapi_loopback`, `cpal_loopback`).
+- `process_lister.rs`: Implements Windows process listing via `sysinfo`.
+- `error_notifier.rs`: WebSocket-based error notifier.
+
+### `src/control/`
+The API surface for device-to-device commands.
+- `http.rs`: Axum-based HTTP server handling `/connect`, `/disconnect`, `/change-source`, etc.
+- `ws.rs` / `ws_client.rs`: WebSocket implementations for real-time bi-directional control signals.
+- `messages.rs`: JSON serialization structures for control commands.
+
+### `src/stream/`
+Audio transmission and reception.
+- `sender/engine.rs`: The `AudioStreamEngine` orchestrates active subscriptions and dynamically spawns capture tasks.
+- `receiver/listener.rs`: Ingests UDP/TCP packets and drives the receiver audio stream.
+
+### `src/jitter/`
+High-performance, lock-free audio buffering and manipulation.
+- `manager.rs`: The brain of the receiver. Manages dynamic buffer targets, PLC generation, sequence ordering, and WSOLA cross-fading.
+- `buffer.rs`: A sequence-ordered storage structure for incoming packets.
+
+### `src/discovery/`
+Network discovery protocols.
+- `mdns.rs`: Bonjour/mDNS service registration and resolution.
+- `broadcaster.rs` / `listener.rs`: UDP broadcast beacons for instantaneous local network discovery.
+
+### `src/network/`
+Low-level networking utilities.
+- `interface.rs`: IP resolution, local interface detection, and Android USB tethering IP classification.
+- `adb/`: Logic specific to ADB reverse port forwarding and multiplexing.
+- `ports.rs`: Defines the standard port numbers used by Gemacast services.

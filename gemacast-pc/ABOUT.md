@@ -44,6 +44,44 @@ The application architecture strictly separates the UI event loop from asynchron
 
 ## File Tree & Explanation
 
+```text
+gemacast-pc
+├── .gitignore
+├── ABOUT.md
+├── AdbWinApi.dll
+├── AdbWinUsbApi.dll
+├── CHANGELOG.md
+├── Cargo.toml
+├── adb.exe
+├── build.rs
+└── src
+    ├── adapters
+    │   ├── audio.rs
+    │   ├── device.rs
+    │   └── tray.rs
+    ├── adapters.rs
+    ├── app.rs
+    ├── background.rs
+    ├── events.rs
+    ├── main.rs
+    ├── state.rs
+    ├── tasks
+    │   ├── audio_engine.rs
+    │   ├── command_handler.rs
+    │   ├── control_dispatcher.rs
+    │   ├── device_watchdog.rs
+    │   └── udp_listener.rs
+    ├── tasks.rs
+    ├── testing.rs
+    ├── traits
+    │   ├── audio_controller.rs
+    │   ├── device_notifier.rs
+    │   ├── device_registry.rs
+    │   └── tray_notifier.rs
+    ├── traits.rs
+    └── tray.rs
+```
+
 ### Root Files
 - **`Cargo.toml`**: Defines dependencies, workspace settings, and metadata for packaging (`cargo-dist`, `cargo-deb`, `cargo-generate-rpm`). Includes configuration to bundle ADB binaries.
 - **`build.rs`**: Build script that embeds a Windows application manifest (fixing a `tray-icon` crash) and automatically downloads and extracts the correct ADB binaries (platform-tools) for the target OS during compilation.
