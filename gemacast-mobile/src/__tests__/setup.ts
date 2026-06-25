@@ -35,7 +35,7 @@ beforeAll(() => {
       removeEventListener: () => {},
       setInterval: globalThis.setInterval,
       clearInterval: globalThis.clearInterval,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
   }
 });
