@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/apirJS/gemacast/compare/v0.2.1...v0.2.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* update tauri android jni implementation for v2 ([e281c17](https://github.com/apirJS/gemacast/commit/e281c17c1e8910826c821a54724a0321b926cda2))
+
 ## [0.2.1](https://github.com/apirJS/gemacast/compare/v0.2.0...v0.2.1) (2026-06-27)
 
 
