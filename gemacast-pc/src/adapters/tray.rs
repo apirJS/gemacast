@@ -44,4 +44,15 @@ impl TrayNotifier for EventLoopTrayNotifier {
     fn notify_shutdown_complete(&self) {
         let _ = self.proxy.send_event(TrayEvent::ShutdownComplete);
     }
+
+    fn notify_update_ready(&self, version: String, installer_path: std::path::PathBuf) {
+        let _ = self.proxy.send_event(TrayEvent::UpdateReady {
+            version,
+            installer_path,
+        });
+    }
+
+    fn notify_update_failed(&self, message: String) {
+        let _ = self.proxy.send_event(TrayEvent::UpdateFailed(message));
+    }
 }

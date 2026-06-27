@@ -37,11 +37,16 @@ fn load_icon() -> Result<Icon, Box<dyn std::error::Error>> {
 /// ```
 pub struct TrayManager {
     _tray_icon: TrayIcon,
+    tray_menu: Menu,
     pub device_menu_items: HashMap<DeviceId, CheckMenuItem>,
     pub connected_devices_submenu: Submenu,
     pub no_devices_placeholder: MenuItem,
     pub broadcast_toggle_item: MenuItem,
     pub quit_menu_item: MenuItem,
+    /// The "Install Update" menu item, shown only when a download is ready.
+    pub update_menu_item: Option<MenuItem>,
+    /// Separator placed after the update item (removed together with it).
+    update_separator: Option<PredefinedMenuItem>,
 }
 
 impl TrayManager {
@@ -62,7 +67,7 @@ impl TrayManager {
         let _ = tray_menu.append(&quit_menu_item);
 
         let mut builder = TrayIconBuilder::new()
-            .with_menu(Box::new(tray_menu))
+            .with_menu(Box::new(tray_menu.clone()))
             .with_tooltip("Gemacast");
 
         let icon = load_icon().map_err(|e| {
@@ -74,11 +79,14 @@ impl TrayManager {
 
         Ok(Self {
             _tray_icon: tray_icon,
+            tray_menu,
             device_menu_items: HashMap::new(),
             no_devices_placeholder,
             connected_devices_submenu,
             broadcast_toggle_item,
             quit_menu_item,
+            update_menu_item: None,
+            update_separator: None,
         })
     }
 
@@ -151,5 +159,30 @@ impl TrayManager {
             }
         }
         None
+    }
+
+    /// Show the "Install Update" menu item at the very top of the tray menu.
+    pub fn show_update_ready(&mut self, version: &str) {
+        // Remove any previous update item first.
+        self.remove_update_item();
+
+        let item = MenuItem::new(format!("Install Update (v{version})"), true, None);
+        let sep = PredefinedMenuItem::separator();
+
+        let _ = self.tray_menu.prepend(&sep);
+        let _ = self.tray_menu.prepend(&item);
+
+        self.update_menu_item = Some(item);
+        self.update_separator = Some(sep);
+    }
+
+    /// Remove the update menu item and its separator.
+    pub fn remove_update_item(&mut self) {
+        if let Some(item) = self.update_menu_item.take() {
+            let _ = self.tray_menu.remove(&item);
+        }
+        if let Some(sep) = self.update_separator.take() {
+            let _ = self.tray_menu.remove(&sep);
+        }
     }
 }

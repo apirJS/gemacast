@@ -5,6 +5,7 @@
 
 use crate::events::{AppCommand, TrayEvent};
 use crate::tray::TrayManager;
+use std::path::PathBuf;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tray_icon::menu::MenuEvent;
@@ -123,12 +124,21 @@ pub fn run() {
         }
     };
 
+    // Path to a downloaded update installer (set by UpdateReady event).
+    let mut pending_installer: Option<PathBuf> = None;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
             Event::UserEvent(tray_event) => {
-                handle_tray_event(tray_event, &mut tray_manager, &command_tx, control_flow);
+                handle_tray_event(
+                    tray_event,
+                    &mut tray_manager,
+                    &command_tx,
+                    control_flow,
+                    &mut pending_installer,
+                );
             }
             Event::MainEventsCleared => {
                 if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
@@ -137,6 +147,7 @@ pub fn run() {
                         &mut tray_manager,
                         &command_tx,
                         control_flow,
+                        &mut pending_installer,
                     );
                 }
             }
@@ -155,8 +166,24 @@ fn handle_tray_event(
     tray: &mut TrayManager,
     command_tx: &tokio::sync::mpsc::Sender<AppCommand>,
     control_flow: &mut ControlFlow,
+    pending_installer: &mut Option<PathBuf>,
 ) {
     match event {
+        TrayEvent::UpdateReady {
+            version,
+            installer_path,
+        } => {
+            tracing::info!(
+                "Update v{} downloaded to {}",
+                version,
+                installer_path.display()
+            );
+            tray.show_update_ready(&version);
+            *pending_installer = Some(installer_path);
+        }
+        TrayEvent::UpdateFailed(msg) => {
+            tracing::warn!("Update failed: {}", msg);
+        }
         TrayEvent::DiscoveredDevice {
             device_id,
             name,
@@ -190,7 +217,49 @@ fn handle_menu_event(
     tray: &mut TrayManager,
     command_tx: &tokio::sync::mpsc::Sender<AppCommand>,
     _control_flow: &mut ControlFlow,
+    pending_installer: &mut Option<PathBuf>,
 ) {
+    // Check update item click
+    if let Some(ref update_item) = tray.update_menu_item
+        && *menu_event == update_item.id()
+    {
+        if let Some(installer_path) = pending_installer.as_ref() {
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Gemacast Update")
+                .set_description(
+                    "A new version of Gemacast has been downloaded.\n\n\
+                     Click OK to install the update now.",
+                )
+                .set_level(rfd::MessageLevel::Info)
+                .set_buttons(rfd::MessageButtons::OkCancel)
+                .show();
+
+            if confirmed == rfd::MessageDialogResult::Ok {
+                match crate::updater::install_update(installer_path) {
+                    Ok(()) => {
+                        // Exit immediately so the installer/user can overwrite the files
+                        // without hitting a "Files in Use" error.
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        // We must use a simple logging or dialog for error, but here we can just show it.
+                        rfd::MessageDialog::new()
+                            .set_title("Update Failed")
+                            .set_description(format!("Failed to launch installer: {e}"))
+                            .set_level(rfd::MessageLevel::Error)
+                            .show();
+                    }
+                }
+            } else {
+                // User cancelled — clean up the downloaded file.
+                crate::updater::cleanup_update(installer_path);
+                *pending_installer = None;
+                tray.remove_update_item();
+            }
+        }
+        return;
+    }
+
     // Check if a device was clicked (to kick it)
     if let Some(device_id) = tray.find_device_by_menu_id(menu_event) {
         if let Err(e) = command_tx.try_send(AppCommand::KickDevice(device_id.clone())) {

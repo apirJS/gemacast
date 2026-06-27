@@ -11,6 +11,13 @@ use std::net::SocketAddr;
 /// These drive the system tray menu: adding/removing device entries
 /// and displaying fatal error dialogs.
 pub enum TrayEvent {
+    /// A new version has been downloaded and is ready to install.
+    UpdateReady {
+        version: String,
+        installer_path: std::path::PathBuf,
+    },
+    /// An update check or download failed.
+    UpdateFailed(String),
     /// A new device connected or an existing device changed its IP.
     DiscoveredDevice {
         device_id: DeviceId,
