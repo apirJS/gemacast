@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/apirJS/gemacast/compare/v0.2.3...v0.2.4) (2026-06-27)
+
+
+### Bug Fixes
+
+* missing trait on install.rs ([67422f4](https://github.com/apirJS/gemacast/commit/67422f4342e9d87bbb7b288bc104127838652c76))
+
 ## [0.2.3](https://github.com/apirJS/gemacast/compare/v0.2.2...v0.2.3) (2026-06-27)
 
 
