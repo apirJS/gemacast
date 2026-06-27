@@ -19,7 +19,7 @@ pub mod mocks {
     // MockTrayNotifier
     // -----------------------------------------------------------------------
 
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone)]
     pub enum TrayCall {
         Discovered {
             device_id: DeviceId,
@@ -33,8 +33,6 @@ pub mod mocks {
         },
         FatalError(String),
         ShutdownComplete,
-        UpdateReady(String, std::path::PathBuf),
-        UpdateFailed(String),
     }
 
     /// Records every tray notification for later assertion.
@@ -87,20 +85,6 @@ pub mod mocks {
 
         fn notify_shutdown_complete(&self) {
             self.calls.lock().unwrap().push(TrayCall::ShutdownComplete);
-        }
-
-        fn notify_update_ready(&self, version: String, installer_path: std::path::PathBuf) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(TrayCall::UpdateReady(version, installer_path));
-        }
-
-        fn notify_update_failed(&self, message: String) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(TrayCall::UpdateFailed(message));
         }
     }
 

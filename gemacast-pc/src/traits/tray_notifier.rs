@@ -23,10 +23,4 @@ pub trait TrayNotifier: Send + Sync {
 
     /// The background engine has finished shutting down.
     fn notify_shutdown_complete(&self);
-
-    /// An update is ready to be installed.
-    fn notify_update_ready(&self, version: String, installer_path: std::path::PathBuf);
-
-    /// An update check or download failed.
-    fn notify_update_failed(&self, message: String);
 }

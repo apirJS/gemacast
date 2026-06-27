@@ -6,7 +6,6 @@ import { BitrateSelect } from './BitrateSelect';
 import { GainSlider } from './GainSlider';
 import { ExclusiveToggle } from './ExclusiveToggle';
 import { ModeSelector } from './ModeSelector';
-import { UpdateBanner } from './UpdateBanner';
 import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
 import { useDrawer } from '../../hooks/use-drawer';
 
@@ -65,8 +64,6 @@ export function SettingsDrawer() {
           </div>
 
           <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
-            <UpdateBanner />
-
             <div>
               <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
                 Buffer Preset
