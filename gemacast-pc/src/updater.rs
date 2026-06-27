@@ -72,9 +72,8 @@ pub fn install_update(installer_path: &Path) -> Result<(), String> {
     {
         // Windows (.msi) / macOS (.dmg) — open with the system handler.
         open::that(installer_path).map_err(|e| format!("Failed to open installer: {e}"))?;
+        Ok(())
     }
-
-    Ok(())
 }
 
 /// Delete the downloaded installer file (used when the user cancels).
