@@ -4,16 +4,15 @@
 /// from the app's `FileProvider`. The user will see the system install prompt.
 #[cfg(target_os = "android")]
 pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
-    use jni::objects::{JObject, JValue};
-    use tauri::Manager;
+    use jni::objects::JValue;
 
-    let webview = app.get_webview("main").ok_or("No main webview")?;
+    let webview_window = app.get_webview_window("main").ok_or("No main webview")?;
 
     // Run on the Android activity's JNI environment.
-    webview
-        .jni_handle()
-        .exec(move |env, activity, _webview| {
-            let path_str = path.to_string();
+    webview_window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _webview| {
+                let path_str = path.to_string();
 
             // We need to call Java code to trigger the install intent.
             // Steps:
@@ -156,7 +155,9 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                 )
                 .expect("startActivity failed");
         })
-        .map_err(|e| format!("JNI error: {e:?}"))?;
+        .map_err(|e| format!("JNI error: {e:?}"))
+        })
+        .map_err(|e| e.to_string())??;
 
     Ok(())
 }
