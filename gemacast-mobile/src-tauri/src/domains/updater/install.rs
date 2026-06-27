@@ -5,6 +5,7 @@
 #[cfg(target_os = "android")]
 pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
     use jni::objects::JValue;
+    use tauri::Manager;
 
     let webview_window = app.get_webview_window("main").ok_or("No main webview")?;
 
