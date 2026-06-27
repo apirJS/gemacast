@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/apirJS/gemacast/compare/v0.2.0...v0.2.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* ci build and clippy errors for updater ([89e00c1](https://github.com/apirJS/gemacast/commit/89e00c183774a9f661056f0523748fde94a3bf87))
+
 ## [0.2.0](https://github.com/apirJS/gemacast/compare/v0.1.4...v0.2.0) (2026-06-27)
 
 
