@@ -370,12 +370,15 @@ async fn run_background_tasks(
     let handler = Arc::new(command_handler::CommandHandler {
         is_broadcasting,
         registry,
-        tray,
+        tray: tray.clone(),
         audio,
         notifier,
     });
 
     command_handler::spawn_command_handler(&mut set, command_rx, handler);
+
+    // --- Update checker (runs once at startup, downloads if available) ---
+    crate::tasks::updater::spawn_update_checker(&mut set, tray.clone());
 
     // --- Wait for all tasks ---
     while set.join_next().await.is_some() {}

@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod jitter;
 pub mod network;
 pub mod stream;
+pub mod updater;
 
 // Testing infrastructure
 #[cfg(test)]
