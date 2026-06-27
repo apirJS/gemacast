@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/apirJS/gemacast/compare/v0.2.4...v0.2.5) (2026-06-27)
+
+
+### Bug Fixes
+
+* wrong type assumption fix ([858c730](https://github.com/apirJS/gemacast/commit/858c73018ae157181686d94e1928b8dab4ff61b7))
+
 ## [0.2.4](https://github.com/apirJS/gemacast/compare/v0.2.3...v0.2.4) (2026-06-27)
 
 
