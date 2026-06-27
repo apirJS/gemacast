@@ -9,14 +9,14 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
 
     let webview_window = app.get_webview_window("main").ok_or("No main webview")?;
 
+    let path_owned = path.to_string();
+
     // Run on the Android activity's JNI environment.
     webview_window
         .with_webview(move |webview| {
-            webview
-                .jni_handle()
-                .exec(move |env, activity, _webview| {
-                    let path_str = path.to_string();
-
+            #[cfg(target_os = "android")]
+            {
+                let _ = webview.jni_handle().exec(move |env, activity, _webview| {
                     // We need to call Java code to trigger the install intent.
                     // Steps:
                     //   1. Create a java.io.File from the path
@@ -26,7 +26,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                     //   5. Start the activity
 
                     let j_path = env
-                        .new_string(&path_str)
+                        .new_string(&path_owned)
                         .expect("Failed to create Java string for APK path");
 
                     // new java.io.File(path)
@@ -42,9 +42,6 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                         .expect("Failed to create File object");
 
                     // Get the application context
-                    let context_class = env
-                        .find_class("android/content/Context")
-                        .expect("Context class not found");
                     let get_app_context = env
                         .call_method(
                             &activity,
@@ -83,19 +80,19 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                         .find_class("androidx/core/content/FileProvider")
                         .expect("FileProvider class not found");
                     let content_uri = env
-                .call_static_method(
-                    fp_class,
-                    "getUriForFile",
-                    "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
-                    &[
-                        JValue::Object(&get_app_context),
-                        JValue::Object(&j_authority),
-                        JValue::Object(&file_obj),
-                    ],
-                )
-                .expect("getUriForFile failed")
-                .l()
-                .expect("getUriForFile returned non-object");
+                        .call_static_method(
+                            fp_class,
+                            "getUriForFile",
+                            "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                            &[
+                                JValue::Object(&get_app_context),
+                                JValue::Object(&j_authority),
+                                JValue::Object(&file_obj),
+                            ],
+                        )
+                        .expect("getUriForFile failed")
+                        .l()
+                        .expect("getUriForFile returned non-object");
 
                     // Create install intent
                     let intent_class = env
@@ -157,10 +154,10 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                             &[JValue::Object(&intent)],
                         )
                         .expect("startActivity failed");
-                })
-                .map_err(|e| format!("JNI error: {e:?}"))
+                });
+            }
         })
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
