@@ -34,7 +34,7 @@ tokio = { version = "1.50.0", features = ["full"] }
 tauri-plugin-device-info = "1.0.1"
 netdev = "0.43.0"
 tracing = "0.1.44"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 semver = "1"
 futures-util = "0.3"
 
