@@ -38,6 +38,12 @@ export type PlaybackArgs = {
 };
 
 export const tauriBridge = {
+  checkForUpdate: () => invoke<{ version: string; downloadUrl: string } | null>('check_for_update'),
+
+  downloadUpdate: (args: { url: string }) => invoke<string>('download_update', args),
+
+  installApk: (args: { path: string }) => invoke('install_apk', args),
+
   connectToSender: (args: ConnectArgs) =>
     invoke('connect_to_sender', {
       ip: args.ip,
