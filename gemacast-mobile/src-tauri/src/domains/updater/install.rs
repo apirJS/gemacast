@@ -7,14 +7,12 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
     use jni::objects::{JObject, JValue};
     use tauri::Manager;
 
-    let activity = app.main_webview().ok_or("No main webview")?;
+    let webview = app.get_webview("main").ok_or("No main webview")?;
 
     // Run on the Android activity's JNI environment.
-    activity
-        .with_webview(move |webview| {
-            let env = webview.jni_env();
-            let activity = webview.activity();
-
+    webview
+        .jni_handle()
+        .exec(move |env, activity, _webview| {
             let path_str = path.to_string();
 
             // We need to call Java code to trigger the install intent.
