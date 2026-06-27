@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/apirJS/gemacast/compare/v0.1.4...v0.2.0) (2026-06-27)
+
+
+### Features
+
+* app update feature ([#15](https://github.com/apirJS/gemacast/issues/15)) ([a178952](https://github.com/apirJS/gemacast/commit/a1789526939dc7ef51ce7e010541132d60824e58))
+* update mechanism ([#14](https://github.com/apirJS/gemacast/issues/14)) ([a82fcdf](https://github.com/apirJS/gemacast/commit/a82fcdf94a7bdec8de59af608e8839fe7598fe11))
+
 ## [0.1.4](https://github.com/apirJS/gemacast/compare/v0.1.3...v0.1.4) (2026-06-25)
 
 
