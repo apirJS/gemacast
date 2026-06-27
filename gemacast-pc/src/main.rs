@@ -24,6 +24,7 @@ mod state;
 pub mod tasks;
 pub mod traits;
 mod tray;
+mod updater;
 
 #[cfg(test)]
 pub mod testing;
