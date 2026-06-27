@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/apirJS/gemacast/compare/v0.2.2...v0.2.3) (2026-06-27)
+
+
+### Bug Fixes
+
+* syntax issue at mobile update installer ([393a2ed](https://github.com/apirJS/gemacast/commit/393a2edb7020d9dc6320f8c2ce441628197db686))
+
 ## [0.2.2](https://github.com/apirJS/gemacast/compare/v0.2.1...v0.2.2) (2026-06-27)
 
 
