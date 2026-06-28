@@ -40,6 +40,8 @@ rubato = "3.0.0"
 audioadapter-buffers = "3.0.0"
 cpal = "0.17.3"
 semver = "1.0.28"
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 oboe = { version = "0.6.1", features = ["shared-stdcxx"] }

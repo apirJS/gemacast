@@ -26,12 +26,15 @@ fn load_icon() -> Result<Icon, Box<dyn std::error::Error>> {
 /// The menu layout is:
 /// ```text
 /// ┌──────────────────────┐
+/// │ Install Update (v…)  │  ← update_menu_item (only when ready)
+/// │ ──────────────────── │
 /// │ Stop Stream          │  ← broadcast_toggle_item
 /// │ ──────────────────── │
 /// │ Connected Phones ►   │  ← connected_devices_submenu
 /// │   Phone 1 (IP) [WIFI]│    ← device_menu_items entries
 /// │   Phone 2 (IP) [ADB] │
 /// │ ──────────────────── │
+/// │ Check for Updates    │  ← check_update_menu_item
 /// │ quit                 │  ← quit_menu_item
 /// └──────────────────────┘
 /// ```
@@ -43,10 +46,16 @@ pub struct TrayManager {
     pub no_devices_placeholder: MenuItem,
     pub broadcast_toggle_item: MenuItem,
     pub quit_menu_item: MenuItem,
+    /// Manual "Check for Updates" menu item (always visible).
+    pub check_update_menu_item: MenuItem,
     /// The "Install Update" menu item, shown only when a download is ready.
     pub update_menu_item: Option<MenuItem>,
     /// Separator placed after the update item (removed together with it).
     update_separator: Option<PredefinedMenuItem>,
+    /// "Update check failed — click to retry" item (shown on failure).
+    pub update_failed_menu_item: Option<MenuItem>,
+    /// Separator placed after the failed item.
+    update_failed_separator: Option<PredefinedMenuItem>,
 }
 
 impl TrayManager {
@@ -56,6 +65,7 @@ impl TrayManager {
         let broadcast_toggle_item = MenuItem::new("Stop Stream", true, None);
         let connected_devices_submenu = Submenu::new("Connected Phones", true);
         let no_devices_placeholder = MenuItem::new("No devices connected yet", false, None);
+        let check_update_menu_item = MenuItem::new("Check for Updates", true, None);
         let quit_menu_item = MenuItem::new("quit", true, None);
 
         let _ = connected_devices_submenu.append(&no_devices_placeholder);
@@ -64,6 +74,7 @@ impl TrayManager {
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&connected_devices_submenu);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
+        let _ = tray_menu.append(&check_update_menu_item);
         let _ = tray_menu.append(&quit_menu_item);
 
         let mut builder = TrayIconBuilder::new()
@@ -85,8 +96,11 @@ impl TrayManager {
             connected_devices_submenu,
             broadcast_toggle_item,
             quit_menu_item,
+            check_update_menu_item,
             update_menu_item: None,
             update_separator: None,
+            update_failed_menu_item: None,
+            update_failed_separator: None,
         })
     }
 
@@ -163,8 +177,9 @@ impl TrayManager {
 
     /// Show the "Install Update" menu item at the very top of the tray menu.
     pub fn show_update_ready(&mut self, version: &str) {
-        // Remove any previous update item first.
+        // Remove any previous update or failure items first.
         self.remove_update_item();
+        self.remove_update_failed_item();
 
         let item = MenuItem::new(format!("Install Update (v{version})"), true, None);
         let sep = PredefinedMenuItem::separator();
@@ -182,6 +197,30 @@ impl TrayManager {
             let _ = self.tray_menu.remove(&item);
         }
         if let Some(sep) = self.update_separator.take() {
+            let _ = self.tray_menu.remove(&sep);
+        }
+    }
+
+    /// Show an "Update failed — click to retry" item at the top of the menu.
+    pub fn show_update_failed(&mut self) {
+        self.remove_update_failed_item();
+
+        let item = MenuItem::new("Update failed — click to retry", true, None);
+        let sep = PredefinedMenuItem::separator();
+
+        let _ = self.tray_menu.prepend(&sep);
+        let _ = self.tray_menu.prepend(&item);
+
+        self.update_failed_menu_item = Some(item);
+        self.update_failed_separator = Some(sep);
+    }
+
+    /// Remove the update-failed menu item and its separator.
+    pub fn remove_update_failed_item(&mut self) {
+        if let Some(item) = self.update_failed_menu_item.take() {
+            let _ = self.tray_menu.remove(&item);
+        }
+        if let Some(sep) = self.update_failed_separator.take() {
             let _ = self.tray_menu.remove(&sep);
         }
     }
