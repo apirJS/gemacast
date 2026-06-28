@@ -1,48 +1,53 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { tauriBridge } from '../core/tauri-bridge';
 import { useToastStore } from '../stores/toast-store';
+import { useUpdateStore } from '../stores/update-store';
 
-export type UpdateState =
-  | { status: 'idle' }
-  | { status: 'checking' }
-  | { status: 'available'; version: string; downloadUrl: string }
-  | { status: 'downloading'; percent: number }
-  | { status: 'ready'; version: string; apkPath: string }
-  | { status: 'installing' }
-  | { status: 'error'; message: string }
-  | { status: 'up-to-date' };
-
+/**
+ * Hook that drives the auto-update lifecycle.
+ *
+ * State is stored in a global Zustand store (`useUpdateStore`) so it persists
+ * across component mount/unmount cycles (e.g., when the settings drawer is
+ * opened and closed).
+ *
+ * The update check runs once on first mount. Subsequent mounts reuse the
+ * existing store state without re-checking.
+ */
 export function useUpdater() {
-  const [state, setState] = useState<UpdateState>({ status: 'idle' });
-  const stateRef = useRef(state);
+  const store = useUpdateStore();
 
+  // --- Check for updates on first mount (only if still idle) ---
   useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+    if (store.status !== 'idle') return;
 
-  // Check for updates on mount (app launch).
-  useEffect(() => {
     let cancelled = false;
 
     async function check() {
-      setState({ status: 'checking' });
+      // Clean up any stale APKs from previous sessions.
+      try {
+        await tauriBridge.cleanupStaleUpdates();
+      } catch {
+        // Non-critical — ignore.
+      }
+
+      useUpdateStore.getState().setChecking();
+
       try {
         const result = await tauriBridge.checkForUpdate();
         if (cancelled) return;
+
         if (result) {
-          setState({
-            status: 'available',
-            version: result.version,
-            downloadUrl: result.downloadUrl,
-          });
+          useUpdateStore
+            .getState()
+            .setAvailable(result.version, result.downloadUrl, result.sha256 ?? null);
         } else {
-          setState({ status: 'up-to-date' });
+          useUpdateStore.getState().setUpToDate();
         }
       } catch (e) {
         if (cancelled) return;
         const message = e instanceof Error ? e.message : String(e);
-        setState({ status: 'error', message });
+        useUpdateStore.getState().setError(message);
         useToastStore.getState().show('warning', `Update check failed: ${message}`);
       }
     }
@@ -51,31 +56,47 @@ export function useUpdater() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on first mount when idle
   }, []);
 
-  const startDownload = useCallback(async () => {
-    const current = stateRef.current;
-    if (current.status !== 'available') return;
+  // --- Handle app resume (detect return from system installer) ---
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        useUpdateStore.getState().handleAppResume();
+      }
+    }
 
-    const { version, downloadUrl } = current;
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  // --- Actions ---
+
+  const startDownload = useCallback(async () => {
+    const { status, downloadUrl, sha256, version } = useUpdateStore.getState();
+    if (status !== 'available' || !downloadUrl || !version) return;
 
     // Register the progress listener BEFORE starting the download
     // to avoid losing early progress events.
     const unlisten = await listen<number>('update-progress', (event) => {
-      setState((prev) => {
-        if (prev.status !== 'downloading') return prev;
-        return { ...prev, percent: event.payload };
-      });
+      const current = useUpdateStore.getState();
+      if (current.status === 'downloading') {
+        useUpdateStore.getState().setDownloading(event.payload);
+      }
     });
 
-    setState({ status: 'downloading', percent: 0 });
+    useUpdateStore.getState().setDownloading(0);
 
     try {
-      const apkPath = await tauriBridge.downloadUpdate({ url: downloadUrl });
-      setState({ status: 'ready', version, apkPath });
+      const apkPath = await tauriBridge.downloadUpdate({
+        url: downloadUrl,
+        sha256: sha256,
+      });
+      useUpdateStore.getState().setReady(version, apkPath);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setState({ status: 'error', message });
+      useUpdateStore.getState().setError(message);
       useToastStore.getState().show('error', `Download failed: ${message}`);
     } finally {
       unlisten();
@@ -83,21 +104,32 @@ export function useUpdater() {
   }, []);
 
   const installUpdate = useCallback(async () => {
-    const current = stateRef.current;
-    if (current.status !== 'ready') return;
+    const { status, apkPath } = useUpdateStore.getState();
+    if (status !== 'ready' || !apkPath) return;
 
-    const { apkPath } = current;
-    setState({ status: 'installing' });
+    useUpdateStore.getState().setInstalling();
 
     try {
       await tauriBridge.installApk({ path: apkPath });
-      // The OS installer takes over from here — we stay in 'installing' state.
+      // The OS installer takes over from here.
+      // When the user returns to the app, `handleAppResume` will transition
+      // back to 'ready' if the version hasn't changed.
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setState({ status: 'error', message });
+      useUpdateStore.getState().setError(message);
       useToastStore.getState().show('error', `Install failed: ${message}`);
     }
   }, []);
 
-  return { state, startDownload, installUpdate };
+  const retry = useCallback(() => {
+    // Reset to idle so the next mount (or immediate re-run) will re-check.
+    useUpdateStore.getState().reset();
+  }, []);
+
+  return {
+    state: store,
+    startDownload,
+    installUpdate,
+    retry,
+  };
 }

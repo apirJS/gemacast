@@ -838,44 +838,74 @@ jobs:
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          cat > updater.json << EOF
+          # Download all release artifacts to compute SHA-256 checksums.
+          mkdir -p dl
+          declare -A FILES=(
+            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi"
+            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg"
+            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg"
+            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg"
+            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage"
+            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage"
+            ["android"]="gemacast-mobile.apk"
+          )
+
+          declare -A SIGS=(
+            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi.sig"
+            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg.sig"
+            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg.sig"
+            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg.sig"
+            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage.sig"
+            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage.sig"
+            ["android"]="gemacast-mobile.apk.sig"
+          )
+
+          # Download each artifact and compute its SHA-256 hash.
+          declare -A HASHES
+          for platform in "${!FILES[@]}"; do
+            file="${FILES[$platform]}"
+            if gh release download "$TAG" --pattern "$file" --dir dl --repo "$REPO" 2>/dev/null; then
+              HASHES[$platform]=$(sha256sum "dl/$file" | cut -d' ' -f1)
+              echo "SHA-256 for $platform ($file): ${HASHES[$platform]}"
+            else
+              echo "WARNING: Could not download $file for $platform — omitting sha256"
+              HASHES[$platform]=""
+            fi
+          done
+
+          # Build the JSON with sha256 fields.
+          build_entry() {
+            local platform="$1"
+            local file="${FILES[$platform]}"
+            local sig="${SIGS[$platform]}"
+            local hash="${HASHES[$platform]}"
+            local entry="\"url\": \"${BASE_URL}/${file}\", \"signature\": \"${BASE_URL}/${sig}\""
+            if [ -n "$hash" ]; then
+              entry="$entry, \"sha256\": \"${hash}\""
+            fi
+            echo "{${entry}}"
+          }
+
+          cat > updater.json << ENDJSON
           {
             "version": "${VERSION}",
             "pub_date": "${PUB_DATE}",
             "platforms": {
-              "windows-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi",
-                "signature": "${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi.sig"
-              },
-              "darwin-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg.sig"
-              },
-              "darwin-aarch64": {
-                "url": "${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg.sig"
-              },
-              "darwin-universal": {
-                "url": "${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg.sig"
-              },
-              "linux-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage",
-                "signature": "${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage.sig"
-              },
-              "linux-aarch64": {
-                "url": "${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage",
-                "signature": "${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage.sig"
-              },
-              "android": {
-                "url": "${BASE_URL}/gemacast-mobile.apk",
-                "signature": "${BASE_URL}/gemacast-mobile.apk.sig"
-              }
+              "windows-x86_64": $(build_entry windows-x86_64),
+              "darwin-x86_64": $(build_entry darwin-x86_64),
+              "darwin-aarch64": $(build_entry darwin-aarch64),
+              "darwin-universal": $(build_entry darwin-universal),
+              "linux-x86_64": $(build_entry linux-x86_64),
+              "linux-aarch64": $(build_entry linux-aarch64),
+              "android": $(build_entry android)
             }
           }
-          EOF
+          ENDJSON
           # Remove leading whitespace from heredoc
           sed -i 's/^          //' updater.json
+
+          echo "Generated updater.json:"
+          cat updater.json
 
       - name: Upload updater.json
         run: gh release upload "$TAG" updater.json --clobber --repo "$REPO"

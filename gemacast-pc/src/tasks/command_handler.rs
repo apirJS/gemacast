@@ -58,6 +58,9 @@ impl CommandHandler {
                 self.handle_stop_all_streams(broadcaster).await;
                 self.tray.notify_shutdown_complete();
             }
+            AppCommand::CheckForUpdates => {
+                self.handle_check_for_updates();
+            }
         }
     }
 
@@ -151,6 +154,67 @@ impl CommandHandler {
                 .notify_disconnect(&device_id, Some(device.addr))
                 .await;
         }
+    }
+
+    fn handle_check_for_updates(&self) {
+        tracing::info!("Executing manual CheckForUpdates command");
+        let tray = self.tray.clone();
+        tokio::spawn(async move {
+            let current_version = env!("CARGO_PKG_VERSION");
+            let key = match crate::updater::platform_key() {
+                Some(k) => k,
+                None => {
+                    tray.notify_update_failed(
+                        "Auto-updates are not supported on this platform".to_string(),
+                    );
+                    return;
+                }
+            };
+
+            let info =
+                match gemacast_core::updater::check_for_update(current_version, key).await {
+                    Ok(Some(info)) => info,
+                    Ok(None) => {
+                        tracing::info!("Manual update check: already up to date.");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Manual update check failed: {}", e);
+                        tray.notify_update_failed(e);
+                        return;
+                    }
+                };
+
+            let filename = info
+                .download_url
+                .rsplit('/')
+                .next()
+                .unwrap_or("gemacast-update");
+
+            let dir = std::env::temp_dir().join("gemacast-update");
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                tray.notify_update_failed(format!("Failed to create update directory: {e}"));
+                return;
+            }
+            let file_path = dir.join(filename);
+
+            match gemacast_core::updater::download_update(
+                &info.download_url,
+                &file_path,
+                None,
+                info.sha256.as_deref(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    tray.notify_update_ready(info.version, file_path);
+                }
+                Err(e) => {
+                    tracing::warn!("Manual update download failed: {}", e);
+                    tray.notify_update_failed(e);
+                }
+            }
+        });
     }
 }
 

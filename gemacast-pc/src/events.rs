@@ -54,4 +54,6 @@ pub enum AppCommand {
     StopBroadcasting,
     /// Trigger a complete shutdown of the background engine.
     ExitApp,
+    /// Manually trigger an update check from the tray menu.
+    CheckForUpdates,
 }
