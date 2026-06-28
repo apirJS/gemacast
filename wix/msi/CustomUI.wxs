@@ -64,11 +64,12 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <UIRef Id="WixUI_Common" />
     
+    <!-- Only show exit dialog with checkboxes on fresh install, not on uninstall/repair -->
     <InstallUISequence>
-      <Show Dialog="MyExitDialog" OnExit="success" />
+      <Show Dialog="MyExitDialog" OnExit="success" Condition="NOT Installed" />
     </InstallUISequence>
     <AdminUISequence>
-      <Show Dialog="MyExitDialog" OnExit="success" />
+      <Show Dialog="MyExitDialog" OnExit="success" Condition="NOT Installed" />
     </AdminUISequence>
   </Fragment>
 </Wix>
