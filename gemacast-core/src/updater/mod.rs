@@ -231,7 +231,11 @@ pub fn cleanup_stale_updates(dir: &Path) {
 }
 
 /// Retry an async operation with exponential backoff.
-async fn retry_async<F, Fut, T>(max_retries: u32, initial_backoff_ms: u64, op: F) -> Result<T, String>
+async fn retry_async<F, Fut, T>(
+    max_retries: u32,
+    initial_backoff_ms: u64,
+    op: F,
+) -> Result<T, String>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, String>>,

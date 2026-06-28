@@ -171,19 +171,18 @@ impl CommandHandler {
                 }
             };
 
-            let info =
-                match gemacast_core::updater::check_for_update(current_version, key).await {
-                    Ok(Some(info)) => info,
-                    Ok(None) => {
-                        tracing::info!("Manual update check: already up to date.");
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Manual update check failed: {}", e);
-                        tray.notify_update_failed(e);
-                        return;
-                    }
-                };
+            let info = match gemacast_core::updater::check_for_update(current_version, key).await {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    tracing::info!("Manual update check: already up to date.");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("Manual update check failed: {}", e);
+                    tray.notify_update_failed(e);
+                    return;
+                }
+            };
 
             let filename = info
                 .download_url

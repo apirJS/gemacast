@@ -46,13 +46,8 @@ pub async fn download_update(
         }
     });
 
-    gemacast_core::updater::download_update(
-        &url,
-        &file_path,
-        Some(progress_tx),
-        sha256.as_deref(),
-    )
-    .await?;
+    gemacast_core::updater::download_update(&url, &file_path, Some(progress_tx), sha256.as_deref())
+        .await?;
 
     file_path
         .to_str()
