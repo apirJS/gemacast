@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/apirJS/gemacast/compare/v0.2.5...v0.3.0) (2026-06-28)
+
+
+### Features
+
+* app updater, installers test, fixing broken CI files, fixing broken MSI installer ([#23](https://github.com/apirJS/gemacast/issues/23)) ([3ec1011](https://github.com/apirJS/gemacast/commit/3ec101108a78cf5bd91b15a591e993afe6d6452b))
+
+
+### Bug Fixes
+
+* mixed codes after rebase, and cargo format issue ([a9a2ee0](https://github.com/apirJS/gemacast/commit/a9a2ee012919ff44abe249a51e6699350073bf82))
+
 ## [0.2.5](https://github.com/apirJS/gemacast/compare/v0.2.4...v0.2.5) (2026-06-27)
 
 
