@@ -1,11 +1,9 @@
 name: Test Installers
 
 on:
-  workflow_run:
-    workflows: ["CI Validation"]
-    types:
-      - completed
-    branches: [main]
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
 
 permissions:
@@ -26,7 +24,6 @@ jobs:
   # Produces archives as workflow artifacts (not GitHub Releases).
   # ─────────────────────────────────────────────────────────────────────────────
   build-binaries:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     name: Build (${{ matrix.name }})
     strategy:
       fail-fast: false

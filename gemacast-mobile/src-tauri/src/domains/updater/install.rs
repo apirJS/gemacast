@@ -20,9 +20,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
 
     webview_window
         .with_webview(move |webview| {
-            let result = (|| -> Result<(), String> {
-                let env = webview.jni_env();
-                let activity = webview.activity();
+            let result = webview.jni_handle().exec(move |env, activity, _webview| -> Result<(), String> {
 
                 // Steps:
                 //   1. Create a java.io.File from the path
@@ -50,7 +48,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                 // Get the application context
                 let get_app_context = env
                     .call_method(
-                        &activity,
+                        activity,
                         "getApplicationContext",
                         "()Landroid/content/Context;",
                         &[],
@@ -146,7 +144,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
 
                 // context.startActivity(intent)
                 env.call_method(
-                    &activity,
+                    activity,
                     "startActivity",
                     "(Landroid/content/Intent;)V",
                     &[JValue::Object(&intent)],
@@ -154,7 +152,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                 .map_err(|e| format!("startActivity failed: {e}"))?;
 
                 Ok(())
-            })();
+            });
 
             if let Err(e) = result {
                 *error_slot_inner.lock().unwrap() = Some(e);
