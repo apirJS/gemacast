@@ -3,7 +3,7 @@ resolver = "2"
 members = ["gemacast-core", "gemacast-pc", "gemacast-mobile/src-tauri"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 authors = ["Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>"]
 homepage = "https://github.com/apirJS/gemacast"
