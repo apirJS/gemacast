@@ -75,7 +75,7 @@ pub fn install_update(installer_path: &Path) -> Result<bool, String> {
         // Restart the application.
         let _ = std::process::Command::new(target_path).spawn();
         // Signal to the caller that we must exit NOW (the new binary is running).
-        return Ok(true);
+        Ok(true)
     }
 
     #[cfg(not(target_os = "linux"))]
