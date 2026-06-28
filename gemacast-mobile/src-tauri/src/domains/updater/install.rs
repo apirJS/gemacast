@@ -1,163 +1,173 @@
 /// Android-specific APK installation using JNI.
 ///
-/// This calls the Android `Intent.ACTION_INSTALL_PACKAGE` with a content URI
-/// from the app's `FileProvider`. The user will see the system install prompt.
+/// Uses `ACTION_VIEW` with MIME type `application/vnd.android.package-archive`
+/// (the modern replacement for the deprecated `ACTION_INSTALL_PACKAGE`) and a
+/// `content://` URI from the app's `FileProvider`. The user will see the system
+/// install prompt.
 #[cfg(target_os = "android")]
 pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
-    use jni::objects::JValue;
+    use jni::objects::{JObject, JValue};
+    use std::sync::{Arc, Mutex};
     use tauri::Manager;
 
     let webview_window = app.get_webview_window("main").ok_or("No main webview")?;
 
     let path_owned = path.to_string();
 
-    // Run on the Android activity's JNI environment.
-    webview_window
+    // We use a shared error slot to propagate errors out of the `with_webview`
+    // closure, since the closure cannot return a `Result` directly.
+    let error_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let error_slot_inner = error_slot.clone();
+    let path_owned = path.to_string();
+
+    activity
         .with_webview(move |webview| {
-            #[cfg(target_os = "android")]
-            {
-                let _ = webview.jni_handle().exec(move |env, activity, _webview| {
-                    // We need to call Java code to trigger the install intent.
-                    // Steps:
-                    //   1. Create a java.io.File from the path
-                    //   2. Get a content:// URI via FileProvider.getUriForFile()
-                    //   3. Create an ACTION_INSTALL_PACKAGE intent
-                    //   4. Set data and type, add FLAG_GRANT_READ_URI_PERMISSION
-                    //   5. Start the activity
+            let result = (|| -> Result<(), String> {
+                let env = webview.jni_env();
+                let activity = webview.activity();
 
-                    let j_path = env
-                        .new_string(&path_owned)
-                        .expect("Failed to create Java string for APK path");
+                // Steps:
+                //   1. Create a java.io.File from the path
+                //   2. Get a content:// URI via FileProvider.getUriForFile()
+                //   3. Create an ACTION_VIEW intent with setDataAndType()
+                //   4. Add FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK
+                //   5. Start the activity
 
-                    // new java.io.File(path)
-                    let file_class = env
-                        .find_class("java/io/File")
-                        .expect("File class not found");
-                    let file_obj = env
-                        .new_object(
-                            file_class,
-                            "(Ljava/lang/String;)V",
-                            &[JValue::Object(&j_path)],
-                        )
-                        .expect("Failed to create File object");
+                let j_path = env
+                    .new_string(&path_owned)
+                    .map_err(|e| format!("Failed to create Java string for APK path: {e}"))?;
 
-                    // Get the application context
-                    let get_app_context = env
-                        .call_method(
-                            &activity,
-                            "getApplicationContext",
-                            "()Landroid/content/Context;",
-                            &[],
-                        )
-                        .expect("getApplicationContext failed")
-                        .l()
-                        .expect("getApplicationContext returned non-object");
+                // new java.io.File(path)
+                let file_class = env
+                    .find_class("java/io/File")
+                    .map_err(|e| format!("File class not found: {e}"))?;
+                let file_obj = env
+                    .new_object(
+                        file_class,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&j_path)],
+                    )
+                    .map_err(|e| format!("Failed to create File object: {e}"))?;
 
-                    // Get authority string: "<package>.fileprovider"
-                    let get_package = env
-                        .call_method(
-                            &get_app_context,
-                            "getPackageName",
-                            "()Ljava/lang/String;",
-                            &[],
-                        )
-                        .expect("getPackageName failed")
-                        .l()
-                        .expect("getPackageName returned non-object");
+                // Get the application context
+                let get_app_context = env
+                    .call_method(
+                        &activity,
+                        "getApplicationContext",
+                        "()Landroid/content/Context;",
+                        &[],
+                    )
+                    .map_err(|e| format!("getApplicationContext failed: {e}"))?
+                    .l()
+                    .map_err(|e| format!("getApplicationContext returned non-object: {e}"))?;
 
-                    let package_name: String = env
-                        .get_string((&get_package).into())
-                        .expect("Failed to convert package name")
-                        .into();
+                // Get authority string: "<package>.fileprovider"
+                let get_package = env
+                    .call_method(
+                        &get_app_context,
+                        "getPackageName",
+                        "()Ljava/lang/String;",
+                        &[],
+                    )
+                    .map_err(|e| format!("getPackageName failed: {e}"))?
+                    .l()
+                    .map_err(|e| format!("getPackageName returned non-object: {e}"))?;
 
-                    let authority = format!("{package_name}.fileprovider");
-                    let j_authority = env
-                        .new_string(&authority)
-                        .expect("Failed to create authority string");
+                let package_name: String = env
+                    .get_string((&get_package).into())
+                    .map_err(|e| format!("Failed to convert package name: {e}"))?
+                    .into();
 
-                    // FileProvider.getUriForFile(context, authority, file)
-                    let fp_class = env
-                        .find_class("androidx/core/content/FileProvider")
-                        .expect("FileProvider class not found");
-                    let content_uri = env
-                        .call_static_method(
-                            fp_class,
-                            "getUriForFile",
-                            "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
-                            &[
-                                JValue::Object(&get_app_context),
-                                JValue::Object(&j_authority),
-                                JValue::Object(&file_obj),
-                            ],
-                        )
-                        .expect("getUriForFile failed")
-                        .l()
-                        .expect("getUriForFile returned non-object");
+                let authority = format!("{package_name}.fileprovider");
+                let j_authority = env
+                    .new_string(&authority)
+                    .map_err(|e| format!("Failed to create authority string: {e}"))?;
 
-                    // Create install intent
-                    let intent_class = env
-                        .find_class("android/content/Intent")
-                        .expect("Intent class not found");
-                    let action = env
-                        .new_string("android.intent.action.INSTALL_PACKAGE")
-                        .expect("Failed to create action string");
-                    let intent = env
-                        .new_object(
-                            intent_class,
-                            "(Ljava/lang/String;)V",
-                            &[JValue::Object(&action)],
-                        )
-                        .expect("Failed to create Intent");
+                // FileProvider.getUriForFile(context, authority, file)
+                let fp_class = env
+                    .find_class("androidx/core/content/FileProvider")
+                    .map_err(|e| format!("FileProvider class not found: {e}"))?;
+                let content_uri = env
+                    .call_static_method(
+                        fp_class,
+                        "getUriForFile",
+                        "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                        &[
+                            JValue::Object(&get_app_context),
+                            JValue::Object(&j_authority),
+                            JValue::Object(&file_obj),
+                        ],
+                    )
+                    .map_err(|e| format!("getUriForFile failed: {e}"))?
+                    .l()
+                    .map_err(|e| format!("getUriForFile returned non-object: {e}"))?;
 
-                    // intent.setData(contentUri)
-                    let _ = env
-                        .call_method(
-                            &intent,
-                            "setData",
-                            "(Landroid/net/Uri;)Landroid/content/Intent;",
-                            &[JValue::Object(&content_uri)],
-                        )
-                        .expect("setData failed");
+                // Create an ACTION_VIEW intent (modern replacement for deprecated ACTION_INSTALL_PACKAGE)
+                let intent_class = env
+                    .find_class("android/content/Intent")
+                    .map_err(|e| format!("Intent class not found: {e}"))?;
+                let action = env
+                    .new_string("android.intent.action.VIEW")
+                    .map_err(|e| format!("Failed to create action string: {e}"))?;
+                let intent = env
+                    .new_object(
+                        intent_class,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&action)],
+                    )
+                    .map_err(|e| format!("Failed to create Intent: {e}"))?;
 
-                    // intent.addFlags(FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK)
-                    // FLAG_GRANT_READ_URI_PERMISSION = 1
-                    // FLAG_ACTIVITY_NEW_TASK = 0x10000000
-                    let flags: i32 = 1 | 0x10000000;
-                    let _ = env
-                        .call_method(
-                            &intent,
-                            "addFlags",
-                            "(I)Landroid/content/Intent;",
-                            &[JValue::Int(flags)],
-                        )
-                        .expect("addFlags failed");
+                // intent.setDataAndType(contentUri, "application/vnd.android.package-archive")
+                let mime_type = env
+                    .new_string("application/vnd.android.package-archive")
+                    .map_err(|e| format!("Failed to create MIME type string: {e}"))?;
+                let _ = env
+                    .call_method(
+                        &intent,
+                        "setDataAndType",
+                        "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                        &[
+                            JValue::Object(&content_uri),
+                            JValue::Object(&mime_type),
+                        ],
+                    )
+                    .map_err(|e| format!("setDataAndType failed: {e}"))?;
 
-                    // intent.putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-                    let extra_key = env
-                        .new_string("android.intent.extra.NOT_UNKNOWN_SOURCE")
-                        .expect("Failed to create extra key");
-                    let _ = env
-                        .call_method(
-                            &intent,
-                            "putExtra",
-                            "(Ljava/lang/String;Z)Landroid/content/Intent;",
-                            &[JValue::Object(&extra_key), JValue::Bool(1)],
-                        )
-                        .expect("putExtra failed");
+                // intent.addFlags(FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK)
+                // FLAG_GRANT_READ_URI_PERMISSION = 1
+                // FLAG_ACTIVITY_NEW_TASK = 0x10000000
+                let flags: i32 = 1 | 0x10000000;
+                let _ = env
+                    .call_method(
+                        &intent,
+                        "addFlags",
+                        "(I)Landroid/content/Intent;",
+                        &[JValue::Int(flags)],
+                    )
+                    .map_err(|e| format!("addFlags failed: {e}"))?;
 
-                    // context.startActivity(intent)
-                    let _ = env
-                        .call_method(
-                            &activity,
-                            "startActivity",
-                            "(Landroid/content/Intent;)V",
-                            &[JValue::Object(&intent)],
-                        )
-                        .expect("startActivity failed");
-                });
+                // context.startActivity(intent)
+                env.call_method(
+                    &activity,
+                    "startActivity",
+                    "(Landroid/content/Intent;)V",
+                    &[JValue::Object(&intent)],
+                )
+                .map_err(|e| format!("startActivity failed: {e}"))?;
+
+                Ok(())
+            })();
+
+            if let Err(e) = result {
+                *error_slot_inner.lock().unwrap() = Some(e);
             }
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to access webview: {e:?}"))?;
+
+    // Check if the JNI closure reported an error.
+    if let Some(err) = error_slot.lock().unwrap().take() {
+        return Err(err);
+    }
 
     Ok(())
 }

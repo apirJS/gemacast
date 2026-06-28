@@ -5,9 +5,9 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <!--
-    Silent MSI payload for Gemacast.
-    This MSI is driven by the Burn bootstrapper (Bundle.wxs) and has no user-facing UI.
-    The CREATEDESKTOPSHORTCUT property is set by Burn via MsiProperty.
+    WiX v4 MSI installer for Gemacast.
+    Provides install, upgrade, repair, and clean uninstall support.
+    UI flow is defined in CustomUI.wxs.
 
     UpgradeCode preserved from the old cargo-wix MSI for upgrade compatibility.
   -->
@@ -110,6 +110,25 @@
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>
 
+      <!-- Remove INSTALLFOLDER on uninstall (catches runtime-created files) -->
+      <Component Id="CleanupInstallFolder" Guid="*">
+        <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="InstallDirCleanup"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <!-- Clean up the registry key tree on uninstall -->
+      <Component Id="CleanupRegistry" Guid="*">
+        <RegistryValue Root="HKCU"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="Installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+        <RemoveRegistryKey Id="RemoveGemacastKey" Root="HKCU" Key="Software\EchaApriliyanto\Gemacast" Action="removeOnUninstall" />
+        <RemoveRegistryKey Id="RemoveVendorKey" Root="HKCU" Key="Software\EchaApriliyanto" Action="removeOnUninstall" />
+      </Component>
+
     </ComponentGroup>
 
     <DirectoryRef Id="INSTALLFOLDER">
@@ -144,6 +163,7 @@
                   Target="[INSTALLFOLDER]gemacast-pc.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="ProductICO" />
+        <RemoveFile Id="CleanDesktopShortcut" Name="Gemacast.lnk" On="uninstall" />
         <RegistryValue Root="HKCU"
                        Key="Software\EchaApriliyanto\Gemacast"
                        Name="DesktopInstalled"
@@ -164,6 +184,10 @@
     <Icon Id="ProductICO" SourceFile="$(var.IconDir)\Product.ico" />
     <Property Id="ARPPRODUCTICON" Value="ProductICO" />
     <Property Id="ARPHELPLINK" Value="https://github.com/apirJS/gemacast" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/apirJS/gemacast" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/apirJS/gemacast/releases" />
+    <!-- Hide Modify button — single-feature installer, nothing to modify -->
+    <Property Id="ARPNOMODIFY" Value="1" />
 
   </Package>
 
