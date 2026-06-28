@@ -9,6 +9,9 @@ pub fn platform_key() -> Option<&'static str> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return Some("windows-x86_64");
 
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    return Some("windows-aarch64");
+
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     return Some("darwin-x86_64");
 
@@ -23,6 +26,7 @@ pub fn platform_key() -> Option<&'static str> {
 
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
@@ -31,12 +35,17 @@ pub fn platform_key() -> Option<&'static str> {
     return None;
 }
 
-/// Launch the downloaded installer.
+/// Launch the downloaded installer and return whether the caller should exit.
 ///
 /// On Windows this opens the `.msi` with the default handler.
 /// On macOS it opens the `.dmg`.
-/// On Linux it replaces the current AppImage binary.
-pub fn install_update(installer_path: &Path) -> Result<(), String> {
+/// On Linux it replaces the current AppImage binary and restarts.
+///
+/// Returns `Ok(true)` when the caller **must** exit the process immediately
+/// (Linux: the new binary has already been spawned), or `Ok(false)` when the
+/// installer was launched asynchronously and the caller should exit after a
+/// small delay.
+pub fn install_update(installer_path: &Path) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
         use std::path::PathBuf;
@@ -65,14 +74,16 @@ pub fn install_update(installer_path: &Path) -> Result<(), String> {
 
         // Restart the application.
         let _ = std::process::Command::new(target_path).spawn();
-        std::process::exit(0);
+        // Signal to the caller that we must exit NOW (the new binary is running).
+        return Ok(true);
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         // Windows (.msi) / macOS (.dmg) — open with the system handler.
         open::that(installer_path).map_err(|e| format!("Failed to open installer: {e}"))?;
-        Ok(())
+        // The installer runs asynchronously; the caller should exit after a delay.
+        Ok(false)
     }
 }
 

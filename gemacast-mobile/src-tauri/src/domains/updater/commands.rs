@@ -16,8 +16,16 @@ pub async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo
 ///
 /// Emits `update-progress` events to the frontend with the download percentage.
 /// Returns the absolute path to the downloaded APK file.
+///
+/// If the manifest included a SHA-256 digest, the download is verified against
+/// it before returning. A mismatch causes an error (and the corrupt file is
+/// removed automatically by the core downloader).
 #[tauri::command]
-pub async fn download_update(app: tauri::AppHandle, url: String) -> Result<String, String> {
+pub async fn download_update(
+    app: tauri::AppHandle,
+    url: String,
+    sha256: Option<String>,
+) -> Result<String, String> {
     let cache_dir = app
         .path()
         .app_cache_dir()
@@ -38,12 +46,33 @@ pub async fn download_update(app: tauri::AppHandle, url: String) -> Result<Strin
         }
     });
 
-    gemacast_core::updater::download_update(&url, &file_path, Some(progress_tx)).await?;
+    gemacast_core::updater::download_update(
+        &url,
+        &file_path,
+        Some(progress_tx),
+        sha256.as_deref(),
+    )
+    .await?;
 
     file_path
         .to_str()
         .map(String::from)
         .ok_or_else(|| "Path contains invalid UTF-8".to_string())
+}
+
+/// Clean up any previously downloaded update APKs from the cache.
+///
+/// Should be called on app startup to reclaim space from stale downloads.
+#[tauri::command]
+pub async fn cleanup_stale_updates(app: tauri::AppHandle) -> Result<(), String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("Failed to get cache dir: {e}"))?
+        .join("updates");
+
+    gemacast_core::updater::cleanup_stale_updates(&cache_dir);
+    Ok(())
 }
 
 /// Trigger the Android system installer for the downloaded APK.
