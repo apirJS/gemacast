@@ -74,6 +74,7 @@ pub fn run() {
             domains::updater::commands::check_for_update,
             domains::updater::commands::download_update,
             domains::updater::commands::install_apk,
+            domains::updater::commands::cleanup_stale_updates,
             domains::discovery::commands::get_local_ip,
             domains::discovery::commands::get_network_identifier,
             domains::discovery::commands::get_connection_status,

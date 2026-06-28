@@ -183,6 +183,7 @@ fn handle_tray_event(
         }
         TrayEvent::UpdateFailed(msg) => {
             tracing::warn!("Update failed: {}", msg);
+            tray.show_update_failed();
         }
         TrayEvent::DiscoveredDevice {
             device_id,
@@ -219,7 +220,7 @@ fn handle_menu_event(
     _control_flow: &mut ControlFlow,
     pending_installer: &mut Option<PathBuf>,
 ) {
-    // Check update item click
+    // --- Update install click ---
     if let Some(ref update_item) = tray.update_menu_item
         && *menu_event == update_item.id()
     {
@@ -236,13 +237,19 @@ fn handle_menu_event(
 
             if confirmed == rfd::MessageDialogResult::Ok {
                 match crate::updater::install_update(installer_path) {
-                    Ok(()) => {
-                        // Exit immediately so the installer/user can overwrite the files
-                        // without hitting a "Files in Use" error.
+                    Ok(must_exit_now) => {
+                        if must_exit_now {
+                            // Linux: new binary already spawned, exit immediately.
+                            std::process::exit(0);
+                        }
+                        // Windows/macOS: MSI/DMG launched asynchronously.
+                        // Small delay so the installer has time to start before
+                        // we exit, avoiding a race where the installer hasn't
+                        // launched yet.
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         std::process::exit(0);
                     }
                     Err(e) => {
-                        // We must use a simple logging or dialog for error, but here we can just show it.
                         rfd::MessageDialog::new()
                             .set_title("Update Failed")
                             .set_description(format!("Failed to launch installer: {e}"))
@@ -260,7 +267,22 @@ fn handle_menu_event(
         return;
     }
 
-    // Check if a device was clicked (to kick it)
+    // --- "Update failed — click to retry" click ---
+    if let Some(ref failed_item) = tray.update_failed_menu_item
+        && *menu_event == failed_item.id()
+    {
+        tray.remove_update_failed_item();
+        let _ = command_tx.try_send(AppCommand::CheckForUpdates);
+        return;
+    }
+
+    // --- "Check for Updates" click ---
+    if *menu_event == tray.check_update_menu_item.id() {
+        let _ = command_tx.try_send(AppCommand::CheckForUpdates);
+        return;
+    }
+
+    // --- Device click (to kick it) ---
     if let Some(device_id) = tray.find_device_by_menu_id(menu_event) {
         if let Err(e) = command_tx.try_send(AppCommand::KickDevice(device_id.clone())) {
             display_error_dialog(e.to_string());
@@ -271,7 +293,7 @@ fn handle_menu_event(
         return;
     }
 
-    // Check broadcast toggle
+    // --- Broadcast toggle ---
     if *menu_event == tray.broadcast_toggle_item.id() {
         let currently_broadcasting = tray.broadcast_toggle_item.text().contains("Stop");
 
@@ -291,7 +313,7 @@ fn handle_menu_event(
         return;
     }
 
-    // Check quit
+    // --- Quit ---
     if *menu_event == tray.quit_menu_item.id() {
         let _ = command_tx.try_send(AppCommand::ExitApp);
     }

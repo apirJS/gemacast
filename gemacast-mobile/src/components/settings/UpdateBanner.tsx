@@ -1,8 +1,8 @@
 import { useUpdater } from '../../hooks/use-updater';
-import { Download, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Download, RefreshCw, CheckCircle, AlertTriangle, RotateCcw } from 'lucide-react';
 
 export function UpdateBanner() {
-  const { state, startDownload, installUpdate } = useUpdater();
+  const { state, startDownload, installUpdate, retry } = useUpdater();
 
   // Don't render anything when up-to-date or idle.
   if (state.status === 'up-to-date' || state.status === 'idle') {
@@ -78,9 +78,19 @@ export function UpdateBanner() {
       )}
 
       {state.status === 'error' && (
-        <div className="flex items-center gap-2 text-yellow-500">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span className="text-[0.8rem]">{state.message}</span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1 text-yellow-500">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="text-[0.8rem] truncate">{state.errorMessage}</span>
+          </div>
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:bg-accent/80"
+            onClick={retry}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Retry
+          </button>
         </div>
       )}
     </div>

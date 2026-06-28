@@ -334,7 +334,7 @@ jobs:
         run: |
           Write-Host "Downloading Windows archive from release $env:TAG..."
           gh release download $env:TAG `
-            -p "*x86_64-pc-windows-msvc.zip" `
+            -p "gemacast-pc-x86_64-pc-windows-msvc.zip" `
             --dir dist_download
 
           $zipFile = Get-ChildItem -Path dist_download -Filter "*.zip" | Select-Object -First 1
@@ -478,27 +478,28 @@ jobs:
           if [ -f dist_extracted/adb ]; then
             cp dist_extracted/adb "${PKG_NAME}/usr/lib/gemacast/"
             chmod 755 "${PKG_NAME}/usr/lib/gemacast/adb"
+          else
+            echo "::error::ADB binary not found in extracted archive — .deb would be incomplete"
+            exit 1
           fi
 
           # Desktop entry & icon
           cp linux/gemacast-pc.desktop "${PKG_NAME}/usr/share/applications/"
           cp linux/gemacast-pc.png "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps/"
 
-          # Control file
-          cat > "${PKG_NAME}/DEBIAN/control" << EOF
-          Package: gemacast-pc
-          Version: ${VERSION}
-          Section: sound
-          Priority: optional
-          Architecture: ${{ matrix.arch }}
-          Maintainer: Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>
-          Description: Low-latency real-time audio streaming from PC to Android
-           Gemacast streams audio from your PC to Android devices over a local
-           network with minimal latency using Opus codec and UDP transport.
-          Homepage: https://github.com/apirJS/gemacast
-          EOF
-          # Remove leading whitespace from heredoc (DEBIAN/control is whitespace-sensitive)
-          sed -i 's/^          //' "${PKG_NAME}/DEBIAN/control"
+          # Control file — written field-by-field to avoid heredoc whitespace issues
+          {
+            echo "Package: gemacast-pc"
+            echo "Version: ${VERSION}"
+            echo "Section: sound"
+            echo "Priority: optional"
+            echo "Architecture: ${{ matrix.arch }}"
+            echo "Maintainer: Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>"
+            echo "Description: Low-latency real-time audio streaming from PC to Android"
+            echo " Gemacast streams audio from your PC to Android devices over a local"
+            echo " network with minimal latency using Opus codec and UDP transport."
+            echo "Homepage: https://github.com/apirJS/gemacast"
+          } > "${PKG_NAME}/DEBIAN/control"
 
           dpkg-deb --build --root-owner-group "${PKG_NAME}"
           echo "Built: ${PKG_NAME}.deb"
@@ -543,15 +544,8 @@ jobs:
           cp linux/gemacast-pc.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/gemacast-pc.png"
           cp linux/gemacast-pc.png "$APPDIR/.DirIcon"
 
-          # Create AppRun
-          cat > "$APPDIR/AppRun" << 'APPRUN'
-          #!/bin/bash
-          SELF="$(readlink -f "$0")"
-          HERE="${SELF%/*}"
-          export PATH="${HERE}/usr/bin:${PATH}"
-          exec "${HERE}/usr/bin/gemacast-pc" "$@"
-          APPRUN
-          sed -i 's/^          //' "$APPDIR/AppRun"
+          # Create AppRun — written via printf to avoid heredoc/YAML conflicts
+          printf '#!/bin/bash\nSELF="$(readlink -f "$0")"\nHERE="${SELF%%/*}"\nexport PATH="${HERE}/usr/bin:${PATH}"\nexec "${HERE}/usr/bin/gemacast-pc" "$@"\n' > "$APPDIR/AppRun"
           chmod +x "$APPDIR/AppRun"
 
           # Download appimagetool for the current architecture
@@ -636,8 +630,16 @@ jobs:
           lipo -create -output "$APP/Contents/MacOS/gemacast-pc" \
             mac_x64/gemacast-pc mac_arm64/gemacast-pc
 
-          # ADB: use arm64 version (works on both via Rosetta, or is native)
-          [ -f mac_arm64/adb ] && cp mac_arm64/adb "$APP/Contents/MacOS/"
+          # ADB: prefer x64 for Intel compatibility since arm64 would need Rosetta.
+          # If only arm64 exists, fall back to it (runs via Rosetta on Intel).
+          if [ -f mac_x64/adb ] && [ -f mac_arm64/adb ]; then
+            lipo -create -output "$APP/Contents/MacOS/adb" mac_x64/adb mac_arm64/adb 2>/dev/null \
+              || cp mac_x64/adb "$APP/Contents/MacOS/"
+          elif [ -f mac_x64/adb ]; then
+            cp mac_x64/adb "$APP/Contents/MacOS/"
+          elif [ -f mac_arm64/adb ]; then
+            cp mac_arm64/adb "$APP/Contents/MacOS/"
+          fi
           chmod +x "$APP/Contents/MacOS/"*
 
           sed "s/VERSION_PLACEHOLDER/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
@@ -654,6 +656,7 @@ jobs:
       - name: Create DMG files
         run: |
           for VARIANT in x64 aarch64 universal; do
+            DMG="gemacast-pc-${VARIANT}-apple-darwin.dmg"
             create-dmg \
               --volname "Gemacast" \
               --volicon "gemacast-mobile/src-tauri/icons/icon.icns" \
@@ -663,9 +666,16 @@ jobs:
               --icon "Gemacast-${VARIANT}.app" 150 190 \
               --app-drop-link 450 190 \
               --hide-extension "Gemacast-${VARIANT}.app" \
-              "gemacast-pc-${VARIANT}-apple-darwin.dmg" \
+              "$DMG" \
               "Gemacast-${VARIANT}.app" || true
             # create-dmg returns non-zero when code signing is skipped; this is expected for unsigned builds
+
+            # Verify the DMG was actually produced despite the || true
+            if [ ! -f "$DMG" ] || [ ! -s "$DMG" ]; then
+              echo "::error::$DMG was not produced by create-dmg"
+              exit 1
+            fi
+            echo "Created: $DMG ($(du -h "$DMG" | cut -f1))"
           done
 
       # -- Upload all to release ---------------------------------
@@ -795,6 +805,13 @@ jobs:
       - name: Import GPG key
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          # Verify at least one secret key was imported
+          KEY_COUNT=$(gpg --list-secret-keys --keyid-format SHORT 2>/dev/null | grep -c '^sec' || true)
+          if [ "$KEY_COUNT" -eq 0 ]; then
+            echo "::error::GPG key import failed — no secret keys found"
+            exit 1
+          fi
+          echo "GPG key imported successfully ($KEY_COUNT secret key(s))"
 
       - name: Download all release assets
         run: |
@@ -804,13 +821,20 @@ jobs:
       - name: Sign all assets
         run: |
           cd assets
+          SIGNED=0
           for file in *.msi *.deb *.rpm *.AppImage *.dmg *.app.tar.gz *.tar.xz *.zip *.apk; do
             if [ -f "$file" ]; then
-              gpg --batch --yes --pinentry-mode loopback \
-                --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
+              echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
                 --detach-sign --armor --output "${file}.sig" "$file"
+              SIGNED=$((SIGNED+1))
             fi
           done
+          if [ "$SIGNED" -eq 0 ]; then
+            echo "::error::No files were signed — check that release assets were downloaded"
+            exit 1
+          fi
+          echo "Signed $SIGNED file(s)"
 
       - name: Upload signatures
         run: gh release upload "$TAG" assets/*.sig --clobber --repo ${{ github.repository }}
@@ -825,7 +849,8 @@ jobs:
       - build-linux-packages
       - build-macos-dmg
       - build-android
-    if: ${{ always() && needs.host.result == 'success' && (needs.build-msi.result == 'skipped' || needs.build-msi.result == 'success') && (needs.build-linux-packages.result == 'skipped' || needs.build-linux-packages.result == 'success') && (needs.build-macos-dmg.result == 'skipped' || needs.build-macos-dmg.result == 'success') && (needs.build-android.result == 'skipped' || needs.build-android.result == 'success') }}
+      - sign-release
+    if: ${{ always() && needs.host.result == 'success' && (needs.build-msi.result == 'skipped' || needs.build-msi.result == 'success') && (needs.build-linux-packages.result == 'skipped' || needs.build-linux-packages.result == 'success') && (needs.build-macos-dmg.result == 'skipped' || needs.build-macos-dmg.result == 'success') && (needs.build-android.result == 'skipped' || needs.build-android.result == 'success') && (needs.sign-release.result == 'skipped' || needs.sign-release.result == 'success') }}
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -838,44 +863,83 @@ jobs:
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          cat > updater.json << EOF
-          {
-            "version": "${VERSION}",
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "windows-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi",
-                "signature": "${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi.sig"
-              },
-              "darwin-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg.sig"
-              },
-              "darwin-aarch64": {
-                "url": "${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg.sig"
-              },
-              "darwin-universal": {
-                "url": "${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg",
-                "signature": "${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg.sig"
-              },
-              "linux-x86_64": {
-                "url": "${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage",
-                "signature": "${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage.sig"
-              },
-              "linux-aarch64": {
-                "url": "${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage",
-                "signature": "${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage.sig"
-              },
-              "android": {
-                "url": "${BASE_URL}/gemacast-mobile.apk",
-                "signature": "${BASE_URL}/gemacast-mobile.apk.sig"
+          # Download all release artifacts to compute SHA-256 checksums.
+          mkdir -p dl
+          declare -A FILES=(
+            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi"
+            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg"
+            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg"
+            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg"
+            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage"
+            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage"
+            ["android"]="gemacast-mobile.apk"
+          )
+
+          declare -A SIGS=(
+            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi.sig"
+            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg.sig"
+            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg.sig"
+            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg.sig"
+            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage.sig"
+            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage.sig"
+            ["android"]="gemacast-mobile.apk.sig"
+          )
+
+          # Download each artifact and compute its SHA-256 hash.
+          declare -A HASHES
+          for platform in "${!FILES[@]}"; do
+            file="${FILES[$platform]}"
+            if gh release download "$TAG" --pattern "$file" --dir dl --repo "$REPO" 2>/dev/null; then
+              HASHES[$platform]=$(sha256sum "dl/$file" | cut -d' ' -f1)
+              echo "SHA-256 for $platform ($file): ${HASHES[$platform]}"
+            else
+              echo "WARNING: Could not download $file for $platform — omitting sha256"
+              HASHES[$platform]=""
+            fi
+          done
+
+          # Build the JSON using jq for proper escaping (avoids fragile heredoc whitespace)
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            --arg base_url "$BASE_URL" \
+            --arg win_file "${FILES[windows-x86_64]}" \
+            --arg win_sig "${SIGS[windows-x86_64]}" \
+            --arg win_hash "${HASHES[windows-x86_64]}" \
+            --arg dar_x64_file "${FILES[darwin-x86_64]}" \
+            --arg dar_x64_sig "${SIGS[darwin-x86_64]}" \
+            --arg dar_x64_hash "${HASHES[darwin-x86_64]}" \
+            --arg dar_arm_file "${FILES[darwin-aarch64]}" \
+            --arg dar_arm_sig "${SIGS[darwin-aarch64]}" \
+            --arg dar_arm_hash "${HASHES[darwin-aarch64]}" \
+            --arg dar_uni_file "${FILES[darwin-universal]}" \
+            --arg dar_uni_sig "${SIGS[darwin-universal]}" \
+            --arg dar_uni_hash "${HASHES[darwin-universal]}" \
+            --arg lin_x64_file "${FILES[linux-x86_64]}" \
+            --arg lin_x64_sig "${SIGS[linux-x86_64]}" \
+            --arg lin_x64_hash "${HASHES[linux-x86_64]}" \
+            --arg lin_arm_file "${FILES[linux-aarch64]}" \
+            --arg lin_arm_sig "${SIGS[linux-aarch64]}" \
+            --arg lin_arm_hash "${HASHES[linux-aarch64]}" \
+            --arg android_file "${FILES[android]}" \
+            --arg android_sig "${SIGS[android]}" \
+            --arg android_hash "${HASHES[android]}" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                "windows-x86_64": { url: "\($base_url)/\($win_file)", signature: "\($base_url)/\($win_sig)", sha256: $win_hash },
+                "darwin-x86_64":  { url: "\($base_url)/\($dar_x64_file)", signature: "\($base_url)/\($dar_x64_sig)", sha256: $dar_x64_hash },
+                "darwin-aarch64": { url: "\($base_url)/\($dar_arm_file)", signature: "\($base_url)/\($dar_arm_sig)", sha256: $dar_arm_hash },
+                "darwin-universal": { url: "\($base_url)/\($dar_uni_file)", signature: "\($base_url)/\($dar_uni_sig)", sha256: $dar_uni_hash },
+                "linux-x86_64":   { url: "\($base_url)/\($lin_x64_file)", signature: "\($base_url)/\($lin_x64_sig)", sha256: $lin_x64_hash },
+                "linux-aarch64":  { url: "\($base_url)/\($lin_arm_file)", signature: "\($base_url)/\($lin_arm_sig)", sha256: $lin_arm_hash },
+                "android":        { url: "\($base_url)/\($android_file)", signature: "\($base_url)/\($android_sig)", sha256: $android_hash }
               }
-            }
-          }
-          EOF
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' updater.json
+            }' > updater.json
+
+          echo "Generated updater.json:"
+          cat updater.json
 
       - name: Upload updater.json
         run: gh release upload "$TAG" updater.json --clobber --repo "$REPO"
@@ -915,31 +979,43 @@ jobs:
           else
             echo "" > current_changelog.md
           fi
-          
-          # Create new beautiful download matrix
-          cat << EOF > custom_header.md
-          ## Gemacast ${VERSION} Downloads
 
-          ### 🖥️ Desktop Installers
-          * **Windows**: [MSI Installer (x64)](${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi)
-          * **macOS (Universal)**: [DMG Installer](${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-universal-apple-darwin.app.tar.gz)
-          * **macOS (Apple Silicon)**: [DMG Installer](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.app.tar.gz)
-          * **macOS (Intel)**: [DMG Installer](${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-x64-apple-darwin.app.tar.gz)
-          * **Linux (Debian/Ubuntu)**: [amd64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_amd64.deb) | [arm64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_arm64.deb)
-          * **Linux (Fedora/RHEL)**: [x86_64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.x86_64.rpm) | [aarch64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.aarch64.rpm)
-          * **Linux (Portable)**: [x86_64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage) | [aarch64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage)
+          # Preserve the existing release body (contains cargo-dist checksum table)
+          EXISTING_BODY=$(gh release view "$TAG" --json body -q .body 2>/dev/null || echo "")
           
-          ### 📱 Mobile
-          * **Android**: [APK Installer](${BASE_URL}/gemacast-mobile.apk)
+          # Extract the cargo-dist checksum table if present
+          CHECKSUM_TABLE=""
+          if echo "$EXISTING_BODY" | grep -q "checksum"; then
+            CHECKSUM_TABLE=$(echo "$EXISTING_BODY" | sed -n '/^|.*checksum/I,$ p')
+          fi
 
-          ### 🔒 Security
-          All binaries are cryptographically signed. Download the corresponding \`.sig\` file to verify.
-
-          ---
+          # Create the download matrix — written via echo to avoid heredoc/YAML conflicts
+          {
+            echo "## Gemacast ${VERSION} Downloads"
+            echo ""
+            echo "### Desktop Installers"
+            echo "* **Windows**: [MSI Installer (x64)](${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi)"
+            echo "* **macOS (Universal)**: [DMG Installer](${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-universal-apple-darwin.app.tar.gz)"
+            echo "* **macOS (Apple Silicon)**: [DMG Installer](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.app.tar.gz)"
+            echo "* **macOS (Intel)**: [DMG Installer](${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-x64-apple-darwin.app.tar.gz)"
+            echo "* **Linux (Debian/Ubuntu)**: [amd64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_amd64.deb) | [arm64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_arm64.deb)"
+            echo "* **Linux (Fedora/RHEL)**: [x86_64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.x86_64.rpm) | [aarch64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.aarch64.rpm)"
+            echo "* **Linux (Portable)**: [x86_64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage) | [aarch64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage)"
+            echo ""
+            echo "### Mobile"
+            echo "* **Android**: [APK Installer](${BASE_URL}/gemacast-mobile.apk)"
+            echo ""
+            echo "### Security"
+            echo "All binaries are cryptographically signed. Download the corresponding \`.sig\` file to verify."
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Changelog"
+          } > custom_header.md
           
-          ### Changelog
-          EOF
-          
-          # Combine and update release
+          # Combine: download matrix + changelog + cargo-dist checksums
           cat custom_header.md current_changelog.md > new_notes.md
+          if [ -n "$CHECKSUM_TABLE" ]; then
+            printf "\n\n---\n\n### Checksums\n\n%s\n" "$CHECKSUM_TABLE" >> new_notes.md
+          fi
           gh release edit "$TAG" --notes-file new_notes.md --draft=false
