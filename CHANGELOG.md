@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/apirJS/gemacast/compare/v0.3.0...v0.3.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* deprecated syntax at install.rs, and change on test-intallers.yaml run condition ([2024944](https://github.com/apirJS/gemacast/commit/202494427f98194fc6af6d706ffa8a02e0af389d))
+
 ## [0.3.0](https://github.com/apirJS/gemacast/compare/v0.2.5...v0.3.0) (2026-06-28)
 
 
