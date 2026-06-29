@@ -48,7 +48,7 @@ jobs:
             archive_cmd: tar -cJf
             adb_files: "adb"
           - name: macos-x64
-            runner: macos-13
+            runner: macos-15
             target: x86_64-apple-darwin
             archive: gemacast-pc-x86_64-apple-darwin.tar.xz
             archive_cmd: tar -cJf
