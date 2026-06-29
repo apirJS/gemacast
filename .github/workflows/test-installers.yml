@@ -1039,7 +1039,7 @@ jobs:
           script: |
             echo "=== Emulator booted ==="
 
-            # Install the APK (unsigned/debug mode, --no-streaming for compatibility)
+            # Install the APK (debug-signed, --no-streaming for compatibility)
             adb install -t "$APK_PATH"
             echo "PASS: APK installed successfully"
 
@@ -1052,24 +1052,11 @@ jobs:
 
             # Verify the app process is running
             PID=$(adb shell pidof com.apir.gemacast || true)
-            if [ -n "$PID" ]; then
-              echo "PASS: App is running (PID $PID)"
-            else
-              echo "FAIL: App process not found"
-              # Check logcat for crash info
-              adb logcat -d -t 50 --pid=$(adb shell ps -A | grep gemacast | awk '{print $2}') 2>/dev/null || true
-              adb logcat -d -t 50 '*:E' 2>/dev/null | grep -i "gemacast\|fatal\|crash" || true
-              exit 1
-            fi
+            [ -n "$PID" ] && echo "PASS: App is running (PID $PID)" || { echo "FAIL: App process not found"; adb logcat -d -t 50 '*:E' 2>/dev/null | grep -i "gemacast\|fatal\|crash" || true; exit 1; }
 
             # Verify activity is in the task stack
             ACTIVITY_INFO=$(adb shell dumpsys activity activities 2>/dev/null | grep "com.apir.gemacast" | head -5)
-            if [ -n "$ACTIVITY_INFO" ]; then
-              echo "PASS: Activity found in activity stack"
-              echo "$ACTIVITY_INFO"
-            else
-              echo "WARN: Activity not found in activity stack (may be expected for background service apps)"
-            fi
+            [ -n "$ACTIVITY_INFO" ] && echo "PASS: Activity found in activity stack" && echo "$ACTIVITY_INFO" || echo "WARN: Activity not found in activity stack (may be expected for background service apps)"
 
             # Uninstall
             adb shell pm uninstall com.apir.gemacast
@@ -1077,12 +1064,7 @@ jobs:
 
             # Verify uninstall
             STILL_INSTALLED=$(adb shell pm list packages 2>/dev/null | grep "com.apir.gemacast" || true)
-            if [ -z "$STILL_INSTALLED" ]; then
-              echo "PASS: Package fully removed"
-            else
-              echo "FAIL: Package still listed after uninstall"
-              exit 1
-            fi
+            [ -z "$STILL_INSTALLED" ] && echo "PASS: Package fully removed" || { echo "FAIL: Package still listed after uninstall"; exit 1; }
 
             echo ""
             echo "All Android APK checks passed"
