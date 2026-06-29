@@ -545,8 +545,14 @@ jobs:
         run: |
           sudo apt-get install -y alien rpm
           DEB_FILE="gemacast-pc_${TEST_VERSION}_${{ matrix.arch }}.deb"
-          sudo alien --to-rpm --scripts "$DEB_FILE"
-          RPM_FILE=$(ls *.rpm | head -1)
+          # Generate the RPM build directory and spec file with correct target architecture
+          sudo alien --generate --to-rpm --target=${{ matrix.appimage_arch }} --scripts "$DEB_FILE"
+          SPEC_FILE=$(ls */*.spec | head -1)
+          # Add AutoReqProv: no to the spec file to prevent scraping x86_64 ADB dependencies on arm64
+          sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
+          # Build the RPM package from the modified spec file
+          sudo rpmbuild --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
+          RPM_FILE=$(ls */*.rpm | head -1)
           mv "$RPM_FILE" "gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
           echo "Built: gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
 
@@ -1106,8 +1112,8 @@ jobs:
           dnf update -y
           dnf install -y --setopt=strict=0 which xorg-x11-server-Xvfb xdotool zenity file libappindicator-gtk3 libayatana-appindicator android-tools
 
-          # Install RPM ignoring alien's x86_64 cross-arch dependencies
-          rpm -ivh --nodeps rpm_download/*.rpm
+          # Install RPM cleanly using dnf install
+          dnf install -y rpm_download/*.rpm
 
           ERRORS=0
 
