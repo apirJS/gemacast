@@ -17,45 +17,36 @@ import { useUpdateStore } from '../stores/update-store';
 export function useUpdater() {
   const store = useUpdateStore();
 
+  // --- Actions ---
+
+  const checkForUpdates = useCallback(async () => {
+    useUpdateStore.getState().setChecking();
+    try {
+      await tauriBridge.cleanupStaleUpdates();
+    } catch {
+      // Non-critical — ignore.
+    }
+
+    try {
+      const result = await tauriBridge.checkForUpdate();
+      if (result) {
+        useUpdateStore
+          .getState()
+          .setAvailable(result.version, result.downloadUrl, result.sha256 ?? null);
+      } else {
+        useUpdateStore.getState().setUpToDate();
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      useUpdateStore.getState().setError(message);
+      useToastStore.getState().show('error', 'Update check failed', message);
+    }
+  }, []);
+
   // --- Check for updates on first mount (only if still idle) ---
   useEffect(() => {
     if (store.status !== 'idle') return;
-
-    let cancelled = false;
-
-    async function check() {
-      // Clean up any stale APKs from previous sessions.
-      try {
-        await tauriBridge.cleanupStaleUpdates();
-      } catch {
-        // Non-critical — ignore.
-      }
-
-      useUpdateStore.getState().setChecking();
-
-      try {
-        const result = await tauriBridge.checkForUpdate();
-        if (cancelled) return;
-
-        if (result) {
-          useUpdateStore
-            .getState()
-            .setAvailable(result.version, result.downloadUrl, result.sha256 ?? null);
-        } else {
-          useUpdateStore.getState().setUpToDate();
-        }
-      } catch (e) {
-        if (cancelled) return;
-        const message = e instanceof Error ? e.message : String(e);
-        useUpdateStore.getState().setError(message);
-        useToastStore.getState().show('warning', `Update check failed: ${message}`);
-      }
-    }
-
-    check();
-    return () => {
-      cancelled = true;
-    };
+    checkForUpdates();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on first mount when idle
   }, []);
 
@@ -70,8 +61,6 @@ export function useUpdater() {
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
-
-  // --- Actions ---
 
   const startDownload = useCallback(async () => {
     const { status, downloadUrl, sha256, version } = useUpdateStore.getState();
@@ -97,7 +86,7 @@ export function useUpdater() {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       useUpdateStore.getState().setError(message);
-      useToastStore.getState().show('error', `Download failed: ${message}`);
+      useToastStore.getState().show('error', 'Download failed', message);
     } finally {
       unlisten();
     }
@@ -117,7 +106,7 @@ export function useUpdater() {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       useUpdateStore.getState().setError(message);
-      useToastStore.getState().show('error', `Install failed: ${message}`);
+      useToastStore.getState().show('error', 'Install failed', message);
     }
   }, []);
 
@@ -128,6 +117,7 @@ export function useUpdater() {
 
   return {
     state: store,
+    checkForUpdates,
     startDownload,
     installUpdate,
     retry,

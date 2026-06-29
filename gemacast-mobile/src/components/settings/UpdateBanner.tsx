@@ -2,11 +2,21 @@ import { useUpdater } from '../../hooks/use-updater';
 import { Download, RefreshCw, CheckCircle, AlertTriangle, RotateCcw } from 'lucide-react';
 
 export function UpdateBanner() {
-  const { state, startDownload, installUpdate, retry } = useUpdater();
+  const { state, checkForUpdates, startDownload, installUpdate, retry } = useUpdater();
 
-  // Don't render anything when up-to-date or idle.
   if (state.status === 'up-to-date' || state.status === 'idle') {
-    return null;
+    return (
+      <div className="mb-4 flex items-center justify-between rounded-xl border border-border bg-accent/10 p-4">
+        <span className="text-[0.85rem] text-muted-foreground">App is up to date</span>
+        <button
+          onClick={checkForUpdates}
+          className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[0.8rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:bg-accent/80"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          Check
+        </button>
+      </div>
+    );
   }
 
   return (

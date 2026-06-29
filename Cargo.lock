@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "audioadapter-buffers",
  "axum",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-mobile"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-pc"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-trait",
  "embed-manifest",

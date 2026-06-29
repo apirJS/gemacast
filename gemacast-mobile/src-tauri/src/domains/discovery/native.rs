@@ -18,14 +18,14 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
             #[cfg(target_os = "android")]
             {
                 let transport_info_tx = transport_info_tx.clone();
-                let _ = webview.jni_handle().exec(move |env, context, _webview| {
+                webview.jni_handle().exec(move |env, context, _webview| {
                     let result = (|| -> Result<String, String> {
                         let _class = env
-                            .get_object_class(&context)
+                            .get_object_class(context)
                             .map_err(|e| format!("Failed to get Activity class: {}", e))?;
 
                         let transport_obj = env
-                            .call_method(&context, "getTransportType", "()Ljava/lang/String;", &[])
+                            .call_method(context, "getTransportType", "()Ljava/lang/String;", &[])
                             .map_err(|e| {
                                 format!("Failed to call getTransportType on Activity: {}", e)
                             })?;
@@ -72,10 +72,10 @@ pub fn call_native_sync_service(
         .with_webview(move |webview| {
             #[cfg(target_os = "android")]
             {
-                let _ = webview.jni_handle().exec(move |env, context, _webview| {
+                webview.jni_handle().exec(move |env, context, _webview| {
                     let action_jstr = env.new_string(&action_str).unwrap();
                     let _ = env.call_method(
-                        &context,
+                        context,
                         "syncServiceState",
                         "(Ljava/lang/String;Z)V",
                         &[

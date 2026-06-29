@@ -136,6 +136,11 @@ gemacast-core
     │   └── types.rs
     ├── lib.rs
     ├── network
+    │   ├── adb
+    │   │   ├── framer.rs
+    │   │   ├── mod.rs
+    │   │   ├── reverse.rs
+    │   │   └── server.rs
     │   ├── interface.rs
     │   ├── mod.rs
     │   └── ports.rs
@@ -159,7 +164,9 @@ gemacast-core
     │       ├── encode.rs
     │       ├── engine.rs
     │       └── mod.rs
-    └── testing.rs
+    ├── testing.rs
+    └── updater
+        └── mod.rs
 ```
 
 ### `src/domain/`
@@ -205,3 +212,7 @@ Low-level networking utilities.
 - `interface.rs`: IP resolution, local interface detection, and Android USB tethering IP classification.
 - `adb/`: Logic specific to ADB reverse port forwarding and multiplexing.
 - `ports.rs`: Defines the standard port numbers used by Gemacast services.
+
+### `src/updater/`
+Logic for checking and downloading application updates using the latest `updater.json` manifest.
+- `mod.rs`: Handles HTTP requests to the release server, parses the update manifest, and streams the downloaded binary.

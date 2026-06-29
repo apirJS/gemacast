@@ -197,6 +197,11 @@ impl CommandHandler {
             }
             let file_path = dir.join(filename);
 
+            if file_path.exists() {
+                tray.notify_update_ready(info.version, file_path);
+                return;
+            }
+
             match gemacast_core::updater::download_update(
                 &info.download_url,
                 &file_path,
