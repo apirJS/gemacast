@@ -62,8 +62,6 @@ export function useUpdater() {
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
-
-
   const startDownload = useCallback(async () => {
     const { status, downloadUrl, sha256, version } = useUpdateStore.getState();
     if (status !== 'available' || !downloadUrl || !version) return;
