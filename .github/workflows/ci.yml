@@ -84,6 +84,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy Android
         if: matrix.os == 'ubuntu-22.04'
-        run: cargo clippy --workspace --exclude gemacast-pc --target aarch64-linux-android -- -D warnings
+        run: |
+          cargo install cargo-ndk
+          cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
       - name: Cargo Test
         run: cargo test --workspace
