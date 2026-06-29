@@ -78,13 +78,21 @@ fn local_adb_path() -> std::path::PathBuf {
         && let Some(dir) = exe.parent()
     {
         let local = dir.join(adb_name);
-        if local.exists() && std::process::Command::new(&local).arg("version").output().is_ok() {
+        if local.exists()
+            && std::process::Command::new(&local)
+                .arg("version")
+                .output()
+                .is_ok()
+        {
             return local;
         }
     }
     #[cfg(target_os = "linux")]
     if std::path::Path::new("/usr/lib/gemacast/adb").exists()
-        && std::process::Command::new("/usr/lib/gemacast/adb").arg("version").output().is_ok()
+        && std::process::Command::new("/usr/lib/gemacast/adb")
+            .arg("version")
+            .output()
+            .is_ok()
     {
         return std::path::PathBuf::from("/usr/lib/gemacast/adb");
     }
