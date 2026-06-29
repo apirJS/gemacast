@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/apirJS/gemacast/compare/v0.3.1...v0.3.2) (2026-06-28)
+
+
+### Bug Fixes
+
+* cargo syntax issue ([3877c41](https://github.com/apirJS/gemacast/commit/3877c41bef71ca337de81701c5fccdcad95169de))
+
 ## [0.3.1](https://github.com/apirJS/gemacast/compare/v0.3.0...v0.3.1) (2026-06-28)
 
 
