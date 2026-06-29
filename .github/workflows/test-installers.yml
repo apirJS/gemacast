@@ -998,7 +998,7 @@ jobs:
 
       - name: Build APK via Tauri (debug-signed for emulator testing)
         working-directory: ./gemacast-mobile
-        run: bunx tauri android build --apk -- --debug
+        run: bunx tauri android build --apk --debug
 
       - name: Locate and verify APK
         id: apk
