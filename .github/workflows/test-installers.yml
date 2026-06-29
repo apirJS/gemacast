@@ -68,6 +68,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -94,7 +96,7 @@ jobs:
           # CMake is pre-installed on Windows runners via Visual Studio
 
       - name: Build gemacast-pc (release)
-        run: cargo build --release --package gemacast-pc
+        run: cargo build --release --package gemacast-pc --target ${{ matrix.target }}
 
       - name: Stage archive contents
         shell: bash
@@ -104,9 +106,9 @@ jobs:
 
           # Copy the binary
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp target/release/gemacast-pc.exe "$STAGE_DIR/"
+            cp target/${{ matrix.target }}/release/gemacast-pc.exe "$STAGE_DIR/"
           else
-            cp target/release/gemacast-pc "$STAGE_DIR/"
+            cp target/${{ matrix.target }}/release/gemacast-pc "$STAGE_DIR/"
           fi
 
           # Copy ADB files from the crate root (downloaded by build.rs)
@@ -314,6 +316,7 @@ jobs:
             exit 1
           }
           Write-Host "`nAll installation checks passed"
+          exit 0
 
       - name: Uninstall MSI silently
         shell: pwsh
@@ -365,6 +368,7 @@ jobs:
             exit 1
           }
           Write-Host "`nAll uninstall checks passed"
+          exit 0
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Test Linux packages: .deb, .rpm, .AppImage for amd64 and arm64
@@ -410,7 +414,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libfuse2 file libayatana-appindicator3-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
+            libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libxdo-dev
 
       # ── .deb ────────────────────────────────────────────────────────────────
       - name: Build .deb package
