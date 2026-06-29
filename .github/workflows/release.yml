@@ -55,7 +55,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -112,7 +112,7 @@ jobs:
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -194,7 +194,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -244,7 +244,7 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -314,7 +314,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -437,7 +437,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -509,9 +509,21 @@ jobs:
         run: |
           sudo apt-get install -y alien rpm
           DEB_FILE="gemacast-pc_${VERSION}_${{ matrix.arch }}.deb"
-          sudo alien --to-rpm --scripts "$DEB_FILE"
-          # alien names it something like gemacast-pc-VERSION.ARCH.rpm
-          RPM_FILE=$(ls *.rpm | head -1)
+          # Generate the RPM build directory and spec file with correct target architecture
+          sudo alien --generate --to-rpm --target=${{ matrix.appimage_arch }} --scripts "$DEB_FILE"
+          SPEC_FILE=$(find . -name '*.spec' | head -1)
+          # Add AutoReqProv: no to prevent scraping x86_64 ADB dependencies on arm64
+          sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
+          # Build the RPM package from the modified spec file
+          BUILD_DIR=$(dirname "$SPEC_FILE")
+          RPMBUILD_OUT=$(sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE" 2>&1)
+          echo "$RPMBUILD_OUT"
+          # Parse the output path from rpmbuild's "Wrote:" line (rpmbuild may write to ../ or a subdirectory)
+          RPM_FILE=$(echo "$RPMBUILD_OUT" | grep '^Wrote:' | awk '{print $2}' | head -1)
+          if [ -z "$RPM_FILE" ] || [ ! -f "$RPM_FILE" ]; then
+            echo "::error::rpmbuild did not produce an RPM file (parsed: '$RPM_FILE')"
+            exit 1
+          fi
           mv "$RPM_FILE" "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
           echo "Built: gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
 
@@ -571,12 +583,12 @@ jobs:
       - plan
       - host
     if: ${{ needs.host.result == 'success' }}
-    runs-on: macos-latest
+    runs-on: macos-15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -697,7 +709,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -724,7 +736,7 @@ jobs:
       
       - name: Install Pinned NDK & Build Tools
         run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;29.0.3"
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
 
@@ -768,6 +780,8 @@ jobs:
           alias: ${{ secrets.ANDROID_KEY_ALIAS }}
           keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
 
       - name: Rename Signed APK
         run: |
@@ -962,7 +976,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
