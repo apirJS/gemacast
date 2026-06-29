@@ -552,11 +552,12 @@ jobs:
           sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
           # Build the RPM package from the modified spec file using alien's unpacked buildroot
           BUILD_DIR=$(dirname "$SPEC_FILE")
-          sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
-          RPM_FILE=$(find . -name '*.rpm' -not -name '*.src.rpm' | head -1)
-          if [ -z "$RPM_FILE" ]; then
-            echo "::error::rpmbuild did not produce an RPM file"
-            find . -name '*.rpm' -ls
+          RPMBUILD_OUT=$(sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE" 2>&1)
+          echo "$RPMBUILD_OUT"
+          # Parse the output path from rpmbuild's "Wrote:" line (rpmbuild may write to ../ or a subdirectory)
+          RPM_FILE=$(echo "$RPMBUILD_OUT" | grep '^Wrote:' | awk '{print $2}' | head -1)
+          if [ -z "$RPM_FILE" ] || [ ! -f "$RPM_FILE" ]; then
+            echo "::error::rpmbuild did not produce an RPM file (parsed: '$RPM_FILE')"
             exit 1
           fi
           mv "$RPM_FILE" "gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
