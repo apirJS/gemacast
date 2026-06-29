@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.3](https://github.com/apirJS/gemacast/compare/v0.3.2...v0.3.3) (2026-06-29)
+
+
+### Bug Fixes
+
+* **ci:** fix RPM build by locating output in arch subdirectory ([27c9c19](https://github.com/apirJS/gemacast/commit/27c9c198871068a9201598e532f0403f05dafbbf))
+* **gemacast-core:** missing feature dep for reqwest, and rust formatter issue ([a3f807a](https://github.com/apirJS/gemacast/commit/a3f807a0ce0a40b6c5acdc9719aca2541ad4f89c))
+* **pc:** make ADB path resolution robust for Linux packages and fix Fedora RPM CI checks [skip ci] ([09e82db](https://github.com/apirJS/gemacast/commit/09e82db05903929e831cfef0037025141fff3aab))
+
 ## [0.3.2](https://github.com/apirJS/gemacast/compare/v0.3.1...v0.3.2) (2026-06-28)
 
 
