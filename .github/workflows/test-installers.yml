@@ -1102,9 +1102,12 @@ jobs:
 
       - name: Install RPM and verify
         run: |
-          # Install necessary test tools and the RPM package
+          # Install necessary test tools, appindicator libs, and android-tools
           dnf update -y
-          dnf install -y which xorg-x11-server-Xvfb xdotool zenity file rpm_download/*.rpm
+          dnf install -y --setopt=strict=0 which xorg-x11-server-Xvfb xdotool zenity file libappindicator-gtk3 libayatana-appindicator android-tools
+
+          # Install RPM ignoring alien's x86_64 cross-arch dependencies
+          rpm -ivh --nodeps rpm_download/*.rpm
 
           ERRORS=0
 
