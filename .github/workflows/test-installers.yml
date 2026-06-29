@@ -552,8 +552,8 @@ jobs:
           sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
           # Build the RPM package from the modified spec file using alien's unpacked buildroot
           BUILD_DIR=$(dirname "$SPEC_FILE")
-          sudo rpmbuild --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
-          RPM_FILE=$(ls */*.rpm | head -1)
+          sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
+          RPM_FILE=$(ls *.rpm | head -1)
           mv "$RPM_FILE" "gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
           echo "Built: gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
 
