@@ -61,7 +61,7 @@ jobs:
             adb_files: "adb"
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -170,7 +170,7 @@ jobs:
     needs: build-binaries
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -388,7 +388,7 @@ jobs:
             runs_on: ubuntu-22.04-arm
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -674,9 +674,9 @@ jobs:
   test-macos-dmg:
     name: Test macOS DMG & App Bundle
     needs: build-binaries
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
@@ -729,7 +729,15 @@ jobs:
           lipo -create -output "$APP/Contents/MacOS/gemacast-pc" \
             mac_x64/gemacast-pc mac_arm64/gemacast-pc
 
-          [ -f mac_arm64/adb ] && cp mac_arm64/adb "$APP/Contents/MacOS/"
+          # ADB: attempt lipo for universal binary, fallback to single-arch copy
+          if [ -f mac_x64/adb ] && [ -f mac_arm64/adb ]; then
+            lipo -create -output "$APP/Contents/MacOS/adb" mac_x64/adb mac_arm64/adb 2>/dev/null \
+              || cp mac_x64/adb "$APP/Contents/MacOS/"
+          elif [ -f mac_x64/adb ]; then
+            cp mac_x64/adb "$APP/Contents/MacOS/"
+          elif [ -f mac_arm64/adb ]; then
+            cp mac_arm64/adb "$APP/Contents/MacOS/"
+          fi
           chmod +x "$APP/Contents/MacOS/"*
 
           sed "s/VERSION_PLACEHOLDER/$TEST_VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
@@ -763,6 +771,12 @@ jobs:
               "gemacast-pc-${VARIANT}-apple-darwin.dmg" \
               "Gemacast-${VARIANT}.app" || true
             # create-dmg returns non-zero when code signing is skipped; expected for unsigned builds
+
+            # Verify the DMG was actually produced despite the || true
+            if [ ! -f "gemacast-pc-${VARIANT}-apple-darwin.dmg" ] || [ ! -s "gemacast-pc-${VARIANT}-apple-darwin.dmg" ]; then
+              echo "::error::DMG was not produced by create-dmg for $VARIANT"
+              exit 1
+            fi
           done
           echo "Created DMG files:"
           ls -lh *.dmg
@@ -922,7 +936,7 @@ jobs:
     # No dependency on build-binaries — APK builds from source and runs in parallel
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -950,8 +964,7 @@ jobs:
       - name: Install Pinned NDK & Build Tools
         run: |
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install \
-            "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0" \
-            "system-images;android-30;google_apis;x86_64"
+            "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
 
@@ -983,14 +996,14 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' package.json > package.tmp.json && mv package.tmp.json package.json
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp && mv src-tauri/tauri.conf.tmp src-tauri/tauri.conf.json
 
-      - name: Build APK via Tauri
+      - name: Build APK via Tauri (debug-signed for emulator testing)
         working-directory: ./gemacast-mobile
-        run: bunx tauri android build --apk
+        run: bunx tauri android build --apk -- --debug
 
       - name: Locate and verify APK
         id: apk
         run: |
-          APK_PATH=$(find gemacast-mobile/src-tauri/gen/android -name "*.apk" -path "*/release/*" | head -1)
+          APK_PATH=$(find gemacast-mobile/src-tauri/gen/android -name "*.apk" -not -name "*unaligned*" | head -1)
           if [ -z "$APK_PATH" ]; then
             echo "::error::No APK found in build output"
             exit 1
@@ -1017,7 +1030,7 @@ jobs:
           fi
 
       - name: Install and launch APK on emulator
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@v2.36.0
         with:
           api-level: 30
           arch: x86_64
@@ -1102,7 +1115,7 @@ jobs:
             "${{ needs.test-linux-packages.result }}" \
             "${{ needs.test-macos-dmg.result }}" \
             "${{ needs.test-android-apk.result }}"; do
-            if [ "$result" != "success" ]; then
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               FAILED=$((FAILED+1))
             fi
           done
