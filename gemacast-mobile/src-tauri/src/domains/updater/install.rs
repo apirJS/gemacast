@@ -20,7 +20,7 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
 
     webview_window
         .with_webview(move |webview| {
-            webview.jni_handle().exec(move |mut env, activity, _webview| {
+            webview.jni_handle().exec(move |env, activity, _webview| {
                 let mut run_jni = || -> Result<(), String> {
                     // Steps:
                     //   1. Create a java.io.File from the path
