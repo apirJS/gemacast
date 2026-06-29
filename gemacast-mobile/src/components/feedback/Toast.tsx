@@ -69,7 +69,7 @@ export function Toast({ toast }: { toast: ToastType }) {
           }}
         >
           <h3 className="mb-3 text-base font-semibold">Error Details</h3>
-          <div className="mb-4 max-h-[50vh] overflow-y-auto rounded-[var(--radius-default)] bg-secondary p-3 text-xs whitespace-pre-wrap font-mono">
+          <div className="mb-4 min-h-[100px] max-h-[50vh] overflow-x-auto overflow-y-auto rounded-[var(--radius-default)] bg-secondary p-3 text-xs whitespace-pre font-mono">
             {toast.fullLog}
           </div>
           <button

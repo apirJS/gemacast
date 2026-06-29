@@ -128,7 +128,8 @@ gemacast-mobile
 │   │   │   ├── SettingsDrawer.test.tsx
 │   │   │   ├── SettingsDrawer.tsx
 │   │   │   ├── ThemeToggle.test.tsx
-│   │   │   └── ThemeToggle.tsx
+│   │   │   ├── ThemeToggle.tsx
+│   │   │   └── UpdateBanner.tsx
 │   │   └── shared
 │   │       ├── ConfirmDialog.test.tsx
 │   │       ├── ConfirmDialog.tsx
@@ -167,14 +168,16 @@ gemacast-mobile
 │   │   ├── use-manual-connect.ts
 │   │   ├── use-network-monitor.ts
 │   │   ├── use-settings.ts
-│   │   └── use-tauri-events.ts
+│   │   ├── use-tauri-events.ts
+│   │   └── use-updater.ts
 │   ├── index.css
 │   ├── main.tsx
 │   └── stores
 │       ├── app-store.test.ts
 │       ├── app-store.ts
 │       ├── toast-store.test.ts
-│       └── toast-store.ts
+│       ├── toast-store.ts
+│       └── update-store.ts
 ├── src-tauri
 │   ├── .gitignore
 │   ├── Cargo.toml
@@ -228,6 +231,10 @@ gemacast-mobile
 │   │   │   ├── ipc
 │   │   │   │   ├── mod.rs
 │   │   │   │   └── server.rs
+│   │   │   ├── updater
+│   │   │   │   ├── commands.rs
+│   │   │   │   ├── install.rs
+│   │   │   │   └── mod.rs
 │   │   │   └── mod.rs
 │   │   ├── lib.rs
 │   │   ├── main.rs
@@ -262,10 +269,12 @@ gemacast-mobile
 - **`stores/`**:
   - `app-store.ts`: The primary Zustand store managing the entire application state (discovered senders, connection status, latency stats, settings).
   - `toast-store.ts`: Manages temporary toast notifications.
+  - `update-store.ts`: Manages application update states (available, downloading, installing, ready).
 - **`hooks/`**:
   - `use-connection.ts`: Orchestrates the complex logic of connecting, disconnecting, and handling timeouts/errors.
   - `use-audio.ts`: Handles local playback state (starting/stopping the Oboe audio stream without tearing down the connection).
   - `use-discovery.ts`: Triggers the backend sender discovery service.
+  - `use-updater.ts`: Coordinates checking for and triggering application updates.
 - **`components/`**:
   - Modular UI components organized by feature (`device/`, `senders/`, `layout/`, `settings/`, `feedback/`).
   - `layout/AppShell.tsx`: The main structural layout of the mobile UI.
@@ -282,6 +291,9 @@ Contains domain logic that is decoupled from Tauri-specific I/O, making it fully
   - `commands.rs`: Thin `#[tauri::command]` wrappers that extract state and delegate to `AudioService`.
 - **`discovery/`**:
   - `service.rs`: Resolves network identities, IPs, and classifies available transports (Wi-Fi, USB, ADB) by reading from `NetworkInfoProvider` and `PlatformService`.
+- **`updater/`**:
+  - `commands.rs`: `#[tauri::command]` handlers for checking and downloading updates.
+  - `install.rs`: Android-specific logic to trigger APK installation.
 
 #### `traits.rs` (I/O Abstractions)
 Defines the boundaries of the Hexagonal architecture.

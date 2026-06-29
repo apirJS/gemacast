@@ -203,6 +203,7 @@ impl TrayManager {
 
     /// Show an "Update failed — click to retry" item at the top of the menu.
     pub fn show_update_failed(&mut self) {
+        self.remove_update_item();
         self.remove_update_failed_item();
 
         let item = MenuItem::new("Update failed — click to retry", true, None);
