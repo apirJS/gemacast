@@ -553,7 +553,12 @@ jobs:
           # Build the RPM package from the modified spec file using alien's unpacked buildroot
           BUILD_DIR=$(dirname "$SPEC_FILE")
           sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
-          RPM_FILE=$(ls *.rpm | head -1)
+          RPM_FILE=$(find . -name '*.rpm' -not -name '*.src.rpm' | head -1)
+          if [ -z "$RPM_FILE" ]; then
+            echo "::error::rpmbuild did not produce an RPM file"
+            find . -name '*.rpm' -ls
+            exit 1
+          fi
           mv "$RPM_FILE" "gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
           echo "Built: gemacast-pc-${TEST_VERSION}.${{ matrix.appimage_arch }}.rpm"
 
@@ -876,11 +881,9 @@ jobs:
           # Mount
           MOUNT_OUTPUT=$(hdiutil attach "$DMG" -nobrowse -noverify 2>&1)
           echo "$MOUNT_OUTPUT"
-          MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep '/Volumes/' | awk '{print $NF}')
-
+          MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -o '/Volumes/[^ ]*' | tail -1)
           if [ -z "$MOUNT_POINT" ]; then
-            # Try alternative parsing
-            MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | tail -1 | sed 's/.*\(\/Volumes\/.*\)/\1/')
+            MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | sed -n 's|.*\(/Volumes/.*\)|\1|p' | tail -1)
           fi
 
           echo "Mounted at: $MOUNT_POINT"
@@ -956,6 +959,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           submodules: recursive
 
       - name: Setup Bun

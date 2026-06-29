@@ -509,9 +509,19 @@ jobs:
         run: |
           sudo apt-get install -y alien rpm
           DEB_FILE="gemacast-pc_${VERSION}_${{ matrix.arch }}.deb"
-          sudo alien --to-rpm --scripts "$DEB_FILE"
-          # alien names it something like gemacast-pc-VERSION.ARCH.rpm
-          RPM_FILE=$(ls *.rpm | head -1)
+          # Generate the RPM build directory and spec file with correct target architecture
+          sudo alien --generate --to-rpm --target=${{ matrix.appimage_arch }} --scripts "$DEB_FILE"
+          SPEC_FILE=$(find . -name '*.spec' | head -1)
+          # Add AutoReqProv: no to prevent scraping x86_64 ADB dependencies on arm64
+          sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
+          # Build the RPM package from the modified spec file
+          BUILD_DIR=$(dirname "$SPEC_FILE")
+          sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE"
+          RPM_FILE=$(find . -name '*.rpm' -not -name '*.src.rpm' | head -1)
+          if [ -z "$RPM_FILE" ]; then
+            echo "::error::rpmbuild did not produce an RPM file"
+            exit 1
+          fi
           mv "$RPM_FILE" "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
           echo "Built: gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
 
