@@ -68,7 +68,7 @@ impl PresenceProvider for PcPresenceProvider {
 ///
 /// On Windows this is `<exe_dir>/adb.exe`, on other platforms `<exe_dir>/adb`.
 /// Falls back to bare `"adb"` (PATH lookup) if the exe directory cannot be determined.
-fn local_adb_path() -> std::path::PathBuf {
+pub(crate) fn local_adb_path() -> std::path::PathBuf {
     let adb_name = if cfg!(target_os = "windows") {
         "adb.exe"
     } else {
