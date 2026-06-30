@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/apirJS/gemacast/compare/v0.3.4...v0.4.0) (2026-06-30)
+
+
+### Features
+
+* launch app on startup ([#32](https://github.com/apirJS/gemacast/issues/32)) ([7286095](https://github.com/apirJS/gemacast/commit/72860955142ee089607489b13e3946fffc7552f2))
+
 ## [0.3.4](https://github.com/apirJS/gemacast/compare/v0.3.3...v0.3.4) (2026-06-29)
 
 
