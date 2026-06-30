@@ -30,7 +30,7 @@ The application architecture strictly separates the UI event loop from asynchron
 
 ### Key Workflows
 
-- **Startup**: `main()` starts the `tao` event loop (`app::run()`), spawns the background engine on a separate thread, and initializes the tray icon. The background engine spins up its UDP listeners, HTTP control servers, ADB servers, audio engine, and watchdog tasks, wiring them together using channels wrapped in production adapters.
+- **Startup**: `main()` starts the `tao` event loop (`app::run()`), spawns the background engine on a separate thread, and initializes the tray icon. It installs a global panic hook (`crash_log`), parses the user configuration (`config`), and ensures the app is correctly registered for OS autostart (`autostart`). A one-time welcome dialog is displayed on first run. The background engine spins up its UDP listeners, HTTP control servers, ADB servers, audio engine, and watchdog tasks, wiring them together using channels wrapped in production adapters.
 - **Device Connection**: 
   - A device discovers the PC and sends an HTTP `Connect` command.
   - The `ControlDispatcher` handles the command, registers the device in the `DeviceRegistry`, and updates the tray (`TrayEvent::DiscoveredDevice`).
@@ -61,7 +61,10 @@ gemacast-pc
     │   └── tray.rs
     ├── adapters.rs
     ├── app.rs
+    ├── autostart.rs
     ├── background.rs
+    ├── config.rs
+    ├── crash_log.rs
     ├── events.rs
     ├── main.rs
     ├── state.rs
@@ -89,9 +92,12 @@ gemacast-pc
 - **`build.rs`**: Build script that embeds a Windows application manifest (fixing a `tray-icon` crash) and automatically downloads and extracts the correct ADB binaries (platform-tools) for the target OS during compilation.
 
 ### Source Files (`src/`)
-- **`main.rs`**: Application entry point. Initializes tracing and launches the tray event loop.
-- **`app.rs`**: Contains the `tao` event loop for the UI. Handles system termination signals, tray menu events, and processes incoming `TrayEvent`s from the background thread.
+- **`main.rs`**: Application entry point. Initializes crash logging, reads user config, sets up autostart, displays the welcome dialog, and launches the tray event loop.
+- **`app.rs`**: Contains the `tao` event loop for the UI. Handles system termination signals, tray menu events, persists settings, and processes incoming `TrayEvent`s from the background thread.
+- **`autostart.rs`**: Cross-platform utilities for registering the app to run at system startup (e.g., Windows Registry, Linux `.desktop`, macOS LaunchAgents).
 - **`background.rs`**: The core setup for the background engine. It creates the Tokio runtime, shared state, channels, instantiates production trait adapters, and spawns all async background tasks into a `JoinSet`.
+- **`config.rs`**: Handles loading, saving, and managing the `config.json` preferences file in the user's data directory.
+- **`crash_log.rs`**: Implements a global panic hook that writes detailed crash dumps (including backtraces) to disk, with automatic log rotation.
 - **`events.rs`**: Defines the inter-thread communication enums: `TrayEvent` (Background -> UI) and `AppCommand` (UI -> Background).
 - **`state.rs`**: Implements `SharedMapDeviceRegistry`, a thread-safe registry (`Arc<Mutex<HashMap>>`) of all connected devices.
 - **`tray.rs`**: Manages the creation and dynamic updating of the system tray icon and its context menu (adding/removing check-marked devices).

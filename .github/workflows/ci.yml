@@ -43,10 +43,23 @@ jobs:
         run: bun test
 
   backend:
-    name: Backend Checks (Rust)
+    name: Backend Checks (${{ matrix.name }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest]
+        include:
+          - name: Linux PC
+            os: ubuntu-22.04
+            target: pc
+          - name: Linux Android
+            os: ubuntu-22.04
+            target: android
+          - name: Windows PC
+            os: windows-latest
+            target: pc
+          - name: macOS PC
+            os: macos-15
+            target: pc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -54,7 +67,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+      - name: Add Android targets
+        if: matrix.target == 'android'
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
       - name: Install Linux Dependencies
@@ -63,16 +78,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev
       - name: Setup Java
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.target == 'android'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       - name: Setup Android SDK & NDK
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.target == 'android'
         uses: android-actions/setup-android@v3
       - name: Install Pinned NDK & Build Tools
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.target == 'android'
         run: |
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
@@ -80,12 +95,14 @@ jobs:
           echo "BUILD_TOOLS_VERSION=34.0.0" >> $GITHUB_ENV
       - name: Rustfmt
         run: cargo fmt --check
-      - name: Clippy
+      - name: Clippy PC
+        if: matrix.target == 'pc'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy Android
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.target == 'android'
         run: |
           cargo install cargo-ndk
           cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
       - name: Cargo Test
+        if: matrix.target == 'pc'
         run: cargo test --workspace

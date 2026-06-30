@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "audioadapter-buffers",
  "axum",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-mobile"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1821,9 +1821,10 @@ dependencies = [
 
 [[package]]
 name = "gemacast-pc"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "async-trait",
+ "dirs",
  "embed-manifest",
  "fs2",
  "futures-util",
@@ -1842,6 +1843,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "whoami",
+ "winreg",
 ]
 
 [[package]]

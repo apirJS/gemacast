@@ -48,6 +48,8 @@ pub struct TrayManager {
     pub quit_menu_item: MenuItem,
     /// Manual "Check for Updates" menu item (always visible).
     pub check_update_menu_item: MenuItem,
+    /// Toggle for launching the app automatically on system startup.
+    pub launch_on_startup_item: CheckMenuItem,
     /// The "Install Update" menu item, shown only when a download is ready.
     pub update_menu_item: Option<MenuItem>,
     /// Separator placed after the update item (removed together with it).
@@ -66,6 +68,12 @@ impl TrayManager {
         let connected_devices_submenu = Submenu::new("Connected Phones", true);
         let no_devices_placeholder = MenuItem::new("No devices connected yet", false, None);
         let check_update_menu_item = MenuItem::new("Check for Updates", true, None);
+        let launch_on_startup_item = CheckMenuItem::new(
+            "Launch on Startup",
+            true,
+            crate::autostart::is_autostart_enabled(),
+            None,
+        );
         let quit_menu_item = MenuItem::new("quit", true, None);
 
         let _ = connected_devices_submenu.append(&no_devices_placeholder);
@@ -75,6 +83,7 @@ impl TrayManager {
         let _ = tray_menu.append(&connected_devices_submenu);
         let _ = tray_menu.append(&PredefinedMenuItem::separator());
         let _ = tray_menu.append(&check_update_menu_item);
+        let _ = tray_menu.append(&launch_on_startup_item);
         let _ = tray_menu.append(&quit_menu_item);
 
         let mut builder = TrayIconBuilder::new()
@@ -97,6 +106,7 @@ impl TrayManager {
             broadcast_toggle_item,
             quit_menu_item,
             check_update_menu_item,
+            launch_on_startup_item,
             update_menu_item: None,
             update_separator: None,
             update_failed_menu_item: None,
