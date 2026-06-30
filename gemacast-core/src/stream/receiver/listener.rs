@@ -190,7 +190,7 @@ impl AudioStreamReceiver {
 
         #[cfg(target_os = "android")]
         {
-            use oboe::AudioStream;
+            use oboe::{AudioStream, AudioStreamSafe};
             match &mut self.playback_stream {
                 PlaybackStream::Oboe(stream) => {
                     let burst = stream.get_frames_per_burst();
