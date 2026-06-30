@@ -313,6 +313,23 @@ fn handle_menu_event(
         return;
     }
 
+    // --- Launch on Startup toggle ---
+    if *menu_event == tray.launch_on_startup_item.id() {
+        let new_state = !tray.launch_on_startup_item.is_checked();
+        tray.launch_on_startup_item.set_checked(new_state);
+
+        if let Err(e) = crate::autostart::set_autostart(new_state) {
+            tracing::warn!("Failed to update autostart: {}", e);
+        }
+
+        let mut cfg = crate::config::load_config();
+        cfg.launch_on_startup = new_state;
+        if let Err(e) = crate::config::save_config(&cfg) {
+            tracing::warn!("Failed to save config: {}", e);
+        }
+        return;
+    }
+
     // --- Quit ---
     if *menu_event == tray.quit_menu_item.id() {
         let _ = command_tx.try_send(AppCommand::ExitApp);
