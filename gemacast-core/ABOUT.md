@@ -87,7 +87,7 @@ flowchart TD
   - **Dynamic Depth Calculation**: Calculates target buffer depth based on EWMA (Exponential Weighted Moving Average) of network inter-arrival jitter.
   - **Packet Loss Concealment (PLC)**: Instructs the Opus decoder to synthesize audio if packets are missing.
   - **Time-Stretching (WSOLA)**: Uses Waveform Similarity Overlap-Add to seamlessly speed up or slow down audio playback to manage buffer depth without pitch-shifting or popping artifacts.
-- Finally, the PCM samples are pulled by the CPAL audio callback and sent to the DAC for playback.
+- Finally, the PCM samples are pulled by the audio playback callback and sent to the DAC. On Android, the app first attempts to build an ultra-low latency Google Oboe stream; if the device's hardware or ROM rejects the stream configuration, it safely falls back to a standard `cpal` stream to guarantee audio delivery.
 
 ## File Tree & Explanation
 

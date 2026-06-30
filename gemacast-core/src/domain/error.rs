@@ -114,6 +114,20 @@ pub enum AudioError {
 
     #[error("source is not actively subscribed")]
     SourceNotSubscribed,
+
+    #[cfg(target_os = "android")]
+    #[error("Oboe failed to open {direction} stream: {message}")]
+    OboeStreamBuildFailed {
+        direction: StreamDirection,
+        message: String,
+    },
+
+    #[cfg(target_os = "android")]
+    #[error("Oboe failed to start {direction} stream: {message}")]
+    OboeStreamStartFailed {
+        direction: StreamDirection,
+        message: String,
+    },
 }
 
 #[derive(ThisError, Debug)]

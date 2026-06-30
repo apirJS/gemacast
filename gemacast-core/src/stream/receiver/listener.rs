@@ -1,3 +1,5 @@
+#[cfg(target_os = "android")]
+use super::stream::build_cpal_fallback_stream;
 use crate::{
     audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE},
     domain::error::{AudioError, GemaCastError, StreamDirection},
@@ -8,8 +10,6 @@ use crate::{
 use cpal::StreamError;
 #[cfg(not(target_os = "android"))]
 use cpal::traits::*;
-#[cfg(target_os = "android")]
-use oboe::{AudioStream, AudioStreamSafe};
 use ringbuf::{HeapProd, HeapRb, traits::*};
 use std::sync::{
     Arc,
@@ -57,15 +57,35 @@ impl AudioStreamReceiver {
         )?;
 
         #[cfg(target_os = "android")]
-        let playback_stream = build_playback_stream(
-            packet_consumer,
-            config_ref,
-            is_tcp_mode,
-            is_playing,
-            volume,
-            latency_metric.clone(),
-            _exclusive_mode,
-        )?;
+        let (packet_producer, playback_stream) = {
+            // Try Oboe first; if it fails, the consumer is consumed by the
+            // failed callback so we must create a fresh ring buffer for cpal.
+            match build_playback_stream(
+                packet_consumer,
+                config_ref.clone(),
+                is_tcp_mode.clone(),
+                is_playing.clone(),
+                volume.clone(),
+                latency_metric.clone(),
+                _exclusive_mode,
+            ) {
+                Ok(stream) => (packet_producer, stream),
+                Err(oboe_err) => {
+                    tracing::warn!("Oboe failed ({}), retrying with cpal fallback", oboe_err);
+                    let fallback_rb = HeapRb::<RawPacket>::new(PACKET_CHANNEL_CAPACITY);
+                    let (fb_producer, fb_consumer) = fallback_rb.split();
+                    let stream = build_cpal_fallback_stream(
+                        fb_consumer,
+                        config_ref,
+                        is_tcp_mode,
+                        is_playing,
+                        volume,
+                        latency_metric.clone(),
+                    )?;
+                    (fb_producer, stream)
+                }
+            }
+        };
 
         Ok(Self {
             packet_producer,
@@ -170,15 +190,27 @@ impl AudioStreamReceiver {
 
         #[cfg(target_os = "android")]
         {
-            let burst = self.playback_stream.get_frames_per_burst();
-            let _ = self.playback_stream.set_buffer_size_in_frames(burst * 2);
+            use oboe::AudioStream;
+            match &mut self.playback_stream {
+                PlaybackStream::Oboe(stream) => {
+                    let burst = stream.get_frames_per_burst();
+                    let _ = stream.set_buffer_size_in_frames(burst * 2);
 
-            self.playback_stream
-                .start()
-                .map_err(|_| AudioError::PlayStreamFailed {
-                    direction: StreamDirection::Output,
-                    source: cpal::PlayStreamError::DeviceNotAvailable,
-                })?;
+                    stream
+                        .start()
+                        .map_err(|e| AudioError::OboeStreamStartFailed {
+                            direction: StreamDirection::Output,
+                            message: format!("{}", e),
+                        })?;
+                }
+                PlaybackStream::Cpal(stream) => {
+                    use cpal::traits::StreamTrait;
+                    stream.play().map_err(|e| AudioError::PlayStreamFailed {
+                        direction: StreamDirection::Output,
+                        source: e,
+                    })?;
+                }
+            }
         }
         Ok(())
     }
