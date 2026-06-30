@@ -100,6 +100,7 @@ export type AppSettings = {
   theme: 'light' | 'dark';
   mode: ConnectionMode;
   exclusiveMode: boolean;
+  keepScreenOn: boolean;
   bufferPreset: PresetId | string;
   customJitterConfig: JitterConfig;
   savedPresets: SavedPreset[];

@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   mode: ConnectionMode.Wifi,
   exclusiveMode: true,
+  keepScreenOn: false,
   bufferPreset: 'auto',
   customJitterConfig: DEFAULT_AUTO_CONFIG,
   savedPresets: [],

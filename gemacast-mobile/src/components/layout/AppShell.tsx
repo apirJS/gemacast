@@ -5,8 +5,13 @@ import { ManualConnect } from '../senders/ManualConnect';
 import { LatencyStats } from '../latency/LatencyStats';
 import { ToastContainer } from '../feedback/ToastContainer';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
+import { useWakeLock } from '../../hooks/use-wake-lock';
+import { useAppStore } from '../../stores/app-store';
 
 export function AppShell() {
+  const keepScreenOn = useAppStore((s) => s.settings.keepScreenOn);
+  useWakeLock(keepScreenOn);
+
   return (
     <>
       <ToastContainer />
