@@ -236,6 +236,9 @@ fn handle_menu_event(
                 .show();
 
             if confirmed == rfd::MessageDialogResult::Ok {
+                // Kill ADB before launching installer so the MSI can
+                // replace adb.exe without a "Files in Use" conflict.
+                kill_adb_sync();
                 match crate::updater::install_update(installer_path) {
                     Ok(must_exit_now) => {
                         if must_exit_now {
@@ -315,8 +318,9 @@ fn handle_menu_event(
 
     // --- Launch on Startup toggle ---
     if *menu_event == tray.launch_on_startup_item.id() {
-        let new_state = !tray.launch_on_startup_item.is_checked();
-        tray.launch_on_startup_item.set_checked(new_state);
+        // CheckMenuItem auto-toggles on click, so is_checked() already
+        // reflects the user's desired state — no need to invert or set_checked.
+        let new_state = tray.launch_on_startup_item.is_checked();
 
         if let Err(e) = crate::autostart::set_autostart(new_state) {
             tracing::warn!("Failed to update autostart: {}", e);
@@ -332,6 +336,33 @@ fn handle_menu_event(
 
     // --- Quit ---
     if *menu_event == tray.quit_menu_item.id() {
+        kill_adb_sync();
         let _ = command_tx.try_send(AppCommand::ExitApp);
+    }
+}
+
+/// Synchronously kill the bundled ADB server and any lingering `adb.exe`
+/// processes. Called before launching the MSI installer and on quit so
+/// that the installer can replace `adb.exe` without a "Files in Use" error.
+fn kill_adb_sync() {
+    let adb_path = crate::background::local_adb_path();
+    let _ = std::process::Command::new(&adb_path)
+        .args(["kill-server"])
+        .output();
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/IM", "adb.exe"]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let _ = cmd.output();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("pkill");
+        cmd.args(["-9", "adb"]);
+        let _ = cmd.output();
     }
 }
