@@ -48,15 +48,16 @@ flowchart TD
    - When a sender is found, the backend uses `TauriFrontendNotifier` to emit a `SenderDiscovered` event.
    - Frontend's `useTauriEvents` catches the event, updates `app-store.ts`, and the UI displays the sender in the `SenderList`.
 
-2. **Connection & Audio Streaming Flow**:
+3. **Connection & Audio Streaming Flow**:
    - User clicks a sender -> `connectToSender()` in `use-connection.ts` is invoked.
    - `tauriBridge.connectToSender()` calls the Rust backend.
    - `AudioService` does the following:
      1. Creates an HTTP control client and calls `.connect(...)` to handshake with the PC sender.
-     2. Calls `session.start_session(...)` to prepare the audio stream receiver (opening UDP/TCP ports and initializing the jitter buffer).
+     2. Calls `session.start_session(...)` to prepare the audio stream receiver (opening UDP/TCP ports, initializing the jitter buffer, and falling back from Oboe to cpal if necessary).
      3. Calls `platform.set_streaming_flag(true)` and `sync_service(Playing)` to notify the native Android layer (likely updating a foreground service notification).
    - Once connected, `use-connection.ts` fetches available audio sources and capturable processes.
-   - It also establishes a WebSocket control connection to receive real-time disconnects or errors.
+   - It establishes a WebSocket control connection to receive real-time disconnects or errors.
+   - The UI optionally requests an OS Wake Lock (via `useWakeLock`) to keep the screen on based on the user's settings.
 
 3. **Disconnection Flow**:
    - User clicks disconnect -> `disconnect()` in `use-connection.ts` is called.
@@ -275,6 +276,7 @@ gemacast-mobile
   - `use-audio.ts`: Handles local playback state (starting/stopping the Oboe audio stream without tearing down the connection).
   - `use-discovery.ts`: Triggers the backend sender discovery service.
   - `use-updater.ts`: Coordinates checking for and triggering application updates.
+  - `use-wake-lock.ts`: Interfaces with the Web Screen Wake Lock API to prevent the device from sleeping while streaming.
 - **`components/`**:
   - Modular UI components organized by feature (`device/`, `senders/`, `layout/`, `settings/`, `feedback/`).
   - `layout/AppShell.tsx`: The main structural layout of the mobile UI.

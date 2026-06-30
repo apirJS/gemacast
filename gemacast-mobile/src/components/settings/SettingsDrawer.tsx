@@ -5,10 +5,12 @@ import { CustomJitterConfig } from './CustomJitterConfig';
 import { BitrateSelect } from './BitrateSelect';
 import { GainSlider } from './GainSlider';
 import { ExclusiveToggle } from './ExclusiveToggle';
+import { KeepScreenOnToggle } from './KeepScreenOnToggle';
 import { ModeSelector } from './ModeSelector';
 import { UpdateBanner } from './UpdateBanner';
 import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
 import { useDrawer } from '../../hooks/use-drawer';
+import packageJson from '../../../package.json';
 
 export function SettingsDrawer() {
   const { open, dialogRef, handleOpen, handleClose } = useDrawer('settings');
@@ -100,6 +102,14 @@ export function SettingsDrawer() {
               <ExclusiveToggle />
             </div>
 
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                Keep Screen On
+                {help.renderHelpButton('keep-screen-on')}
+              </div>
+              <KeepScreenOnToggle />
+            </div>
+
             <div>
               <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
                 Mode
@@ -121,7 +131,9 @@ export function SettingsDrawer() {
               >
                 GitHub — apirJS/gemacast
               </a>
-              <p className="mt-4 text-[0.8rem] text-muted-foreground">v0.1.0 · 2026 ApirJS</p>
+              <p className="mt-4 text-[0.8rem] text-muted-foreground">
+                v{packageJson.version} · 2026 ApirJS
+              </p>
             </div>
           </div>
         </div>

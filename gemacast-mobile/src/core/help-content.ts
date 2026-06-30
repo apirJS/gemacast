@@ -31,6 +31,10 @@ export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
     title: 'Exclusive Mode',
     body: 'When enabled, the Android audio output stream requests exclusive access to the audio hardware (Oboe SharingMode::Exclusive). This can reduce latency by bypassing the Android audio mixer.\n\nNote: Not all devices support exclusive mode. If the device denies the request, it will automatically fall back to shared mode.',
   },
+  'keep-screen-on': {
+    title: 'Keep Screen On',
+    body: 'When enabled, prevents the screen from dimming or turning off while Gemacast is open.\n\nPerformance Note: Mobile operating systems aggressively throttle background network and CPU activity when the screen sleeps. Keeping the screen on ensures Gemacast receives maximum system resources, preventing audio dropouts and latency spikes during streaming.\n\nThis uses the standard Screen Wake Lock API. The lock is automatically released when Gemacast is minimized or closed.',
+  },
   'connection-mode': {
     title: 'Connection Mode',
     body: 'WiFi: Standard wireless connection over your local network. Latency depends on Wi-Fi quality; 5 GHz band recommended.\n\nUSB: Audio streams over USB tethering. Very low latency (~0.5ms transit) over a physical cable.\n\nADB: Audio streams via USB debug bridge with TCP transport. Requires ADB reverse port forwarding. Uses length-prefixed TCP framing for reliable delivery.',
