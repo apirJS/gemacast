@@ -70,7 +70,8 @@ gemacast-pc
     │   ├── command_handler.rs
     │   ├── control_dispatcher.rs
     │   ├── device_watchdog.rs
-    │   └── udp_listener.rs
+    │   ├── udp_listener.rs
+    │   └── updater.rs
     ├── tasks.rs
     ├── testing.rs
     ├── traits
@@ -79,7 +80,8 @@ gemacast-pc
     │   ├── device_registry.rs
     │   └── tray_notifier.rs
     ├── traits.rs
-    └── tray.rs
+    ├── tray.rs
+    └── updater.rs
 ```
 
 ### Root Files
@@ -93,6 +95,7 @@ gemacast-pc
 - **`events.rs`**: Defines the inter-thread communication enums: `TrayEvent` (Background -> UI) and `AppCommand` (UI -> Background).
 - **`state.rs`**: Implements `SharedMapDeviceRegistry`, a thread-safe registry (`Arc<Mutex<HashMap>>`) of all connected devices.
 - **`tray.rs`**: Manages the creation and dynamic updating of the system tray icon and its context menu (adding/removing check-marked devices).
+- **`updater.rs`**: Defines platform keys and the application-specific update installation process.
 - **`testing.rs`**: Provides hand-written mock implementations of the trait boundaries (`MockTrayNotifier`, `MockAudioController`, etc.) for comprehensive unit testing without actual I/O.
 - **`adapters.rs`**: Re-exports the production implementations of traits.
 - **`tasks.rs`**: Re-exports all background tasks.
@@ -109,6 +112,7 @@ gemacast-pc
 - **`control_dispatcher.rs`**: `ControlDispatcher` processes inbound HTTP and UDP control commands (`Connect`, `Disconnect`, `GetSources`, `ChangeSource`, `ChangeBitrate`, `Probe`). It coordinates the registry, tray, and audio engine.
 - **`device_watchdog.rs`**: Periodically scans the `DeviceRegistry` to evict stale WiFi devices that haven't sent a heartbeat within the timeout period.
 - **`udp_listener.rs`**: Spawns a listener for UDP discovery probes and relays them to the control dispatcher.
+- **`updater.rs`**: Background task that periodically checks for updates and emits `UpdateReady` events.
 
 ### `src/traits/` (I/O Abstractions)
 These traits decouple business logic from concrete implementations (like channels or HTTP clients), enabling the extensive unit testing found in `testing.rs`.
