@@ -146,6 +146,7 @@ describe('getDefaultResetConfig', () => {
     theme: 'dark',
     mode: ConnectionMode.Wifi,
     exclusiveMode: false,
+    keepScreenOn: false,
     bufferPreset: 'custom',
     customJitterConfig: validAdaptiveConfig,
     savedPresets: [],
