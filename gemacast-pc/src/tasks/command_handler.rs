@@ -160,6 +160,8 @@ impl CommandHandler {
         tracing::info!("Executing manual CheckForUpdates command");
         let tray = self.tray.clone();
         tokio::spawn(async move {
+            tray.notify_update_checking();
+
             let current_version = env!("CARGO_PKG_VERSION");
             let key = match crate::updater::platform_key() {
                 Some(k) => k,
@@ -175,6 +177,7 @@ impl CommandHandler {
                 Ok(Some(info)) => info,
                 Ok(None) => {
                     tracing::info!("Manual update check: already up to date.");
+                    tray.notify_update_up_to_date();
                     return;
                 }
                 Err(e) => {

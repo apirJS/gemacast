@@ -18,6 +18,12 @@ pub enum TrayEvent {
     },
     /// An update check or download failed.
     UpdateFailed(String),
+    /// A manual update check is in progress.
+    UpdateChecking,
+    /// The app is already up to date (response to a manual check).
+    UpdateUpToDate,
+    /// Timer-driven: remove any temporary update status item from the tray.
+    ClearUpdateStatus,
     /// A new device connected or an existing device changed its IP.
     DiscoveredDevice {
         device_id: DeviceId,

@@ -29,4 +29,10 @@ pub trait TrayNotifier: Send + Sync {
 
     /// An update check or download failed.
     fn notify_update_failed(&self, message: String);
+
+    /// A manual update check has started.
+    fn notify_update_checking(&self);
+
+    /// The app is already up to date (manual check result).
+    fn notify_update_up_to_date(&self);
 }

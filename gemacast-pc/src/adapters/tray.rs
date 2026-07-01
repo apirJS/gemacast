@@ -55,4 +55,12 @@ impl TrayNotifier for EventLoopTrayNotifier {
     fn notify_update_failed(&self, message: String) {
         let _ = self.proxy.send_event(TrayEvent::UpdateFailed(message));
     }
+
+    fn notify_update_checking(&self) {
+        let _ = self.proxy.send_event(TrayEvent::UpdateChecking);
+    }
+
+    fn notify_update_up_to_date(&self) {
+        let _ = self.proxy.send_event(TrayEvent::UpdateUpToDate);
+    }
 }

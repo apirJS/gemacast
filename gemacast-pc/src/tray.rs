@@ -58,6 +58,14 @@ pub struct TrayManager {
     pub update_failed_menu_item: Option<MenuItem>,
     /// Separator placed after the failed item.
     update_failed_separator: Option<PredefinedMenuItem>,
+    /// "Checking for updates..." item (shown while a manual check is running).
+    update_checking_menu_item: Option<MenuItem>,
+    /// Separator after the checking item.
+    update_checking_separator: Option<PredefinedMenuItem>,
+    /// "✓ App is up to date" item (shown temporarily after a manual check).
+    update_up_to_date_menu_item: Option<MenuItem>,
+    /// Separator after the up-to-date item.
+    update_up_to_date_separator: Option<PredefinedMenuItem>,
 }
 
 impl TrayManager {
@@ -111,6 +119,10 @@ impl TrayManager {
             update_separator: None,
             update_failed_menu_item: None,
             update_failed_separator: None,
+            update_checking_menu_item: None,
+            update_checking_separator: None,
+            update_up_to_date_menu_item: None,
+            update_up_to_date_separator: None,
         })
     }
 
@@ -190,6 +202,8 @@ impl TrayManager {
         // Remove any previous update or failure items first.
         self.remove_update_item();
         self.remove_update_failed_item();
+        self.remove_update_checking_item();
+        self.remove_update_up_to_date_item();
 
         let item = MenuItem::new(format!("Install Update (v{version})"), true, None);
         let sep = PredefinedMenuItem::separator();
@@ -215,6 +229,8 @@ impl TrayManager {
     pub fn show_update_failed(&mut self) {
         self.remove_update_item();
         self.remove_update_failed_item();
+        self.remove_update_checking_item();
+        self.remove_update_up_to_date_item();
 
         let item = MenuItem::new("Update failed — click to retry", true, None);
         let sep = PredefinedMenuItem::separator();
@@ -232,6 +248,60 @@ impl TrayManager {
             let _ = self.tray_menu.remove(&item);
         }
         if let Some(sep) = self.update_failed_separator.take() {
+            let _ = self.tray_menu.remove(&sep);
+        }
+    }
+
+    /// Show a disabled "Checking for updates..." item at the top of the menu.
+    pub fn show_update_checking(&mut self) {
+        self.remove_update_item();
+        self.remove_update_failed_item();
+        self.remove_update_checking_item();
+        self.remove_update_up_to_date_item();
+
+        let item = MenuItem::new("Checking for updates...", false, None);
+        let sep = PredefinedMenuItem::separator();
+
+        let _ = self.tray_menu.prepend(&sep);
+        let _ = self.tray_menu.prepend(&item);
+
+        self.update_checking_menu_item = Some(item);
+        self.update_checking_separator = Some(sep);
+    }
+
+    /// Remove the "Checking for updates..." item and its separator.
+    pub fn remove_update_checking_item(&mut self) {
+        if let Some(item) = self.update_checking_menu_item.take() {
+            let _ = self.tray_menu.remove(&item);
+        }
+        if let Some(sep) = self.update_checking_separator.take() {
+            let _ = self.tray_menu.remove(&sep);
+        }
+    }
+
+    /// Show a "✓ App is up to date" item at the top of the menu.
+    pub fn show_update_up_to_date(&mut self) {
+        self.remove_update_item();
+        self.remove_update_failed_item();
+        self.remove_update_checking_item();
+        self.remove_update_up_to_date_item();
+
+        let item = MenuItem::new("✓ App is up to date", false, None);
+        let sep = PredefinedMenuItem::separator();
+
+        let _ = self.tray_menu.prepend(&sep);
+        let _ = self.tray_menu.prepend(&item);
+
+        self.update_up_to_date_menu_item = Some(item);
+        self.update_up_to_date_separator = Some(sep);
+    }
+
+    /// Remove the "✓ App is up to date" item and its separator.
+    pub fn remove_update_up_to_date_item(&mut self) {
+        if let Some(item) = self.update_up_to_date_menu_item.take() {
+            let _ = self.tray_menu.remove(&item);
+        }
+        if let Some(sep) = self.update_up_to_date_separator.take() {
             let _ = self.tray_menu.remove(&sep);
         }
     }
