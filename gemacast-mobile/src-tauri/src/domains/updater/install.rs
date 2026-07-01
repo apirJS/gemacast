@@ -4,24 +4,30 @@
 /// (the modern replacement for the deprecated `ACTION_INSTALL_PACKAGE`) and a
 /// `content://` URI from the app's `FileProvider`. The user will see the system
 /// install prompt.
+///
+/// **Important**: `with_webview` dispatches the JNI closure asynchronously on
+/// the WebView thread. We use a `Condvar` to block this function until the
+/// closure has finished, ensuring errors are properly propagated and the APK
+/// file isn't cleaned up prematurely.
 #[cfg(target_os = "android")]
 pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
     use jni::objects::{JString, JValue};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use tauri::Manager;
 
     let webview_window = app.get_webview_window("main").ok_or("No main webview")?;
 
-    // We use a shared error slot to propagate errors out of the `with_webview`
-    // closure, since the closure cannot return a `Result` directly.
-    let error_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let error_slot_inner = error_slot.clone();
+    // Shared state: the Mutex holds `Option<Result<(), String>>`.
+    // - `None`  = the JNI closure hasn't finished yet.
+    // - `Some(result)` = the JNI closure has finished with this result.
+    let pair = Arc::new((Mutex::new(None::<Result<(), String>>), Condvar::new()));
+    let pair_inner = pair.clone();
     let path_owned = path.to_string();
 
     webview_window
         .with_webview(move |webview| {
             webview.jni_handle().exec(move |env, activity, _webview| {
-                let mut run_jni = || -> Result<(), String> {
+                let result = (|| -> Result<(), String> {
                     // Steps:
                     //   1. Create a java.io.File from the path
                     //   2. Get a content:// URI via FileProvider.getUriForFile()
@@ -153,19 +159,24 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                     .map_err(|e| format!("startActivity failed: {e}"))?;
 
                     Ok(())
-                };
+                })();
 
-                if let Err(e) = run_jni() {
-                    *error_slot_inner.lock().unwrap() = Some(e);
-                }
+                // Signal completion to the waiting thread.
+                let (lock, cvar) = &*pair_inner;
+                *lock.lock().unwrap() = Some(result);
+                cvar.notify_one();
             });
         })
         .map_err(|e| format!("Failed to access webview: {e:?}"))?;
 
-    // Check if the JNI closure reported an error.
-    if let Some(err) = error_slot.lock().unwrap().take() {
-        return Err(err);
+    // Block until the JNI closure has finished executing on the WebView thread.
+    let (lock, cvar) = &*pair;
+    let mut guard = lock.lock().unwrap();
+    while guard.is_none() {
+        guard = cvar.wait(guard).unwrap();
     }
 
-    Ok(())
+    // Unwrap the result from the JNI closure.
+    guard.take().unwrap()
 }
+
