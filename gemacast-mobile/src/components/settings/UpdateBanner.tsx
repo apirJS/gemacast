@@ -1,5 +1,5 @@
 import { useUpdater } from '../../hooks/use-updater';
-import { Download, RefreshCw, CheckCircle, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Download, RefreshCw, AlertTriangle, RotateCcw } from 'lucide-react';
 
 export function UpdateBanner() {
   const { state, checkForUpdates, startDownload, installUpdate, retry } = useUpdater();
@@ -64,17 +64,16 @@ export function UpdateBanner() {
 
       {state.status === 'ready' && (
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <CheckCircle className="h-4 w-4 shrink-0 text-green-500" />
-            <span className="text-[0.85rem] font-medium text-foreground">
-              Ready to install v{state.version}
-            </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[0.9rem] font-semibold text-foreground">Ready to Install</p>
+            <p className="text-[0.8rem] text-muted-foreground">v{state.version}</p>
           </div>
           <button
             type="button"
-            className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-[0.85rem] font-medium text-white transition-colors hover:bg-green-700 active:bg-green-800"
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-[0.85rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90 active:bg-primary/80"
             onClick={installUpdate}
           >
+            <Download className="h-4 w-4" />
             Install
           </button>
         </div>
