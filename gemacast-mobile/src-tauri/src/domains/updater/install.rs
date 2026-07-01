@@ -179,4 +179,3 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
     // Unwrap the result from the JNI closure.
     guard.take().unwrap()
 }
-
