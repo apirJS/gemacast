@@ -152,7 +152,7 @@ fn run_desktop_capture_loop(
 
     let _listener = stream
         .add_local_listener()
-        .state_changed(move |_, old_state, new_state| {
+        .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Desktop] stream state changed {:?} -> {:?}",
                 old_state,
@@ -191,23 +191,22 @@ fn run_desktop_capture_loop(
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
                 if let Some(data) = datas.first() {
-                    if let Some(chunk) = data.chunk() {
-                        let offset = chunk.offset() as usize;
-                        let size = chunk.size() as usize;
+                    let chunk = data.chunk();
+                    let offset = chunk.offset() as usize;
+                    let size = chunk.size() as usize;
 
-                        if let Some(slice) = data.data() {
-                            if offset + size <= slice.len() {
-                                let audio_bytes = &slice[offset..offset + size];
-                                let n_samples = size / std::mem::size_of::<f32>();
+                    if let Some(slice) = data.data() {
+                        if offset + size <= slice.len() {
+                            let audio_bytes = &slice[offset..offset + size];
+                            let n_samples = size / std::mem::size_of::<f32>();
 
-                                unsafe {
-                                    push_pw_audio_to_ringbuf(
-                                        audio_bytes.as_ptr() as *const f32,
-                                        n_samples,
-                                        producer,
-                                        notify,
-                                    );
-                                }
+                            unsafe {
+                                push_pw_audio_to_ringbuf(
+                                    audio_bytes.as_ptr() as *const f32,
+                                    n_samples,
+                                    producer,
+                                    notify,
+                                );
                             }
                         }
                     }
@@ -237,7 +236,7 @@ fn run_desktop_capture_loop(
     // We use a timer to periodically check is_running
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
-    let _timer = mainloop.add_timer(move |_| {
+    let _timer = mainloop.loop_().add_timer(move |_| {
         if !is_running_timer.load(Ordering::Relaxed) {
             if let Some(ml) = mainloop_weak.upgrade() {
                 ml.quit();
@@ -245,7 +244,7 @@ fn run_desktop_capture_loop(
         }
     });
     // Check every 100ms if we should stop
-    if let Some(ref timer_source) = _timer {
+    if let Some(ref timer_source) = Some(_timer) {
         timer_source.update_timer(
             Some(std::time::Duration::from_millis(100)),
             Some(std::time::Duration::from_millis(100)),
