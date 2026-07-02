@@ -32,12 +32,10 @@ pub const PW_RING_BUFFER_SIZE: usize = OPUS_FRAME_SAMPLES * 64;
 /// we want to receive in our capture stream's `process` callback.
 pub fn build_audio_params() -> Vec<u8> {
     let mut params_buf = vec![0u8; 1024];
-    let format_value = spa::param::audio::AudioInfoRaw {
-        format: spa::param::audio::AudioFormat::F32LE,
-        rate: OPUS_SAMPLE_RATE,
-        channels: OPUS_CHANNELS as u32,
-        ..Default::default()
-    };
+    let mut format_value = spa::param::audio::AudioInfoRaw::new();
+    format_value.set_format(spa::param::audio::AudioFormat::F32LE);
+    format_value.set_rate(OPUS_SAMPLE_RATE);
+    format_value.set_channels(OPUS_CHANNELS as u32);
 
     spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(&mut params_buf),
@@ -153,10 +151,10 @@ mod tests {
         // pw::init() shouldn't panic if PipeWire is properly available.
         if is_pipewire_available() {
             // Further check: can we create a main loop and context?
-            let mainloop = pw::main_loop::MainLoop::new(None);
+            let mainloop = pw::main_loop::MainLoopRc::new(None);
             assert!(mainloop.is_ok(), "Failed to create PipeWire MainLoop");
 
-            let context = pw::context::Context::new(&mainloop.unwrap());
+            let context = pw::context::ContextRc::new(&mainloop.unwrap(), None);
             assert!(context.is_ok(), "Failed to create PipeWire Context");
         } else {
             // We only print a warning so the test passes on developers'

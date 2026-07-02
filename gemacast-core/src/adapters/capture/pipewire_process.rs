@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pipewire as pw;
-use pw::properties;
+use pw::properties::properties;
 
-use pw::stream::{Stream, StreamFlags};
+use pw::stream::{StreamBox as Stream, StreamFlags};
 
 use super::pipewire_common::{self, create_pw_ring_buffer, push_pw_audio_to_ringbuf};
 
@@ -120,14 +120,14 @@ pub fn create_pipewire_process_loopback(
 fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoop::new(None)
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
 
-    let context = pw::context::Context::new(&mainloop)
+    let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -209,14 +209,14 @@ fn run_process_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoop::new(None)
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
 
-    let context = pw::context::Context::new(&mainloop)
+    let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream targeting the specific application node.
