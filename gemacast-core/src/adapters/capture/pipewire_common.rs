@@ -180,6 +180,6 @@ mod tests {
             );
         }
 
-        assert_eq!(producer.len(), n_samples);
+        assert_eq!(producer.occupied_len(), n_samples);
     }
 }
