@@ -168,7 +168,7 @@ mod tests {
     fn test_push_pw_audio_to_ringbuf() {
         let (mut producer, resources, _tx) = create_pw_ring_buffer();
 
-        let dummy_audio = vec![0.1f32, 0.2, 0.3, 0.4];
+        let dummy_audio = [0.1f32, 0.2, 0.3, 0.4];
         let n_samples = dummy_audio.len();
 
         unsafe {

@@ -184,6 +184,10 @@ mod tests {
 
     #[test]
     fn test_factory_creation_does_not_panic() {
+        // Skip in CI to avoid macOS ScreenCaptureKit hanging on permissions dialog
+        if std::env::var("CI").is_ok() {
+            return;
+        }
         let factory = DefaultCaptureFactory;
 
         // This test ensures that the factory methods don't panic upon invocation
