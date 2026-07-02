@@ -183,21 +183,21 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
                     && class.contains("Stream/Output/Audio")
                 {
                     let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
-                        let name = app_name
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("PID {pid}"));
+                    let name = app_name
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("PID {pid}"));
 
-                        if pid > 0 {
-                            let key = name.to_lowercase();
-                            let mut map = found_clone.lock().unwrap();
-                            map.entry(key).or_insert(ProcessInfo {
-                                pid,
-                                name,
-                                has_audio_session: true,
-                            });
-                        }
+                    if pid > 0 {
+                        let key = name.to_lowercase();
+                        let mut map = found_clone.lock().unwrap();
+                        map.entry(key).or_insert(ProcessInfo {
+                            pid,
+                            name,
+                            has_audio_session: true,
+                        });
                     }
                 }
+            }
         })
         .register();
 
