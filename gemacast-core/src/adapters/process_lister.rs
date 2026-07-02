@@ -164,7 +164,6 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     let found_nodes =
         std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, ProcessInfo>::new()));
-    let found_clone = found_nodes.clone();
 
     // To handle native PipeWire apps, we must track Client objects because they hold the PID
     // and Name, while the Node object holds the media.class. We map client.id -> (pid, name)
@@ -186,8 +185,9 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
-                if let Some(props) = global.props {
-                    let app_pid = props.get("application.process.id");
+                if let Some(props) = global.props
+                    && let Some(app_pid) = props.get("application.process.id")
+                {
                     let app_name = props.get("application.name");
                     let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
                     let name = app_name
@@ -199,23 +199,23 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
                         cmap.insert(global.id, (pid, name));
                     }
                 }
-            } else if global.type_ == pw::types::ObjectType::Node {
-                if let Some(props) = global.props {
-                    let media_class = props.get("media.class").map(|s| s.to_string());
-                    let app_pid = props.get("application.process.id");
-                    let app_name = props.get("application.name").map(|s| s.to_string());
-                    let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
+            } else if global.type_ == pw::types::ObjectType::Node
+                && let Some(props) = global.props
+            {
+                let media_class = props.get("media.class").map(|s| s.to_string());
+                let app_pid = props.get("application.process.id");
+                let app_name = props.get("application.name").map(|s| s.to_string());
+                let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
 
-                    let node_pid: Option<u32> = app_pid.and_then(|s| s.parse().ok());
+                let node_pid: Option<u32> = app_pid.and_then(|s| s.parse().ok());
 
-                    let mut tnodes = temp_nodes_clone.lock().unwrap();
-                    tnodes.push(TempNode {
-                        client_id,
-                        media_class,
-                        node_pid,
-                        node_name: app_name,
-                    });
-                }
+                let mut tnodes = temp_nodes_clone.lock().unwrap();
+                tnodes.push(TempNode {
+                    client_id,
+                    media_class,
+                    node_pid,
+                    node_name: app_name,
+                });
             }
         })
         .register();
@@ -248,33 +248,33 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let mut map = found_nodes.lock().unwrap();
 
     for node in tnodes.iter() {
-        if let Some(class) = &node.media_class {
-            if class.contains("Stream/Output/Audio") {
-                // Try to get PID from the node first, otherwise lookup the client
-                let (pid, name) = if let Some(pid) = node.node_pid {
-                    let n = node
-                        .node_name
-                        .clone()
-                        .unwrap_or_else(|| format!("PID {pid}"));
-                    (pid, n)
-                } else if let Some(cid) = node.client_id {
-                    if let Some((pid, n)) = cmap.get(&cid) {
-                        (*pid, n.clone())
-                    } else {
-                        (0, String::new())
-                    }
+        if let Some(class) = &node.media_class
+            && class.contains("Stream/Output/Audio")
+        {
+            // Try to get PID from the node first, otherwise lookup the client
+            let (pid, name) = if let Some(pid) = node.node_pid {
+                let n = node
+                    .node_name
+                    .clone()
+                    .unwrap_or_else(|| format!("PID {pid}"));
+                (pid, n)
+            } else if let Some(cid) = node.client_id {
+                if let Some((pid, n)) = cmap.get(&cid) {
+                    (*pid, n.clone())
                 } else {
                     (0, String::new())
-                };
-
-                if pid > 0 {
-                    let key = name.to_lowercase();
-                    map.entry(key).or_insert(ProcessInfo {
-                        pid,
-                        name,
-                        has_audio_session: true,
-                    });
                 }
+            } else {
+                (0, String::new())
+            };
+
+            if pid > 0 {
+                let key = name.to_lowercase();
+                map.entry(key).or_insert(ProcessInfo {
+                    pid,
+                    name,
+                    has_audio_session: true,
+                });
             }
         }
     }

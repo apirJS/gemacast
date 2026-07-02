@@ -134,8 +134,6 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .get_registry()
         .map_err(|e| AudioError::PipeWireError(format!("Registry: {e}")))?;
 
-    let target_pid_str = pid.to_string();
-
     let client_map = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
         u32,
         u32,
@@ -155,13 +153,12 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
-                if let Some(props) = global.props {
-                    if let Some(pid_str) = props.get("application.process.id") {
-                        if let Ok(app_pid) = pid_str.parse::<u32>() {
-                            let mut cmap = client_map_clone.lock().unwrap();
-                            cmap.insert(global.id, app_pid);
-                        }
-                    }
+                if let Some(props) = global.props
+                    && let Some(pid_str) = props.get("application.process.id")
+                    && let Ok(app_pid) = pid_str.parse::<u32>()
+                {
+                    let mut cmap = client_map_clone.lock().unwrap();
+                    cmap.insert(global.id, app_pid);
                 }
             } else if global.type_ == pw::types::ObjectType::Node {
                 if let Some(props) = global.props {
@@ -191,10 +188,10 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let _core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync {
-                if let Some(ml) = mainloop_weak.upgrade() {
-                    ml.quit();
-                }
+            if _seq == pending_sync
+                && let Some(ml) = mainloop_weak.upgrade()
+            {
+                ml.quit();
             }
         })
         .register();
@@ -220,20 +217,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let mut found_node_id = None;
 
     for node in tnodes.iter() {
-        if let Some(class) = &node.media_class {
-            if class.contains("Stream/Output/Audio") {
-                let node_pid = if let Some(p) = node.node_pid {
-                    p
-                } else if let Some(cid) = node.client_id {
-                    *cmap.get(&cid).unwrap_or(&0)
-                } else {
-                    0
-                };
+        if let Some(class) = &node.media_class
+            && class.contains("Stream/Output/Audio")
+        {
+            let node_pid = if let Some(p) = node.node_pid {
+                p
+            } else if let Some(cid) = node.client_id {
+                *cmap.get(&cid).unwrap_or(&0)
+            } else {
+                0
+            };
 
-                if node_pid == pid {
-                    found_node_id = Some(node.id.to_string());
-                    break;
-                }
+            if node_pid == pid {
+                found_node_id = Some(node.id.to_string());
+                break;
             }
         }
     }
