@@ -178,12 +178,12 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     // Run the main loop briefly to enumerate nodes.
     // Use a timeout to avoid hanging if the PID has no audio node.
     let mainloop_weak2 = mainloop.downgrade();
-    let _timer = mainloop.add_timer(move |_| {
+    let _timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
             ml.quit();
         }
     });
-    if let Some(ref timer_source) = _timer {
+    if let Some(ref timer_source) = Some(_timer) {
         timer_source.update_timer(
             Some(std::time::Duration::from_secs(2)),
             None, // One-shot
@@ -225,7 +225,7 @@ fn run_process_capture_loop(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::NODE_NAME => "gemacast-process-capture",
-        *pw::keys::TARGET_OBJECT => target_node_id.as_str(),
+        "target.object" => target_node_id.as_str(),
     };
 
     let stream = Stream::new(&core, "gemacast-process-capture", props)
@@ -239,7 +239,7 @@ fn run_process_capture_loop(
     let mainloop_weak3 = mainloop.downgrade();
 
     let _listener = stream
-        .add_local_listener()
+        .add_local_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Process] stream state changed {:?} -> {:?}",

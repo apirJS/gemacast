@@ -211,7 +211,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     let _core_listener = core
         .add_listener_local()
-        .done(move |id, _seq| {
+        .done(move |_id, _seq| {
             if _seq == pending_sync {
                 if let Some(ml) = mainloop_weak.upgrade() {
                     ml.quit();

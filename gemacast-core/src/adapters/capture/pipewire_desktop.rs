@@ -151,7 +151,7 @@ fn run_desktop_capture_loop(
     let mainloop_weak3 = mainloop.downgrade();
 
     let _listener = stream
-        .add_local_listener()
+        .add_local_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Desktop] stream state changed {:?} -> {:?}",
