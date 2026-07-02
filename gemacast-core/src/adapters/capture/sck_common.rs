@@ -14,10 +14,10 @@
 //! for consumption by the CapturePool.
 
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
-use crate::domain::error::{AudioError, GemaCastError};
+use crate::domain::error::GemaCastError;
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use tokio::sync::{Notify, mpsc};
 
 use screencapturekit::prelude::*;

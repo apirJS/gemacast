@@ -277,7 +277,7 @@ fn run_process_capture_loop(
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
-                if let Some(data) = datas.first() {
+                if let Some(data) = datas.first_mut() {
                     let chunk = data.chunk();
                     let offset = chunk.offset() as usize;
                     let size = chunk.size() as usize;

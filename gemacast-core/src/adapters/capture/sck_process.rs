@@ -102,14 +102,19 @@ pub fn create_sck_process_loopback(
         .find(|app| app.process_id() == pid as i32)
         .ok_or_else(|| GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
 
-    let app_name = target_app
-        .application_name()
-        .unwrap_or_else(|| format!("PID {pid}"));
+    let mut app_name = target_app.application_name();
+    if app_name.is_empty() {
+        app_name = format!("PID {pid}");
+    }
 
     // Get the application's windows for the content filter.
     // If the app has windows, we use them. If not (e.g., background audio app),
     // we fall back to a display filter that includes only this app.
-    let app_windows = target_app.windows();
+    let app_windows: Vec<_> = content
+        .windows()
+        .into_iter()
+        .filter(|w| w.owning_application().map(|a| a.process_id()) == Some(pid as i32))
+        .collect();
 
     let filter = if !app_windows.is_empty() {
         // Use the first window to create a window-scoped filter

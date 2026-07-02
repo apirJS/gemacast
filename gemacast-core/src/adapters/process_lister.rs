@@ -277,9 +277,10 @@ fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::
             continue;
         }
 
-        let name = app
-            .application_name()
-            .unwrap_or_else(|| format!("PID {pid}"));
+        let mut name = app.application_name();
+        if name.is_empty() {
+            name = format!("PID {pid}");
+        }
 
         if name.is_empty() {
             continue;
