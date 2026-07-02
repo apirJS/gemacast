@@ -374,14 +374,33 @@ mod tests {
     #[test]
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
-            // To test end-to-end process capture, we spawn a dummy audio process.
-            // We use pw-loopback with passive=true so it doesn't instantly exit in a headless
-            // CI environment where there are no physical sinks.
-            let mut child = match std::process::Command::new("pw-loopback")
-                .arg("--playback-props=node.passive=true")
-                .arg("--capture-props=node.passive=true")
-                .spawn()
+            let wav_path = std::env::temp_dir().join("dummy_process.wav");
             {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&wav_path).unwrap();
+                f.write_all(&[
+                    b'R', b'I', b'F', b'F', 0x24, 0x53, 0x07, 0x00, b'W', b'A', b'V', b'E', b'f',
+                    b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb,
+                    0x00, 0x00, 1, 0, 8, 0, b'd', b'a', b't', b'a', 0x00, 0x53, 0x07, 0x00,
+                ])
+                .unwrap();
+                let data = vec![0u8; 480000]; // 10 seconds
+                f.write_all(&data).unwrap();
+            }
+
+            // Create a dummy sink in PipeWire so pw-play doesn't exit instantly in headless CI
+            let _ = std::process::Command::new("pw-cli")
+                .args([
+                    "create-node",
+                    "adapter",
+                    "{ factory.name=support.null-audio-sink node.name=\"dummy-sink\" media.class=Audio/Sink object.linger=true }",
+                ])
+                .status();
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            // To test end-to-end process capture, we spawn a dummy audio process.
+            let mut child = match std::process::Command::new("pw-play").arg(&wav_path).spawn() {
                 Ok(child) => child,
                 Err(e) => {
                     println!(
@@ -414,6 +433,7 @@ mod tests {
             // Cleanup the dummy process
             let _ = child.kill();
             let _ = child.wait();
+            let _ = std::fs::remove_file(&wav_path);
         } else {
             println!("PipeWire is not available, skipping process capture end-to-end test.");
         }
