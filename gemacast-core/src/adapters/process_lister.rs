@@ -189,7 +189,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
                     && let Some(app_pid) = props.get("application.process.id")
                 {
                     let app_name = props.get("application.name");
-                    let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let pid: u32 = app_pid.parse().ok().unwrap_or(0);
                     let name = app_name
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("PID {pid}"));
