@@ -311,11 +311,22 @@ mod tests {
     #[test]
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
-            // Spawn a dummy audio process so the registry actually has an application node
-            let mut child = match std::process::Command::new("pw-play")
-                .arg("/dev/urandom")
-                .spawn()
+            let wav_path = std::env::temp_dir().join("dummy_lister.wav");
             {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&wav_path).unwrap();
+                f.write_all(&[
+                    b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't',
+                    b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb, 0x00, 0x00,
+                    1, 0, 8, 0, b'd', b'a', b't', b'a', 0, 0, 0, 0,
+                ])
+                .unwrap();
+                let data = vec![0u8; 480000]; // 10 seconds
+                f.write_all(&data).unwrap();
+            }
+
+            // Spawn a dummy audio process so the registry actually has an application node
+            let mut child = match std::process::Command::new("pw-play").arg(&wav_path).spawn() {
                 Ok(child) => child,
                 Err(e) => {
                     println!(
@@ -347,6 +358,8 @@ mod tests {
 
             // Cleanup
             let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&wav_path);
             let _ = child.wait();
         } else {
             println!("PipeWire is not available, skipping linux_enumerate_pipewire_nodes test.");

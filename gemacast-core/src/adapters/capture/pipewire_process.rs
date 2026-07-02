@@ -177,18 +177,18 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     // Run the main loop briefly to enumerate nodes.
     // Use a timeout to avoid hanging if the PID has no audio node.
     let mainloop_weak2 = mainloop.downgrade();
-    let _timer = mainloop.loop_().add_timer(move |_| {
+    let timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
             ml.quit();
         }
     });
-    if let Some(ref timer_source) = Some(_timer) {
-        timer_source.update_timer(
-            Some(std::time::Duration::from_secs(2)),
-            None, // One-shot
-        );
-    }
+    timer.update_timer(
+        Some(std::time::Duration::from_secs(2)),
+        None, // One-shot
+    );
 
+    // Keep timer alive during loop
+    let _keep_timer = timer;
     mainloop.run();
 
     let result = found_node_id
@@ -374,14 +374,24 @@ mod tests {
     #[test]
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
+            let wav_path = std::env::temp_dir().join("dummy_process.wav");
+            {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&wav_path).unwrap();
+                f.write_all(&[
+                    b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't',
+                    b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb, 0x00, 0x00,
+                    1, 0, 8, 0, b'd', b'a', b't', b'a', 0, 0, 0, 0,
+                ])
+                .unwrap();
+                let data = vec![0u8; 480000]; // 10 seconds
+                f.write_all(&data).unwrap();
+            }
+
             // To test end-to-end process capture, we spawn a dummy audio process.
             // `pw-play` is part of pipewire-bin and plays audio to the graph.
             // We'll spawn it, grab its PID, and try to capture it.
-            let mut child = match std::process::Command::new("pw-play")
-                // Using /dev/urandom as a dummy source is safe
-                .arg("/dev/urandom")
-                .spawn()
-            {
+            let mut child = match std::process::Command::new("pw-play").arg(&wav_path).spawn() {
                 Ok(child) => child,
                 Err(e) => {
                     println!("Failed to spawn pw-play ({}), skipping end-to-end test.", e);

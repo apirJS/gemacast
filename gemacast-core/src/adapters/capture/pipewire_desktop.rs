@@ -236,7 +236,7 @@ fn run_desktop_capture_loop(
     // We use a timer to periodically check is_running
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
-    let _timer = mainloop.loop_().add_timer(move |_| {
+    let timer = mainloop.loop_().add_timer(move |_| {
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
@@ -244,13 +244,12 @@ fn run_desktop_capture_loop(
         }
     });
     // Check every 100ms if we should stop
-    if let Some(ref timer_source) = Some(_timer) {
-        timer_source.update_timer(
-            Some(std::time::Duration::from_millis(100)),
-            Some(std::time::Duration::from_millis(100)),
-        );
-    }
+    timer.update_timer(
+        Some(std::time::Duration::from_millis(100)),
+        Some(std::time::Duration::from_millis(100)),
+    );
 
+    let _keep_timer = timer;
     mainloop.run();
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
