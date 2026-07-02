@@ -166,36 +166,55 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, ProcessInfo>::new()));
     let found_clone = found_nodes.clone();
 
+    // To handle native PipeWire apps, we must track Client objects because they hold the PID
+    // and Name, while the Node object holds the media.class. We map client.id -> (pid, name)
+    let client_map =
+        std::sync::Arc::new(std::sync::Mutex::new(HashMap::<u32, (u32, String)>::new()));
+    let client_map_clone = client_map.clone();
+
+    // We also need to store nodes that we found, since global callbacks can arrive in any order
+    struct TempNode {
+        client_id: Option<u32>,
+        media_class: Option<String>,
+        node_pid: Option<u32>,
+        node_name: Option<String>,
+    }
+    let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
+    let temp_nodes_clone = temp_nodes.clone();
+
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
-            if global.type_ != pw::types::ObjectType::Node {
-                return;
-            }
-
-            if let Some(props) = global.props {
-                let media_class = props.get("media.class");
-                let app_pid = props.get("application.process.id");
-                let app_name = props.get("application.name");
-
-                // Filter for audio output streams (apps producing audio)
-                if let Some(class) = media_class
-                    && class.contains("Stream/Output/Audio")
-                {
+            if global.type_ == pw::types::ObjectType::Client {
+                if let Some(props) = global.props {
+                    let app_pid = props.get("application.process.id");
+                    let app_name = props.get("application.name");
                     let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
                     let name = app_name
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("PID {pid}"));
 
                     if pid > 0 {
-                        let key = name.to_lowercase();
-                        let mut map = found_clone.lock().unwrap();
-                        map.entry(key).or_insert(ProcessInfo {
-                            pid,
-                            name,
-                            has_audio_session: true,
-                        });
+                        let mut cmap = client_map_clone.lock().unwrap();
+                        cmap.insert(global.id, (pid, name));
                     }
+                }
+            } else if global.type_ == pw::types::ObjectType::Node {
+                if let Some(props) = global.props {
+                    let media_class = props.get("media.class").map(|s| s.to_string());
+                    let app_pid = props.get("application.process.id");
+                    let app_name = props.get("application.name").map(|s| s.to_string());
+                    let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
+
+                    let node_pid: Option<u32> = app_pid.and_then(|s| s.parse().ok());
+
+                    let mut tnodes = temp_nodes_clone.lock().unwrap();
+                    tnodes.push(TempNode {
+                        client_id,
+                        media_class,
+                        node_pid,
+                        node_name: app_name,
+                    });
                 }
             }
         })
@@ -224,7 +243,42 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     // which takes less than 5ms rather than a hardcoded 1 second.
     mainloop.run();
 
-    let map = found_nodes.lock().unwrap();
+    let cmap = client_map.lock().unwrap();
+    let tnodes = temp_nodes.lock().unwrap();
+    let mut map = found_nodes.lock().unwrap();
+
+    for node in tnodes.iter() {
+        if let Some(class) = &node.media_class {
+            if class.contains("Stream/Output/Audio") {
+                // Try to get PID from the node first, otherwise lookup the client
+                let (pid, name) = if let Some(pid) = node.node_pid {
+                    let n = node
+                        .node_name
+                        .clone()
+                        .unwrap_or_else(|| format!("PID {pid}"));
+                    (pid, n)
+                } else if let Some(cid) = node.client_id {
+                    if let Some((pid, n)) = cmap.get(&cid) {
+                        (*pid, n.clone())
+                    } else {
+                        (0, String::new())
+                    }
+                } else {
+                    (0, String::new())
+                };
+
+                if pid > 0 {
+                    let key = name.to_lowercase();
+                    map.entry(key).or_insert(ProcessInfo {
+                        pid,
+                        name,
+                        has_audio_session: true,
+                    });
+                }
+            }
+        }
+    }
+
     let mut processes: Vec<_> = map.values().cloned().collect();
 
     // Sort alphabetically (all have audio sessions)

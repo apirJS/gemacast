@@ -135,47 +135,72 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .map_err(|e| AudioError::PipeWireError(format!("Registry: {e}")))?;
 
     let target_pid_str = pid.to_string();
-    let found_node_id = Arc::new(std::sync::Mutex::new(None::<String>));
-    let found_clone = found_node_id.clone();
-    let mainloop_weak = mainloop.downgrade();
+
+    let client_map = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        u32,
+        u32,
+    >::new()));
+    let client_map_clone = client_map.clone();
+
+    struct TempNode {
+        id: u32,
+        client_id: Option<u32>,
+        media_class: Option<String>,
+        node_pid: Option<u32>,
+    }
+    let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
+    let temp_nodes_clone = temp_nodes.clone();
 
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
-            // Only look at Node-type objects
-            if global.type_ != pw::types::ObjectType::Node {
-                return;
-            }
-
-            if let Some(props) = global.props {
-                let app_pid = props.get("application.process.id");
-                let media_class = props.get("media.class");
-
-                // Match: correct PID AND audio output stream
-                if app_pid == Some(&target_pid_str)
-                    && let Some(class) = media_class
-                    && class.contains("Stream/Output/Audio")
-                {
-                    let node_id = global.id.to_string();
-                    tracing::info!(
-                        "[PipeWire] Found node {} for PID {} (class: {})",
-                        node_id,
-                        pid,
-                        class
-                    );
-                    *found_clone.lock().unwrap() = Some(node_id);
-
-                    // We found our target, quit the main loop
-                    if let Some(ml) = mainloop_weak.upgrade() {
-                        ml.quit();
+            if global.type_ == pw::types::ObjectType::Client {
+                if let Some(props) = global.props {
+                    if let Some(pid_str) = props.get("application.process.id") {
+                        if let Ok(app_pid) = pid_str.parse::<u32>() {
+                            let mut cmap = client_map_clone.lock().unwrap();
+                            cmap.insert(global.id, app_pid);
+                        }
                     }
+                }
+            } else if global.type_ == pw::types::ObjectType::Node {
+                if let Some(props) = global.props {
+                    let media_class = props.get("media.class").map(|s| s.to_string());
+                    let app_pid = props
+                        .get("application.process.id")
+                        .and_then(|s| s.parse::<u32>().ok());
+                    let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
+
+                    let mut tnodes = temp_nodes_clone.lock().unwrap();
+                    tnodes.push(TempNode {
+                        id: global.id,
+                        client_id,
+                        media_class,
+                        node_pid: app_pid,
+                    });
                 }
             }
         })
         .register();
 
-    // Run the main loop briefly to enumerate nodes.
-    // Use a timeout to avoid hanging if the PID has no audio node.
+    let mainloop_weak = mainloop.downgrade();
+    let pending_sync = core
+        .sync(0)
+        .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
+
+    let _core_listener = core
+        .add_listener_local()
+        .done(move |_id, _seq| {
+            if _seq == pending_sync {
+                if let Some(ml) = mainloop_weak.upgrade() {
+                    ml.quit();
+                }
+            }
+        })
+        .register();
+
+    // Run the mainloop briefly to enumerate
+    // Use a timer as a fallback timeout just in case sync hangs
     let mainloop_weak2 = mainloop.downgrade();
     let timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
@@ -186,16 +211,34 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         Some(std::time::Duration::from_secs(2)),
         None, // One-shot
     );
-
-    // Keep timer alive during loop
     let _keep_timer = timer;
+
     mainloop.run();
 
-    let result = found_node_id
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
+    let cmap = client_map.lock().unwrap();
+    let tnodes = temp_nodes.lock().unwrap();
+    let mut found_node_id = None;
+
+    for node in tnodes.iter() {
+        if let Some(class) = &node.media_class {
+            if class.contains("Stream/Output/Audio") {
+                let node_pid = if let Some(p) = node.node_pid {
+                    p
+                } else if let Some(cid) = node.client_id {
+                    *cmap.get(&cid).unwrap_or(&0)
+                } else {
+                    0
+                };
+
+                if node_pid == pid {
+                    found_node_id = Some(node.id.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    let result = found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
 
     Ok(result)
 }
