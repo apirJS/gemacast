@@ -119,7 +119,6 @@ fn windows_list_processes() -> Vec<ProcessInfo> {
 fn linux_list_processes() -> Vec<ProcessInfo> {
     use crate::adapters::capture::pipewire_common;
 
-
     // Don't crash if PipeWire is not available (e.g., PulseAudio-only systems)
     if !pipewire_common::is_pipewire_available() {
         tracing::info!("[ProcessLister] PipeWire not available, returning empty process list");

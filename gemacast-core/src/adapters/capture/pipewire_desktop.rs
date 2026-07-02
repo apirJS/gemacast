@@ -21,9 +21,7 @@ use pw::properties;
 
 use pw::stream::{Stream, StreamFlags};
 
-use super::pipewire_common::{
-    self, create_pw_ring_buffer, push_pw_audio_to_ringbuf,
-};
+use super::pipewire_common::{self, create_pw_ring_buffer, push_pw_audio_to_ringbuf};
 
 /// PipeWire desktop audio capture backend.
 ///
