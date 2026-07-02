@@ -400,13 +400,15 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
             // To test end-to-end process capture, we spawn a dummy audio process.
-            let mut child = match std::process::Command::new("pw-play").arg(&wav_path).spawn() {
+            let mut child = match std::process::Command::new("pw-play")
+                .arg(&wav_path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
                 Ok(child) => child,
                 Err(e) => {
-                    println!(
-                        "Failed to spawn pw-loopback ({}), skipping end-to-end test.",
-                        e
-                    );
+                    println!("Failed to spawn pw-play ({}), skipping end-to-end test.", e);
                     return;
                 }
             };
@@ -414,7 +416,20 @@ mod tests {
             let pid = child.id();
 
             // Give WirePlumber a moment to create the node
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+
+            // Check if it already exited
+            if let Ok(Some(status)) = child.try_wait() {
+                let mut stderr_str = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_string(&mut stderr_str);
+                }
+                panic!(
+                    "pw-play exited prematurely with status {:?}. Stderr: {}",
+                    status, stderr_str
+                );
+            }
 
             let result = create_pipewire_process_loopback(pid);
 
