@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pipewire as pw;
 use pw::properties;
-use pw::spa;
+
 use pw::stream::{Stream, StreamFlags};
 
 use super::pipewire_common::{
-    self, PwProcessData, create_pw_ring_buffer, push_pw_audio_to_ringbuf,
+    self, create_pw_ring_buffer, push_pw_audio_to_ringbuf,
 };
 
 /// PipeWire desktop audio capture backend.

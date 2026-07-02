@@ -118,7 +118,7 @@ fn windows_list_processes() -> Vec<ProcessInfo> {
 #[cfg(target_os = "linux")]
 fn linux_list_processes() -> Vec<ProcessInfo> {
     use crate::adapters::capture::pipewire_common;
-    use std::collections::HashMap;
+
 
     // Don't crash if PipeWire is not available (e.g., PulseAudio-only systems)
     if !pipewire_common::is_pipewire_available() {
@@ -272,48 +272,26 @@ fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::
     let current_pid = std::process::id() as i32;
     let mut seen = HashMap::<String, ProcessInfo>::new();
 
-    if let Some(snapshot) = content.snapshot() {
-        for app in snapshot.applications {
-            let pid = app.process_id;
-            if pid == current_pid || pid <= 1 {
-                continue;
-            }
-            let name = if app.application_name.is_empty() {
-                continue; // Skip empty-named apps (typically system daemons)
-            } else {
-                app.application_name
-            };
-
-            let key = name.to_lowercase();
-            seen.entry(key).or_insert(ProcessInfo {
-                pid: pid as u32,
-                name,
-                has_audio_session: true,
-            });
+    for app in content.applications() {
+        let pid = app.process_id();
+        if pid == current_pid || pid <= 1 {
+            continue;
         }
-    } else {
-        // Fallback to individual FFI calls if snapshot fails
-        for app in content.applications() {
-            let pid = app.process_id();
-            if pid == current_pid || pid <= 1 {
-                continue;
-            }
 
-            let name = app
-                .application_name()
-                .unwrap_or_else(|| format!("PID {pid}"));
+        let name = app
+            .application_name()
+            .unwrap_or_else(|| format!("PID {pid}"));
 
-            if name.is_empty() {
-                continue;
-            }
-
-            let key = name.to_lowercase();
-            seen.entry(key).or_insert(ProcessInfo {
-                pid: pid as u32,
-                name,
-                has_audio_session: true,
-            });
+        if name.is_empty() {
+            continue;
         }
+
+        let key = name.to_lowercase();
+        seen.entry(key).or_insert(ProcessInfo {
+            pid: pid as u32,
+            name,
+            has_audio_session: true,
+        });
     }
 
     let mut processes: Vec<_> = seen.into_values().collect();

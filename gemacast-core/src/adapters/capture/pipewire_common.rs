@@ -13,10 +13,10 @@
 //! the same pattern used by the WASAPI capture backends on Windows.
 
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
-use crate::domain::error::{AudioError, GemaCastError};
+
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use tokio::sync::{Notify, mpsc};
 
 use pipewire as pw;
