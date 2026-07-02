@@ -21,10 +21,15 @@ export function useUpdater() {
 
   const checkForUpdates = useCallback(async () => {
     useUpdateStore.getState().setChecking();
-    try {
-      await tauriBridge.cleanupStaleUpdates();
-    } catch {
-      // Non-critical — ignore.
+
+    // Don't delete the downloaded APK while the user is in the install flow.
+    const currentStatus = useUpdateStore.getState().status;
+    if (currentStatus !== 'ready' && currentStatus !== 'installing') {
+      try {
+        await tauriBridge.cleanupStaleUpdates();
+      } catch {
+        // Non-critical — ignore.
+      }
     }
 
     try {

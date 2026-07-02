@@ -127,6 +127,8 @@ pub fn run() {
     // Path to a downloaded update installer (set by UpdateReady event).
     let mut pending_installer: Option<PathBuf> = None;
 
+    let proxy_for_events = event_loop.create_proxy();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -136,6 +138,7 @@ pub fn run() {
                     tray_event,
                     &mut tray_manager,
                     &command_tx,
+                    &proxy_for_events,
                     control_flow,
                     &mut pending_installer,
                 );
@@ -165,6 +168,7 @@ fn handle_tray_event(
     event: TrayEvent,
     tray: &mut TrayManager,
     command_tx: &tokio::sync::mpsc::Sender<AppCommand>,
+    proxy: &EventLoopProxy<TrayEvent>,
     control_flow: &mut ControlFlow,
     pending_installer: &mut Option<PathBuf>,
 ) {
@@ -184,6 +188,23 @@ fn handle_tray_event(
         TrayEvent::UpdateFailed(msg) => {
             tracing::warn!("Update failed: {}", msg);
             tray.show_update_failed();
+        }
+        TrayEvent::UpdateChecking => {
+            tray.show_update_checking();
+        }
+        TrayEvent::UpdateUpToDate => {
+            tray.show_update_up_to_date();
+            // Auto-remove the "up to date" item after 5 seconds so it
+            // doesn't linger in the menu forever.
+            let proxy = proxy.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let _ = proxy.send_event(TrayEvent::ClearUpdateStatus);
+            });
+        }
+        TrayEvent::ClearUpdateStatus => {
+            tray.remove_update_up_to_date_item();
+            tray.remove_update_checking_item();
         }
         TrayEvent::DiscoveredDevice {
             device_id,

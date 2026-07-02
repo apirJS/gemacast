@@ -35,6 +35,8 @@ pub mod mocks {
         ShutdownComplete,
         UpdateReady(String, std::path::PathBuf),
         UpdateFailed(String),
+        UpdateChecking,
+        UpdateUpToDate,
     }
 
     /// Records every tray notification for later assertion.
@@ -101,6 +103,14 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(TrayCall::UpdateFailed(message));
+        }
+
+        fn notify_update_checking(&self) {
+            self.calls.lock().unwrap().push(TrayCall::UpdateChecking);
+        }
+
+        fn notify_update_up_to_date(&self) {
+            self.calls.lock().unwrap().push(TrayCall::UpdateUpToDate);
         }
     }
 
