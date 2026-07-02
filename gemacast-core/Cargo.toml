@@ -66,16 +66,9 @@ features = [
 ]
 
 [target.'cfg(target_os="linux")'.dependencies]
-pipewire = "0.7.2"
-# Pin libspa/libspa-sys: pipewire 0.7.2 depends on "libspa ^0" which
-# resolves to 0.10.0 (incompatible API). Force 0.7.2 to match.
-libspa = "=0.7.2"
-libspa-sys = "=0.7.2"
+pipewire = "0.10.0"
 
 [target.'cfg(target_os="macos")'.dependencies]
-screencapturekit = { version = "7.0.1", features = ["macos_13_0"] }
-# Pin apple-metal: screencapturekit allows >=0.6, <0.9 which resolves to
-# 0.8.8 (broken Swift: MTLResidencySet/MTLLogState missing). Force 0.8.7.
-apple-metal = "=0.8.7"
+screencapturekit = { version = "8.0.0", features = ["macos_13_0"] }
 
 
