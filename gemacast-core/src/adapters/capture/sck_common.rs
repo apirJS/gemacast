@@ -105,10 +105,10 @@ impl SCStreamOutputTrait for SckAudioHandler {
         // ScreenCaptureKit delivers audio as interleaved f32 PCM
         // at the sample rate we configured (48kHz stereo).
         if let Some(audio_data) = extract_audio_f32_from_sample_buffer(&sample) {
-            if let Ok(mut producer) = self.producer.lock() {
-                if producer.vacant_len() >= audio_data.len() {
-                    let _ = producer.push_slice(&audio_data);
-                }
+            if let Ok(mut producer) = self.producer.lock()
+                && producer.vacant_len() >= audio_data.len()
+            {
+                let _ = producer.push_slice(&audio_data);
             }
             self.notify.notify_one();
         }

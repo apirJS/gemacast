@@ -100,7 +100,7 @@ pub fn create_sck_process_loopback(
         .applications()
         .into_iter()
         .find(|app| app.process_id() == pid as i32)
-        .ok_or_else(|| GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
+        .ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
 
     let mut app_name = target_app.application_name();
     if app_name.is_empty() {

@@ -179,9 +179,10 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
                 let app_name = props.get("application.name");
 
                 // Filter for audio output streams (apps producing audio)
-                if let Some(class) = media_class {
-                    if class.contains("Stream/Output/Audio") {
-                        let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
+                if let Some(class) = media_class
+                    && class.contains("Stream/Output/Audio")
+                {
+                    let pid: u32 = app_pid.and_then(|s| s.parse().ok()).unwrap_or(0);
                         let name = app_name
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("PID {pid}"));
@@ -212,10 +213,10 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let _core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync {
-                if let Some(ml) = mainloop_weak.upgrade() {
-                    ml.quit();
-                }
+            if _seq == pending_sync
+                && let Some(ml) = mainloop_weak.upgrade()
+            {
+                ml.quit();
             }
         })
         .register();
@@ -228,7 +229,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let mut processes: Vec<_> = map.values().cloned().collect();
 
     // Sort alphabetically (all have audio sessions)
-    processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    processes.sort_by_key(|a| a.name.to_lowercase());
 
     Ok(processes)
 }
