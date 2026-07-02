@@ -195,19 +195,19 @@ fn run_desktop_capture_loop(
                     let offset = chunk.offset() as usize;
                     let size = chunk.size() as usize;
 
-                    if let Some(slice) = data.data() {
-                        if offset + size <= slice.len() {
-                            let audio_bytes = &slice[offset..offset + size];
-                            let n_samples = size / std::mem::size_of::<f32>();
+                    if let Some(slice) = data.data()
+                        && offset + size <= slice.len()
+                    {
+                        let audio_bytes = &slice[offset..offset + size];
+                        let n_samples = size / std::mem::size_of::<f32>();
 
-                            unsafe {
-                                push_pw_audio_to_ringbuf(
-                                    audio_bytes.as_ptr() as *const f32,
-                                    n_samples,
-                                    producer,
-                                    notify,
-                                );
-                            }
+                        unsafe {
+                            push_pw_audio_to_ringbuf(
+                                audio_bytes.as_ptr() as *const f32,
+                                n_samples,
+                                producer,
+                                notify,
+                            );
                         }
                     }
                 }
@@ -237,10 +237,10 @@ fn run_desktop_capture_loop(
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
     let _timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed) {
-            if let Some(ml) = mainloop_weak.upgrade() {
-                ml.quit();
-            }
+        if !is_running_timer.load(Ordering::Relaxed)
+            && let Some(ml) = mainloop_weak.upgrade()
+        {
+            ml.quit();
         }
     });
     // Check every 100ms if we should stop

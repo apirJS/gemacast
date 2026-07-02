@@ -297,7 +297,7 @@ fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::
     let mut processes: Vec<_> = seen.into_values().collect();
 
     // Sort alphabetically
-    processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    processes.sort_by_key(|a| a.name.to_lowercase());
 
     Ok(processes)
 }

@@ -152,23 +152,22 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
                 let media_class = props.get("media.class");
 
                 // Match: correct PID AND audio output stream
-                if app_pid == Some(&target_pid_str) {
-                    if let Some(class) = media_class {
-                        if class.contains("Stream/Output/Audio") {
-                            let node_id = global.id.to_string();
-                            tracing::info!(
-                                "[PipeWire] Found node {} for PID {} (class: {})",
-                                node_id,
-                                pid,
-                                class
-                            );
-                            *found_clone.lock().unwrap() = Some(node_id);
+                if app_pid == Some(&target_pid_str)
+                    && let Some(class) = media_class
+                    && class.contains("Stream/Output/Audio")
+                {
+                    let node_id = global.id.to_string();
+                    tracing::info!(
+                        "[PipeWire] Found node {} for PID {} (class: {})",
+                        node_id,
+                        pid,
+                        class
+                    );
+                    *found_clone.lock().unwrap() = Some(node_id);
 
-                            // We found our target, quit the main loop
-                            if let Some(ml) = mainloop_weak.upgrade() {
-                                ml.quit();
-                            }
-                        }
+                    // We found our target, quit the main loop
+                    if let Some(ml) = mainloop_weak.upgrade() {
+                        ml.quit();
                     }
                 }
             }
