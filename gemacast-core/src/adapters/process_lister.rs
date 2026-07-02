@@ -198,7 +198,6 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
                         }
                     }
                 }
-            }
         })
         .register();
 
