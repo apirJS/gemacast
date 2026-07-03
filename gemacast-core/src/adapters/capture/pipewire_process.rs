@@ -414,7 +414,6 @@ mod tests {
     #[test]
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
-
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
             let _ = std::process::Command::new("pw-cli")
                 .args([
@@ -459,7 +458,10 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
-                panic!("pw-cat exited prematurely with status {:?}. Stderr: {}", status, stderr_str);
+                panic!(
+                    "pw-cat exited prematurely with status {:?}. Stderr: {}",
+                    status, stderr_str
+                );
             }
 
             let result = create_pipewire_process_loopback(pid);

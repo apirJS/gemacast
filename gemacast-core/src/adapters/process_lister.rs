@@ -365,13 +365,6 @@ mod tests {
     #[test]
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
-            let wav_path = std::env::temp_dir().join("dummy_lister.wav");
-            {
-                use std::io::Write;
-                let mut f = std::fs::File::create(&wav_path).unwrap();
-                f.write_all(&[
-                    b'R', b'I', b'F', b'F', 0x24, 0x53, 0x07, 0x00, b'W', b'A', b'V', b'E', b'f',
-                    b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb,
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
             let _ = std::process::Command::new("pw-cli")
                 .args([
@@ -418,7 +411,10 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
-                panic!("pw-cat exited prematurely with status {:?}. Stderr: {}", status, stderr_str);
+                panic!(
+                    "pw-cat exited prematurely with status {:?}. Stderr: {}",
+                    status, stderr_str
+                );
             }
 
             let result = linux_enumerate_pipewire_nodes();
