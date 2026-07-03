@@ -184,25 +184,30 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
-                if let Some(props) = global.props
-                    && let Some(app_pid) = props.get("application.process.id")
-                {
-                    let app_name = props.get("application.name");
-                    let pid: u32 = app_pid.parse().ok().unwrap_or(0);
-                    let name = app_name
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("PID {pid}"));
+                if let Some(props) = global.props {
+                    let pid_str = props
+                        .get("application.process.id")
+                        .or_else(|| props.get("pipewire.sec.pid"));
+                    if let Some(app_pid) = pid_str {
+                        let app_name = props.get("application.name");
+                        let pid: u32 = app_pid.parse().ok().unwrap_or(0);
+                        let name = app_name
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("PID {pid}"));
 
-                    if pid > 0 {
-                        let mut cmap = client_map_clone.lock().unwrap();
-                        cmap.insert(global.id, (pid, name));
+                        if pid > 0 {
+                            let mut cmap = client_map_clone.lock().unwrap();
+                            cmap.insert(global.id, (pid, name));
+                        }
                     }
                 }
             } else if global.type_ == pw::types::ObjectType::Node
                 && let Some(props) = global.props
             {
                 let media_class = props.get("media.class").map(|s| s.to_string());
-                let app_pid = props.get("application.process.id");
+                let app_pid = props
+                    .get("application.process.id")
+                    .or_else(|| props.get("pipewire.sec.pid"));
                 let app_name = props.get("application.name").map(|s| s.to_string());
                 let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
 
