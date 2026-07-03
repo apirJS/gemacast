@@ -391,6 +391,60 @@ mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
 
+    /// Generate a silent WAV file (48 kHz, stereo, s16) of the given duration in
+    /// seconds and return its path. The file is placed in std::env::temp_dir().
+    fn create_silent_wav(duration_secs: u32) -> String {
+        let sample_rate: u32 = 48000;
+        let channels: u16 = 2;
+        let bits_per_sample: u16 = 16;
+        let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+        let block_align = channels * bits_per_sample / 8;
+        let data_size = byte_rate * duration_secs;
+        let file_size = 36 + data_size; // RIFF chunk size = file size - 8
+
+        let path = std::env::temp_dir().join(format!(
+            "gemacast_ci_silence_{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut buf: Vec<u8> = Vec::with_capacity(44);
+        // RIFF header
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&file_size.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        // fmt sub-chunk
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes()); // PCM chunk size
+        buf.extend_from_slice(&1u16.to_le_bytes()); // PCM format
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&byte_rate.to_le_bytes());
+        buf.extend_from_slice(&block_align.to_le_bytes());
+        buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+        // data sub-chunk
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_size.to_le_bytes());
+
+        // Write header + zero-filled audio data
+        use std::io::Write;
+        let mut file = std::fs::File::create(&path).expect("failed to create WAV file");
+        file.write_all(&buf).expect("failed to write WAV header");
+        // Write silence in 64 KB chunks to avoid huge single allocation
+        let chunk = vec![0u8; 65536];
+        let mut remaining = data_size as usize;
+        while remaining > 0 {
+            let n = remaining.min(chunk.len());
+            file.write_all(&chunk[..n])
+                .expect("failed to write WAV data");
+            remaining -= n;
+        }
+
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn test_process_capture_not_found() {
         if is_pipewire_available() {
@@ -425,25 +479,20 @@ mod tests {
 
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // To test end-to-end process capture, we spawn a dummy audio process playing infinite silence
-            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
+            // To test end-to-end process capture, we spawn a dummy audio process playing silence.
+            // We generate a proper WAV file because the CI's pw-cat version uses libsndfile
+            // which requires a valid container header (raw /dev/zero or stdin won't work).
+            let wav_path = create_silent_wav(30);
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
-                .arg("--raw")
-                .arg("--format")
-                .arg("s16")
-                .arg("--rate")
-                .arg("48000")
-                .arg("--channels")
-                .arg("2")
-                .arg("-")
-                .stdin(std::process::Stdio::from(dev_zero))
+                .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
                 Ok(child) => child,
                 Err(e) => {
+                    let _ = std::fs::remove_file(&wav_path);
                     println!("Failed to spawn pw-cat ({}), skipping end-to-end test.", e);
                     return;
                 }
@@ -461,6 +510,7 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
+                let _ = std::fs::remove_file(&wav_path);
                 panic!(
                     "pw-cat exited prematurely with status {:?}. Stderr: {}",
                     status, stderr_str
@@ -472,6 +522,7 @@ mod tests {
             let _ = child.kill();
 
             if let Err(e) = result {
+                let _ = std::fs::remove_file(&wav_path);
                 panic!("Expected success capturing dummy process, got {:?}", e);
             }
 
@@ -483,6 +534,7 @@ mod tests {
             // Cleanup the dummy process
             let _ = child.kill();
             let _ = child.wait();
+            let _ = std::fs::remove_file(&wav_path);
         } else {
             println!("PipeWire is not available, skipping process capture end-to-end test.");
         }
@@ -513,41 +565,35 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // Helper to spawn a pw-cat process playing silence
-        let spawn_pw_cat = || -> Option<std::process::Child> {
-            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
+        // Helper to spawn a pw-cat process playing silence from a WAV file
+        let spawn_pw_cat = || -> Option<(std::process::Child, String)> {
+            let wav_path = create_silent_wav(30);
             match std::process::Command::new("pw-cat")
                 .arg("-p")
-                .arg("--raw")
-                .arg("--format")
-                .arg("s16")
-                .arg("--rate")
-                .arg("48000")
-                .arg("--channels")
-                .arg("2")
-                .arg("-")
-                .stdin(std::process::Stdio::from(dev_zero))
+                .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
-                Ok(child) => Some(child),
+                Ok(child) => Some((child, wav_path)),
                 Err(e) => {
+                    let _ = std::fs::remove_file(&wav_path);
                     println!("Failed to spawn pw-cat ({}), skipping.", e);
                     None
                 }
             }
         };
 
-        let mut child1 = match spawn_pw_cat() {
+        let (mut child1, wav1) = match spawn_pw_cat() {
             Some(c) => c,
             None => return,
         };
-        let mut child2 = match spawn_pw_cat() {
+        let (mut child2, wav2) = match spawn_pw_cat() {
             Some(c) => c,
             None => {
                 let _ = child1.kill();
                 let _ = child1.wait();
+                let _ = std::fs::remove_file(&wav1);
                 return;
             }
         };
@@ -566,6 +612,8 @@ mod tests {
                 let _ = stderr.read_to_string(&mut stderr_str);
             }
             let _ = child2.kill();
+            let _ = std::fs::remove_file(&wav1);
+            let _ = std::fs::remove_file(&wav2);
             panic!(
                 "pw-cat (child1) exited prematurely with status {:?}. Stderr: {}",
                 status, stderr_str
@@ -579,6 +627,8 @@ mod tests {
                 let _ = stderr.read_to_string(&mut stderr_str);
             }
             let _ = child1.kill();
+            let _ = std::fs::remove_file(&wav1);
+            let _ = std::fs::remove_file(&wav2);
             panic!(
                 "pw-cat (child2) exited prematurely with status {:?}. Stderr: {}",
                 status, stderr_str
@@ -603,7 +653,7 @@ mod tests {
             result2.err()
         );
 
-        // Drop both handles — ensures concurrent cleanup doesn't deadlock or crash
+        // Drop both handles â€” ensures concurrent cleanup doesn't deadlock or crash
         if let Ok(handle1) = result1 {
             drop(handle1);
         }
@@ -611,10 +661,12 @@ mod tests {
             drop(handle2);
         }
 
-        // Cleanup both pw-cat processes
+        // Cleanup both pw-cat processes and temp files
         let _ = child1.kill();
         let _ = child1.wait();
         let _ = child2.kill();
         let _ = child2.wait();
+        let _ = std::fs::remove_file(&wav1);
+        let _ = std::fs::remove_file(&wav2);
     }
 }

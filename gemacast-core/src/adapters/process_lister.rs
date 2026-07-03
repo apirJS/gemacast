@@ -354,6 +354,53 @@ mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
 
+    /// Generate a silent WAV file (48 kHz, stereo, s16) and return its path.
+    fn create_silent_wav(duration_secs: u32) -> String {
+        let sample_rate: u32 = 48000;
+        let channels: u16 = 2;
+        let bits_per_sample: u16 = 16;
+        let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+        let block_align = channels * bits_per_sample / 8;
+        let data_size = byte_rate * duration_secs;
+        let file_size = 36 + data_size;
+
+        let path = std::env::temp_dir().join(format!(
+            "gemacast_ci_silence_{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut buf: Vec<u8> = Vec::with_capacity(44);
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&file_size.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&byte_rate.to_le_bytes());
+        buf.extend_from_slice(&block_align.to_le_bytes());
+        buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_size.to_le_bytes());
+
+        use std::io::Write;
+        let mut file = std::fs::File::create(&path).expect("failed to create WAV file");
+        file.write_all(&buf).expect("failed to write WAV header");
+        let chunk = vec![0u8; 65536];
+        let mut remaining = data_size as usize;
+        while remaining > 0 {
+            let n = remaining.min(chunk.len());
+            file.write_all(&chunk[..n])
+                .expect("failed to write WAV data");
+            remaining -= n;
+        }
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
@@ -368,27 +415,19 @@ mod tests {
 
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // Spawn a dummy audio process that plays infinite silence.
-            // Using /dev/zero with explicit raw format guarantees it will stream forever
-            // and fully initialize the PipeWire Node, avoiding any issues with invalid/empty WAV files stalling.
-            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
+            // Spawn a dummy audio process playing silence from a proper WAV file.
+            // CI's pw-cat uses libsndfile which requires a valid container header.
+            let wav_path = create_silent_wav(30);
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
-                .arg("--raw")
-                .arg("--format")
-                .arg("s16")
-                .arg("--rate")
-                .arg("48000")
-                .arg("--channels")
-                .arg("2")
-                .arg("-")
-                .stdin(std::process::Stdio::from(dev_zero))
+                .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
                 Ok(child) => child,
                 Err(e) => {
+                    let _ = std::fs::remove_file(&wav_path);
                     println!("Failed to spawn pw-cat ({}), skipping enumeration test.", e);
                     return;
                 }
@@ -406,6 +445,7 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
+                let _ = std::fs::remove_file(&wav_path);
                 panic!(
                     "pw-cat exited prematurely with status {:?}. Stderr: {}",
                     status, stderr_str
@@ -427,6 +467,7 @@ mod tests {
 
             let _ = child.kill();
             let _ = child.wait();
+            let _ = std::fs::remove_file(&wav_path);
         } else {
             println!("PipeWire is not available, skipping linux_enumerate_pipewire_nodes test.");
         }
