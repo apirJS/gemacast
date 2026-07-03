@@ -553,21 +553,30 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1500));
 
         // Verify both pw-cat processes are still running
-        for (child, label) in [(&mut child1, "child1"), (&mut child2, "child2")] {
-            if let Ok(Some(status)) = child.try_wait() {
-                let mut stderr_str = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_string(&mut stderr_str);
-                }
-                // Kill the other child before panicking
-                let _ = child1.kill();
-                let _ = child2.kill();
-                panic!(
-                    "pw-cat ({}) exited prematurely with status {:?}. Stderr: {}",
-                    label, status, stderr_str
-                );
+        if let Ok(Some(status)) = child1.try_wait() {
+            let mut stderr_str = String::new();
+            if let Some(mut stderr) = child1.stderr.take() {
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut stderr_str);
             }
+            let _ = child2.kill();
+            panic!(
+                "pw-cat (child1) exited prematurely with status {:?}. Stderr: {}",
+                status, stderr_str
+            );
+        }
+
+        if let Ok(Some(status)) = child2.try_wait() {
+            let mut stderr_str = String::new();
+            if let Some(mut stderr) = child2.stderr.take() {
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut stderr_str);
+            }
+            let _ = child1.kill();
+            panic!(
+                "pw-cat (child2) exited prematurely with status {:?}. Stderr: {}",
+                status, stderr_str
+            );
         }
 
         // Create capture handles for both PIDs simultaneously
