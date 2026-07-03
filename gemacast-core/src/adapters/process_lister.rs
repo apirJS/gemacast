@@ -388,10 +388,13 @@ mod tests {
                 ])
                 .status();
 
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(200)); // Create a dummy PID to look for, so we don't rely on SO_PEERCRED inside containers
+            let dummy_pid = 999999;
 
             // Spawn a dummy audio process so the registry actually has an application node
             let mut child = match std::process::Command::new("pw-play")
+                .arg("-P")
+                .arg(format!("{{ \"application.process.id\": {} }}", dummy_pid))
                 .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -406,8 +409,6 @@ mod tests {
                     return;
                 }
             };
-
-            let pid = child.id();
 
             // Give WirePlumber a moment to create the node
             std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -427,20 +428,17 @@ mod tests {
 
             let result = linux_enumerate_pipewire_nodes();
 
-            assert!(result.is_ok(), "Enumeration failed: {:?}", result.err());
-
             if let Ok(processes) = result {
-                // Assert that the PID of the spawned process is in the list
-                let found = processes.iter().any(|p| p.pid == pid);
+                let found = processes.iter().any(|p| p.pid == dummy_pid);
                 assert!(
                     found,
-                    "Failed to find the spawned pw-loopback process (PID {}) in the enumerated list",
-                    pid
+                    "Failed to find the spawned pw-play process (PID {}) in the enumerated list",
+                    dummy_pid
                 );
+            } else {
+                panic!("Enumeration failed");
             }
 
-            // Cleanup
-            let _ = child.kill();
             let _ = child.wait();
             let _ = std::fs::remove_file(&wav_path);
         } else {

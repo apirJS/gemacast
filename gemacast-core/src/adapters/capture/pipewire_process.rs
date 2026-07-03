@@ -439,8 +439,13 @@ mod tests {
 
             std::thread::sleep(std::time::Duration::from_millis(200));
 
+            // Create a dummy PID to look for, so we don't rely on SO_PEERCRED inside containers
+            let dummy_pid = 999999;
+
             // To test end-to-end process capture, we spawn a dummy audio process.
             let mut child = match std::process::Command::new("pw-play")
+                .arg("-P")
+                .arg(format!("{{ \"application.process.id\": {} }}", dummy_pid))
                 .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -452,8 +457,6 @@ mod tests {
                     return;
                 }
             };
-
-            let pid = child.id();
 
             // Give WirePlumber a moment to create the node
             std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -471,14 +474,13 @@ mod tests {
                 );
             }
 
-            let result = create_pipewire_process_loopback(pid);
+            let result = create_pipewire_process_loopback(dummy_pid);
 
-            // The capture should succeed
-            assert!(
-                result.is_ok(),
-                "Expected success capturing dummy process, got {:?}",
-                result.err()
-            );
+            let _ = child.kill();
+
+            if let Err(e) = result {
+                panic!("Expected success capturing dummy process, got {:?}", e);
+            }
 
             if let Ok(handle) = result {
                 // Ensure Drop handles cleanup
