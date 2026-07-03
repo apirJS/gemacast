@@ -455,11 +455,11 @@ mod tests {
                     );
                 }
 
-                if let Ok(processes) = linux_enumerate_pipewire_nodes() {
-                    if processes.iter().any(|p| p.pid == pid) {
-                        found = true;
-                        break;
-                    }
+                if let Ok(processes) = linux_enumerate_pipewire_nodes()
+                    && processes.iter().any(|p| p.pid == pid)
+                {
+                    found = true;
+                    break;
                 }
             }
 

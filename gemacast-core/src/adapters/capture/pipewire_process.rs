@@ -647,15 +647,15 @@ mod tests {
                 );
             }
 
-            if handle1_opt.is_none() {
-                if let Ok(h) = create_pipewire_process_loopback(pid1) {
-                    handle1_opt = Some(h);
-                }
+            if handle1_opt.is_none()
+                && let Ok(h) = create_pipewire_process_loopback(pid1)
+            {
+                handle1_opt = Some(h);
             }
-            if handle2_opt.is_none() {
-                if let Ok(h) = create_pipewire_process_loopback(pid2) {
-                    handle2_opt = Some(h);
-                }
+            if handle2_opt.is_none()
+                && let Ok(h) = create_pipewire_process_loopback(pid2)
+            {
+                handle2_opt = Some(h);
             }
 
             if handle1_opt.is_some() && handle2_opt.is_some() {
