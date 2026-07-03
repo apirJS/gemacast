@@ -160,22 +160,22 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
                     let mut cmap = client_map_clone.lock().unwrap();
                     cmap.insert(global.id, app_pid);
                 }
-            } else if global.type_ == pw::types::ObjectType::Node {
-                if let Some(props) = global.props {
-                    let media_class = props.get("media.class").map(|s| s.to_string());
-                    let app_pid = props
-                        .get("application.process.id")
-                        .and_then(|s| s.parse::<u32>().ok());
-                    let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
+            } else if global.type_ == pw::types::ObjectType::Node
+                && let Some(props) = global.props
+            {
+                let media_class = props.get("media.class").map(|s| s.to_string());
+                let app_pid = props
+                    .get("application.process.id")
+                    .and_then(|s| s.parse::<u32>().ok());
+                let client_id = props.get("client.id").and_then(|s| s.parse::<u32>().ok());
 
-                    let mut tnodes = temp_nodes_clone.lock().unwrap();
-                    tnodes.push(TempNode {
-                        id: global.id,
-                        client_id,
-                        media_class,
-                        node_pid: app_pid,
-                    });
-                }
+                let mut tnodes = temp_nodes_clone.lock().unwrap();
+                tnodes.push(TempNode {
+                    id: global.id,
+                    client_id,
+                    media_class,
+                    node_pid: app_pid,
+                });
             }
         })
         .register();
