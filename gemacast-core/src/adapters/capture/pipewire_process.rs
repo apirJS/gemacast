@@ -378,12 +378,10 @@ fn run_process_capture_loop(
             ml.quit();
         }
     });
-    if let Some(ref timer_source) = Some(_timer) {
-        timer_source.update_timer(
-            Some(std::time::Duration::from_millis(100)),
-            Some(std::time::Duration::from_millis(100)),
-        );
-    }
+    _timer.update_timer(
+        Some(std::time::Duration::from_millis(100)),
+        Some(std::time::Duration::from_millis(100)),
+    );
 
     mainloop.run();
 
