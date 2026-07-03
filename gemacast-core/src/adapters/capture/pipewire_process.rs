@@ -428,11 +428,11 @@ mod tests {
             // To test end-to-end process capture, we spawn a dummy audio process playing infinite silence
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
-                .arg("-f")
+                .arg("--format")
                 .arg("s16")
-                .arg("-r")
+                .arg("--rate")
                 .arg("48000")
-                .arg("-c")
+                .arg("--channels")
                 .arg("2")
                 .arg("/dev/zero")
                 .stdout(std::process::Stdio::piped())
@@ -483,5 +483,123 @@ mod tests {
         } else {
             println!("PipeWire is not available, skipping process capture end-to-end test.");
         }
+    }
+
+    /// Multi-listener test: verifies multiple simultaneous process captures work.
+    ///
+    /// 1. Creates a null sink
+    /// 2. Spawns two separate pw-cat processes playing silence
+    /// 3. Creates a PipeWireProcessCapture for each PID
+    /// 4. Asserts both captures succeed and don't interfere
+    /// 5. Drops both handles cleanly
+    #[test]
+    fn test_multi_process_capture() {
+        if !is_pipewire_available() {
+            println!("PipeWire is not available, skipping multi-process capture test.");
+            return;
+        }
+
+        // Create a dummy null sink
+        let _ = std::process::Command::new("pw-cli")
+            .args([
+                "create-node",
+                "adapter",
+                "{ factory.name=support.null-audio-sink node.name=\"ci-multi-sink\" media.class=Audio/Sink object.linger=true }",
+            ])
+            .status();
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Helper to spawn a pw-cat process playing silence
+        let spawn_pw_cat = || -> Option<std::process::Child> {
+            match std::process::Command::new("pw-cat")
+                .arg("-p")
+                .arg("--format")
+                .arg("s16")
+                .arg("--rate")
+                .arg("48000")
+                .arg("--channels")
+                .arg("2")
+                .arg("/dev/zero")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => Some(child),
+                Err(e) => {
+                    println!("Failed to spawn pw-cat ({}), skipping.", e);
+                    None
+                }
+            }
+        };
+
+        let mut child1 = match spawn_pw_cat() {
+            Some(c) => c,
+            None => return,
+        };
+        let mut child2 = match spawn_pw_cat() {
+            Some(c) => c,
+            None => {
+                let _ = child1.kill();
+                let _ = child1.wait();
+                return;
+            }
+        };
+
+        let pid1 = child1.id();
+        let pid2 = child2.id();
+
+        // Give WirePlumber time to create nodes for both processes
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        // Verify both pw-cat processes are still running
+        for (child, label) in [(&mut child1, "child1"), (&mut child2, "child2")] {
+            if let Ok(Some(status)) = child.try_wait() {
+                let mut stderr_str = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_string(&mut stderr_str);
+                }
+                // Kill the other child before panicking
+                let _ = child1.kill();
+                let _ = child2.kill();
+                panic!(
+                    "pw-cat ({}) exited prematurely with status {:?}. Stderr: {}",
+                    label, status, stderr_str
+                );
+            }
+        }
+
+        // Create capture handles for both PIDs simultaneously
+        let result1 = create_pipewire_process_loopback(pid1);
+        let result2 = create_pipewire_process_loopback(pid2);
+
+        // Both should succeed
+        assert!(
+            result1.is_ok(),
+            "Capture for PID {} (child1) failed: {:?}",
+            pid1,
+            result1.err()
+        );
+        assert!(
+            result2.is_ok(),
+            "Capture for PID {} (child2) failed: {:?}",
+            pid2,
+            result2.err()
+        );
+
+        // Drop both handles — ensures concurrent cleanup doesn't deadlock or crash
+        if let Ok(handle1) = result1 {
+            drop(handle1);
+        }
+        if let Ok(handle2) = result2 {
+            drop(handle2);
+        }
+
+        // Cleanup both pw-cat processes
+        let _ = child1.kill();
+        let _ = child1.wait();
+        let _ = child2.kill();
+        let _ = child2.wait();
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! - **Windows**: WASAPI session enumeration
 //! - **Linux**: PipeWire Registry node enumeration
-//! - **macOS**: ScreenCaptureKit `SCShareableContent`
+//! - **macOS**: Disabled (ScreenCaptureKit removed — untested)
 //!
 //! This adapter encapsulates the full process enumeration logic that was
 //! previously embedded in `control::http::handle_get_processes`, including:
@@ -22,8 +22,7 @@ use crate::ports::process_lister::ProcessLister;
 ///   active audio sessions, then enriches with Toolhelp32 process names.
 /// - **Linux**: Uses PipeWire Registry to discover audio-producing nodes.
 ///   Falls back to empty list if PipeWire is unavailable.
-/// - **macOS**: Uses ScreenCaptureKit `SCShareableContent` to list capturable
-///   applications. Falls back to empty list if permission is denied.
+/// - **macOS**: Returns empty list (ScreenCaptureKit disabled — untested).
 #[derive(Clone)]
 pub struct DefaultProcessLister;
 
@@ -288,25 +287,18 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 }
 
 // ---------------------------------------------------------------------------
-// macOS: ScreenCaptureKit application enumeration
+// macOS: ScreenCaptureKit disabled (untested) — returns empty list
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
 fn macos_list_processes() -> Vec<ProcessInfo> {
-    match macos_enumerate_sck_apps() {
-        Ok(processes) => processes,
-        Err(e) => {
-            tracing::warn!("[ProcessLister] ScreenCaptureKit enumeration failed: {e}");
-            Vec::new()
-        }
-    }
+    tracing::info!(
+        "[ProcessLister] ScreenCaptureKit disabled — per-process listing unavailable on macOS"
+    );
+    Vec::new()
 }
 
-/// Enumerate capturable applications via ScreenCaptureKit.
-///
-/// Calls `SCShareableContent::get()` to list all running applications,
-/// filters out system processes and the current process, and returns
-/// them as `ProcessInfo` entries.
+#[cfg(false)]
 #[cfg(target_os = "macos")]
 fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::GemaCastError> {
     use crate::domain::error::AudioError;
@@ -381,11 +373,11 @@ mod tests {
             // and fully initialize the PipeWire Node, avoiding any issues with invalid/empty WAV files stalling.
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
-                .arg("-f")
+                .arg("--format")
                 .arg("s16")
-                .arg("-r")
+                .arg("--rate")
                 .arg("48000")
-                .arg("-c")
+                .arg("--channels")
                 .arg("2")
                 .arg("/dev/zero")
                 .stdout(std::process::Stdio::piped())
@@ -438,33 +430,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[cfg(target_os = "macos")]
-mod macos_tests {
-    use super::*;
-
-    #[test]
-    fn test_macos_enumerate_sck_apps() {
-        // Attempt to enumerate processes via SCK
-        let result = macos_enumerate_sck_apps();
-
-        match result {
-            Ok(processes) => {
-                println!(
-                    "Successfully enumerated {} processes via ScreenCaptureKit",
-                    processes.len()
-                );
-                // We don't assert length > 0 because a strictly isolated CI environment might have no shareable windows,
-                // but usually there's at least Finder/WindowServer.
-            }
-            Err(e) => {
-                // In headless CI environments, this might fail due to lack of TCC Screen Recording permissions.
-                // We print the error and let it pass rather than failing the build.
-                println!(
-                    "ScreenCaptureKit enumeration failed (expected if missing permissions): {:?}",
-                    e
-                );
-            }
-        }
-    }
-}
+// macOS SCK tests removed — ScreenCaptureKit disabled (untested)

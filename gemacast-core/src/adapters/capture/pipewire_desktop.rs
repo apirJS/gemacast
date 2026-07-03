@@ -260,6 +260,7 @@ fn run_desktop_capture_loop(
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use ringbuf::traits::*;
 
     #[test]
     fn test_create_desktop_loopback() {
@@ -279,5 +280,112 @@ mod tests {
         } else {
             println!("PipeWire is not available, skipping desktop loopback test.");
         }
+    }
+
+    /// End-to-end test: verifies that desktop capture actually receives audio samples.
+    ///
+    /// 1. Creates a null audio sink so PipeWire has somewhere to route audio
+    /// 2. Spawns pw-cat playing infinite silence through that sink
+    /// 3. Creates a desktop capture stream (which monitors the sink)
+    /// 4. Waits for samples to appear in the ring buffer consumer
+    /// 5. Asserts that we received > 0 samples
+    #[test]
+    fn test_desktop_capture_receives_audio() {
+        if !is_pipewire_available() {
+            println!("PipeWire is not available, skipping desktop capture receives audio test.");
+            return;
+        }
+
+        // Create a dummy null sink for the headless CI environment
+        let _ = std::process::Command::new("pw-cli")
+            .args([
+                "create-node",
+                "adapter",
+                "{ factory.name=support.null-audio-sink node.name=\"ci-desktop-sink\" media.class=Audio/Sink object.linger=true }",
+            ])
+            .status();
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Spawn pw-cat to play silence through the sink, generating audio traffic
+        let mut child = match std::process::Command::new("pw-cat")
+            .arg("-p")
+            .arg("--format")
+            .arg("s16")
+            .arg("--rate")
+            .arg("48000")
+            .arg("--channels")
+            .arg("2")
+            .arg("/dev/zero")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                println!(
+                    "Failed to spawn pw-cat ({}), skipping desktop capture receives audio test.",
+                    e
+                );
+                return;
+            }
+        };
+
+        // Give WirePlumber time to set up the node and routing
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Verify pw-cat is still running
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut stderr_str = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut stderr_str);
+            }
+            panic!(
+                "pw-cat exited prematurely with status {:?}. Stderr: {}",
+                status, stderr_str
+            );
+        }
+
+        // Create the desktop capture
+        let result = create_pipewire_desktop_loopback();
+        assert!(
+            result.is_ok(),
+            "Expected desktop capture to succeed, got {:?}",
+            result.err()
+        );
+
+        let CaptureHandle {
+            backend,
+            mut consumer,
+            notify: _notify,
+            stream_error_rx: _stream_error_rx,
+        } = result.unwrap();
+
+        // Wait for audio samples to arrive in the consumer ring buffer.
+        // The capture runs on a dedicated PipeWire thread, so we poll the
+        // consumer side with a timeout.
+        let mut total_samples = 0usize;
+        let mut scratch = vec![0.0f32; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+
+        while std::time::Instant::now() < deadline {
+            let n = consumer.pop_slice(&mut scratch);
+            total_samples += n;
+            if total_samples > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        assert!(
+            total_samples > 0,
+            "Desktop capture did not receive any audio samples within the timeout"
+        );
+
+        // Clean up: drop the capture backend first, then kill pw-cat
+        drop(backend);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

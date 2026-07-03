@@ -19,11 +19,12 @@ pub mod pipewire_desktop;
 #[cfg(target_os = "linux")]
 pub mod pipewire_process;
 
-#[cfg(target_os = "macos")]
+// DEAD CODE: ScreenCaptureKit disabled — untested, macOS falls back to CPAL
+#[cfg(false)]
 pub mod sck_common;
-#[cfg(target_os = "macos")]
+#[cfg(false)]
 pub mod sck_desktop;
-#[cfg(target_os = "macos")]
+#[cfg(false)]
 pub mod sck_process;
 
 // Re-export port traits for backward compatibility.
@@ -51,10 +52,7 @@ pub enum PlatformCaptureBackend {
     PipeWireDesktop(pipewire_desktop::PipeWireDesktopCapture),
     #[cfg(target_os = "linux")]
     PipeWireProcess(pipewire_process::PipeWireProcessCapture),
-    #[cfg(target_os = "macos")]
-    SckDesktop(sck_desktop::SckDesktopCapture),
-    #[cfg(target_os = "macos")]
-    SckProcess(sck_process::SckProcessCapture),
+    // ScreenCaptureKit variants disabled — untested
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
@@ -69,10 +67,6 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.play(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.play(),
-            #[cfg(target_os = "macos")]
-            Self::SckDesktop(b) => b.play(),
-            #[cfg(target_os = "macos")]
-            Self::SckProcess(b) => b.play(),
             Self::Cpal(b) => b.play(),
         }
     }
@@ -87,10 +81,6 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.pause(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.pause(),
-            #[cfg(target_os = "macos")]
-            Self::SckDesktop(b) => b.pause(),
-            #[cfg(target_os = "macos")]
-            Self::SckProcess(b) => b.pause(),
             Self::Cpal(b) => b.pause(),
         }
     }
@@ -101,7 +91,7 @@ impl CaptureBackend for PlatformCaptureBackend {
 // ---------------------------------------------------------------------------
 
 /// Production capture factory (WASAPI on Windows, PipeWire on Linux,
-/// ScreenCaptureKit on macOS, CPAL as universal fallback).
+/// CPAL as universal fallback).
 ///
 /// Implements [`CaptureFactory`] with `Backend = PlatformCaptureBackend`,
 /// so the entire pipeline monomorphizes at compile time.
@@ -115,8 +105,8 @@ impl CaptureBackend for PlatformCaptureBackend {
 /// (e.g., PulseAudio-only systems), it falls back to CPAL. Per-process capture
 /// requires PipeWire — it is not available via CPAL.
 ///
-/// On macOS, the factory uses ScreenCaptureKit for both desktop and per-process
-/// capture. Falls back to CPAL for desktop capture if SCK permission is denied.
+/// On macOS, ScreenCaptureKit is disabled (untested). Desktop capture uses
+/// CPAL loopback. Per-process capture is unavailable.
 pub struct DefaultCaptureFactory;
 
 impl CaptureFactory for DefaultCaptureFactory {
@@ -142,13 +132,9 @@ impl CaptureFactory for DefaultCaptureFactory {
             cpal_loopback::create_cpal_loopback()
         };
 
+        // macOS: ScreenCaptureKit disabled (untested), use CPAL directly
         #[cfg(target_os = "macos")]
-        return sck_desktop::create_sck_desktop_loopback().or_else(|e| {
-            tracing::warn!(
-                "ScreenCaptureKit desktop capture failed ({e}), falling back to CPAL loopback"
-            );
-            cpal_loopback::create_cpal_loopback()
-        });
+        return cpal_loopback::create_cpal_loopback();
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         return cpal_loopback::create_cpal_loopback();
@@ -170,8 +156,9 @@ impl CaptureFactory for DefaultCaptureFactory {
             Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
         };
 
+        // macOS: ScreenCaptureKit disabled (untested), per-process capture unavailable
         #[cfg(target_os = "macos")]
-        return sck_process::create_sck_process_loopback(pid);
+        return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());

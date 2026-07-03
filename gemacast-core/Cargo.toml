@@ -68,7 +68,8 @@ features = [
 [target.'cfg(target_os="linux")'.dependencies]
 pipewire = "0.10.0"
 
-[target.'cfg(target_os="macos")'.dependencies]
-screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
+# DEAD: ScreenCaptureKit disabled — untested
+# [target.'cfg(target_os="macos")'.dependencies]
+# screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
 
 
