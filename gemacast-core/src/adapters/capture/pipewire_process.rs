@@ -500,41 +500,49 @@ mod tests {
 
             let pid = child.id();
 
-            // Give WirePlumber a moment to create the node
-            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let mut handle_opt = None;
+            let mut last_err = None;
 
-            // Check if it already exited
-            if let Ok(Some(status)) = child.try_wait() {
-                let mut stderr_str = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_string(&mut stderr_str);
+            // Retry loop to wait for WirePlumber to create the node (CI can be slow)
+            for _ in 0..15 {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+
+                // Check if it already exited
+                if let Ok(Some(status)) = child.try_wait() {
+                    let mut stderr_str = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        use std::io::Read;
+                        let _ = stderr.read_to_string(&mut stderr_str);
+                    }
+                    let _ = std::fs::remove_file(&wav_path);
+                    panic!(
+                        "pw-cat exited prematurely with status {:?}. Stderr: {}",
+                        status, stderr_str
+                    );
                 }
-                let _ = std::fs::remove_file(&wav_path);
-                panic!(
-                    "pw-cat exited prematurely with status {:?}. Stderr: {}",
-                    status, stderr_str
-                );
-            }
 
-            let result = create_pipewire_process_loopback(pid);
-
-            let _ = child.kill();
-
-            if let Err(e) = result {
-                let _ = std::fs::remove_file(&wav_path);
-                panic!("Expected success capturing dummy process, got {:?}", e);
-            }
-
-            if let Ok(handle) = result {
-                // Ensure Drop handles cleanup
-                drop(handle);
+                match create_pipewire_process_loopback(pid) {
+                    Ok(handle) => {
+                        handle_opt = Some(handle);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
+                }
             }
 
             // Cleanup the dummy process
             let _ = child.kill();
             let _ = child.wait();
             let _ = std::fs::remove_file(&wav_path);
+
+            if handle_opt.is_none() {
+                panic!(
+                    "Expected success capturing dummy process, got {:?}",
+                    last_err
+                );
+            }
         } else {
             println!("PipeWire is not available, skipping process capture end-to-end test.");
         }
@@ -601,72 +609,77 @@ mod tests {
         let pid1 = child1.id();
         let pid2 = child2.id();
 
-        // Give WirePlumber time to create nodes for both processes
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let mut handle1_opt = None;
+        let mut handle2_opt = None;
 
-        // Verify both pw-cat processes are still running
-        if let Ok(Some(status)) = child1.try_wait() {
-            let mut stderr_str = String::new();
-            if let Some(mut stderr) = child1.stderr.take() {
-                use std::io::Read;
-                let _ = stderr.read_to_string(&mut stderr_str);
+        // Retry loop to wait for WirePlumber to create nodes
+        for _ in 0..15 {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+
+            // Verify both pw-cat processes are still running
+            if let Ok(Some(status)) = child1.try_wait() {
+                let mut stderr_str = String::new();
+                if let Some(mut stderr) = child1.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_string(&mut stderr_str);
+                }
+                let _ = child2.kill();
+                let _ = std::fs::remove_file(&wav1);
+                let _ = std::fs::remove_file(&wav2);
+                panic!(
+                    "pw-cat (child1) exited prematurely with status {:?}. Stderr: {}",
+                    status, stderr_str
+                );
             }
-            let _ = child2.kill();
-            let _ = std::fs::remove_file(&wav1);
-            let _ = std::fs::remove_file(&wav2);
-            panic!(
-                "pw-cat (child1) exited prematurely with status {:?}. Stderr: {}",
-                status, stderr_str
-            );
-        }
 
-        if let Ok(Some(status)) = child2.try_wait() {
-            let mut stderr_str = String::new();
-            if let Some(mut stderr) = child2.stderr.take() {
-                use std::io::Read;
-                let _ = stderr.read_to_string(&mut stderr_str);
+            if let Ok(Some(status)) = child2.try_wait() {
+                let mut stderr_str = String::new();
+                if let Some(mut stderr) = child2.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_string(&mut stderr_str);
+                }
+                let _ = child1.kill();
+                let _ = std::fs::remove_file(&wav1);
+                let _ = std::fs::remove_file(&wav2);
+                panic!(
+                    "pw-cat (child2) exited prematurely with status {:?}. Stderr: {}",
+                    status, stderr_str
+                );
             }
-            let _ = child1.kill();
-            let _ = std::fs::remove_file(&wav1);
-            let _ = std::fs::remove_file(&wav2);
-            panic!(
-                "pw-cat (child2) exited prematurely with status {:?}. Stderr: {}",
-                status, stderr_str
-            );
+
+            if handle1_opt.is_none() {
+                if let Ok(h) = create_pipewire_process_loopback(pid1) {
+                    handle1_opt = Some(h);
+                }
+            }
+            if handle2_opt.is_none() {
+                if let Ok(h) = create_pipewire_process_loopback(pid2) {
+                    handle2_opt = Some(h);
+                }
+            }
+
+            if handle1_opt.is_some() && handle2_opt.is_some() {
+                break;
+            }
         }
 
-        // Create capture handles for both PIDs simultaneously
-        let result1 = create_pipewire_process_loopback(pid1);
-        let result2 = create_pipewire_process_loopback(pid2);
-
-        // Both should succeed
-        assert!(
-            result1.is_ok(),
-            "Capture for PID {} (child1) failed: {:?}",
-            pid1,
-            result1.err()
-        );
-        assert!(
-            result2.is_ok(),
-            "Capture for PID {} (child2) failed: {:?}",
-            pid2,
-            result2.err()
-        );
-
-        // Drop both handles â€” ensures concurrent cleanup doesn't deadlock or crash
-        if let Ok(handle1) = result1 {
-            drop(handle1);
-        }
-        if let Ok(handle2) = result2 {
-            drop(handle2);
-        }
-
-        // Cleanup both pw-cat processes and temp files
+        // Cleanup both pw-cat processes and temp files early to ensure handles drop safely if needed
         let _ = child1.kill();
         let _ = child1.wait();
         let _ = child2.kill();
         let _ = child2.wait();
         let _ = std::fs::remove_file(&wav1);
         let _ = std::fs::remove_file(&wav2);
+
+        assert!(
+            handle1_opt.is_some(),
+            "Capture for PID {} (child1) failed after retries",
+            pid1
+        );
+        assert!(
+            handle2_opt.is_some(),
+            "Capture for PID {} (child2) failed after retries",
+            pid2
+        );
     }
 }

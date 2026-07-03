@@ -435,39 +435,43 @@ mod tests {
 
             let pid = child.id();
 
-            // Give WirePlumber a moment to create the node
-            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let mut found = false;
 
-            // Check if it already exited
-            if let Ok(Some(status)) = child.try_wait() {
-                let mut stderr_str = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_string(&mut stderr_str);
+            // Retry loop to give WirePlumber time to create the node
+            for _ in 0..15 {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+
+                // Check if it already exited
+                if let Ok(Some(status)) = child.try_wait() {
+                    let mut stderr_str = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        use std::io::Read;
+                        let _ = stderr.read_to_string(&mut stderr_str);
+                    }
+                    let _ = std::fs::remove_file(&wav_path);
+                    panic!(
+                        "pw-cat exited prematurely with status {:?}. Stderr: {}",
+                        status, stderr_str
+                    );
                 }
-                let _ = std::fs::remove_file(&wav_path);
-                panic!(
-                    "pw-cat exited prematurely with status {:?}. Stderr: {}",
-                    status, stderr_str
-                );
-            }
 
-            let result = linux_enumerate_pipewire_nodes();
-
-            if let Ok(processes) = result {
-                let found = processes.iter().any(|p| p.pid == pid);
-                assert!(
-                    found,
-                    "Failed to find the spawned pw-cat process (PID {}) in the enumerated list",
-                    pid
-                );
-            } else {
-                panic!("Enumeration failed");
+                if let Ok(processes) = linux_enumerate_pipewire_nodes() {
+                    if processes.iter().any(|p| p.pid == pid) {
+                        found = true;
+                        break;
+                    }
+                }
             }
 
             let _ = child.kill();
             let _ = child.wait();
             let _ = std::fs::remove_file(&wav_path);
+
+            assert!(
+                found,
+                "Failed to find the spawned pw-cat process (PID {}) in the enumerated list after retries",
+                pid
+            );
         } else {
             println!("PipeWire is not available, skipping linux_enumerate_pipewire_nodes test.");
         }
