@@ -371,15 +371,18 @@ mod tests {
             // Spawn a dummy audio process that plays infinite silence.
             // Using /dev/zero with explicit raw format guarantees it will stream forever
             // and fully initialize the PipeWire Node, avoiding any issues with invalid/empty WAV files stalling.
+            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
+                .arg("--raw")
                 .arg("--format")
                 .arg("s16")
                 .arg("--rate")
                 .arg("48000")
                 .arg("--channels")
                 .arg("2")
-                .arg("/dev/zero")
+                .arg("-")
+                .stdin(std::process::Stdio::from(dev_zero))
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()

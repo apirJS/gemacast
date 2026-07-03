@@ -426,15 +426,18 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
             // To test end-to-end process capture, we spawn a dummy audio process playing infinite silence
+            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
+                .arg("--raw")
                 .arg("--format")
                 .arg("s16")
                 .arg("--rate")
                 .arg("48000")
                 .arg("--channels")
                 .arg("2")
-                .arg("/dev/zero")
+                .arg("-")
+                .stdin(std::process::Stdio::from(dev_zero))
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -512,15 +515,18 @@ mod tests {
 
         // Helper to spawn a pw-cat process playing silence
         let spawn_pw_cat = || -> Option<std::process::Child> {
+            let dev_zero = std::fs::File::open("/dev/zero").expect("failed to open /dev/zero");
             match std::process::Command::new("pw-cat")
                 .arg("-p")
+                .arg("--raw")
                 .arg("--format")
                 .arg("s16")
                 .arg("--rate")
                 .arg("48000")
                 .arg("--channels")
                 .arg("2")
-                .arg("/dev/zero")
+                .arg("-")
+                .stdin(std::process::Stdio::from(dev_zero))
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
