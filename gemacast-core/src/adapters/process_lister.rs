@@ -372,14 +372,7 @@ mod tests {
                 f.write_all(&[
                     b'R', b'I', b'F', b'F', 0x24, 0x53, 0x07, 0x00, b'W', b'A', b'V', b'E', b'f',
                     b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb,
-                    0x00, 0x00, 1, 0, 8, 0, b'd', b'a', b't', b'a', 0x00, 0x53, 0x07, 0x00,
-                ])
-                .unwrap();
-                let data = vec![0u8; 480000]; // 10 seconds
-                f.write_all(&data).unwrap();
-            }
-
-            // Create a dummy sink in PipeWire so pw-play doesn't exit instantly in headless CI
+            // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
             let _ = std::process::Command::new("pw-cli")
                 .args([
                     "create-node",
@@ -388,27 +381,32 @@ mod tests {
                 ])
                 .status();
 
-            std::thread::sleep(std::time::Duration::from_millis(200)); // Create a dummy PID to look for, so we don't rely on SO_PEERCRED inside containers
-            let dummy_pid = 999999;
+            std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // Spawn a dummy audio process so the registry actually has an application node
-            let mut child = match std::process::Command::new("pw-play")
-                .arg("-P")
-                .arg(format!("{{ \"application.process.id\": {} }}", dummy_pid))
-                .arg(&wav_path)
+            // Spawn a dummy audio process that plays infinite silence.
+            // Using /dev/zero with explicit raw format guarantees it will stream forever
+            // and fully initialize the PipeWire Node, avoiding any issues with invalid/empty WAV files stalling.
+            let mut child = match std::process::Command::new("pw-cat")
+                .arg("-p")
+                .arg("-f")
+                .arg("s16")
+                .arg("-r")
+                .arg("48000")
+                .arg("-c")
+                .arg("2")
+                .arg("/dev/zero")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
                 Ok(child) => child,
                 Err(e) => {
-                    println!(
-                        "Failed to spawn pw-play ({}), skipping enumeration test.",
-                        e
-                    );
+                    println!("Failed to spawn pw-cat ({}), skipping enumeration test.", e);
                     return;
                 }
             };
+
+            let pid = child.id();
 
             // Give WirePlumber a moment to create the node
             std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -420,27 +418,24 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
-                panic!(
-                    "pw-play exited prematurely with status {:?}. Stderr: {}",
-                    status, stderr_str
-                );
+                panic!("pw-cat exited prematurely with status {:?}. Stderr: {}", status, stderr_str);
             }
 
             let result = linux_enumerate_pipewire_nodes();
 
             if let Ok(processes) = result {
-                let found = processes.iter().any(|p| p.pid == dummy_pid);
+                let found = processes.iter().any(|p| p.pid == pid);
                 assert!(
                     found,
-                    "Failed to find the spawned pw-play process (PID {}) in the enumerated list",
-                    dummy_pid
+                    "Failed to find the spawned pw-cat process (PID {}) in the enumerated list",
+                    pid
                 );
             } else {
                 panic!("Enumeration failed");
             }
 
+            let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&wav_path);
         } else {
             println!("PipeWire is not available, skipping linux_enumerate_pipewire_nodes test.");
         }

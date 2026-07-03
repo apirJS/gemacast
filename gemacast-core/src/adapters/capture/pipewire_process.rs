@@ -421,14 +421,7 @@ mod tests {
                 f.write_all(&[
                     b'R', b'I', b'F', b'F', 0x24, 0x53, 0x07, 0x00, b'W', b'A', b'V', b'E', b'f',
                     b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0x00, 0x00, 0x80, 0xbb,
-                    0x00, 0x00, 1, 0, 8, 0, b'd', b'a', b't', b'a', 0x00, 0x53, 0x07, 0x00,
-                ])
-                .unwrap();
-                let data = vec![0u8; 480000]; // 10 seconds
-                f.write_all(&data).unwrap();
-            }
-
-            // Create a dummy sink in PipeWire so pw-play doesn't exit instantly in headless CI
+            // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
             let _ = std::process::Command::new("pw-cli")
                 .args([
                     "create-node",
@@ -439,24 +432,28 @@ mod tests {
 
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // Create a dummy PID to look for, so we don't rely on SO_PEERCRED inside containers
-            let dummy_pid = 999999;
-
-            // To test end-to-end process capture, we spawn a dummy audio process.
-            let mut child = match std::process::Command::new("pw-play")
-                .arg("-P")
-                .arg(format!("{{ \"application.process.id\": {} }}", dummy_pid))
-                .arg(&wav_path)
+            // To test end-to-end process capture, we spawn a dummy audio process playing infinite silence
+            let mut child = match std::process::Command::new("pw-cat")
+                .arg("-p")
+                .arg("-f")
+                .arg("s16")
+                .arg("-r")
+                .arg("48000")
+                .arg("-c")
+                .arg("2")
+                .arg("/dev/zero")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
                 Ok(child) => child,
                 Err(e) => {
-                    println!("Failed to spawn pw-play ({}), skipping end-to-end test.", e);
+                    println!("Failed to spawn pw-cat ({}), skipping end-to-end test.", e);
                     return;
                 }
             };
+
+            let pid = child.id();
 
             // Give WirePlumber a moment to create the node
             std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -468,13 +465,10 @@ mod tests {
                     use std::io::Read;
                     let _ = stderr.read_to_string(&mut stderr_str);
                 }
-                panic!(
-                    "pw-play exited prematurely with status {:?}. Stderr: {}",
-                    status, stderr_str
-                );
+                panic!("pw-cat exited prematurely with status {:?}. Stderr: {}", status, stderr_str);
             }
 
-            let result = create_pipewire_process_loopback(dummy_pid);
+            let result = create_pipewire_process_loopback(pid);
 
             let _ = child.kill();
 
@@ -490,7 +484,6 @@ mod tests {
             // Cleanup the dummy process
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&wav_path);
         } else {
             println!("PipeWire is not available, skipping process capture end-to-end test.");
         }
