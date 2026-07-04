@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/apirJS/gemacast/compare/v0.4.2...v0.5.0) (2026-07-04)
+
+
+### Features
+
+* pipewire process-level audio capture and desktop audio capture support ([8e98444](https://github.com/apirJS/gemacast/commit/8e984446480756712740fa0d71a6d418f9688a38))
+* pipewire process-level capture support for Linux ([#38](https://github.com/apirJS/gemacast/issues/38)) ([9cf620b](https://github.com/apirJS/gemacast/commit/9cf620b293415364c5f6cb3f0ae85ac2d7965198))
+
+
+### Bug Fixes
+
+* missing build deps on CI ([#40](https://github.com/apirJS/gemacast/issues/40)) ([0c4cb64](https://github.com/apirJS/gemacast/commit/0c4cb64c1927628d3545c9ae2c2ecbdee16089c7))
+
 ## [0.6.0](https://github.com/apirJS/gemacast/compare/v0.5.0...v0.6.0) (2026-07-04)
 
 
