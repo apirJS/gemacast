@@ -92,15 +92,7 @@ impl ControlDispatcher {
                 .await;
             }
             ControlCommand::GetSources { response_tx } => {
-                #[cfg(target_os = "windows")]
-                let (sources, caps) = get_windows_sources();
-                #[cfg(not(target_os = "windows"))]
-                let (sources, caps) = (
-                    vec![gemacast_core::domain::types::AudioSource::Desktop],
-                    gemacast_core::domain::types::SenderCapabilities {
-                        supports_process_capture: false,
-                    },
-                );
+                let (sources, caps) = get_platform_sources();
 
                 let _ = response_tx.send(gemacast_core::control::types::SourcesResponse {
                     sources,
@@ -256,15 +248,37 @@ pub async fn unregister_device(
     audio.unsubscribe(&device_id).await;
 }
 
-#[cfg(target_os = "windows")]
-fn get_windows_sources() -> (
+/// Returns the available audio sources and sender capabilities for the current platform.
+///
+/// - **Windows**: Always supports process capture (via WASAPI).
+/// - **Linux**: Supports process capture only if PipeWire is available.
+/// - **macOS**: Always supports process capture (via ScreenCaptureKit).
+/// - **Other**: Desktop capture only.
+fn get_platform_sources() -> (
     Vec<gemacast_core::domain::types::AudioSource>,
     gemacast_core::domain::types::SenderCapabilities,
 ) {
+    let supports_process = if cfg!(any(target_os = "windows", target_os = "macos")) {
+        true
+    } else if cfg!(target_os = "linux") {
+        // Check PipeWire availability at runtime — PulseAudio-only systems
+        // don't support per-process capture.
+        #[cfg(target_os = "linux")]
+        {
+            gemacast_core::adapters::capture::pipewire_common::is_pipewire_available()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    } else {
+        false
+    };
+
     (
         vec![gemacast_core::domain::types::AudioSource::Desktop],
         gemacast_core::domain::types::SenderCapabilities {
-            supports_process_capture: true,
+            supports_process_capture: supports_process,
         },
     )
 }
