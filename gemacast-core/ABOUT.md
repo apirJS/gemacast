@@ -99,12 +99,18 @@ gemacast-core
 ├── Cargo.toml
 └── src
     ├── adapters
-    │   ├── capture
-    │   │   ├── cpal_loopback.rs
-    │   │   ├── mod.rs
-    │   │   ├── wasapi_common.rs
-    │   │   ├── wasapi_desktop.rs
-    │   │   └── wasapi_loopback.rs
+     │   ├── capture
+     │   │   ├── cpal_loopback.rs
+     │   │   ├── mod.rs
+     │   │   ├── pipewire_common.rs     (Linux)
+     │   │   ├── pipewire_desktop.rs    (Linux)
+     │   │   ├── pipewire_process.rs    (Linux)
+     │   │   ├── sck_common.rs          (DISABLED — untested)
+     │   │   ├── sck_desktop.rs         (DISABLED — untested)
+     │   │   ├── sck_process.rs         (DISABLED — untested)
+     │   │   ├── wasapi_common.rs
+     │   │   ├── wasapi_desktop.rs
+     │   │   └── wasapi_loopback.rs
     │   ├── error_notifier.rs
     │   ├── mod.rs
     │   ├── process_lister.rs
@@ -182,8 +188,8 @@ Hexagonal boundary traits defining what the core needs from the outside world.
 
 ### `src/adapters/`
 Concrete production implementations of the port traits.
-- `capture/`: Contains OS-specific audio capture backends (`wasapi_desktop`, `wasapi_loopback`, `cpal_loopback`).
-- `process_lister.rs`: Implements Windows process listing via `sysinfo`.
+- `capture/`: Contains OS-specific audio capture backends (`wasapi_desktop`, `wasapi_loopback`, `cpal_loopback`, `pipewire_desktop`, `pipewire_process`). ScreenCaptureKit files (`sck_*`) are present but disabled via `#[cfg(FALSE)]` — untested.
+- `process_lister.rs`: Implements Windows process listing via `sysinfo`, Linux via PipeWire Registry, macOS returns empty (SCK disabled).
 - `error_notifier.rs`: WebSocket-based error notifier.
 
 ### `src/control/`
