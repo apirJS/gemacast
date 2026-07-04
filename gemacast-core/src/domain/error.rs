@@ -128,6 +128,23 @@ pub enum AudioError {
         direction: StreamDirection,
         message: String,
     },
+
+    #[cfg(target_os = "linux")]
+    #[error("PipeWire error: {0}")]
+    PipeWireError(String),
+
+    #[cfg(target_os = "linux")]
+    #[error("PipeWire connection failed: {0}")]
+    PipeWireConnectionFailed(String),
+
+    // ScreenCaptureKit disabled — untested
+    #[cfg(false)]
+    #[error("ScreenCaptureKit error: {0}")]
+    ScreenCaptureKitError(String),
+
+    #[cfg(false)]
+    #[error("ScreenCaptureKit permission denied — grant Screen Recording in System Settings")]
+    ScreenCapturePermissionDenied,
 }
 
 #[derive(ThisError, Debug)]
