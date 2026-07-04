@@ -24,7 +24,7 @@ allow-dirty = ["ci", "msi"]
 # but pipewire-rs 0.10.0 requires PipeWire 1.0+ headers (only on ubuntu-24.04+).
 [dist.github-custom-runners]
 x86_64-unknown-linux-gnu = "ubuntu-24.04"
-aarch64-unknown-linux-gnu = "ubuntu-24.04"
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
 
 [dist.dependencies.apt]
 "libwebkit2gtk-4.1-dev" = "*"
