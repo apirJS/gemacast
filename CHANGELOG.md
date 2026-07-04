@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/apirJS/gemacast/compare/v0.4.2...v0.5.0) (2026-07-04)
+
+
+### Features
+
+* pipewire process-level capture support for Linux ([#38](https://github.com/apirJS/gemacast/issues/38)) ([9cf620b](https://github.com/apirJS/gemacast/commit/9cf620b293415364c5f6cb3f0ae85ac2d7965198))
+
 ## [0.4.2](https://github.com/apirJS/gemacast/compare/v0.4.1...v0.4.2) (2026-07-01)
 
 
