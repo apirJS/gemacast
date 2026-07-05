@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -106,6 +107,38 @@ class MainActivity : TauriActivity() {
             startService(intent)
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    /**
+     * Install an APK from the given file path using the system package installer.
+     *
+     * Called from Rust via JNI. This method MUST live in Kotlin (not in JNI Rust
+     * code) because `with_webview`/`jni_handle().exec()` runs on a native thread
+     * whose class loader is the boot class loader. The boot class loader cannot
+     * see application-level classes like `androidx.core.content.FileProvider`,
+     * causing `NoClassDefFoundError`. By keeping all FileProvider/Intent logic in
+     * Kotlin, the app's own class loader is used and the class is found normally.
+     */
+    @Keep
+    fun installApk(path: String): String? {
+        return try {
+            val file = File(path)
+            if (!file.exists()) {
+                return "APK file does not exist at path: $path"
+            }
+            val authority = "${packageName}.fileprovider"
+            val contentUri = FileProvider.getUriForFile(applicationContext, authority, file)
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(contentUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            null // Success
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "Exception in installApk: ${e.message}"
         }
     }
 

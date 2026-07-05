@@ -9,13 +9,25 @@
 //! - **Command Handler**: Processes tray UI commands (start/stop, kick, shutdown)
 //! - **Device Watchdog**: Removes stale devices that stop sending probes
 //! - **ADB tasks**: Port forwarding, discovery, and audio tunneling for USB devices
+//!
+//! ## Construction Phases (Typestate Builder)
+//!
+//! The background engine is assembled through four compile-time-enforced phases:
+//!
+//! 1. [`BackgroundEngine::new`] — shared state (`registry`, `is_broadcasting`, `ws_connections`)
+//! 2. [`BackgroundEngine::create_channels`] → [`EngineWithChannels`] — all `mpsc`/`broadcast` channels
+//! 3. [`EngineWithChannels::create_adapters`] → [`EngineWithAdapters`] — trait object wrappers
+//! 4. [`EngineWithAdapters::init_infrastructure`] → [`EngineReady`] — ADB, UDP, mDNS, HTTP verified
+//!
+//! Finally, [`EngineReady::spawn_tasks_and_run`] spawns every background task
+//! and awaits completion.
 
-use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tao::event_loop::EventLoopProxy;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 
 use gemacast_core::adapters::capture::DefaultCaptureFactory;
@@ -30,6 +42,7 @@ use gemacast_core::network::adb::{
 };
 use gemacast_core::stream::sender::engine::AudioStreamEngine;
 
+use crate::adapters::device::WsConnectionMap;
 use crate::adapters::{
     ChannelAudioController, EventLoopTrayNotifier, MultiTransportDeviceNotifier,
 };
@@ -208,199 +221,433 @@ fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runti
     }
 }
 
-/// The main async body: create channels, adapters, and spawn all tasks.
+/// The main async body: build the engine through four phases, then run.
 async fn run_background_tasks(
     event_loop_proxy: EventLoopProxy<TrayEvent>,
     command_rx: mpsc::Receiver<AppCommand>,
 ) {
-    let mut set = JoinSet::new();
+    let result = BackgroundEngine::new(event_loop_proxy)
+        .create_channels(command_rx)
+        .create_adapters()
+        .init_infrastructure()
+        .await;
 
-    // --- Shared state ---
-    let registry = Arc::new(SharedMapDeviceRegistry::new());
-    let is_broadcasting = Arc::new(AtomicBool::new(true));
-    let ws_connections = Arc::new(Mutex::new(HashMap::new()));
+    let Some(engine) = result else { return };
 
-    // --- Channels ---
-    let (presence_tx, presence_rx) = mpsc::channel(8);
-    let (inbound_control_tx, inbound_control_rx) = mpsc::channel(32);
-    let (http_command_tx, http_command_rx) = mpsc::channel::<ControlCommand>(32);
-    let (audio_command_tx, audio_command_rx) =
-        mpsc::channel::<gemacast_core::stream::sender::AudioStreamCommand>(32);
-    let (adb_shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(16);
-    let (adb_outbound_control_tx, _) = tokio::sync::broadcast::channel::<ControlMessage>(16);
-    let (fatal_error_tx, mut fatal_error_rx) = mpsc::channel::<String>(8);
+    engine.spawn_tasks_and_run().await;
+}
 
-    // --- Adapters (wrap channels in trait implementations) ---
-    let tray: Arc<dyn crate::traits::TrayNotifier> =
-        Arc::new(EventLoopTrayNotifier::new(event_loop_proxy.clone()));
-    let audio: Arc<dyn crate::traits::AudioController> =
-        Arc::new(ChannelAudioController::new(audio_command_tx.clone()));
-    let notifier: Arc<dyn crate::traits::DeviceNotifier> =
-        Arc::new(MultiTransportDeviceNotifier::new(
-            ws_connections.clone(),
-            adb_outbound_control_tx.clone(),
-            adb_shutdown_tx.clone(),
-        ));
+// ---------------------------------------------------------------------------
+// Phase 1: Shared state
+// ---------------------------------------------------------------------------
 
-    // --- Fatal error relay ---
-    let tray_for_errors = tray.clone();
-    set.spawn(async move {
-        while let Some(msg) = fatal_error_rx.recv().await {
-            tracing::error!("Fatal background error received: {}", msg);
-            tray_for_errors.notify_fatal_error(msg);
+/// Phase 1 — holds the core shared state that every subsystem needs.
+#[allow(dead_code)] // Fields are consumed by `create_channels()`, not read directly.
+struct BackgroundEngine {
+    registry: Arc<SharedMapDeviceRegistry>,
+    is_broadcasting: Arc<AtomicBool>,
+    ws_connections: WsConnectionMap,
+    event_loop_proxy: EventLoopProxy<TrayEvent>,
+}
+
+impl BackgroundEngine {
+    fn new(event_loop_proxy: EventLoopProxy<TrayEvent>) -> Self {
+        Self {
+            registry: Arc::new(SharedMapDeviceRegistry::new()),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            ws_connections: Arc::new(Mutex::new(Default::default())),
+            event_loop_proxy,
         }
-    });
-
-    // --- Verify ADB availability ---
-    if adb_command().arg("version").output().await.is_err() {
-        let msg =
-            "Failed to launch bundled ADB! Please ensure the application was installed correctly.";
-        tracing::error!("{}", msg);
-        tray.notify_fatal_error(msg.to_string());
-        return;
     }
 
-    // --- Kill any existing ADB server to get a clean state ---
-    let _ = adb_command().arg("kill-server").output().await;
+    /// Create all inter-task channels, consuming `self` and producing the next phase.
+    fn create_channels(self, command_rx: mpsc::Receiver<AppCommand>) -> EngineWithChannels {
+        let (presence_tx, presence_rx) = mpsc::channel(8);
+        let (inbound_control_tx, inbound_control_rx) = mpsc::channel(32);
+        let (http_command_tx, http_command_rx) = mpsc::channel::<ControlCommand>(32);
+        let (audio_command_tx, audio_command_rx) =
+            mpsc::channel::<gemacast_core::stream::sender::AudioStreamCommand>(32);
+        let (adb_shutdown_tx, _) = broadcast::channel::<()>(16);
+        let (adb_outbound_control_tx, _) = broadcast::channel::<ControlMessage>(16);
+        let (fatal_error_tx, fatal_error_rx) = mpsc::channel::<String>(8);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-    // --- Identity ---
-    let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-    let sender_id = DeviceId::new();
-
-    // --- Presence listener ---
-    tracing::info!("Initializing UDP Presence Listener...");
-    let listener = match gemacast_core::network::PresenceListener::new(presence_tx).await {
-        Ok(l) => l,
-        Err(e) => {
-            let msg = friendly_bind_error(e, "Discovery port");
-            tracing::error!("Fatal error: {}", msg);
-            tray.notify_fatal_error(msg);
-            return;
+        EngineWithChannels {
+            registry: self.registry,
+            is_broadcasting: self.is_broadcasting,
+            ws_connections: self.ws_connections,
+            event_loop_proxy: self.event_loop_proxy,
+            command_rx,
+            presence_tx,
+            presence_rx,
+            inbound_control_tx,
+            inbound_control_rx,
+            http_command_tx,
+            http_command_rx,
+            audio_command_tx,
+            audio_command_rx,
+            adb_shutdown_tx,
+            adb_outbound_control_tx,
+            fatal_error_tx,
+            fatal_error_rx,
         }
-    };
+    }
+}
 
-    // --- HTTP control server ---
-    let control_state = ControlServerState {
-        command_tx: http_command_tx,
-        is_broadcasting: is_broadcasting.clone(),
-        sender_id: sender_id.clone(),
-        sender_name: device_name.clone(),
-        ws_connections: ws_connections.clone(),
-        process_lister: DefaultProcessLister,
-    };
+// ---------------------------------------------------------------------------
+// Phase 2: Channels created
+// ---------------------------------------------------------------------------
 
-    // --- mDNS broadcaster ---
-    let _mdns_broadcaster = match gemacast_core::discovery::MdnsBroadcaster::new(
-        sender_id.clone(),
-        device_name.clone(),
-        gemacast_core::network::Ports::CONTROL,
-    ) {
-        Ok(b) => {
-            tracing::info!("Started mDNS broadcaster");
-            Some(b)
+/// Phase 2 — all inter-task channels have been created.
+struct EngineWithChannels {
+    // Shared state (from Phase 1)
+    registry: Arc<SharedMapDeviceRegistry>,
+    is_broadcasting: Arc<AtomicBool>,
+    ws_connections: WsConnectionMap,
+    event_loop_proxy: EventLoopProxy<TrayEvent>,
+
+    // Channels
+    command_rx: mpsc::Receiver<AppCommand>,
+    presence_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
+    presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
+    inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    http_command_tx: mpsc::Sender<ControlCommand>,
+    http_command_rx: mpsc::Receiver<ControlCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    adb_shutdown_tx: broadcast::Sender<()>,
+    adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
+    fatal_error_tx: mpsc::Sender<String>,
+    fatal_error_rx: mpsc::Receiver<String>,
+}
+
+impl EngineWithChannels {
+    /// Wrap channels in production trait adapters, consuming `self` and
+    /// producing the next phase.
+    fn create_adapters(self) -> EngineWithAdapters {
+        let tray: Arc<dyn crate::traits::TrayNotifier> =
+            Arc::new(EventLoopTrayNotifier::new(self.event_loop_proxy.clone()));
+        let audio: Arc<dyn crate::traits::AudioController> =
+            Arc::new(ChannelAudioController::new(self.audio_command_tx.clone()));
+        let notifier: Arc<dyn crate::traits::DeviceNotifier> =
+            Arc::new(MultiTransportDeviceNotifier::new(
+                self.ws_connections.clone(),
+                self.adb_outbound_control_tx.clone(),
+                self.adb_shutdown_tx.clone(),
+            ));
+
+        EngineWithAdapters {
+            registry: self.registry,
+            is_broadcasting: self.is_broadcasting,
+            ws_connections: self.ws_connections,
+            event_loop_proxy: self.event_loop_proxy,
+            command_rx: self.command_rx,
+            presence_tx: self.presence_tx,
+            presence_rx: self.presence_rx,
+            inbound_control_tx: self.inbound_control_tx,
+            inbound_control_rx: self.inbound_control_rx,
+            http_command_tx: self.http_command_tx,
+            http_command_rx: self.http_command_rx,
+            audio_command_tx: self.audio_command_tx,
+            audio_command_rx: self.audio_command_rx,
+            adb_shutdown_tx: self.adb_shutdown_tx,
+            adb_outbound_control_tx: self.adb_outbound_control_tx,
+            fatal_error_tx: self.fatal_error_tx,
+            fatal_error_rx: self.fatal_error_rx,
+            tray,
+            audio,
+            notifier,
         }
-        Err(e) => {
-            tracing::warn!("Failed to start mDNS broadcaster: {}", e);
-            None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Adapters created
+// ---------------------------------------------------------------------------
+
+/// Phase 3 — trait adapters are ready, infrastructure can now be initialized.
+struct EngineWithAdapters {
+    // Shared state
+    registry: Arc<SharedMapDeviceRegistry>,
+    is_broadcasting: Arc<AtomicBool>,
+    ws_connections: WsConnectionMap,
+    event_loop_proxy: EventLoopProxy<TrayEvent>,
+
+    // Channels
+    command_rx: mpsc::Receiver<AppCommand>,
+    presence_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
+    presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
+    inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    http_command_tx: mpsc::Sender<ControlCommand>,
+    http_command_rx: mpsc::Receiver<ControlCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    adb_shutdown_tx: broadcast::Sender<()>,
+    adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
+    fatal_error_tx: mpsc::Sender<String>,
+    fatal_error_rx: mpsc::Receiver<String>,
+
+    // Adapters
+    tray: Arc<dyn crate::traits::TrayNotifier>,
+    audio: Arc<dyn crate::traits::AudioController>,
+    notifier: Arc<dyn crate::traits::DeviceNotifier>,
+}
+
+impl EngineWithAdapters {
+    /// Verify ADB, bind the UDP listener, create HTTP control state, start
+    /// mDNS, and resolve the PC identity. Returns `None` on fatal errors.
+    async fn init_infrastructure(self) -> Option<EngineReady> {
+        // --- Verify ADB availability ---
+        if adb_command().arg("version").output().await.is_err() {
+            let msg = "Failed to launch bundled ADB! Please ensure the application was installed correctly.";
+            tracing::error!("{}", msg);
+            self.tray.notify_fatal_error(msg.to_string());
+            return None;
         }
-    };
 
-    let (_control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let tray_for_control = tray.clone();
-    set.spawn(async move {
-        if let Err(e) =
-            gemacast_core::control::start_control_server(control_state, control_shutdown_rx).await
-        {
-            let msg = friendly_bind_error(e, "Control port (55559)");
-            tracing::error!("Fatal error: {}", msg);
-            tray_for_control.notify_fatal_error(msg);
-        }
-    });
+        // --- Kill any existing ADB server to get a clean state ---
+        let _ = adb_command().arg("kill-server").output().await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // --- ADB presence provider ---
-    let presence_provider = Arc::new(PcPresenceProvider {
-        is_broadcasting: is_broadcasting.clone(),
-        sender_id: sender_id.clone(),
-        sender_name: device_name.clone(),
-    });
+        // --- Identity ---
+        let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
+        let sender_id = DeviceId::new();
 
-    // --- Spawn tasks ---
-    tracing::info!("Spawning all background tasks...");
-    let error_notifier = WsErrorNotifier::new(ws_connections.clone());
-    let engine = AudioStreamEngine::new(DefaultCaptureFactory, true, error_notifier);
+        // --- Presence listener ---
+        tracing::info!("Initializing UDP Presence Listener...");
+        let listener = match gemacast_core::network::PresenceListener::new(self.presence_tx).await {
+            Ok(l) => l,
+            Err(e) => {
+                let msg = friendly_bind_error(e, "Discovery port");
+                tracing::error!("Fatal error: {}", msg);
+                self.tray.notify_fatal_error(msg);
+                return None;
+            }
+        };
 
-    udp_listener::spawn_udp_listener(
-        &mut set,
-        listener,
-        presence_rx,
-        inbound_control_tx.clone(),
-        tray.clone(),
-    );
+        // --- HTTP control server state ---
+        let control_state = ControlServerState {
+            command_tx: self.http_command_tx,
+            is_broadcasting: self.is_broadcasting.clone(),
+            sender_id: sender_id.clone(),
+            sender_name: device_name.clone(),
+            ws_connections: self.ws_connections.clone(),
+            process_lister: DefaultProcessLister,
+        };
 
-    audio_engine::spawn_audio_engine(&mut set, engine, audio_command_rx, tray.clone());
+        // --- mDNS broadcaster ---
+        let _mdns_broadcaster = match gemacast_core::discovery::MdnsBroadcaster::new(
+            sender_id.clone(),
+            device_name.clone(),
+            gemacast_core::network::Ports::CONTROL,
+        ) {
+            Ok(b) => {
+                tracing::info!("Started mDNS broadcaster");
+                Some(b)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to start mDNS broadcaster: {}", e);
+                None
+            }
+        };
 
-    spawn_adb_audio_tcp_server(
-        &mut set,
-        audio_command_tx.clone(),
-        adb_shutdown_tx.clone(),
-        fatal_error_tx.clone(),
-    );
+        // --- ADB presence provider ---
+        let presence_provider = Arc::new(PcPresenceProvider {
+            is_broadcasting: self.is_broadcasting.clone(),
+            sender_id: sender_id.clone(),
+            sender_name: device_name.clone(),
+        });
 
-    spawn_adb_discovery_tcp_server(
-        &mut set,
-        presence_provider,
-        inbound_control_tx.clone(),
-        adb_shutdown_tx.clone(),
-        adb_outbound_control_tx.clone(),
-        fatal_error_tx.clone(),
-    );
+        Some(EngineReady {
+            registry: self.registry,
+            is_broadcasting: self.is_broadcasting,
+            ws_connections: self.ws_connections,
+            event_loop_proxy: self.event_loop_proxy,
+            command_rx: self.command_rx,
+            presence_rx: self.presence_rx,
+            inbound_control_tx: self.inbound_control_tx,
+            inbound_control_rx: self.inbound_control_rx,
+            http_command_rx: self.http_command_rx,
+            audio_command_tx: self.audio_command_tx,
+            audio_command_rx: self.audio_command_rx,
+            adb_shutdown_tx: self.adb_shutdown_tx,
+            adb_outbound_control_tx: self.adb_outbound_control_tx,
+            fatal_error_tx: self.fatal_error_tx,
+            fatal_error_rx: self.fatal_error_rx,
+            tray: self.tray,
+            audio: self.audio,
+            notifier: self.notifier,
+            listener,
+            control_state,
+            _mdns_broadcaster,
+            presence_provider,
+            sender_id,
+            device_name,
+        })
+    }
+}
 
-    spawn_adb_port_forwarding_watchdog(&mut set, adb_shutdown_tx.clone());
+// ---------------------------------------------------------------------------
+// Phase 4: Ready to spawn
+// ---------------------------------------------------------------------------
 
-    device_watchdog::spawn_device_watchdog(&mut set, registry.clone(), tray.clone(), audio.clone());
+/// Phase 4 — all infrastructure is verified and ready; tasks can be spawned.
+struct EngineReady {
+    // Shared state
+    registry: Arc<SharedMapDeviceRegistry>,
+    is_broadcasting: Arc<AtomicBool>,
+    ws_connections: WsConnectionMap,
+    #[allow(dead_code)]
+    event_loop_proxy: EventLoopProxy<TrayEvent>,
 
-    // --- Control dispatcher ---
-    let dispatcher = Arc::new(control_dispatcher::ControlDispatcher {
-        registry: registry.clone(),
-        tray: tray.clone(),
-        audio: audio.clone(),
-        notifier: notifier.clone(),
-        sender_id,
-        sender_name: device_name,
-        is_broadcasting: is_broadcasting.clone(),
-    });
+    // Channels (receivers are consumed during spawning)
+    command_rx: mpsc::Receiver<AppCommand>,
+    presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
+    inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
+    http_command_rx: mpsc::Receiver<ControlCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    adb_shutdown_tx: broadcast::Sender<()>,
+    adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
+    fatal_error_tx: mpsc::Sender<String>,
+    fatal_error_rx: mpsc::Receiver<String>,
 
-    control_dispatcher::spawn_control_dispatcher(
-        &mut set,
-        inbound_control_rx,
-        http_command_rx,
-        dispatcher,
-        registry.clone(),
-    );
+    // Adapters
+    tray: Arc<dyn crate::traits::TrayNotifier>,
+    audio: Arc<dyn crate::traits::AudioController>,
+    notifier: Arc<dyn crate::traits::DeviceNotifier>,
 
-    // --- Command handler (processes AppCommands from tray UI) ---
-    let handler = Arc::new(command_handler::CommandHandler {
-        is_broadcasting,
-        registry,
-        tray: tray.clone(),
-        audio,
-        notifier,
-    });
+    // Infrastructure
+    listener: gemacast_core::network::PresenceListener,
+    control_state: ControlServerState<DefaultProcessLister>,
+    #[allow(dead_code)]
+    _mdns_broadcaster: Option<gemacast_core::discovery::MdnsBroadcaster>,
+    presence_provider: Arc<PcPresenceProvider>,
+    sender_id: DeviceId,
+    device_name: String,
+}
 
-    command_handler::spawn_command_handler(&mut set, command_rx, handler);
+impl EngineReady {
+    /// Spawn every background task and block until all tasks complete.
+    async fn spawn_tasks_and_run(self) {
+        let mut set = JoinSet::new();
 
-    // --- Update checker (runs once at startup, downloads if available) ---
-    crate::tasks::updater::spawn_update_checker(&mut set, tray.clone());
+        tracing::info!("Spawning all background tasks...");
 
-    // --- Wait for all tasks ---
-    while set.join_next().await.is_some() {}
+        // -- Fatal error relay --
+        let tray_for_errors = self.tray.clone();
+        let mut fatal_error_rx = self.fatal_error_rx;
+        set.spawn(async move {
+            while let Some(msg) = fatal_error_rx.recv().await {
+                tracing::error!("Fatal background error received: {}", msg);
+                tray_for_errors.notify_fatal_error(msg);
+            }
+        });
 
-    // --- Gracefully shut down ADB server so it doesn't linger ---
-    shutdown_adb().await;
+        // -- HTTP control server --
+        let (_control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let tray_for_control = self.tray.clone();
+        let control_state = self.control_state;
+        set.spawn(async move {
+            if let Err(e) =
+                gemacast_core::control::start_control_server(control_state, control_shutdown_rx)
+                    .await
+            {
+                let msg = friendly_bind_error(e, "Control port (55559)");
+                tracing::error!("Fatal error: {}", msg);
+                tray_for_control.notify_fatal_error(msg);
+            }
+        });
 
-    tracing::info!("Background engine has fully shut down");
+        // -- UDP listener --
+        udp_listener::spawn_udp_listener(
+            &mut set,
+            self.listener,
+            self.presence_rx,
+            self.inbound_control_tx.clone(),
+            self.tray.clone(),
+        );
+
+        // -- Audio engine --
+        let error_notifier = WsErrorNotifier::new(self.ws_connections.clone());
+        let engine = AudioStreamEngine::new(DefaultCaptureFactory, true, error_notifier);
+        audio_engine::spawn_audio_engine(
+            &mut set,
+            engine,
+            self.audio_command_rx,
+            self.tray.clone(),
+        );
+
+        // -- ADB tasks --
+        spawn_adb_audio_tcp_server(
+            &mut set,
+            self.audio_command_tx.clone(),
+            self.adb_shutdown_tx.clone(),
+            self.fatal_error_tx.clone(),
+        );
+
+        spawn_adb_discovery_tcp_server(
+            &mut set,
+            self.presence_provider,
+            self.inbound_control_tx.clone(),
+            self.adb_shutdown_tx.clone(),
+            self.adb_outbound_control_tx.clone(),
+            self.fatal_error_tx.clone(),
+        );
+
+        spawn_adb_port_forwarding_watchdog(&mut set, self.adb_shutdown_tx.clone());
+
+        // -- Device watchdog --
+        device_watchdog::spawn_device_watchdog(
+            &mut set,
+            self.registry.clone(),
+            self.tray.clone(),
+            self.audio.clone(),
+        );
+
+        // -- Control dispatcher --
+        let dispatcher = Arc::new(control_dispatcher::ControlDispatcher {
+            registry: self.registry.clone(),
+            tray: self.tray.clone(),
+            audio: self.audio.clone(),
+            notifier: self.notifier.clone(),
+            sender_id: self.sender_id,
+            sender_name: self.device_name,
+            is_broadcasting: self.is_broadcasting.clone(),
+        });
+
+        control_dispatcher::spawn_control_dispatcher(
+            &mut set,
+            self.inbound_control_rx,
+            self.http_command_rx,
+            dispatcher,
+            self.registry.clone(),
+        );
+
+        // -- Command handler --
+        let handler = Arc::new(command_handler::CommandHandler {
+            is_broadcasting: self.is_broadcasting,
+            registry: self.registry,
+            tray: self.tray.clone(),
+            audio: self.audio,
+            notifier: self.notifier,
+        });
+
+        command_handler::spawn_command_handler(&mut set, self.command_rx, handler);
+
+        // -- Update checker --
+        crate::tasks::updater::spawn_update_checker(&mut set, self.tray.clone());
+
+        // --- Wait for all tasks ---
+        while set.join_next().await.is_some() {}
+
+        // --- Gracefully shut down ADB server so it doesn't linger ---
+        shutdown_adb().await;
+
+        tracing::info!("Background engine has fully shut down");
+    }
 }
 
 /// Convert a bind error into a user-friendly message.
