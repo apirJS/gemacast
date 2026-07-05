@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.6](https://github.com/apirJS/gemacast/compare/v0.5.5...v0.5.6) (2026-07-05)
+
+
+### Refactoring
+
+* changing background.rs pattern with phased builder pattern instead of god function ([#50](https://github.com/apirJS/gemacast/issues/50)) ([f6dae19](https://github.com/apirJS/gemacast/commit/f6dae19135ef00c592ee0c32d9324a3d8dfa192f))
+
 ## [0.5.5](https://github.com/apirJS/gemacast/compare/v0.5.4...v0.5.5) (2026-07-05)
 
 
