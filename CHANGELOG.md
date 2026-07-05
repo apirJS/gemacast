@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/apirJS/gemacast/compare/v0.5.3...v0.5.4) (2026-07-05)
+
+
+### Bug Fixes
+
+* move install_apk_android logic to kotlin instead of JNI ([c9df954](https://github.com/apirJS/gemacast/commit/c9df9542426d6d8b2d32ff7e0e2ff9166bab94e3))
+
 ## [0.5.3](https://github.com/apirJS/gemacast/compare/v0.5.2...v0.5.3) (2026-07-05)
 
 
