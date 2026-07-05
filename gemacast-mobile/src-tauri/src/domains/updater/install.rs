@@ -42,15 +42,16 @@ pub fn install_apk_android(app: &tauri::AppHandle, path: &str) -> Result<(), Str
                     // Call MainActivity.installApk(path) — all FileProvider/Intent
                     // logic lives in Kotlin where the app class loader works.
                     // It returns a String error message, or null on success.
-                    let result_obj = env.call_method(
-                        activity,
-                        "installApk",
-                        "(Ljava/lang/String;)Ljava/lang/String;",
-                        &[(&j_path).into()],
-                    )
-                    .map_err(|e| format!("JNI call to installApk failed: {e}"))?
-                    .l()
-                    .map_err(|e| format!("installApk returned non-object: {e}"))?;
+                    let result_obj = env
+                        .call_method(
+                            activity,
+                            "installApk",
+                            "(Ljava/lang/String;)Ljava/lang/String;",
+                            &[(&j_path).into()],
+                        )
+                        .map_err(|e| format!("JNI call to installApk failed: {e}"))?
+                        .l()
+                        .map_err(|e| format!("installApk returned non-object: {e}"))?;
 
                     if !result_obj.is_null() {
                         let j_str = jni::objects::JString::from(result_obj);
