@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-core"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "audioadapter-buffers",
  "axum",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-mobile"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "gemacast-pc"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "async-trait",
  "dirs",
