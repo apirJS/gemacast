@@ -1055,17 +1055,17 @@ jobs:
           fi
 
       - name: Install and launch APK on emulator
-        uses: reactivecircus/android-emulator-runner@v2.36.0
+        uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
-          api-level: 30
+          api-level: 31
           arch: x86_64
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
             echo "=== Emulator booted ==="
 
-            # Install the APK (debug-signed, --no-streaming for compatibility)
-            adb install -t "$APK_PATH"
+            # Install the APK (debug-signed, --no-streaming to avoid Broken pipe on CI emulators)
+            adb install -t --no-streaming "$APK_PATH"
             echo "PASS: APK installed successfully"
 
             # Launch the main activity
