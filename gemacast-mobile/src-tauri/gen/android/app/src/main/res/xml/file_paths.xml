@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Original path -->
   <cache-path name="updates" path="updates/" />
+  <!-- Broadened paths to prevent FileProvider crash if the updater downloads outside of the 'updates' subfolder -->
+  <cache-path name="cache_root" path="." />
+  <external-cache-path name="external_cache" path="." />
+  <files-path name="files_root" path="." />
 </paths>

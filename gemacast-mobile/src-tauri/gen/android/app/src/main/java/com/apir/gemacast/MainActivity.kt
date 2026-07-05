@@ -121,16 +121,25 @@ class MainActivity : TauriActivity() {
      * Kotlin, the app's own class loader is used and the class is found normally.
      */
     @Keep
-    fun installApk(path: String) {
-        val file = File(path)
-        val authority = "${packageName}.fileprovider"
-        val contentUri = FileProvider.getUriForFile(applicationContext, authority, file)
+    fun installApk(path: String): String? {
+        return try {
+            val file = File(path)
+            if (!file.exists()) {
+                return "APK file does not exist at path: $path"
+            }
+            val authority = "${packageName}.fileprovider"
+            val contentUri = FileProvider.getUriForFile(applicationContext, authority, file)
 
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(contentUri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(contentUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            null // Success
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "Exception in installApk: ${e.message}"
         }
-        startActivity(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
