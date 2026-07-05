@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/apirJS/gemacast/compare/v0.5.4...v0.5.5) (2026-07-05)
+
+
+### Bug Fixes
+
+* harden Android APK updater against edge cases ([daac960](https://github.com/apirJS/gemacast/commit/daac9600ea05c9ce35afd468657d285c1e2fb503))
+
 ## [0.5.4](https://github.com/apirJS/gemacast/compare/v0.5.3...v0.5.4) (2026-07-05)
 
 
