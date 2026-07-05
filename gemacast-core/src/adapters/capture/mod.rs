@@ -12,6 +12,21 @@ pub mod wasapi_common;
 pub mod wasapi_desktop;
 pub mod wasapi_loopback;
 
+#[cfg(target_os = "linux")]
+pub mod pipewire_common;
+#[cfg(target_os = "linux")]
+pub mod pipewire_desktop;
+#[cfg(target_os = "linux")]
+pub mod pipewire_process;
+
+// DEAD CODE: ScreenCaptureKit disabled — untested, macOS falls back to CPAL
+#[cfg(false)]
+pub mod sck_common;
+#[cfg(false)]
+pub mod sck_desktop;
+#[cfg(false)]
+pub mod sck_process;
+
 // Re-export port traits for backward compatibility.
 // Consumers that previously imported from `stream::sender::capture::CaptureBackend`
 // will continue to work.
@@ -33,6 +48,11 @@ pub enum PlatformCaptureBackend {
     WasapiDesktop(wasapi_desktop::WasapiDesktopCapture),
     #[cfg(target_os = "windows")]
     WasapiProcess(wasapi_loopback::WasapiLoopbackCapture),
+    #[cfg(target_os = "linux")]
+    PipeWireDesktop(pipewire_desktop::PipeWireDesktopCapture),
+    #[cfg(target_os = "linux")]
+    PipeWireProcess(pipewire_process::PipeWireProcessCapture),
+    // ScreenCaptureKit variants disabled — untested
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
@@ -43,6 +63,10 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::WasapiDesktop(b) => b.play(),
             #[cfg(target_os = "windows")]
             Self::WasapiProcess(b) => b.play(),
+            #[cfg(target_os = "linux")]
+            Self::PipeWireDesktop(b) => b.play(),
+            #[cfg(target_os = "linux")]
+            Self::PipeWireProcess(b) => b.play(),
             Self::Cpal(b) => b.play(),
         }
     }
@@ -53,6 +77,10 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::WasapiDesktop(b) => b.pause(),
             #[cfg(target_os = "windows")]
             Self::WasapiProcess(b) => b.pause(),
+            #[cfg(target_os = "linux")]
+            Self::PipeWireDesktop(b) => b.pause(),
+            #[cfg(target_os = "linux")]
+            Self::PipeWireProcess(b) => b.pause(),
             Self::Cpal(b) => b.pause(),
         }
     }
@@ -62,7 +90,8 @@ impl CaptureBackend for PlatformCaptureBackend {
 // Production capture factory
 // ---------------------------------------------------------------------------
 
-/// Production capture factory (Strategy: WASAPI on Windows, CPAL elsewhere).
+/// Production capture factory (WASAPI on Windows, PipeWire on Linux,
+/// CPAL as universal fallback).
 ///
 /// Implements [`CaptureFactory`] with `Backend = PlatformCaptureBackend`,
 /// so the entire pipeline monomorphizes at compile time.
@@ -71,25 +100,44 @@ impl CaptureBackend for PlatformCaptureBackend {
 /// API (which bypasses OEM Audio Processing Objects for clean audio). If WASAPI
 /// fails (e.g., on older Windows builds < 20348), it falls back to CPAL with
 /// a warning log.
+///
+/// On Linux, the factory first attempts PipeWire. If PipeWire is unavailable
+/// (e.g., PulseAudio-only systems), it falls back to CPAL. Per-process capture
+/// requires PipeWire — it is not available via CPAL.
+///
+/// On macOS, ScreenCaptureKit is disabled (untested). Desktop capture uses
+/// CPAL loopback. Per-process capture is unavailable.
 pub struct DefaultCaptureFactory;
 
 impl CaptureFactory for DefaultCaptureFactory {
     type Backend = PlatformCaptureBackend;
 
     fn create_desktop_capture(&self) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
-        #[cfg(windows)]
-        {
-            wasapi_desktop::create_wasapi_desktop_loopback().or_else(|e| {
+        #[cfg(target_os = "windows")]
+        return wasapi_desktop::create_wasapi_desktop_loopback().or_else(|e| {
+            tracing::warn!("WASAPI desktop capture failed ({e}), falling back to CPAL loopback");
+            cpal_loopback::create_cpal_loopback()
+        });
+
+        #[cfg(target_os = "linux")]
+        return if pipewire_common::is_pipewire_available() {
+            pipewire_desktop::create_pipewire_desktop_loopback().or_else(|e| {
                 tracing::warn!(
-                    "WASAPI desktop capture failed ({e}), falling back to CPAL loopback"
+                    "PipeWire desktop capture failed ({e}), falling back to CPAL loopback"
                 );
                 cpal_loopback::create_cpal_loopback()
             })
-        }
-        #[cfg(not(windows))]
-        {
+        } else {
+            tracing::info!("PipeWire not available, using CPAL loopback for desktop capture");
             cpal_loopback::create_cpal_loopback()
-        }
+        };
+
+        // macOS: ScreenCaptureKit disabled (untested), use CPAL directly
+        #[cfg(target_os = "macos")]
+        return cpal_loopback::create_cpal_loopback();
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        return cpal_loopback::create_cpal_loopback();
     }
 
     #[allow(unused_variables)]
@@ -97,13 +145,45 @@ impl CaptureFactory for DefaultCaptureFactory {
         &self,
         pid: u32,
     ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
-        #[cfg(windows)]
-        {
-            wasapi_loopback::create_wasapi_process_loopback(pid)
-        }
-        #[cfg(not(windows))]
-        {
+        #[cfg(target_os = "windows")]
+        return wasapi_loopback::create_wasapi_process_loopback(pid);
+
+        #[cfg(target_os = "linux")]
+        return if pipewire_common::is_pipewire_available() {
+            pipewire_process::create_pipewire_process_loopback(pid)
+        } else {
+            tracing::warn!("PipeWire not available — per-process audio capture requires PipeWire");
             Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
+        };
+
+        // macOS: ScreenCaptureKit disabled (untested), per-process capture unavailable
+        #[cfg(target_os = "macos")]
+        return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_factory_creation_does_not_panic() {
+        // Skip in CI to avoid macOS ScreenCaptureKit hanging on permissions dialog
+        if std::env::var("CI").is_ok() {
+            return;
         }
+        let factory = DefaultCaptureFactory;
+
+        // This test ensures that the factory methods don't panic upon invocation
+        // regardless of the platform. We don't assert Ok() because we might be
+        // running in a CI environment without audio hardware or permissions.
+        let _desktop_result = factory.create_desktop_capture();
+
+        // The process capture is expected to fail on non-Windows/macOS platforms
+        // if PipeWire isn't available, or succeed if it is. Either way, no panic.
+        let _process_result = factory.create_process_capture(999999);
     }
 }

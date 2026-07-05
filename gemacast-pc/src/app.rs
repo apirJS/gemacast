@@ -91,6 +91,7 @@ pub fn run() {
     let (command_tx, command_rx) = tokio::sync::mpsc::channel::<AppCommand>(32);
 
     let proxy_for_bg = event_loop.create_proxy();
+
     crate::background::spawn_background_engine(proxy_for_bg, command_rx);
 
     let proxy_for_term = event_loop.create_proxy();
