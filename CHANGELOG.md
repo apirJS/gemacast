@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.8](https://github.com/apirJS/gemacast/compare/v0.5.7...v0.5.8) (2026-07-06)
+
+
+### Bug Fixes
+
+* **gemacast-mobile:** missing check on checkbox on No Buffer preset confirm dialog ([6210887](https://github.com/apirJS/gemacast/commit/621088729bf43f51fe1e2941a7c4b499a761641c))
+
 ## [0.5.7](https://github.com/apirJS/gemacast/compare/v0.5.6...v0.5.7) (2026-07-06)
 
 
