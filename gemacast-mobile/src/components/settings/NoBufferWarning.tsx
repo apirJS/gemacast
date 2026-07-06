@@ -1,3 +1,5 @@
+import { Check } from "lucide-react";
+
 export function NoBufferWarningDialog({
   dialogRef,
   dontShowAgain,
@@ -25,12 +27,18 @@ export function NoBufferWarningDialog({
       </p>
 
       <label className="mb-4 flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={dontShowAgain}
-          onChange={(e) => setDontShowAgain(e.target.checked)}
-          className="h-4 w-4 accent-primary rounded"
-        />
+        <div className="relative flex h-4 w-4 items-center justify-center">
+          <input
+            type="checkbox"
+            checked={dontShowAgain}
+            onChange={(e) => setDontShowAgain(e.target.checked)}
+            className="peer h-4 w-4 appearance-none rounded-[3px] border border-muted-foreground/30 checked:border-primary checked:bg-primary"
+          />
+          <Check
+            className="pointer-events-none absolute h-3 w-3 text-primary-foreground opacity-0 peer-checked:opacity-100"
+            strokeWidth={4}
+          />
+        </div>
         <span className="text-sm text-muted-foreground">Don&apos;t show this again</span>
       </label>
 
