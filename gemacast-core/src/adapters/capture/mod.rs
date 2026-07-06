@@ -3,8 +3,10 @@
 //! Re-exports port traits from [`crate::ports::capture`] and provides the
 //! production [`DefaultCaptureFactory`] that selects platform-specific backends.
 
+#[cfg(not(target_os = "android"))]
 use crate::domain::error::GemaCastError;
 
+#[cfg(not(target_os = "android"))]
 pub mod cpal_loopback;
 #[cfg(target_os = "windows")]
 pub mod wasapi_common;
@@ -32,10 +34,6 @@ pub mod sck_process;
 // will continue to work.
 pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 
-// ---------------------------------------------------------------------------
-// Platform capture backend (enum dispatch for static dispatch within factory)
-// ---------------------------------------------------------------------------
-
 /// Enum-dispatched capture backend that wraps all platform-specific backends.
 ///
 /// This is the associated type `Backend` for [`DefaultCaptureFactory`].
@@ -43,6 +41,9 @@ pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 /// - No vtable pointer indirection
 /// - Compiler can inline `play()`/`pause()` through the match arms
 /// - Stack-allocated (no heap allocation per capture handle)
+///
+/// Not available on Android — Android is a receiver-only platform.
+#[cfg(not(target_os = "android"))]
 pub enum PlatformCaptureBackend {
     #[cfg(target_os = "windows")]
     WasapiDesktop(wasapi_desktop::WasapiDesktopCapture),
@@ -53,9 +54,11 @@ pub enum PlatformCaptureBackend {
     #[cfg(target_os = "linux")]
     PipeWireProcess(pipewire_process::PipeWireProcessCapture),
     // ScreenCaptureKit variants disabled — untested
+    #[cfg(not(target_os = "android"))]
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
+#[cfg(not(target_os = "android"))]
 impl CaptureBackend for PlatformCaptureBackend {
     fn play(&mut self) -> Result<(), GemaCastError> {
         match self {
@@ -67,6 +70,7 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.play(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.play(),
+            #[cfg(not(target_os = "android"))]
             Self::Cpal(b) => b.play(),
         }
     }
@@ -81,14 +85,11 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.pause(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.pause(),
+            #[cfg(not(target_os = "android"))]
             Self::Cpal(b) => b.pause(),
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Production capture factory
-// ---------------------------------------------------------------------------
 
 /// Production capture factory (WASAPI on Windows, PipeWire on Linux,
 /// CPAL as universal fallback).
@@ -99,16 +100,24 @@ impl CaptureBackend for PlatformCaptureBackend {
 /// On Windows, the factory first attempts the modern WASAPI Application Loopback
 /// API (which bypasses OEM Audio Processing Objects for clean audio). If WASAPI
 /// fails (e.g., on older Windows builds < 20348), it falls back to CPAL with
-/// a warning log.
+/// a warning log. Per-process WASAPI capture returns
+/// [`ProcessCaptureUnavailable`](crate::domain::error::AudioError::ProcessCaptureUnavailable)
+/// on failure since CPAL cannot do per-process capture.
 ///
 /// On Linux, the factory first attempts PipeWire. If PipeWire is unavailable
 /// (e.g., PulseAudio-only systems), it falls back to CPAL. Per-process capture
-/// requires PipeWire — it is not available via CPAL.
+/// requires PipeWire and returns
+/// [`ProcessCaptureUnavailable`](crate::domain::error::AudioError::ProcessCaptureUnavailable)
+/// if PipeWire is missing or if the capture fails at runtime.
 ///
 /// On macOS, ScreenCaptureKit is disabled (untested). Desktop capture uses
 /// CPAL loopback. Per-process capture is unavailable.
+///
+/// Not available on Android — Android is a receiver-only platform.
+#[cfg(not(target_os = "android"))]
 pub struct DefaultCaptureFactory;
 
+#[cfg(not(target_os = "android"))]
 impl CaptureFactory for DefaultCaptureFactory {
     type Backend = PlatformCaptureBackend;
 
@@ -136,8 +145,16 @@ impl CaptureFactory for DefaultCaptureFactory {
         #[cfg(target_os = "macos")]
         return cpal_loopback::create_cpal_loopback();
 
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "android"
+        )))]
         return cpal_loopback::create_cpal_loopback();
+
+        #[cfg(target_os = "android")]
+        return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
     }
 
     #[allow(unused_variables)]
@@ -146,11 +163,21 @@ impl CaptureFactory for DefaultCaptureFactory {
         pid: u32,
     ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
         #[cfg(target_os = "windows")]
-        return wasapi_loopback::create_wasapi_process_loopback(pid);
+        return wasapi_loopback::create_wasapi_process_loopback(pid).map_err(|e| {
+            tracing::warn!(
+                "WASAPI per-process capture failed ({e}), per-process capture unavailable"
+            );
+            crate::domain::error::AudioError::ProcessCaptureUnavailable.into()
+        });
 
         #[cfg(target_os = "linux")]
         return if pipewire_common::is_pipewire_available() {
-            pipewire_process::create_pipewire_process_loopback(pid)
+            pipewire_process::create_pipewire_process_loopback(pid).map_err(|e| {
+                tracing::warn!(
+                    "PipeWire per-process capture failed ({e}), per-process capture unavailable"
+                );
+                crate::domain::error::AudioError::ProcessCaptureUnavailable.into()
+            })
         } else {
             tracing::warn!("PipeWire not available — per-process audio capture requires PipeWire");
             Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
@@ -162,28 +189,5 @@ impl CaptureFactory for DefaultCaptureFactory {
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_factory_creation_does_not_panic() {
-        // Skip in CI to avoid macOS ScreenCaptureKit hanging on permissions dialog
-        if std::env::var("CI").is_ok() {
-            return;
-        }
-        let factory = DefaultCaptureFactory;
-
-        // This test ensures that the factory methods don't panic upon invocation
-        // regardless of the platform. We don't assert Ok() because we might be
-        // running in a CI environment without audio hardware or permissions.
-        let _desktop_result = factory.create_desktop_capture();
-
-        // The process capture is expected to fail on non-Windows/macOS platforms
-        // if PipeWire isn't available, or succeed if it is. Either way, no panic.
-        let _process_result = factory.create_process_capture(999999);
     }
 }

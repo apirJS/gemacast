@@ -12,30 +12,45 @@ beforeEach(() => {
   });
 });
 
+function expandAndRender() {
+  render(<ManualConnect />);
+  // Expand the collapsible to reveal the input + connect button
+  fireEvent.click(screen.getByText('Connect by Address'));
+}
+
 describe('ManualConnect', () => {
-  it('renders input and connect button', () => {
+  it('renders collapsed header', () => {
     render(<ManualConnect />);
+    expect(screen.getByText('Connect by Address')).toBeTruthy();
+  });
+
+  it('renders input and connect button when expanded', () => {
+    expandAndRender();
     expect(screen.getByPlaceholderText('192.xx.xx.xx')).toBeTruthy();
     expect(screen.getByText('Connect')).toBeTruthy();
   });
 
   it('disables connect button when input is empty', () => {
-    render(<ManualConnect />);
-    const btn = screen.getByRole('button', { name: /Connect/i });
-    expect(btn.hasAttribute('disabled')).toBe(true);
+    expandAndRender();
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((b) => b.textContent?.trim() === 'Connect');
+    expect(buttons[0].hasAttribute('disabled')).toBe(true);
   });
 
   it('enables connect button when input has text', () => {
-    render(<ManualConnect />);
+    expandAndRender();
     const input = screen.getByPlaceholderText('192.xx.xx.xx');
     fireEvent.change(input, { target: { value: '10.0.0.1' } });
-    const btn = screen.getByRole('button', { name: /Connect/i });
-    expect(btn.hasAttribute('disabled')).toBe(false);
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((b) => b.textContent?.trim() === 'Connect');
+    expect(buttons[0].hasAttribute('disabled')).toBe(false);
   });
 
   it('disables input when loading a manual connection', () => {
     useAppStore.getState().patch({ isLoading: true, connectingSenderId: 'manual-10.0.0.1' });
-    render(<ManualConnect />);
+    expandAndRender();
     const input = screen.getByPlaceholderText('192.xx.xx.xx');
     expect(input.hasAttribute('disabled')).toBe(true);
   });

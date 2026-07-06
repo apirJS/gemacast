@@ -10,15 +10,9 @@ beforeEach(() => {
 });
 
 describe('ThemeToggle', () => {
-  it('renders correctly based on theme', () => {
+  it('renders a toggle button', () => {
     render(<ThemeToggle />);
-    expect(screen.getByText('☾')).toBeTruthy();
-  });
-
-  it('renders sun icon for light theme', () => {
-    useAppStore.getState().updateSettings({ theme: 'light' });
-    render(<ThemeToggle />);
-    expect(screen.getByText('☼')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Toggle Theme' })).toBeTruthy();
   });
 
   it('updates store and document class when toggled', () => {
@@ -30,5 +24,17 @@ describe('ThemeToggle', () => {
     expect(useAppStore.getState().settings.theme).toBe('light');
     expect(document.documentElement.classList.contains('light')).toBe(true);
     expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+
+  it('toggles back to dark', () => {
+    useAppStore.getState().updateSettings({ theme: 'light' });
+    render(<ThemeToggle />);
+    const button = screen.getByRole('button');
+
+    fireEvent.click(button);
+
+    expect(useAppStore.getState().settings.theme).toBe('dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(document.documentElement.classList.contains('light')).toBe(false);
   });
 });

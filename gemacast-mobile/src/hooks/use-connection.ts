@@ -97,7 +97,6 @@ export async function connectToSender(
       });
     }
 
-    toast.getState().show('success', 'Connected');
     return ok(true);
   } catch (e) {
     const error = GemaCastError.failedToStartPlayback(e);

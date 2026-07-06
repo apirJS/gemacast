@@ -31,3 +31,6 @@ wix/**/bin/
 
 # Playground pwsl scripts
 **/*.ps1
+
+# Temporary
+TEMP/

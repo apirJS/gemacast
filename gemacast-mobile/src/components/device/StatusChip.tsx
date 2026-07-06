@@ -3,31 +3,37 @@ import { Status } from '../../core/types';
 
 const STATUS_CONFIG: Record<
   Status,
-  { class: string; label: string } | ((attempts: number) => { class: string; label: string })
+  | { dot: string; label: string; glow?: string }
+  | ((attempts: number) => { dot: string; label: string; glow?: string })
 > = {
-  [Status.Idle]: { class: 'bg-muted text-muted-foreground', label: 'Idle' },
+  [Status.Idle]: { dot: 'bg-muted-foreground/40', label: 'Idle' },
   [Status.Listening]: {
-    class: 'bg-status-connecting-bg text-status-connecting border border-status-connecting-border',
+    dot: 'bg-blue-400',
+    glow: 'shadow-[0_0_6px_2px_rgba(96,165,250,0.5)]',
     label: 'Scanning…',
   },
   [Status.Connecting]: {
-    class: 'bg-status-connecting-bg text-status-connecting border border-status-connecting-border',
+    dot: 'bg-blue-400',
+    glow: 'shadow-[0_0_6px_2px_rgba(96,165,250,0.5)]',
     label: 'Connecting…',
   },
   [Status.Connected]: {
-    class: 'bg-status-ok-bg text-status-ok border border-status-ok-border',
+    dot: 'bg-emerald-400',
+    glow: 'shadow-[0_0_6px_2px_rgba(52,211,153,0.45)]',
     label: 'Connected',
   },
   [Status.Playing]: {
-    class: 'bg-status-ok-bg text-status-ok border border-status-ok-border',
+    dot: 'bg-emerald-400',
+    glow: 'shadow-[0_0_6px_2px_rgba(52,211,153,0.45)]',
     label: 'Playing',
   },
   [Status.Paused]: {
-    class: 'bg-status-warn-bg text-status-warn border border-status-warn-border',
+    dot: 'bg-amber-400',
     label: 'Paused',
   },
   [Status.Reconnecting]: (attempts) => ({
-    class: 'bg-status-warn-bg text-status-warn border border-status-warn-border',
+    dot: 'bg-amber-400',
+    glow: 'shadow-[0_0_6px_2px_rgba(251,191,36,0.45)]',
     label: attempts > 0 ? `Reconnecting (${attempts}/5)…` : 'Reconnecting…',
   }),
 };
@@ -39,29 +45,50 @@ export function StatusChip() {
   const configEntry = STATUS_CONFIG[status];
   const config = typeof configEntry === 'function' ? configEntry(attempts) : configEntry;
 
-  const showPulse =
+  const isActive =
     status === Status.Listening || status === Status.Connecting || status === Status.Reconnecting;
+
+  const isLive = status === Status.Playing || status === Status.Connected;
+
+  const showBreathing = isActive || isLive;
 
   return (
     <div
       role="status"
       aria-live="polite"
       className={`
-        inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium
-        transition-colors duration-200 ${config.class}
+        status-chip
+        inline-flex items-center gap-2 rounded-full px-4 py-1.5
+        text-xs font-medium tracking-wide
+        text-muted-foreground
+        transition-all duration-300
       `}
     >
-      {showPulse && (
-        <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-current" />
-        </span>
-      )}
-      {!showPulse && status === Status.Playing && (
-        <span className="relative flex h-2 w-2">
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-current" />
-        </span>
-      )}
+      <span
+        className={`
+          relative flex h-2 w-2 shrink-0
+        `}
+      >
+        {/* Breathing ring for active/live states */}
+        {showBreathing && (
+          <span
+            className={`
+              absolute inset-0 rounded-full opacity-75
+              ${config.dot}
+              animate-[status-breathe_2s_ease-in-out_infinite]
+            `}
+          />
+        )}
+        {/* Core dot */}
+        <span
+          className={`
+            relative inline-flex h-2 w-2 rounded-full
+            ${config.dot}
+            ${config.glow ?? ''}
+            transition-all duration-300
+          `}
+        />
+      </span>
       <span>{config.label}</span>
     </div>
   );

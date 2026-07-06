@@ -151,10 +151,11 @@ mod tests {
         // pw::init() shouldn't panic if PipeWire is properly available.
         if is_pipewire_available() {
             // Further check: can we create a main loop and context?
-            let mainloop = pw::main_loop::MainLoopRc::new(None);
-            assert!(mainloop.is_ok(), "Failed to create PipeWire MainLoop");
+            let mainloop_res = pw::main_loop::MainLoopRc::new(None);
+            assert!(mainloop_res.is_ok(), "Failed to create PipeWire MainLoop");
 
-            let context = pw::context::ContextRc::new(&mainloop.unwrap(), None);
+            let mainloop = mainloop_res.unwrap();
+            let context = pw::context::ContextRc::new(&mainloop, None);
             assert!(context.is_ok(), "Failed to create PipeWire Context");
         } else {
             // We only print a warning so the test passes on developers'
