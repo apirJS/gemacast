@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.7](https://github.com/apirJS/gemacast/compare/v0.5.6...v0.5.7) (2026-07-06)
+
+
+### Bug Fixes
+
+* **gemacast-mobile:** overall UI UX refined ([4a102dc](https://github.com/apirJS/gemacast/commit/4a102dcb70dea16fe9795e9d491c4b67f86aaad1))
+
 ## [0.5.6](https://github.com/apirJS/gemacast/compare/v0.5.5...v0.5.6) (2026-07-05)
 
 
