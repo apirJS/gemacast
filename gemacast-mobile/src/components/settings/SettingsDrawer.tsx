@@ -12,6 +12,25 @@ import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
 import { useDrawer } from '../../hooks/use-drawer';
 import packageJson from '../../../package.json';
 
+function SectionLabel({
+  children,
+  helpButton,
+}: {
+  children: React.ReactNode;
+  helpButton?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-2 flex items-center gap-2 text-[0.8rem] font-semibold tracking-[0.04em] text-muted-foreground">
+      {children}
+      {helpButton}
+    </div>
+  );
+}
+
+function SectionDivider() {
+  return <div className="border-t border-border" />;
+}
+
 export function SettingsDrawer() {
   const { open, dialogRef, handleOpen, handleClose } = useDrawer('settings');
   const help = useHelpDialog();
@@ -48,6 +67,9 @@ export function SettingsDrawer() {
           backdrop:bg-black/30 backdrop:backdrop-blur-[4px]
           ${open ? 'animate-[slide-from-left_350ms_cubic-bezier(0.32,0.72,0,1)]' : ''}
         `}
+        style={{
+          paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))',
+        }}
         onClose={handleClose}
       >
         <div className="flex h-full flex-col">
@@ -66,58 +88,68 @@ export function SettingsDrawer() {
             <ThemeToggle />
           </div>
 
-          <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+          <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
             <UpdateBanner />
 
+            {/* Buffer Preset */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+              <SectionLabel helpButton={help.renderHelpButton('buffer-preset')}>
                 Buffer Preset
-                {help.renderHelpButton('buffer-preset')}
-              </div>
+              </SectionLabel>
               <BufferPresetSelect />
               <CustomJitterConfig renderHelpButton={help.renderHelpButton} />
             </div>
 
+            <SectionDivider />
+
+            {/* Audio Bitrate Quality */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+              <SectionLabel helpButton={help.renderHelpButton('audio-bitrate')}>
                 Audio Bitrate Quality
-                {help.renderHelpButton('audio-bitrate')}
-              </div>
+              </SectionLabel>
               <BitrateSelect />
             </div>
 
+            <SectionDivider />
+
+            {/* Audio Gain */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+              <SectionLabel helpButton={help.renderHelpButton('audio-gain')}>
                 Audio Gain
-                {help.renderHelpButton('audio-gain')}
-              </div>
+              </SectionLabel>
               <GainSlider />
             </div>
 
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
-                Exclusive Mode
-                {help.renderHelpButton('exclusive-mode')}
+            <SectionDivider />
+
+            {/* Toggles */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <SectionLabel helpButton={help.renderHelpButton('exclusive-mode')}>
+                  Exclusive Mode
+                </SectionLabel>
+                <ExclusiveToggle />
               </div>
-              <ExclusiveToggle />
+
+              <div className="flex items-center justify-between">
+                <SectionLabel helpButton={help.renderHelpButton('keep-screen-on')}>
+                  Keep Screen On
+                </SectionLabel>
+                <KeepScreenOnToggle />
+              </div>
             </div>
 
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
-                Keep Screen On
-                {help.renderHelpButton('keep-screen-on')}
-              </div>
-              <KeepScreenOnToggle />
-            </div>
+            <SectionDivider />
 
+            {/* Connection Mode */}
             <div>
-              <div className="mb-2 flex items-center gap-2 text-[0.9rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+              <SectionLabel helpButton={help.renderHelpButton('connection-mode')}>
                 Mode
-                {help.renderHelpButton('connection-mode')}
-              </div>
+              </SectionLabel>
               <ModeSelector />
             </div>
 
+            {/* Footer */}
             <div className="mt-4 border-t border-border pt-6 text-center">
               <p className="text-[0.85rem] text-muted-foreground">
                 Latency depends on your Wi-Fi quality. 5 GHz band recommended for lowest latency.

@@ -81,7 +81,7 @@ export function SenderCard({
             ${isDisabled && !showLoading ? 'opacity-50 pointer-events-none' : ''}
             ${
               isConnected
-                ? 'bg-destructive text-destructive-foreground hover:opacity-90'
+                ? 'border-destructive text-destructive bg-transparent hover:bg-destructive hover:text-destructive-foreground'
                 : 'border-border bg-secondary text-secondary-foreground hover:bg-primary hover:text-primary-foreground'
             }
           `}
