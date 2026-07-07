@@ -125,12 +125,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
 
     let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
+    let context_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(context)));
 
-    let core = context
+    let core = context_rc
+        .borrow()
+        .as_ref()
+        .unwrap()
         .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
+    let core_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(core)));
 
-    let registry = core
+    let registry = core_rc
+        .borrow()
+        .as_ref()
+        .unwrap()
         .get_registry()
         .map_err(|e| AudioError::PipeWireError(format!("Registry: {e}")))?;
 
@@ -185,27 +193,56 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
+    let listener_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(_listener)));
+
     let mainloop_weak = mainloop.downgrade();
-    let pending_sync = core
+    let pending_sync = core_rc
+        .borrow()
+        .as_ref()
+        .unwrap()
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let _core_listener = core
+    struct PwResources {
+        _cl: pw::core::Listener,
+        _l: pw::registry::Listener,
+        _r: pw::registry::Registry,
+        _co: pw::core::CoreRc,
+        _cx: pw::context::ContextRc,
+    }
+    let resources = std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let resources_clone = resources.clone();
+    let _core_listener = core_rc
+        .borrow()
+        .as_ref()
+        .unwrap()
         .add_listener_local()
         .done(move |_id, _seq| {
             if _seq == pending_sync
                 && let Some(ml) = mainloop_weak.upgrade()
             {
+                resources_clone.borrow_mut().take();
                 ml.quit();
             }
         })
         .register();
 
+    *resources.borrow_mut() = Some(PwResources {
+        _cl: _core_listener,
+        _l: listener_rc.borrow_mut().take().unwrap(),
+        _r: registry,
+        _co: core_rc.borrow_mut().take().unwrap(),
+        _cx: context_rc.borrow_mut().take().unwrap(),
+    });
+
     // Run the mainloop briefly to enumerate
     // Use a timer as a fallback timeout just in case sync hangs
     let mainloop_weak2 = mainloop.downgrade();
+    let resources_clone2 = resources.clone();
     let timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
+            resources_clone2.borrow_mut().take();
             ml.quit();
         }
     });
