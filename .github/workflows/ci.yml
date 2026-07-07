@@ -52,7 +52,7 @@ jobs:
             os: ubuntu-22.04
             target: pc
           - name: Linux Android
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             target: android
           - name: Windows PC
             os: windows-latest

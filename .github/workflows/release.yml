@@ -726,7 +726,7 @@ jobs:
       - plan
       - host
     if: ${{ needs.host.result == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     environment: Production
     env:
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
