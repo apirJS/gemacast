@@ -115,14 +115,19 @@ fn run_desktop_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    pw::init();
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
+    let mainloop = pw::thread_loop::ThreadLoop::new(Some("gemacast-desktop-capture"), None)
+        .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
+
+    let context = pw::context::Context::new(&mainloop.loop_(), None)
+        .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;
+
+    mainloop.start();
+    let loop_guard = mainloop.lock();
 
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream that connects to the default audio sink's monitor.
@@ -150,7 +155,7 @@ fn run_desktop_capture_loop(
     let is_running_err = is_running.clone();
 
     let _listener = stream
-        .add_listener::<()>()
+        .add_local_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Desktop] stream state changed {:?} -> {:?}",
@@ -225,34 +230,25 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
-    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        stream, _listener, core, context,
-    ))));
-    let keep_objects_clone = keep_objects.clone();
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
 
-    // Run the main loop — blocks until quit
-    // We use a timer to periodically check is_running
-    let is_running_timer = is_running.clone();
-    let mainloop_weak = mainloop.downgrade();
-
-    let timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed)
-            && let Some(ml) = mainloop_weak.upgrade()
-        {
-            let _ = keep_objects_clone.borrow_mut().take();
-            ml.quit();
-        }
-    });
-    // Check every 100ms if we should stop
-    timer.update_timer(
-        Some(std::time::Duration::from_millis(100)),
-        Some(std::time::Duration::from_millis(100)),
-    );
-
-    let _keep_timer = timer;
-    mainloop.run();
+    // Block the current thread until is_running goes false
+    while is_running.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
+
+    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    let loop_guard = mainloop.lock();
+    drop(_listener);
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
 
     Ok(())
 }

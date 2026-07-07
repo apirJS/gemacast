@@ -190,40 +190,45 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        registry, _listener, core, context,
-    ))));
-    let keep_objects_clone1 = keep_objects.clone();
-    let keep_objects_clone2 = keep_objects.clone();
+    let sync_done = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let sync_done_clone = sync_done.clone();
 
     let _core_listener = core
-        .add_listener()
+        .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync
-                && let Some(ml) = mainloop_weak.upgrade()
-            {
-                let _ = keep_objects_clone1.borrow_mut().take();
-                ml.quit();
+            if _seq == pending_sync {
+                let (lock, cvar) = &*sync_done_clone;
+                let mut done = lock.lock().unwrap();
+                *done = true;
+                cvar.notify_one();
             }
         })
         .register();
 
-    // Run the mainloop briefly to enumerate
-    // Use a timer as a fallback timeout just in case sync hangs
-    let mainloop_weak2 = mainloop.downgrade();
-    let timer = mainloop.loop_().add_timer(move |_| {
-        if let Some(ml) = mainloop_weak2.upgrade() {
-            let _ = keep_objects_clone2.borrow_mut().take();
-            ml.quit();
-        }
-    });
-    timer.update_timer(
-        Some(std::time::Duration::from_secs(2)),
-        None, // One-shot
-    );
-    let _keep_timer = timer;
+    // Release the lock so PipeWire can process events
+    drop(loop_guard);
 
-    mainloop.run();
+    // Wait on the main thread for the sync to complete (or timeout)
+    let (lock, cvar) = &*sync_done;
+    let mut done = lock.lock().unwrap();
+    while !*done {
+        let result = cvar.wait_timeout(done, std::time::Duration::from_secs(2)).unwrap();
+        done = result.0;
+        if result.1.timed_out() {
+            tracing::warn!("[PipeWire Process] Node discovery sync timed out");
+            break;
+        }
+    }
+
+    // Re-acquire lock to cleanly destroy objects
+    let loop_guard = mainloop.lock();
+    drop(_core_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
 
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
@@ -290,7 +295,7 @@ fn run_process_capture_loop(
     let is_running_err = is_running.clone();
 
     let _listener = stream
-        .add_listener::<()>()
+        .add_local_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Process] stream state changed {:?} -> {:?}",
@@ -369,31 +374,25 @@ fn run_process_capture_loop(
         target_node_id
     );
 
-    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        stream, _listener, core, context,
-    ))));
-    let keep_objects_clone = keep_objects.clone();
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
 
-    // Periodic check to quit the loop when is_running goes false
-    let is_running_timer = is_running.clone();
-    let mainloop_weak = mainloop.downgrade();
-    let _timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed)
-            && let Some(ml) = mainloop_weak.upgrade()
-        {
-            let _ = keep_objects_clone.borrow_mut().take();
-            ml.quit();
-        }
-    });
-    _timer.update_timer(
-        Some(std::time::Duration::from_millis(100)),
-        Some(std::time::Duration::from_millis(100)),
-    );
-    let _keep_timer = _timer;
-
-    mainloop.run();
+    // Block the current thread until is_running goes false
+    while is_running.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
+
+    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    let loop_guard = mainloop.lock();
+    drop(_listener);
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
 
     Ok(())
 }
