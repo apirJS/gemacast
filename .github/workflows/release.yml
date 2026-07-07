@@ -140,7 +140,25 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
           if [[ "${{ matrix.runner }}" == ubuntu* ]]; then
-            sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev clang libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev ninja-build cmake
+            sudo apt-get update && sudo apt-get install -y clang libasound2-dev libgtk-3-dev \
+              libayatana-appindicator3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev \
+              ninja-build cmake meson pkg-config libudev-dev libdbus-1-dev python3-docutils
+            # Build PipeWire 1.2.7 from source for pipewire-rs 0.10 headers
+            # (Ubuntu 22.04 apt only ships PipeWire 0.3.48 headers)
+            PW_VERSION=1.2.7
+            curl -sSL "https://gitlab.freedesktop.org/pipewire/pipewire/-/archive/${PW_VERSION}/pipewire-${PW_VERSION}.tar.gz" | tar xz
+            cd "pipewire-${PW_VERSION}"
+            meson setup builddir --prefix=/usr \
+              -Dspa-plugins=disabled -Dpipewire-v4l2=disabled -Dpipewire-jack=disabled \
+              -Dlibjack-path="" -Dalsa=disabled -Dpulse-tunnel=disabled -Djack-tunnel=disabled \
+              -Dsession-managers=[] -Dtests=disabled -Dexamples=disabled -Dman=disabled \
+              -Ddocs=disabled -Dgstreamer=disabled -Dbluez5=disabled -Davahi=disabled \
+              -Draop=disabled -Dudevrulesdir=""
+            ninja -C builddir
+            sudo ninja -C builddir install
+            sudo ldconfig
+            cd ..
+            rm -rf "pipewire-${PW_VERSION}"
           fi
       - name: Build artifacts
         run: |
@@ -431,11 +449,11 @@ jobs:
           - arch: amd64
             rust_target: x86_64-unknown-linux-gnu
             appimage_arch: x86_64
-            runs_on: ubuntu-24.04
+            runs_on: ubuntu-22.04
           - arch: arm64
             rust_target: aarch64-unknown-linux-gnu
             appimage_arch: aarch64
-            runs_on: ubuntu-24.04-arm
+            runs_on: ubuntu-22.04-arm
     runs-on: ${{ matrix.runs_on }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -708,7 +726,7 @@ jobs:
       - plan
       - host
     if: ${{ needs.host.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     environment: Production
     env:
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
@@ -756,7 +774,7 @@ jobs:
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxdo-dev libpipewire-0.3-dev clang
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxdo-dev clang
 
       - name: Install Frontend Dependencies
         working-directory: ./gemacast-mobile
