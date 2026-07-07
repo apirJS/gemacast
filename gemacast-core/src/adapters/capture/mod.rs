@@ -142,20 +142,20 @@ impl CaptureFactory for DefaultCaptureFactory {
         pid: u32,
     ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
         #[cfg(target_os = "windows")]
-        return wasapi_loopback::create_wasapi_process_loopback(pid).or_else(|e| {
+        return wasapi_loopback::create_wasapi_process_loopback(pid).map_err(|e| {
             tracing::warn!(
                 "WASAPI per-process capture failed ({e}), per-process capture unavailable"
             );
-            Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
+            crate::domain::error::AudioError::ProcessCaptureUnavailable.into()
         });
 
         #[cfg(target_os = "linux")]
         return if pipewire_common::is_pipewire_available() {
-            pipewire_process::create_pipewire_process_loopback(pid).or_else(|e| {
+            pipewire_process::create_pipewire_process_loopback(pid).map_err(|e| {
                 tracing::warn!(
                     "PipeWire per-process capture failed ({e}), per-process capture unavailable"
                 );
-                Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
+                crate::domain::error::AudioError::ProcessCaptureUnavailable.into()
             })
         } else {
             tracing::warn!("PipeWire not available — per-process audio capture requires PipeWire");
