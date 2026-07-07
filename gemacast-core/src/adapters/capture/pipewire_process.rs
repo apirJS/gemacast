@@ -190,12 +190,19 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        registry, _listener, core, context
+    ))));
+    let keep_objects_clone1 = keep_objects.clone();
+    let keep_objects_clone2 = keep_objects.clone();
+
     let _core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
             if _seq == pending_sync
                 && let Some(ml) = mainloop_weak.upgrade()
             {
+                let _ = keep_objects_clone1.borrow_mut().take();
                 ml.quit();
             }
         })
@@ -206,6 +213,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let mainloop_weak2 = mainloop.downgrade();
     let timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
+            let _ = keep_objects_clone2.borrow_mut().take();
             ml.quit();
         }
     });
@@ -295,17 +303,14 @@ fn run_process_capture_loop(
                     tracing::error!("[PipeWire Process] stream error: {}", err);
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
+                    // Do not call ml.quit() here directly because we want the timer
+                    // to drop the keep_objects before quitting!
                 }
                 pw::stream::StreamState::Unconnected => {
                     tracing::warn!("[PipeWire Process] stream disconnected");
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
+                    // Let the timer handle quitting and dropping.
                 }
                 _ => {}
             }
@@ -368,6 +373,21 @@ fn run_process_capture_loop(
         target_node_id
     );
 
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        stream, _listener, core, context
+    ))));
+    let keep_objects_clone = keep_objects.clone();
+    let keep_objects_clone_err1 = keep_objects.clone();
+    let keep_objects_clone_err2 = keep_objects.clone();
+
+    // We also need to drop them on stream error or disconnect
+    // But since the listener closure borrows the same variables, wait...
+    // We already passed _listener into keep_objects, so we can't easily capture keep_objects
+    // in the _listener closure because it would be a cyclic reference!
+    // To avoid cycle, we just do it for the timer, and let the timer catch the `is_running_timer`
+    // becoming false from the error handler. The error handler sets is_running to false!
+    // So the timer will pick it up on the next tick!
+
     // Periodic check to quit the loop when is_running goes false
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
@@ -375,6 +395,7 @@ fn run_process_capture_loop(
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
+            let _ = keep_objects_clone.borrow_mut().take();
             ml.quit();
         }
     });

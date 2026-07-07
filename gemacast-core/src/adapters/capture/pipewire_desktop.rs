@@ -225,6 +225,12 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
+    // Group objects to be dropped inside the loop
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        stream, _listener, core, context
+    ))));
+    let keep_objects_clone = keep_objects.clone();
+
     // Run the main loop — blocks until quit
     // We use a timer to periodically check is_running
     let is_running_timer = is_running.clone();
@@ -234,6 +240,8 @@ fn run_desktop_capture_loop(
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
+            // Drop PipeWire objects on the loop thread BEFORE quitting
+            let _ = keep_objects_clone.borrow_mut().take();
             ml.quit();
         }
     });
