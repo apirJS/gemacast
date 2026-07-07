@@ -212,7 +212,9 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let (lock, cvar) = &*sync_done;
     let mut done = lock.lock().unwrap();
     while !*done {
-        let result = cvar.wait_timeout(done, std::time::Duration::from_secs(2)).unwrap();
+        let result = cvar
+            .wait_timeout(done, std::time::Duration::from_secs(2))
+            .unwrap();
         done = result.0;
         if result.1.timed_out() {
             tracing::warn!("[PipeWire Process] Node discovery sync timed out");
