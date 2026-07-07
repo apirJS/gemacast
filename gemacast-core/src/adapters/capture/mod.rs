@@ -3,6 +3,7 @@
 //! Re-exports port traits from [`crate::ports::capture`] and provides the
 //! production [`DefaultCaptureFactory`] that selects platform-specific backends.
 
+#[cfg(not(target_os = "android"))]
 use crate::domain::error::GemaCastError;
 
 #[cfg(not(target_os = "android"))]
