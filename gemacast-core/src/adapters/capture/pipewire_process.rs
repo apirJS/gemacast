@@ -191,7 +191,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
     let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        registry, _listener, core, context
+        registry, _listener, core, context,
     ))));
     let keep_objects_clone1 = keep_objects.clone();
     let keep_objects_clone2 = keep_objects.clone();
@@ -370,7 +370,7 @@ fn run_process_capture_loop(
     );
 
     let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        stream, _listener, core, context
+        stream, _listener, core, context,
     ))));
     let keep_objects_clone = keep_objects.clone();
 

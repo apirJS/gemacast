@@ -226,7 +226,7 @@ fn run_desktop_capture_loop(
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
     let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
-        stream, _listener, core, context
+        stream, _listener, core, context,
     ))));
     let keep_objects_clone = keep_objects.clone();
 
