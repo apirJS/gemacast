@@ -252,7 +252,7 @@ fn run_process_capture_loop(
         unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None) }
             .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextBox::new(&mainloop.loop_(), None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
     // Start the thread loop so PipeWire processes events in the background.

@@ -125,7 +125,7 @@ fn run_desktop_capture_loop(
         unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-desktop-capture"), None) }
             .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
 
-    let context = pw::context::ContextBox::new(&mainloop.loop_(), None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;
 
     // Start the thread loop so PipeWire processes events in the background.
