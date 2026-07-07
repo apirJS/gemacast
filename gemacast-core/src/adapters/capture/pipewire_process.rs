@@ -185,6 +185,9 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
+    // Request a sync. The returned ID will be passed to the 'done' event
+    // when all previously issued commands (like the registry enumeration)
+    // have completed.
     let mainloop_weak = mainloop.downgrade();
     let pending_sync = core
         .sync(0)
@@ -201,20 +204,8 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
-    // Run the mainloop briefly to enumerate
-    // Use a timer as a fallback timeout just in case sync hangs
-    let mainloop_weak2 = mainloop.downgrade();
-    let timer = mainloop.loop_().add_timer(move |_| {
-        if let Some(ml) = mainloop_weak2.upgrade() {
-            ml.quit();
-        }
-    });
-    timer.update_timer(
-        Some(std::time::Duration::from_secs(2)),
-        None, // One-shot
-    );
-    let _keep_timer = timer;
-
+    // Run the main loop. It will block until the `done` event fires and
+    // calls quit(), which takes less than 5ms in practice.
     mainloop.run();
 
     let cmap = client_map.lock().unwrap();
@@ -246,6 +237,10 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
 }
 
 /// Internal: runs the PipeWire capture loop for a specific node.
+///
+/// Uses [`ThreadLoopBox`] so PipeWire's event loop runs on a background
+/// thread, and all proxy operations happen under the thread loop's lock
+/// (required by PipeWire's context-safety model).
 fn run_process_capture_loop(
     target_node_id: String,
     producer: &mut ringbuf::HeapProd<f32>,
@@ -253,14 +248,20 @@ fn run_process_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop =
+        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None) }
+            .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop so PipeWire processes events in the background.
+    // We must hold the lock while creating proxies and connecting the stream.
+    mainloop.start();
+    let loop_guard = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream targeting the specific application node.
@@ -280,7 +281,6 @@ fn run_process_capture_loop(
     let is_running_ptr = is_running as *const Arc<AtomicBool>;
 
     let is_running_err = is_running.clone();
-    let mainloop_weak3 = mainloop.downgrade();
 
     let _listener = stream
         .add_local_listener::<()>()
@@ -295,17 +295,11 @@ fn run_process_capture_loop(
                     tracing::error!("[PipeWire Process] stream error: {}", err);
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
                 }
                 pw::stream::StreamState::Unconnected => {
                     tracing::warn!("[PipeWire Process] stream disconnected");
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
                 }
                 _ => {}
             }
@@ -368,24 +362,26 @@ fn run_process_capture_loop(
         target_node_id
     );
 
-    // Periodic check to quit the loop when is_running goes false
-    let is_running_timer = is_running.clone();
-    let mainloop_weak = mainloop.downgrade();
-    let _timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed)
-            && let Some(ml) = mainloop_weak.upgrade()
-        {
-            ml.quit();
-        }
-    });
-    _timer.update_timer(
-        Some(std::time::Duration::from_millis(100)),
-        Some(std::time::Duration::from_millis(100)),
-    );
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
 
-    mainloop.run();
+    // Block the current thread until is_running goes false
+    while is_running.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
+
+    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    let loop_guard = mainloop.lock();
+    drop(_listener);
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
+
     Ok(())
 }
 

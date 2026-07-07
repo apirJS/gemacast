@@ -105,24 +105,36 @@ pub fn create_pipewire_desktop_loopback()
     })
 }
 
-/// Internal: runs the PipeWire MainLoop on the capture thread.
+/// Internal: runs the PipeWire ThreadLoop on the capture thread.
 ///
 /// Creates a stream connected to the default audio sink's monitor,
 /// capturing all system audio.
+///
+/// Uses [`ThreadLoopBox`] so PipeWire's event loop runs on a background
+/// thread, and all proxy operations happen under the thread loop's lock
+/// (required by PipeWire's context-safety model).
 fn run_desktop_capture_loop(
     producer: &mut ringbuf::HeapProd<f32>,
     notify: &Arc<tokio::sync::Notify>,
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    pw::init();
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
+    let mainloop =
+        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-desktop-capture"), None) }
+            .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
+
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
+        .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;
+
+    // Start the thread loop so PipeWire processes events in the background.
+    // We must hold the lock while creating proxies and connecting the stream.
+    mainloop.start();
+    let loop_guard = mainloop.lock();
 
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream that connects to the default audio sink's monitor.
@@ -142,13 +154,12 @@ fn run_desktop_capture_loop(
     // We use raw pointers to pass data into the process callback.
     // This is safe because:
     // 1. producer and notify outlive the mainloop (they're on the same thread stack)
-    // 2. The callback is only invoked while mainloop.run() is executing
+    // 2. The callback is only invoked while the thread loop is running
     let producer_ptr = producer as *mut ringbuf::HeapProd<f32>;
     let notify_ptr = notify as *const Arc<tokio::sync::Notify>;
     let is_running_ptr = is_running as *const Arc<AtomicBool>;
 
     let is_running_err = is_running.clone();
-    let mainloop_weak3 = mainloop.downgrade();
 
     let _listener = stream
         .add_local_listener::<()>()
@@ -163,17 +174,11 @@ fn run_desktop_capture_loop(
                     tracing::error!("[PipeWire Desktop] stream error: {}", err);
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
                 }
                 pw::stream::StreamState::Unconnected => {
                     tracing::warn!("[PipeWire Desktop] stream disconnected");
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    if let Some(ml) = mainloop_weak3.upgrade() {
-                        ml.quit();
-                    }
                 }
                 _ => {}
             }
@@ -232,27 +237,26 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
-    // Run the main loop — blocks until quit
-    // We use a timer to periodically check is_running
-    let is_running_timer = is_running.clone();
-    let mainloop_weak = mainloop.downgrade();
-    let timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed)
-            && let Some(ml) = mainloop_weak.upgrade()
-        {
-            ml.quit();
-        }
-    });
-    // Check every 100ms if we should stop
-    timer.update_timer(
-        Some(std::time::Duration::from_millis(100)),
-        Some(std::time::Duration::from_millis(100)),
-    );
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
 
-    let _keep_timer = timer;
-    mainloop.run();
+    // Block the current thread until is_running goes false
+    while is_running.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
+
+    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    let loop_guard = mainloop.lock();
+    drop(_listener);
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
+
     Ok(())
 }
 
