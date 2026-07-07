@@ -104,7 +104,7 @@ jobs:
           curl -sSL "https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/${WP_VERSION}/wireplumber-${WP_VERSION}.tar.gz" | tar xz
           cd "wireplumber-${WP_VERSION}"
           meson setup builddir --prefix=/usr \
-            -Dtests=disabled -Ddoc=disabled -Dintrospection=disabled -Dsystem-lua=true
+            -Dtests=false -Ddoc=false -Dintrospection=false -Dsystem-lua=true
           ninja -C builddir
           sudo ninja -C builddir install
           sudo ldconfig
