@@ -117,17 +117,14 @@ fn run_desktop_capture_loop(
 ) -> Result<(), GemaCastError> {
     pw::init();
 
-    let mainloop = pw::thread_loop::ThreadLoop::new(Some("gemacast-desktop-capture"), None)
-        .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|e| AudioError::PipeWireError(format!("Failed to create main loop: {e}")))?;
 
-    let context = pw::context::Context::new(&mainloop.loop_(), None)
+    let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;
 
-    mainloop.start();
-    let loop_guard = mainloop.lock();
-
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream that connects to the default audio sink's monitor.
@@ -230,25 +227,20 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
-    // Release the lock so the PipeWire thread can process events
-    drop(loop_guard);
-
-    // Block the current thread until is_running goes false
+    // Block the current thread until is_running goes false.
+    // We poll with a short sleep because MainLoopRc::run() would block
+    // indefinitely and we need to check the is_running flag to exit.
     while is_running.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
-    let loop_guard = mainloop.lock();
+    // Drop PipeWire objects in reverse creation order before the loop goes away
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
-    drop(loop_guard);
-
-    mainloop.stop();
 
     Ok(())
 }

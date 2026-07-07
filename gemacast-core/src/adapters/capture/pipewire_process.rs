@@ -185,7 +185,6 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
-    let mainloop_weak = mainloop.downgrade();
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
@@ -205,9 +204,6 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
-    // Release the lock so PipeWire can process events
-    drop(loop_guard);
-
     // Wait on the main thread for the sync to complete (or timeout)
     let (lock, cvar) = &*sync_done;
     let mut done = lock.lock().unwrap();
@@ -222,15 +218,11 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         }
     }
 
-    // Re-acquire lock to cleanly destroy objects
-    let loop_guard = mainloop.lock();
+    // Drop PipeWire objects in reverse creation order
     drop(_core_listener);
     drop(registry);
     drop(core);
     drop(context);
-    drop(loop_guard);
-
-    mainloop.stop();
 
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
@@ -376,25 +368,20 @@ fn run_process_capture_loop(
         target_node_id
     );
 
-    // Release the lock so the PipeWire thread can process events
-    drop(loop_guard);
-
-    // Block the current thread until is_running goes false
+    // Block the current thread until is_running goes false.
+    // We poll with a short sleep because MainLoopRc::run() would block
+    // indefinitely and we need to check the is_running flag to exit.
     while is_running.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
 
-    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
-    let loop_guard = mainloop.lock();
+    // Drop PipeWire objects in reverse creation order
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
-    drop(loop_guard);
-
-    mainloop.stop();
 
     Ok(())
 }
