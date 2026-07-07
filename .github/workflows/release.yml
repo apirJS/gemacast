@@ -150,7 +150,7 @@ jobs:
             cd "pipewire-${PW_VERSION}"
             meson setup builddir --prefix=/usr \
               -Dspa-plugins=disabled -Dpipewire-v4l2=disabled -Dpipewire-jack=disabled \
-              -Dlibjack-path="" -Dalsa=disabled -Dpulse-tunnel=disabled -Djack-tunnel=disabled \
+              -Dpipewire-alsa=disabled -Dlibjack-path="" -Dalsa=disabled \
               -Dsession-managers=[] -Dtests=disabled -Dexamples=disabled -Dman=disabled \
               -Ddocs=disabled -Dgstreamer=disabled -Dbluez5=disabled -Davahi=disabled \
               -Draop=disabled -Dudevrulesdir=""
