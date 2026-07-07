@@ -121,8 +121,9 @@ fn run_desktop_capture_loop(
 ) -> Result<(), GemaCastError> {
     pw::init();
 
-    let mainloop = pw::thread_loop::ThreadLoopBox::new(Some("gemacast-desktop-capture"), None)
-        .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
+    let mainloop =
+        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-desktop-capture"), None) }
+            .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
 
     let context = pw::context::ContextBox::new(&mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;

@@ -248,8 +248,9 @@ fn run_process_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
+    let mainloop =
+        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None) }
+            .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
     let context = pw::context::ContextBox::new(&mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
