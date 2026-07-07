@@ -79,7 +79,7 @@ jobs:
           sudo apt-get install -y libasound2-dev libgtk-3-dev libayatana-appindicator3-dev \
             libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev dbus-x11 clang \
             meson ninja-build pkg-config libudev-dev libdbus-1-dev python3-docutils \
-            pipewire pipewire-bin wireplumber
+            libglib2.0-dev liblua5.3-dev
           # Build PipeWire 1.2.7 from source for pipewire-rs 0.10 headers
           # (Ubuntu 22.04 apt only ships PipeWire 0.3.48 headers)
           PW_VERSION=1.2.7
@@ -96,6 +96,20 @@ jobs:
           sudo ldconfig
           cd ..
           rm -rf "pipewire-${PW_VERSION}"
+          # Build WirePlumber 0.5.15 from source (ABI-compatible with PipeWire 1.2.7)
+          # Ubuntu 22.04's apt WirePlumber 0.4.8 was built against PipeWire 0.3.48 ABI,
+          # causing infinite "impl_ext_end_proxy called from wrong context" spam when
+          # paired with our source-built PipeWire 1.2.7 daemon.
+          WP_VERSION=0.5.15
+          curl -sSL "https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/${WP_VERSION}/wireplumber-${WP_VERSION}.tar.gz" | tar xz
+          cd "wireplumber-${WP_VERSION}"
+          meson setup builddir --prefix=/usr \
+            -Dtests=disabled -Ddoc=disabled -Dintrospection=disabled -Dsystem-lua=true
+          ninja -C builddir
+          sudo ninja -C builddir install
+          sudo ldconfig
+          cd ..
+          rm -rf "wireplumber-${WP_VERSION}"
       - name: Setup Java
         if: matrix.target == 'android'
         uses: actions/setup-java@v4
@@ -135,15 +149,15 @@ jobs:
           export XDG_RUNTIME_DIR=/tmp/runtime-dir
           mkdir -p $XDG_RUNTIME_DIR
           chmod 0700 $XDG_RUNTIME_DIR
-          # WirePlumber is intentionally NOT started here.
-          # Ubuntu 22.04 ships WirePlumber 0.4.8, built against PipeWire 0.3.48's ABI.
-          # Our source-built PipeWire 1.2.7 overwrites the daemon at /usr, creating an
-          # ABI mismatch: the old WirePlumber's protocol-native module triggers an
-          # infinite "impl_ext_end_proxy called from wrong context" spam loop that
-          # drowns test output and causes a 30-minute timeout.
-          # PipeWire alone is sufficient for pipewire-rs tests in headless CI.
+          # Both PipeWire 1.2.7 and WirePlumber 0.5.15 are source-built against
+          # the same ABI. WirePlumber is required for session management (node
+          # routing, pw-cat sink connections) which some tests depend on.
+          # PipeWire stderr is suppressed to avoid harmless "XOpenDisplay() failed"
+          # warnings in headless CI.
           dbus-run-session -- sh -c '
             pipewire 2>/dev/null &
+            sleep 2
+            wireplumber 2>/dev/null &
             sleep 2
             cargo test --workspace
           '
