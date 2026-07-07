@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.9](https://github.com/apirJS/gemacast/compare/v0.5.8...v0.5.9) (2026-07-07)
+
+
+### Bug Fixes
+
+* compatibility ([#54](https://github.com/apirJS/gemacast/issues/54)) ([6a0fbe7](https://github.com/apirJS/gemacast/commit/6a0fbe7ab865a1199548a576d2e6704e87ed1e4e))
+
 ## [0.5.8](https://github.com/apirJS/gemacast/compare/v0.5.7...v0.5.8) (2026-07-06)
 
 
