@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.10](https://github.com/apirJS/gemacast/compare/v0.5.9...v0.5.10) (2026-07-07)
+
+
+### Bug Fixes
+
+* force trigger v0.6.0 ([6ef8859](https://github.com/apirJS/gemacast/commit/6ef8859bbbc7ca02f0ee5a109756ad9ffd19bd42))
+
 ## [0.5.9](https://github.com/apirJS/gemacast/compare/v0.5.8...v0.5.9) (2026-07-07)
 
 
