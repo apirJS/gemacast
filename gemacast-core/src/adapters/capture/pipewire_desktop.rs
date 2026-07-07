@@ -150,7 +150,7 @@ fn run_desktop_capture_loop(
     let is_running_err = is_running.clone();
 
     let _listener = stream
-        .add_local_listener::<()>()
+        .add_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Desktop] stream state changed {:?} -> {:?}",
@@ -225,6 +225,11 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        stream, _listener, core, context
+    ))));
+    let keep_objects_clone = keep_objects.clone();
+
     // Run the main loop — blocks until quit
     // We use a timer to periodically check is_running
     let is_running_timer = is_running.clone();
@@ -234,6 +239,7 @@ fn run_desktop_capture_loop(
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
+            let _ = keep_objects_clone.borrow_mut().take();
             ml.quit();
         }
     });
@@ -247,16 +253,6 @@ fn run_desktop_capture_loop(
     mainloop.run();
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
-
-    // Manually enter the loop context so PipeWire proxy destruction works correctly
-    // after the main loop has quit.
-    unsafe {
-        pw::sys::pw_loop_enter(mainloop.loop_().as_ptr() as *mut _);
-    }
-    drop(stream);
-    unsafe {
-        pw::sys::pw_loop_leave(mainloop.loop_().as_ptr() as *mut _);
-    }
 
     Ok(())
 }

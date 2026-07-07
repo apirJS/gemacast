@@ -190,12 +190,19 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        registry, _listener, core, context
+    ))));
+    let keep_objects_clone1 = keep_objects.clone();
+    let keep_objects_clone2 = keep_objects.clone();
+
     let _core_listener = core
-        .add_listener_local()
+        .add_listener()
         .done(move |_id, _seq| {
             if _seq == pending_sync
                 && let Some(ml) = mainloop_weak.upgrade()
             {
+                let _ = keep_objects_clone1.borrow_mut().take();
                 ml.quit();
             }
         })
@@ -206,6 +213,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let mainloop_weak2 = mainloop.downgrade();
     let timer = mainloop.loop_().add_timer(move |_| {
         if let Some(ml) = mainloop_weak2.upgrade() {
+            let _ = keep_objects_clone2.borrow_mut().take();
             ml.quit();
         }
     });
@@ -216,14 +224,6 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let _keep_timer = timer;
 
     mainloop.run();
-
-    unsafe {
-        pw::sys::pw_loop_enter(mainloop.loop_().as_ptr() as *mut _);
-    }
-    drop(registry);
-    unsafe {
-        pw::sys::pw_loop_leave(mainloop.loop_().as_ptr() as *mut _);
-    }
 
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
@@ -288,10 +288,9 @@ fn run_process_capture_loop(
     let is_running_ptr = is_running as *const Arc<AtomicBool>;
 
     let is_running_err = is_running.clone();
-    let mainloop_weak3 = mainloop.downgrade();
 
     let _listener = stream
-        .add_local_listener::<()>()
+        .add_listener::<()>()
         .state_changed(move |_, _, old_state, new_state| {
             tracing::debug!(
                 "[PipeWire Process] stream state changed {:?} -> {:?}",
@@ -303,14 +302,11 @@ fn run_process_capture_loop(
                     tracing::error!("[PipeWire Process] stream error: {}", err);
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    // Do not call ml.quit() here directly because we want the timer
-                    // to drop the keep_objects before quitting!
                 }
                 pw::stream::StreamState::Unconnected => {
                     tracing::warn!("[PipeWire Process] stream disconnected");
                     is_running_err.store(false, Ordering::Relaxed);
                     let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
-                    // Let the timer handle quitting and dropping.
                 }
                 _ => {}
             }
@@ -373,6 +369,11 @@ fn run_process_capture_loop(
         target_node_id
     );
 
+    let keep_objects = std::rc::Rc::new(std::cell::RefCell::new(Some((
+        stream, _listener, core, context
+    ))));
+    let keep_objects_clone = keep_objects.clone();
+
     // Periodic check to quit the loop when is_running goes false
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
@@ -380,6 +381,7 @@ fn run_process_capture_loop(
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
+            let _ = keep_objects_clone.borrow_mut().take();
             ml.quit();
         }
     });
@@ -387,18 +389,11 @@ fn run_process_capture_loop(
         Some(std::time::Duration::from_millis(100)),
         Some(std::time::Duration::from_millis(100)),
     );
+    let _keep_timer = _timer;
 
     mainloop.run();
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
-
-    unsafe {
-        pw::sys::pw_loop_enter(mainloop.loop_().as_ptr() as *mut _);
-    }
-    drop(stream);
-    unsafe {
-        pw::sys::pw_loop_leave(mainloop.loop_().as_ptr() as *mut _);
-    }
 
     Ok(())
 }
