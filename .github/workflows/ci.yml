@@ -130,14 +130,20 @@ jobs:
           RUSTFLAGS: ${{ startsWith(matrix.os, 'macos') && '-C link-arg=-Wl,-rpath,/usr/lib/swift' || '' }}
       - name: Cargo Test (Linux with PipeWire)
         if: matrix.target == 'pc' && contains(matrix.os, 'ubuntu')
+        timeout-minutes: 10
         run: |
           export XDG_RUNTIME_DIR=/tmp/runtime-dir
           mkdir -p $XDG_RUNTIME_DIR
           chmod 0700 $XDG_RUNTIME_DIR
+          # WirePlumber is intentionally NOT started here.
+          # Ubuntu 22.04 ships WirePlumber 0.4.8, built against PipeWire 0.3.48's ABI.
+          # Our source-built PipeWire 1.2.7 overwrites the daemon at /usr, creating an
+          # ABI mismatch: the old WirePlumber's protocol-native module triggers an
+          # infinite "impl_ext_end_proxy called from wrong context" spam loop that
+          # drowns test output and causes a 30-minute timeout.
+          # PipeWire alone is sufficient for pipewire-rs tests in headless CI.
           dbus-run-session -- sh -c '
-            pipewire &
-            sleep 2
-            wireplumber &
+            pipewire 2>/dev/null &
             sleep 2
             cargo test --workspace
           '

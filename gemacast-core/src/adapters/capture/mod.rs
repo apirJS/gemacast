@@ -40,6 +40,9 @@ pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 /// - No vtable pointer indirection
 /// - Compiler can inline `play()`/`pause()` through the match arms
 /// - Stack-allocated (no heap allocation per capture handle)
+///
+/// Not available on Android — Android is a receiver-only platform.
+#[cfg(not(target_os = "android"))]
 pub enum PlatformCaptureBackend {
     #[cfg(target_os = "windows")]
     WasapiDesktop(wasapi_desktop::WasapiDesktopCapture),
@@ -54,6 +57,7 @@ pub enum PlatformCaptureBackend {
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
+#[cfg(not(target_os = "android"))]
 impl CaptureBackend for PlatformCaptureBackend {
     fn play(&mut self) -> Result<(), GemaCastError> {
         match self {
@@ -107,8 +111,12 @@ impl CaptureBackend for PlatformCaptureBackend {
 ///
 /// On macOS, ScreenCaptureKit is disabled (untested). Desktop capture uses
 /// CPAL loopback. Per-process capture is unavailable.
+///
+/// Not available on Android — Android is a receiver-only platform.
+#[cfg(not(target_os = "android"))]
 pub struct DefaultCaptureFactory;
 
+#[cfg(not(target_os = "android"))]
 impl CaptureFactory for DefaultCaptureFactory {
     type Backend = PlatformCaptureBackend;
 
