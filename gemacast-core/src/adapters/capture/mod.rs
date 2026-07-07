@@ -5,6 +5,7 @@
 
 use crate::domain::error::GemaCastError;
 
+#[cfg(not(target_os = "android"))]
 pub mod cpal_loopback;
 #[cfg(target_os = "windows")]
 pub mod wasapi_common;
@@ -49,6 +50,7 @@ pub enum PlatformCaptureBackend {
     #[cfg(target_os = "linux")]
     PipeWireProcess(pipewire_process::PipeWireProcessCapture),
     // ScreenCaptureKit variants disabled — untested
+    #[cfg(not(target_os = "android"))]
     Cpal(cpal_loopback::CpalLoopbackCapture),
 }
 
@@ -63,6 +65,7 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.play(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.play(),
+            #[cfg(not(target_os = "android"))]
             Self::Cpal(b) => b.play(),
         }
     }
@@ -77,6 +80,7 @@ impl CaptureBackend for PlatformCaptureBackend {
             Self::PipeWireDesktop(b) => b.pause(),
             #[cfg(target_os = "linux")]
             Self::PipeWireProcess(b) => b.pause(),
+            #[cfg(not(target_os = "android"))]
             Self::Cpal(b) => b.pause(),
         }
     }
@@ -132,8 +136,16 @@ impl CaptureFactory for DefaultCaptureFactory {
         #[cfg(target_os = "macos")]
         return cpal_loopback::create_cpal_loopback();
 
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "android"
+        )))]
         return cpal_loopback::create_cpal_loopback();
+
+        #[cfg(target_os = "android")]
+        return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
     }
 
     #[allow(unused_variables)]

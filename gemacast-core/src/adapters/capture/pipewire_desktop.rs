@@ -122,13 +122,9 @@ fn run_desktop_capture_loop(
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
     let context_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(context)));
 
-    let core = context_rc
-        .borrow()
-        .as_ref()
-        .unwrap()
+    let core = context
         .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
-    let core_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(core)));
 
     // Create a capture stream that connects to the default audio sink's monitor.
     // MEDIA_CLASS "Audio/Sink" with MEDIA_CATEGORY "Capture" and AUTOCONNECT
@@ -141,12 +137,8 @@ fn run_desktop_capture_loop(
         *pw::keys::STREAM_CAPTURE_SINK => "true",
     };
 
-    let stream = Stream::new(
-        core_rc.borrow().as_ref().unwrap(),
-        "gemacast-desktop-capture",
-        props,
-    )
-    .map_err(|e| AudioError::PipeWireError(format!("Stream::new: {e}")))?;
+    let stream = Stream::new(&core, "gemacast-desktop-capture", props)
+        .map_err(|e| AudioError::PipeWireError(format!("Stream::new: {e}")))?;
 
     // We use raw pointers to pass data into the process callback.
     // This is safe because:
@@ -232,9 +224,6 @@ fn run_desktop_capture_loop(
         )
         .map_err(|e| AudioError::PipeWireError(format!("Stream connect: {e}")))?;
 
-    let stream_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(stream)));
-    let listener_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(_listener)));
-
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
     // Run the main loop — blocks until quit
@@ -242,20 +231,10 @@ fn run_desktop_capture_loop(
     let is_running_timer = is_running.clone();
     let mainloop_weak = mainloop.downgrade();
 
-    let context_clone = context_rc.clone();
-    let core_clone = core_rc.clone();
-    let stream_clone = stream_rc.clone();
-    let listener_clone = listener_rc.clone();
-
     let timer = mainloop.loop_().add_timer(move |_| {
         if !is_running_timer.load(Ordering::Relaxed)
             && let Some(ml) = mainloop_weak.upgrade()
         {
-            // Drop objects while still inside the main loop to avoid context warnings
-            listener_clone.borrow_mut().take();
-            stream_clone.borrow_mut().take();
-            core_clone.borrow_mut().take();
-            context_clone.borrow_mut().take();
             ml.quit();
         }
     });
