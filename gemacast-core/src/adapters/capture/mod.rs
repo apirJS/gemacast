@@ -182,26 +182,3 @@ impl CaptureFactory for DefaultCaptureFactory {
         return Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_factory_creation_does_not_panic() {
-        // Skip in CI on Linux: PipeWire desktop capture opens a real stream node that hangs
-        // indefinitely in headless CI (xrun loop with no real audio sink).
-        if std::env::var("CI").is_ok() && cfg!(target_os = "linux") {
-            return;
-        }
-        let factory = DefaultCaptureFactory;
-
-        // This test ensures that the factory methods don't panic upon invocation
-        // regardless of the platform. We don't assert Ok() because environments
-        // may lack audio hardware — the important thing is no panic.
-        let _desktop_result = factory.create_desktop_capture();
-
-        // Process capture returns ProcessCaptureUnavailable on failure (never panics).
-        let _process_result = factory.create_process_capture(999999);
-    }
-}

@@ -120,7 +120,6 @@ fn run_desktop_capture_loop(
 
     let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
-    let context_rc = std::rc::Rc::new(std::cell::RefCell::new(Some(context)));
 
     let core = context
         .connect_rc(None)

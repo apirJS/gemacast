@@ -36,13 +36,13 @@ jobs:
             archive_cmd: 7z a
             adb_files: "adb.exe AdbWinApi.dll AdbWinUsbApi.dll"
           - name: linux-amd64
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: gemacast-pc-x86_64-unknown-linux-gnu.tar.xz
             archive_cmd: tar -cJf
             adb_files: "adb"
           - name: linux-arm64
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: gemacast-pc-aarch64-unknown-linux-gnu.tar.xz
             archive_cmd: tar -cJf
@@ -401,12 +401,12 @@ jobs:
             artifact_name: binary-linux-amd64
             archive: gemacast-pc-x86_64-unknown-linux-gnu.tar.xz
             appimage_arch: x86_64
-            runs_on: ubuntu-22.04
+            runs_on: ubuntu-24.04
           - arch: arm64
             artifact_name: binary-linux-arm64
             archive: gemacast-pc-aarch64-unknown-linux-gnu.tar.xz
             appimage_arch: aarch64
-            runs_on: ubuntu-22.04-arm
+            runs_on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v7
@@ -1006,6 +1006,7 @@ jobs:
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install \
             "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "BUILD_TOOLS_VERSION=34.0.0" >> $GITHUB_ENV
 
