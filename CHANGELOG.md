@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.11](https://github.com/apirJS/gemacast/compare/v0.5.10...v0.5.11) (2026-07-07)
+
+
+### Bug Fixes
+
+* **ci:** force GitHub Actions to run the job on the native ubuntu-22.04-arm runner instead of ubuntu-22.04 ([7812a1b](https://github.com/apirJS/gemacast/commit/7812a1b0e340a7fa2e3cfb5ba51d93bae1c4da70))
+
 ## [0.5.10](https://github.com/apirJS/gemacast/compare/v0.5.9...v0.5.10) (2026-07-07)
 
 
