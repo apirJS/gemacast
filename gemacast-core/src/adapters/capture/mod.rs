@@ -32,10 +32,6 @@ pub mod sck_process;
 // will continue to work.
 pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 
-// ---------------------------------------------------------------------------
-// Platform capture backend (enum dispatch for static dispatch within factory)
-// ---------------------------------------------------------------------------
-
 /// Enum-dispatched capture backend that wraps all platform-specific backends.
 ///
 /// This is the associated type `Backend` for [`DefaultCaptureFactory`].
@@ -86,10 +82,6 @@ impl CaptureBackend for PlatformCaptureBackend {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Production capture factory
-// ---------------------------------------------------------------------------
-
 /// Production capture factory (WASAPI on Windows, PipeWire on Linux,
 /// CPAL as universal fallback).
 ///
@@ -99,11 +91,15 @@ impl CaptureBackend for PlatformCaptureBackend {
 /// On Windows, the factory first attempts the modern WASAPI Application Loopback
 /// API (which bypasses OEM Audio Processing Objects for clean audio). If WASAPI
 /// fails (e.g., on older Windows builds < 20348), it falls back to CPAL with
-/// a warning log.
+/// a warning log. Per-process WASAPI capture returns
+/// [`ProcessCaptureUnavailable`](crate::domain::error::AudioError::ProcessCaptureUnavailable)
+/// on failure since CPAL cannot do per-process capture.
 ///
 /// On Linux, the factory first attempts PipeWire. If PipeWire is unavailable
 /// (e.g., PulseAudio-only systems), it falls back to CPAL. Per-process capture
-/// requires PipeWire — it is not available via CPAL.
+/// requires PipeWire and returns
+/// [`ProcessCaptureUnavailable`](crate::domain::error::AudioError::ProcessCaptureUnavailable)
+/// if PipeWire is missing or if the capture fails at runtime.
 ///
 /// On macOS, ScreenCaptureKit is disabled (untested). Desktop capture uses
 /// CPAL loopback. Per-process capture is unavailable.
@@ -146,11 +142,21 @@ impl CaptureFactory for DefaultCaptureFactory {
         pid: u32,
     ) -> Result<CaptureHandle<Self::Backend>, GemaCastError> {
         #[cfg(target_os = "windows")]
-        return wasapi_loopback::create_wasapi_process_loopback(pid);
+        return wasapi_loopback::create_wasapi_process_loopback(pid).or_else(|e| {
+            tracing::warn!(
+                "WASAPI per-process capture failed ({e}), per-process capture unavailable"
+            );
+            Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
+        });
 
         #[cfg(target_os = "linux")]
         return if pipewire_common::is_pipewire_available() {
-            pipewire_process::create_pipewire_process_loopback(pid)
+            pipewire_process::create_pipewire_process_loopback(pid).or_else(|e| {
+                tracing::warn!(
+                    "PipeWire per-process capture failed ({e}), per-process capture unavailable"
+                );
+                Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
+            })
         } else {
             tracing::warn!("PipeWire not available — per-process audio capture requires PipeWire");
             Err(crate::domain::error::AudioError::ProcessCaptureUnavailable.into())
@@ -171,19 +177,14 @@ mod tests {
 
     #[test]
     fn test_factory_creation_does_not_panic() {
-        // Skip in CI to avoid macOS ScreenCaptureKit hanging on permissions dialog
-        if std::env::var("CI").is_ok() {
-            return;
-        }
         let factory = DefaultCaptureFactory;
 
         // This test ensures that the factory methods don't panic upon invocation
-        // regardless of the platform. We don't assert Ok() because we might be
-        // running in a CI environment without audio hardware or permissions.
+        // regardless of the platform. We don't assert Ok() because CI environments
+        // may lack audio hardware — the important thing is no panic.
         let _desktop_result = factory.create_desktop_capture();
 
-        // The process capture is expected to fail on non-Windows/macOS platforms
-        // if PipeWire isn't available, or succeed if it is. Either way, no panic.
+        // Process capture returns ProcessCaptureUnavailable on failure (never panics).
         let _process_result = factory.create_process_capture(999999);
     }
 }
