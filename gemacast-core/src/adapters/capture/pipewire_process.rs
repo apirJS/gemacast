@@ -185,44 +185,28 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
+    // Request a sync. The returned ID will be passed to the 'done' event
+    // when all previously issued commands (like the registry enumeration)
+    // have completed.
+    let mainloop_weak = mainloop.downgrade();
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let sync_done = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let sync_done_clone = sync_done.clone();
-
     let _core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync {
-                let (lock, cvar) = &*sync_done_clone;
-                let mut done = lock.lock().unwrap();
-                *done = true;
-                cvar.notify_one();
+            if _seq == pending_sync
+                && let Some(ml) = mainloop_weak.upgrade()
+            {
+                ml.quit();
             }
         })
         .register();
 
-    // Wait on the main thread for the sync to complete (or timeout)
-    let (lock, cvar) = &*sync_done;
-    let mut done = lock.lock().unwrap();
-    while !*done {
-        let result = cvar
-            .wait_timeout(done, std::time::Duration::from_secs(2))
-            .unwrap();
-        done = result.0;
-        if result.1.timed_out() {
-            tracing::warn!("[PipeWire Process] Node discovery sync timed out");
-            break;
-        }
-    }
-
-    // Drop PipeWire objects in reverse creation order
-    drop(_core_listener);
-    drop(registry);
-    drop(core);
-    drop(context);
+    // Run the main loop. It will block until the `done` event fires and
+    // calls quit(), which takes less than 5ms in practice.
+    mainloop.run();
 
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
@@ -253,6 +237,10 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
 }
 
 /// Internal: runs the PipeWire capture loop for a specific node.
+///
+/// Uses [`ThreadLoopBox`] so PipeWire's event loop runs on a background
+/// thread, and all proxy operations happen under the thread loop's lock
+/// (required by PipeWire's context-safety model).
 fn run_process_capture_loop(
     target_node_id: String,
     producer: &mut ringbuf::HeapProd<f32>,
@@ -260,14 +248,19 @@ fn run_process_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None)
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(&mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop so PipeWire processes events in the background.
+    // We must hold the lock while creating proxies and connecting the stream.
+    mainloop.start();
+    let loop_guard = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream targeting the specific application node.
@@ -368,20 +361,25 @@ fn run_process_capture_loop(
         target_node_id
     );
 
-    // Block the current thread until is_running goes false.
-    // We poll with a short sleep because MainLoopRc::run() would block
-    // indefinitely and we need to check the is_running flag to exit.
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
+
+    // Block the current thread until is_running goes false
     while is_running.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
 
-    // Drop PipeWire objects in reverse creation order
+    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
+    drop(loop_guard);
+
+    mainloop.stop();
 
     Ok(())
 }
