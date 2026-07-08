@@ -153,7 +153,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let reg_listener = registry
+    let _reg_listener = registry
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
@@ -364,6 +364,7 @@ fn run_process_capture_loop(
             Some(std::time::Duration::from_millis(100)),
             Some(std::time::Duration::from_millis(100)),
         )
+        .into_result()
         .map_err(|e| AudioError::PipeWireError(format!("Failed to update timer: {e}")))?;
 
     mainloop.run();

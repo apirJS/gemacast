@@ -145,21 +145,21 @@ fn linux_list_processes() -> Vec<ProcessInfo> {
 #[cfg(target_os = "linux")]
 fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::error::GemaCastError>
 {
-    use crate::domain::error::{AudioError, ProcessListerError};
+    use crate::domain::error::AudioError;
     use pipewire as pw;
     use std::collections::HashMap;
 
     pw::init();
 
     let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| ProcessListerError::IoError(format!("MainLoop: {e}").into()))?;
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
 
     let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| ProcessListerError::IoError(format!("Context: {e}").into()))?;
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
     let core = context
         .connect_rc(None)
-        .map_err(|e| ProcessListerError::IoError(format!("Core: {e}").into()))?;
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
         .get_registry()
@@ -231,7 +231,8 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     });
     _timer
         .update_timer(Some(std::time::Duration::from_millis(150)), None)
-        .map_err(|e| ProcessListerError::IoError(format!("Timer update failed: {e}").into()))?;
+        .into_result()
+        .map_err(|e| AudioError::PipeWireError(format!("Timer update failed: {e}")))?;
 
     // Run the loop. It blocks until the timer triggers `quit()`.
     mainloop.run();

@@ -244,6 +244,7 @@ fn run_desktop_capture_loop(
             Some(std::time::Duration::from_millis(100)),
             Some(std::time::Duration::from_millis(100)),
         )
+        .into_result()
         .map_err(|e| AudioError::PipeWireError(format!("Failed to update timer: {e}")))?;
 
     // Block the current thread until `is_running` goes false and the timer calls `quit()`
