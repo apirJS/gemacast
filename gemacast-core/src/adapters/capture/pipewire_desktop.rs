@@ -110,9 +110,9 @@ pub fn create_pipewire_desktop_loopback()
 /// Creates a stream connected to the default audio sink's monitor,
 /// capturing all system audio.
 ///
-/// Uses [`ThreadLoopBox`] so PipeWire's event loop runs on a background
-/// thread, and all proxy operations happen under the thread loop's lock
-/// (required by PipeWire's context-safety model).
+/// Uses [`MainLoopRc`] to run PipeWire events on the current thread. A timer
+/// periodically checks the `is_running` flag to cleanly quit the loop, allowing
+/// all proxies to drop naturally on the correct thread without warnings.
 fn run_desktop_capture_loop(
     producer: &mut ringbuf::HeapProd<f32>,
     notify: &Arc<tokio::sync::Notify>,
@@ -121,20 +121,14 @@ fn run_desktop_capture_loop(
 ) -> Result<(), GemaCastError> {
     pw::init();
 
-    let mainloop =
-        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-desktop-capture"), None) }
-            .map_err(|e| AudioError::PipeWireError(format!("Failed to create thread loop: {e}")))?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
 
-    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
-        .map_err(|e| AudioError::PipeWireError(format!("Context: {e}")))?;
-
-    // Start the thread loop so PipeWire processes events in the background.
-    // We must hold the lock while creating proxies and connecting the stream.
-    mainloop.start();
-    let loop_guard = mainloop.lock();
+    let context = pw::context::ContextRc::new(&mainloop, None)
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream that connects to the default audio sink's monitor.
@@ -237,29 +231,28 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture stream connected, entering main loop");
 
-    // Release the lock so the PipeWire thread can process events
-    drop(loop_guard);
+    let timer_mainloop = mainloop.clone();
+    let is_running_timer = is_running.clone();
+    let _timer = mainloop.loop_().add_timer(move |_| {
+        if !is_running_timer.load(Ordering::Relaxed) {
+            timer_mainloop.quit();
+        }
+    });
 
-    // Block the current thread until is_running goes false
-    while is_running.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    _timer
+        .update_timer(
+            Some(std::time::Duration::from_millis(100)),
+            Some(std::time::Duration::from_millis(100)),
+        )
+        .map_err(|e| AudioError::PipeWireError(format!("Failed to update timer: {e}")))?;
+
+    // Block the current thread until `is_running` goes false and the timer calls `quit()`
+    mainloop.run();
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // 1. Lock the loop to safely destroy proxies (stream, core)
-    let loop_guard = mainloop.lock();
-    drop(_listener);
-    drop(stream);
-    drop(core);
-    // 2. Unlock so the background thread can process the disconnect events
-    drop(loop_guard);
-
-    // 3. Stop the background thread (joins it)
-    mainloop.stop();
-
-    // 4. Destroy the context now that the thread is dead
-    drop(context);
+    // All resources (stream, core, context, mainloop) will naturally drop in
+    // reverse order here, on the exact thread they were created on.
 
     Ok(())
 }
