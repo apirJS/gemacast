@@ -302,17 +302,20 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(tnodes);
     drop(cmap);
 
-    // Stop the loop first — joins the internal thread so no async events fire.
-    mainloop.stop();
-
-    // Lock the stopped loop so pw_core_check_context passes, then drop proxies.
+    // 1. Lock the loop to safely destroy proxies
     let loop_guard = mainloop.lock();
     drop(core_listener);
     drop(reg_listener);
     drop(registry);
     drop(core);
-    drop(context);
+    // 2. Unlock so the background thread can process the disconnect events
     drop(loop_guard);
+
+    // 3. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 4. Destroy the context now that the thread is dead
+    drop(context);
 
     Ok(processes)
 }

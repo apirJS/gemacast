@@ -113,11 +113,9 @@ pub fn create_pipewire_process_loopback(
 /// Connects to PipeWire, enumerates all nodes via the Registry, and
 /// matches the `application.process.id` property against the target PID.
 ///
-/// Uses [`ThreadLoopBox`] so that all proxy objects (registry, core, listeners)
-/// are created under the thread loop's lock. On teardown the loop is stopped
-/// first (joining the internal thread), then proxies are dropped under the
-/// re-acquired lock — satisfying PipeWire's context check without any async
-/// proxy-finalisation events.
+/// Uses [`ThreadLoopBox`] to safely manage background PipeWire events. On
+/// teardown, proxies are dropped under the lock, the loop is unlocked and
+/// stopped, and finally the context is destroyed — matching PipeWire C API rules.
 ///
 /// # Returns
 ///
@@ -246,17 +244,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     drop(tnodes);
     drop(cmap);
 
-    // Stop the loop first — joins the internal thread so no async events fire.
-    mainloop.stop();
-
-    // Lock the stopped loop so pw_core_check_context passes, then drop proxies.
+    // 1. Lock the loop to safely destroy proxies
     let loop_guard = mainloop.lock();
     drop(core_listener);
     drop(reg_listener);
     drop(registry);
     drop(core);
-    drop(context);
+    // 2. Unlock so the background thread can process the disconnect events
     drop(loop_guard);
+
+    // 3. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 4. Destroy the context now that the thread is dead
+    drop(context);
 
     found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))
 }
@@ -397,16 +398,19 @@ fn run_process_capture_loop(
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
 
-    // Stop the loop first — joins the internal thread so no async events fire.
-    mainloop.stop();
-
-    // Lock the stopped loop so pw_core_check_context passes, then drop proxies.
+    // 1. Lock the loop to safely destroy proxies
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
-    drop(context);
+    // 2. Unlock so the background thread can process the disconnect events
     drop(loop_guard);
+
+    // 3. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 4. Destroy the context now that the thread is dead
+    drop(context);
 
     Ok(())
 }

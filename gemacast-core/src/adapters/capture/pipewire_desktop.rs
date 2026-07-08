@@ -247,21 +247,19 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // Stop the loop first — this joins the internal PipeWire thread so no
-    // more async event processing can happen after this point.
-    mainloop.stop();
-
-    // Re-acquire the lock on the stopped loop.  The lock satisfies
-    // PipeWire's `pw_core_check_context` (which verifies the caller holds
-    // the loop lock) and because the internal thread is already joined,
-    // no deferred proxy-finalisation events can fire between unlock and
-    // the next statement — eliminating `impl_ext_end_proxy` warnings.
+    // 1. Lock the loop to safely destroy proxies (stream, core)
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
-    drop(context);
+    // 2. Unlock so the background thread can process the disconnect events
     drop(loop_guard);
+
+    // 3. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 4. Destroy the context now that the thread is dead
+    drop(context);
 
     Ok(())
 }
