@@ -113,21 +113,29 @@ pub fn create_pipewire_process_loopback(
 /// Connects to PipeWire, enumerates all nodes via the Registry, and
 /// matches the `application.process.id` property against the target PID.
 ///
+/// Uses [`ThreadLoopBox`] to safely manage background PipeWire events. On
+/// teardown, proxies are dropped under the lock, the loop is unlocked and
+/// stopped, and finally the context is destroyed — matching PipeWire C API rules.
+///
 /// # Returns
 ///
-/// The PipeWire node `object.serial` or ID as a string suitable for
-/// use with the `TARGET_OBJECT` stream property.
-fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
+/// The PipeWire node `object.serial` or ID as a u32 suitable for
+/// use with the `TARGET_OBJECT` stream property or `stream.connect()`.
+fn discover_node_for_pid(pid: u32) -> Result<u32, GemaCastError> {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-discover"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -149,20 +157,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
-            if global.type_ == pw::types::ObjectType::Client {
-                if let Some(props) = global.props {
-                    let pid_str = props
-                        .get("application.process.id")
-                        .or_else(|| props.get("pipewire.sec.pid"));
-                    if let Some(pid_s) = pid_str
-                        && let Ok(app_pid) = pid_s.parse::<u32>()
-                    {
-                        let mut cmap = client_map_clone.lock().unwrap();
-                        cmap.insert(global.id, app_pid);
-                    }
+            if global.type_ == pw::types::ObjectType::Client
+                && let Some(props) = global.props
+            {
+                let pid_str = props
+                    .get("application.process.id")
+                    .or_else(|| props.get("pipewire.sec.pid"));
+                if let Some(pid_s) = pid_str
+                    && let Ok(app_pid) = pid_s.parse::<u32>()
+                {
+                    let mut cmap = client_map_clone.lock().unwrap();
+                    cmap.insert(global.id, app_pid);
                 }
             } else if global.type_ == pw::types::ObjectType::Node
                 && let Some(props) = global.props
@@ -185,29 +193,31 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
-    // Request a sync. The returned ID will be passed to the 'done' event
-    // when all previously issued commands (like the registry enumeration)
-    // have completed.
-    let mainloop_weak = mainloop.downgrade();
+    // Request a sync. When the 'done' event fires with our seq ID,
+    // all registry globals have been delivered.
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let _core_listener = core
+    let sync_done = Arc::new(AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
+    let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync
-                && let Some(ml) = mainloop_weak.upgrade()
-            {
-                ml.quit();
+            if _seq == pending_sync {
+                sync_done_cb.store(true, Ordering::Relaxed);
             }
         })
         .register();
 
-    // Run the main loop. It will block until the `done` event fires and
-    // calls quit(), which takes less than 5ms in practice.
-    mainloop.run();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
+    // Process results (no lock needed — just reading our Arc<Mutex> data).
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut found_node_id = None;
@@ -225,15 +235,29 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
             };
 
             if node_pid == pid {
-                found_node_id = Some(node.id.to_string());
+                found_node_id = Some(node.id);
                 break;
             }
         }
     }
 
-    let result = found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
+    drop(tnodes);
+    drop(cmap);
 
-    Ok(result)
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup messages via impl_ext_end_proxy, which
+    // calls pw_loop_check(). This passes only when the loop thread is alive
+    // AND the caller holds the lock.
+    let loop_guard = mainloop.lock();
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+    mainloop.stop();
+
+    found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))
 }
 
 /// Internal: runs the PipeWire capture loop for a specific node.
@@ -242,7 +266,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
 /// thread, and all proxy operations happen under the thread loop's lock
 /// (required by PipeWire's context-safety model).
 fn run_process_capture_loop(
-    target_node_id: String,
+    target_node_id: u32,
     producer: &mut ringbuf::HeapProd<f32>,
     notify: &Arc<tokio::sync::Notify>,
     is_running: &Arc<AtomicBool>,
@@ -270,7 +294,6 @@ fn run_process_capture_loop(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::NODE_NAME => "gemacast-process-capture",
-        "target.object" => target_node_id.as_str(),
     };
 
     let stream = Stream::new(&core, "gemacast-process-capture", props)
@@ -313,27 +336,26 @@ fn run_process_capture_loop(
                 return;
             }
 
-            if let Some(mut buffer) = stream.dequeue_buffer() {
-                let datas = buffer.datas_mut();
-                if let Some(data) = datas.first_mut() {
-                    let chunk = data.chunk();
-                    let offset = chunk.offset() as usize;
-                    let size = chunk.size() as usize;
+            if let Some(mut buffer) = stream.dequeue_buffer()
+                && let Some(data) = buffer.datas_mut().first_mut()
+            {
+                let chunk = data.chunk();
+                let offset = chunk.offset() as usize;
+                let size = chunk.size() as usize;
 
-                    if let Some(slice) = data.data()
-                        && offset + size <= slice.len()
-                    {
-                        let audio_bytes = &slice[offset..offset + size];
-                        let n_samples = size / std::mem::size_of::<f32>();
+                if let Some(slice) = data.data()
+                    && offset + size <= slice.len()
+                {
+                    let audio_bytes = &slice[offset..offset + size];
+                    let n_samples = size / std::mem::size_of::<f32>();
 
-                        unsafe {
-                            push_pw_audio_to_ringbuf(
-                                audio_bytes.as_ptr() as *const f32,
-                                n_samples,
-                                producer,
-                                notify,
-                            );
-                        }
+                    unsafe {
+                        push_pw_audio_to_ringbuf(
+                            audio_bytes.as_ptr() as *const f32,
+                            n_samples,
+                            producer,
+                            notify,
+                        );
                     }
                 }
             }
@@ -346,12 +368,13 @@ fn run_process_capture_loop(
     let mut params = [pw::spa::pod::Pod::from_bytes(&values)
         .ok_or_else(|| AudioError::PipeWireError("Invalid pod bytes".to_string()))?];
 
-    // We must use AUTOCONNECT even with TARGET_OBJECT, otherwise WirePlumber
-    // won't attempt to connect our capture stream to the targeted node.
+    // We must use AUTOCONNECT, and we pass `Some(target_node_id)` to directly link
+    // to the node, bypassing WirePlumber's policy which might refuse to link
+    // a Capture stream to a Playback stream.
     stream
         .connect(
             pw::spa::utils::Direction::Input,
-            None,
+            Some(target_node_id),
             StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
             &mut params,
         )
@@ -372,14 +395,16 @@ fn run_process_capture_loop(
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
 
-    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup messages via impl_ext_end_proxy, which
+    // calls pw_loop_check(). This passes only when the loop thread is alive
+    // AND the caller holds the lock.
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
     drop(loop_guard);
-
     mainloop.stop();
 
     Ok(())
@@ -389,20 +414,22 @@ fn run_process_capture_loop(
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
-    /// Generate a silent WAV file (48 kHz, stereo, s16) of the given duration in
+    /// Generate a 440 Hz Sine WAV file (48 kHz, stereo, s16) of the given duration in
     /// seconds and return its path. The file is placed in std::env::temp_dir().
-    fn create_silent_wav(duration_secs: u32) -> String {
+    fn create_sine_wav(duration_secs: u32) -> String {
         let sample_rate: u32 = 48000;
         let channels: u16 = 2;
         let bits_per_sample: u16 = 16;
         let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
         let block_align = channels * bits_per_sample / 8;
-        let data_size = byte_rate * duration_secs;
+        let total_samples = sample_rate * duration_secs;
+        let data_size = total_samples * channels as u32 * bits_per_sample as u32 / 8;
         let file_size = 36 + data_size; // RIFF chunk size = file size - 8
 
         let path = std::env::temp_dir().join(format!(
-            "gemacast_ci_silence_{}.wav",
+            "gemacast_ci_sine_{}.wav",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -427,24 +454,31 @@ mod tests {
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&data_size.to_le_bytes());
 
-        // Write header + zero-filled audio data
-        use std::io::Write;
-        let mut file = std::fs::File::create(&path).expect("failed to create WAV file");
-        file.write_all(&buf).expect("failed to write WAV header");
-        // Write silence in 64 KB chunks to avoid huge single allocation
-        let chunk = vec![0u8; 65536];
-        let mut remaining = data_size as usize;
-        while remaining > 0 {
-            let n = remaining.min(chunk.len());
-            file.write_all(&chunk[..n])
-                .expect("failed to write WAV data");
-            remaining -= n;
+        // Write header + audio data
+        use std::io::{BufWriter, Write};
+        let file = std::fs::File::create(&path).expect("failed to create WAV file");
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&buf).expect("failed to write WAV header");
+
+        let freq = 440.0;
+        for i in 0..total_samples {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (t * freq * 2.0 * std::f32::consts::PI).sin();
+            let pcm = (sample * 32767.0) as i16;
+            let pcm_bytes = pcm.to_le_bytes();
+            for _ in 0..channels {
+                writer
+                    .write_all(&pcm_bytes)
+                    .expect("failed to write WAV data");
+            }
         }
+        writer.flush().expect("failed to flush WAV file");
 
         path.to_string_lossy().into_owned()
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_process_capture_not_found() {
         if is_pipewire_available() {
             // PID 999999 is guaranteed not to have a PipeWire node
@@ -465,6 +499,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
@@ -481,7 +516,7 @@ mod tests {
             // To test end-to-end process capture, we spawn a dummy audio process playing silence.
             // We generate a proper WAV file because the CI's pw-cat version uses libsndfile
             // which requires a valid container header (raw /dev/zero or stdin won't work).
-            let wav_path = create_silent_wav(30);
+            let wav_path = create_sine_wav(120);
             let mut child = match std::process::Command::new("pw-cat")
                 .arg("-p")
                 .arg(&wav_path)
@@ -521,9 +556,45 @@ mod tests {
                 }
 
                 match create_pipewire_process_loopback(pid) {
-                    Ok(handle) => {
-                        handle_opt = Some(handle);
-                        break;
+                    Ok(mut handle) => {
+                        let mut has_audio = false;
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(3);
+                        let mut scratch = vec![0.0f32; 4096];
+                        let mut total_samples = 0;
+                        let mut max_abs = 0.0f32;
+                        use ringbuf::traits::*;
+                        while std::time::Instant::now() < deadline {
+                            let n = handle.consumer.pop_slice(&mut scratch);
+                            if n > 0 {
+                                total_samples += n;
+                                for &sample in &scratch[..n] {
+                                    if sample.abs() > max_abs {
+                                        max_abs = sample.abs();
+                                    }
+                                }
+                                if max_abs > 0.01 {
+                                    has_audio = true;
+                                    break;
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                        println!(
+                            "DEBUG: pid={}, total_samples={}, max_abs={}",
+                            pid, total_samples, max_abs
+                        );
+                        if has_audio {
+                            handle_opt = Some(handle);
+                            break;
+                        } else {
+                            last_err = Some(GemaCastError::Audio(
+                                AudioError::PipeWireConnectionFailed(format!(
+                                    "Failed to receive audio samples within 3s. total={}, max_abs={}",
+                                    total_samples, max_abs
+                                )),
+                            ));
+                        }
                     }
                     Err(e) => {
                         last_err = Some(e);
@@ -555,6 +626,7 @@ mod tests {
     /// 4. Asserts both captures succeed and don't interfere
     /// 5. Drops both handles cleanly
     #[test]
+    #[serial(pipewire)]
     fn test_multi_process_capture() {
         if !is_pipewire_available() {
             println!("PipeWire is not available, skipping multi-process capture test.");
@@ -574,7 +646,7 @@ mod tests {
 
         // Helper to spawn a pw-cat process playing silence from a WAV file
         let spawn_pw_cat = || -> Option<(std::process::Child, String)> {
-            let wav_path = create_silent_wav(30);
+            let wav_path = create_sine_wav(120);
             match std::process::Command::new("pw-cat")
                 .arg("-p")
                 .arg(&wav_path)
@@ -647,14 +719,43 @@ mod tests {
             }
 
             if handle1_opt.is_none()
-                && let Ok(h) = create_pipewire_process_loopback(pid1)
+                && let Ok(mut h) = create_pipewire_process_loopback(pid1)
             {
-                handle1_opt = Some(h);
+                let mut has_audio = false;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let mut scratch = vec![0.0f32; 4096];
+                use ringbuf::traits::*;
+                while std::time::Instant::now() < deadline {
+                    let n = h.consumer.pop_slice(&mut scratch);
+                    if scratch[..n].iter().any(|&sample| sample.abs() > 0.01) {
+                        has_audio = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if has_audio {
+                    handle1_opt = Some(h);
+                }
             }
+
             if handle2_opt.is_none()
-                && let Ok(h) = create_pipewire_process_loopback(pid2)
+                && let Ok(mut h) = create_pipewire_process_loopback(pid2)
             {
-                handle2_opt = Some(h);
+                let mut has_audio = false;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let mut scratch = vec![0.0f32; 4096];
+                use ringbuf::traits::*;
+                while std::time::Instant::now() < deadline {
+                    let n = h.consumer.pop_slice(&mut scratch);
+                    if scratch[..n].iter().any(|&sample| sample.abs() > 0.01) {
+                        has_audio = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if has_audio {
+                    handle2_opt = Some(h);
+                }
             }
 
             if handle1_opt.is_some() && handle2_opt.is_some() {

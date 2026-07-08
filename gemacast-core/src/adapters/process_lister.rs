@@ -138,6 +138,10 @@ fn linux_list_processes() -> Vec<ProcessInfo> {
 /// Connects to PipeWire, iterates all global Node objects, and filters
 /// for those with `media.class` containing `"Stream/Output/Audio"` (application
 /// audio playback streams). Deduplicates by process name.
+///
+/// Uses [`ThreadLoopBox`] so that all proxy objects are created and destroyed
+/// under the thread loop's lock, satisfying PipeWire's context-safety model
+/// and avoiding `impl_ext_end_proxy` warnings.
 #[cfg(target_os = "linux")]
 fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::error::GemaCastError>
 {
@@ -147,14 +151,18 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-enumerate"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -180,7 +188,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
@@ -224,29 +232,31 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         })
         .register();
 
-    // Request a sync. The returned ID will be passed to the 'done' event
-    // when all previously issued commands (like the registry enumeration)
-    // have completed.
-    let mainloop_weak = mainloop.downgrade();
+    // Request a sync. When the 'done' event fires with our seq ID,
+    // all registry globals have been delivered.
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let _core_listener = core
+    let sync_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
+    let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync
-                && let Some(ml) = mainloop_weak.upgrade()
-            {
-                ml.quit();
+            if _seq == pending_sync {
+                sync_done_cb.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         })
         .register();
 
-    // Run the main loop. It will block until the `done` event fires,
-    // which takes less than 5ms rather than a hardcoded 1 second.
-    mainloop.run();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
+    // Process results (no lock needed — just reading our Arc<Mutex> data).
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut map = found_nodes.lock().unwrap();
@@ -287,6 +297,23 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     // Sort alphabetically (all have audio sessions)
     processes.sort_by_key(|a| a.name.to_lowercase());
+
+    drop(map);
+    drop(tnodes);
+    drop(cmap);
+
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup messages via impl_ext_end_proxy, which
+    // calls pw_loop_check(). This passes only when the loop thread is alive
+    // AND the caller holds the lock.
+    let loop_guard = mainloop.lock();
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+    mainloop.stop();
 
     Ok(processes)
 }
@@ -358,6 +385,7 @@ fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
     /// Generate a silent WAV file (48 kHz, stereo, s16) and return its path.
     fn create_silent_wav(duration_secs: u32) -> String {
@@ -407,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI

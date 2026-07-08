@@ -193,27 +193,26 @@ fn run_desktop_capture_loop(
                 return;
             }
 
-            if let Some(mut buffer) = stream.dequeue_buffer() {
-                let datas = buffer.datas_mut();
-                if let Some(data) = datas.first_mut() {
-                    let chunk = data.chunk();
-                    let offset = chunk.offset() as usize;
-                    let size = chunk.size() as usize;
+            if let Some(mut buffer) = stream.dequeue_buffer()
+                && let Some(data) = buffer.datas_mut().first_mut()
+            {
+                let chunk = data.chunk();
+                let offset = chunk.offset() as usize;
+                let size = chunk.size() as usize;
 
-                    if let Some(slice) = data.data()
-                        && offset + size <= slice.len()
-                    {
-                        let audio_bytes = &slice[offset..offset + size];
-                        let n_samples = size / std::mem::size_of::<f32>();
+                if let Some(slice) = data.data()
+                    && offset + size <= slice.len()
+                {
+                    let audio_bytes = &slice[offset..offset + size];
+                    let n_samples = size / std::mem::size_of::<f32>();
 
-                        unsafe {
-                            push_pw_audio_to_ringbuf(
-                                audio_bytes.as_ptr() as *const f32,
-                                n_samples,
-                                producer,
-                                notify,
-                            );
-                        }
+                    unsafe {
+                        push_pw_audio_to_ringbuf(
+                            audio_bytes.as_ptr() as *const f32,
+                            n_samples,
+                            producer,
+                            notify,
+                        );
                     }
                 }
             }
@@ -247,14 +246,20 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup protocol messages via impl_ext_end_proxy,
+    // which calls pw_loop_check(). This check passes only when the loop thread
+    // is still alive AND the caller holds the lock. So we must:
+    //   1. Lock (thread still running → pw_loop_check passes)
+    //   2. Drop proxies under lock (cleanup messages sent correctly)
+    //   3. Unlock
+    //   4. Stop (joins the now-idle background thread)
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
     drop(loop_guard);
-
     mainloop.stop();
 
     Ok(())
@@ -264,19 +269,21 @@ fn run_desktop_capture_loop(
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
-    /// Generate a silent WAV file (48 kHz, stereo, s16) and return its path.
-    fn create_silent_wav(duration_secs: u32) -> String {
+    /// Generate a 440 Hz Sine WAV file (48 kHz, stereo, s16) and return its path.
+    fn create_sine_wav(duration_secs: u32) -> String {
         let sample_rate: u32 = 48000;
         let channels: u16 = 2;
         let bits_per_sample: u16 = 16;
         let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
         let block_align = channels * bits_per_sample / 8;
-        let data_size = byte_rate * duration_secs;
+        let total_samples = sample_rate * duration_secs;
+        let data_size = total_samples * channels as u32 * bits_per_sample as u32 / 8;
         let file_size = 36 + data_size;
 
         let path = std::env::temp_dir().join(format!(
-            "gemacast_ci_silence_{}.wav",
+            "gemacast_ci_sine_{}.wav",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -298,21 +305,29 @@ mod tests {
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&data_size.to_le_bytes());
 
-        use std::io::Write;
-        let mut file = std::fs::File::create(&path).expect("failed to create WAV file");
-        file.write_all(&buf).expect("failed to write WAV header");
-        let chunk = vec![0u8; 65536];
-        let mut remaining = data_size as usize;
-        while remaining > 0 {
-            let n = remaining.min(chunk.len());
-            file.write_all(&chunk[..n])
-                .expect("failed to write WAV data");
-            remaining -= n;
+        use std::io::{BufWriter, Write};
+        let file = std::fs::File::create(&path).expect("failed to create WAV file");
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&buf).expect("failed to write WAV header");
+
+        let freq = 440.0;
+        for i in 0..total_samples {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (t * freq * 2.0 * std::f32::consts::PI).sin();
+            let pcm = (sample * 32767.0) as i16;
+            let pcm_bytes = pcm.to_le_bytes();
+            for _ in 0..channels {
+                writer
+                    .write_all(&pcm_bytes)
+                    .expect("failed to write WAV data");
+            }
         }
+        writer.flush().expect("failed to flush WAV file");
         path.to_string_lossy().into_owned()
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_create_desktop_loopback() {
         if is_pipewire_available() {
             let result = create_pipewire_desktop_loopback();
@@ -340,6 +355,7 @@ mod tests {
     /// 4. Waits for samples to appear in the ring buffer consumer
     /// 5. Asserts that we received > 0 samples
     #[test]
+    #[serial(pipewire)]
     fn test_desktop_capture_receives_audio() {
         if !is_pipewire_available() {
             println!("PipeWire is not available, skipping desktop capture receives audio test.");
@@ -357,9 +373,9 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // Spawn pw-cat to play silence through the sink, generating audio traffic.
+        // Spawn pw-cat to play the sine wave through the sink, generating audio traffic.
         // Use a proper WAV file because CI's pw-cat uses libsndfile which needs a container header.
-        let wav_path = create_silent_wav(30);
+        let wav_path = create_sine_wav(30);
         let mut child = match std::process::Command::new("pw-cat")
             .arg("-p")
             .arg(&wav_path)
@@ -417,11 +433,13 @@ mod tests {
         let mut scratch = vec![0.0f32; 4096];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
 
+        let mut has_audio = false;
         use ringbuf::traits::*;
         while std::time::Instant::now() < deadline {
             let n = consumer.pop_slice(&mut scratch);
             total_samples += n;
-            if total_samples > 0 {
+            if scratch[..n].iter().any(|&sample| sample.abs() > 0.01) {
+                has_audio = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -429,7 +447,11 @@ mod tests {
 
         assert!(
             total_samples > 0,
-            "Desktop capture did not receive any audio samples within the timeout"
+            "Desktop capture did not receive any samples within the timeout"
+        );
+        assert!(
+            has_audio,
+            "Desktop capture received samples, but they were all silence (zeros)!"
         );
 
         // Clean up: drop the capture backend first, then kill pw-cat

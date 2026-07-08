@@ -31,14 +31,14 @@ pub const PW_RING_BUFFER_SIZE: usize = OPUS_FRAME_SAMPLES * 64;
 /// This creates the pod parameter that tells PipeWire what audio format
 /// we want to receive in our capture stream's `process` callback.
 pub fn build_audio_params() -> Vec<u8> {
-    let mut params_buf = vec![0u8; 1024];
     let mut format_value = spa::param::audio::AudioInfoRaw::new();
     format_value.set_format(spa::param::audio::AudioFormat::F32LE);
     format_value.set_rate(OPUS_SAMPLE_RATE);
     format_value.set_channels(OPUS_CHANNELS as u32);
 
+    let mut cursor = std::io::Cursor::new(Vec::new());
     spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(&mut params_buf),
+        &mut cursor,
         &spa::pod::Value::Object(spa::pod::Object {
             type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
             id: spa::param::ParamType::EnumFormat.as_raw(),
@@ -47,7 +47,7 @@ pub fn build_audio_params() -> Vec<u8> {
     )
     .expect("Failed to serialize PipeWire audio params");
 
-    params_buf
+    cursor.into_inner()
 }
 
 /// Convenience struct for the resources produced by a PipeWire capture stream setup.
@@ -142,21 +142,23 @@ pub fn is_pipewire_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial(pipewire)]
     fn test_pipewire_initialization() {
         // This test acts as a smoke test in our CI pipeline.
         // In the headless CI environment, dbus-run-session sets up DBus,
         // and the PipeWire daemon runs in the background.
         // pw::init() shouldn't panic if PipeWire is properly available.
         if is_pipewire_available() {
-            // Further check: can we create a main loop and context?
-            let mainloop_res = pw::main_loop::MainLoopRc::new(None);
-            assert!(mainloop_res.is_ok(), "Failed to create PipeWire MainLoop");
-
-            let mainloop = mainloop_res.unwrap();
-            let context = pw::context::ContextRc::new(&mainloop, None);
-            assert!(context.is_ok(), "Failed to create PipeWire Context");
+            // Verify we can create a thread loop (lightweight, no proxies).
+            // We deliberately avoid creating a ContextBox or Core here
+            // because dropping those on a non-started loop triggers
+            // PipeWire's "impl_ext_end_proxy" context check warnings.
+            let mainloop =
+                unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-init-test"), None) };
+            assert!(mainloop.is_ok(), "Failed to create PipeWire ThreadLoop");
         } else {
             // We only print a warning so the test passes on developers'
             // machines that don't have PipeWire, but fails loudly if

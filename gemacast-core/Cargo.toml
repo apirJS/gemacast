@@ -72,4 +72,5 @@ pipewire = "0.10.0"
 # [target.'cfg(target_os="macos")'.dependencies]
 # screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
 
-
+[dev-dependencies]
+serial_test = "3"
