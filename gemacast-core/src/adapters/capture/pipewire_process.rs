@@ -216,10 +216,8 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     while !sync_done.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    // Re-acquire lock for in-context proxy cleanup.
-    let lock = mainloop.lock();
 
-    // We're still holding the lock here — process results.
+    // Process results (no lock needed — just reading our Arc<Mutex> data).
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut found_node_id = None;
@@ -243,20 +241,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         }
     }
 
-    // Drop mutex guards before destroying proxies.
     drop(tnodes);
     drop(cmap);
 
-    // Destroy all proxies under the lock (in-context) to avoid
-    // "impl_ext_end_proxy called from wrong context" warnings.
+    // Correct PipeWire shutdown order per C API docs:
+    // 1. Stop the thread loop (WITHOUT the lock held). This joins the
+    //    background thread, guaranteeing no callbacks will fire.
+    mainloop.stop();
+    // 2. Now destroy proxies. With the thread stopped, no context check
+    //    is performed and no "impl_ext_end_proxy" warning is emitted.
     drop(core_listener);
     drop(reg_listener);
     drop(registry);
     drop(core);
     drop(context);
-    drop(lock);
-
-    mainloop.stop();
 
     found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))
 }
@@ -397,15 +395,16 @@ fn run_process_capture_loop(
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
 
-    // Re-acquire lock to cleanly destroy PipeWire proxies in the correct context
-    let loop_guard = mainloop.lock();
+    // Correct PipeWire shutdown order per C API docs:
+    // 1. Stop the thread loop (WITHOUT the lock held). This joins the
+    //    background thread, guaranteeing no callbacks will fire.
+    mainloop.stop();
+    // 2. Now destroy proxies. With the thread stopped, no context check
+    //    is performed and no "impl_ext_end_proxy" warning is emitted.
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
-    drop(loop_guard);
-
-    mainloop.stop();
 
     Ok(())
 }
