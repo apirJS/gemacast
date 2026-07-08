@@ -124,14 +124,18 @@ pub fn create_pipewire_process_loopback(
 fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-discover"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -153,20 +157,20 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _reg_listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
-            if global.type_ == pw::types::ObjectType::Client
-                && let Some(props) = global.props
-            {
-                let pid_str = props
-                    .get("application.process.id")
-                    .or_else(|| props.get("pipewire.sec.pid"));
-                if let Some(pid_s) = pid_str
-                    && let Ok(app_pid) = pid_s.parse::<u32>()
-                {
-                    let mut cmap = client_map_clone.lock().unwrap();
-                    cmap.insert(global.id, app_pid);
+            if global.type_ == pw::types::ObjectType::Client {
+                if let Some(props) = global.props {
+                    let pid_str = props
+                        .get("application.process.id")
+                        .or_else(|| props.get("pipewire.sec.pid"));
+                    if let Some(pid_s) = pid_str
+                        && let Ok(app_pid) = pid_s.parse::<u32>()
+                    {
+                        let mut cmap = client_map_clone.lock().unwrap();
+                        cmap.insert(global.id, app_pid);
+                    }
                 }
             } else if global.type_ == pw::types::ObjectType::Node
                 && let Some(props) = global.props
@@ -195,20 +199,25 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let sync_mainloop = mainloop.clone();
-    let _core_listener = core
+    let sync_done = Arc::new(AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
+    let core_listener = core
         .add_listener_local()
-        .done(move |_id, seq| {
-            if seq == pending_sync {
-                sync_mainloop.quit();
+        .done(move |_id, _seq| {
+            if _seq == pending_sync {
+                sync_done_cb.store(true, Ordering::Relaxed);
             }
         })
         .register();
 
-    // Block the current thread until the sync event is received and quit() is called
-    mainloop.run();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
-    // Process results
+    // Process results (no lock needed — just reading our Arc<Mutex> data).
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut found_node_id = None;
@@ -232,10 +241,29 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         }
     }
 
+    drop(tnodes);
+    drop(cmap);
+
+    // 1. Lock the loop to safely destroy proxies and context
+    let loop_guard = mainloop.lock();
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    // 2. Stop the background thread (joins it)
+    mainloop.stop();
+
     found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))
 }
 
 /// Internal: runs the PipeWire capture loop for a specific node.
+///
+/// Uses [`ThreadLoopBox`] so PipeWire's event loop runs on a background
+/// thread, and all proxy operations happen under the thread loop's lock
+/// (required by PipeWire's context-safety model).
 fn run_process_capture_loop(
     target_node_id: String,
     producer: &mut ringbuf::HeapProd<f32>,
@@ -243,14 +271,20 @@ fn run_process_capture_loop(
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
 ) -> Result<(), GemaCastError> {
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop =
+        unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None) }
+            .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop so PipeWire processes events in the background.
+    // We must hold the lock while creating proxies and connecting the stream.
+    mainloop.start();
+    let loop_guard = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     // Create a capture stream targeting the specific application node.
@@ -351,25 +385,26 @@ fn run_process_capture_loop(
         target_node_id
     );
 
-    let timer_mainloop = mainloop.clone();
-    let is_running_timer = is_running.clone();
-    let _timer = mainloop.loop_().add_timer(move |_| {
-        if !is_running_timer.load(Ordering::Relaxed) {
-            timer_mainloop.quit();
-        }
-    });
+    // Release the lock so the PipeWire thread can process events
+    drop(loop_guard);
 
-    _timer
-        .update_timer(
-            Some(std::time::Duration::from_millis(100)),
-            Some(std::time::Duration::from_millis(100)),
-        )
-        .into_result()
-        .map_err(|e| AudioError::PipeWireError(format!("Failed to update timer: {e}")))?;
-
-    mainloop.run();
+    // Block the current thread until is_running goes false
+    while is_running.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!("[PipeWire Process] Capture main loop exited");
+
+    // 1. Lock the loop to safely destroy proxies and context
+    let loop_guard = mainloop.lock();
+    drop(_listener);
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    // 2. Stop the background thread (joins it)
+    mainloop.stop();
 
     Ok(())
 }

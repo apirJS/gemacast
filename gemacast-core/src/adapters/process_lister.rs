@@ -151,26 +151,34 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-enumerate"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
         .get_registry()
         .map_err(|e| AudioError::PipeWireError(format!("Registry: {e}")))?;
 
+    let found_nodes =
+        std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, ProcessInfo>::new()));
+
     // To handle native PipeWire apps, we must track Client objects because they hold the PID
-    // and Name, while the Node object holds the media.class.
+    // and Name, while the Node object holds the media.class. We map client.id -> (pid, name)
     let client_map =
         std::sync::Arc::new(std::sync::Mutex::new(HashMap::<u32, (u32, String)>::new()));
     let client_map_clone = client_map.clone();
 
+    // We also need to store nodes that we found, since global callbacks can arrive in any order
     struct TempNode {
         client_id: Option<u32>,
         media_class: Option<String>,
@@ -180,7 +188,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _reg_listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
@@ -224,49 +232,89 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         })
         .register();
 
-    // Add a timer to run the loop for a short duration to collect events
-    let timer_mainloop = mainloop.clone();
-    let _timer = mainloop.loop_().add_timer(move |_| {
-        timer_mainloop.quit();
-    });
-    _timer
-        .update_timer(Some(std::time::Duration::from_millis(150)), None)
-        .into_result()
-        .map_err(|e| AudioError::PipeWireError(format!("Timer update failed: {e}")))?;
+    // Request a sync. When the 'done' event fires with our seq ID,
+    // all registry globals have been delivered.
+    let pending_sync = core
+        .sync(0)
+        .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    // Run the loop. It blocks until the timer triggers `quit()`.
-    mainloop.run();
+    let sync_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
+    let core_listener = core
+        .add_listener_local()
+        .done(move |_id, _seq| {
+            if _seq == pending_sync {
+                sync_done_cb.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .register();
 
-    let mut result = Vec::new();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    // Process results (no lock needed — just reading our Arc<Mutex> data).
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
+    let mut map = found_nodes.lock().unwrap();
 
     for node in tnodes.iter() {
         if let Some(class) = &node.media_class
             && class.contains("Stream/Output/Audio")
         {
-            let pid = if let Some(p) = node.node_pid {
-                p
+            // Try to get PID from the node first, otherwise lookup the client
+            let (pid, name) = if let Some(pid) = node.node_pid {
+                let n = node
+                    .node_name
+                    .clone()
+                    .unwrap_or_else(|| format!("PID {pid}"));
+                (pid, n)
             } else if let Some(cid) = node.client_id {
-                cmap.get(&cid).map(|v| v.0).unwrap_or(0)
+                if let Some((pid, n)) = cmap.get(&cid) {
+                    (*pid, n.clone())
+                } else {
+                    (0, String::new())
+                }
             } else {
-                0
+                (0, String::new())
             };
 
             if pid > 0 {
-                result.push(ProcessInfo {
+                let key = name.to_lowercase();
+                map.entry(key).or_insert(ProcessInfo {
                     pid,
-                    name: node
-                        .node_name
-                        .clone()
-                        .unwrap_or_else(|| "Unknown".to_string()),
+                    name,
                     has_audio_session: true,
                 });
             }
         }
     }
 
-    Ok(result)
+    let mut processes: Vec<_> = map.values().cloned().collect();
+
+    // Sort alphabetically (all have audio sessions)
+    processes.sort_by_key(|a| a.name.to_lowercase());
+
+    drop(map);
+    drop(tnodes);
+    drop(cmap);
+
+    // 1. Lock the loop to safely destroy proxies and context
+    let loop_guard = mainloop.lock();
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(loop_guard);
+
+    // 2. Stop the background thread (joins it)
+    mainloop.stop();
+
+    Ok(processes)
 }
 
 // ---------------------------------------------------------------------------
