@@ -247,17 +247,17 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // Correct PipeWire shutdown order per C API docs:
-    // 1. Stop the loop first so no events are actively processed.
-    mainloop.stop();
-
-    // 2. Acquire the lock so pw_core_check_context passes.
+    // Acquire the lock so pw_core_check_context passes when dropping proxies.
+    // We must drop them while the loop is still actively running.
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
     drop(loop_guard);
+
+    // Stop the loop after proxies are safely destroyed.
+    mainloop.stop();
 
     Ok(())
 }

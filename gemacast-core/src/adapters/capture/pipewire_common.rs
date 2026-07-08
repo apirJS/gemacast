@@ -31,14 +31,14 @@ pub const PW_RING_BUFFER_SIZE: usize = OPUS_FRAME_SAMPLES * 64;
 /// This creates the pod parameter that tells PipeWire what audio format
 /// we want to receive in our capture stream's `process` callback.
 pub fn build_audio_params() -> Vec<u8> {
-    let mut params_buf = vec![0u8; 1024];
     let mut format_value = spa::param::audio::AudioInfoRaw::new();
     format_value.set_format(spa::param::audio::AudioFormat::F32LE);
     format_value.set_rate(OPUS_SAMPLE_RATE);
     format_value.set_channels(OPUS_CHANNELS as u32);
 
+    let mut cursor = std::io::Cursor::new(Vec::new());
     spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(&mut params_buf),
+        &mut cursor,
         &spa::pod::Value::Object(spa::pod::Object {
             type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
             id: spa::param::ParamType::EnumFormat.as_raw(),
@@ -47,7 +47,7 @@ pub fn build_audio_params() -> Vec<u8> {
     )
     .expect("Failed to serialize PipeWire audio params");
 
-    params_buf
+    cursor.into_inner()
 }
 
 /// Convenience struct for the resources produced by a PipeWire capture stream setup.

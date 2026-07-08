@@ -302,11 +302,8 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(tnodes);
     drop(cmap);
 
-    // Correct PipeWire shutdown order per C API docs:
-    // 1. Stop the loop first so no events are actively processed.
-    mainloop.stop();
-
-    // 2. Acquire the lock so pw_core_check_context passes.
+    // Acquire the lock so pw_core_check_context passes when dropping proxies.
+    // We must drop them while the loop is still actively running.
     let loop_guard = mainloop.lock();
     drop(core_listener);
     drop(reg_listener);
@@ -314,6 +311,9 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(core);
     drop(context);
     drop(loop_guard);
+
+    // Stop the loop after proxies are safely destroyed.
+    mainloop.stop();
 
     Ok(processes)
 }
