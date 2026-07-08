@@ -194,26 +194,30 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         .register();
 
     // Request a sync. When the 'done' event fires with our seq ID,
-    // all registry globals have been delivered. Signal the thread loop
-    // to wake our waiting thread (instead of quit + run which would
-    // drop proxies outside the loop context).
+    // all registry globals have been delivered.
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let mainloop_ref = mainloop.clone();
+    let sync_done = Arc::new(AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
     let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
             if _seq == pending_sync {
-                mainloop_ref.signal(false);
+                sync_done_cb.store(true, Ordering::Relaxed);
             }
         })
         .register();
 
-    // Block (releasing the lock) until the done callback signals us.
-    // wait() atomically releases the lock, sleeps, and re-acquires it.
-    mainloop.wait();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // Re-acquire lock for in-context proxy cleanup.
+    let lock = mainloop.lock();
 
     // We're still holding the lock here — process results.
     let cmap = client_map.lock().unwrap();

@@ -238,19 +238,25 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let mainloop_ref = mainloop.clone();
+    let sync_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sync_done_cb = sync_done.clone();
     let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
             if _seq == pending_sync {
-                mainloop_ref.signal(false);
+                sync_done_cb.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         })
         .register();
 
-    // Block (releasing the lock) until the done callback signals us.
-    // wait() atomically releases the lock, sleeps, and re-acquires it.
-    mainloop.wait();
+    // Release the lock so PipeWire's thread can dispatch events,
+    // then poll until the sync callback fires.
+    drop(lock);
+    while !sync_done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // Re-acquire lock for in-context proxy cleanup.
+    let lock = mainloop.lock();
 
     // We're still holding the lock here — process results.
     let cmap = client_map.lock().unwrap();
