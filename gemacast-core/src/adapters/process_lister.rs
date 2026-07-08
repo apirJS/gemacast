@@ -242,26 +242,26 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let tnodes = temp_nodes.lock().unwrap();
 
     for node in tnodes.iter() {
-        if let Some(class) = &node.media_class {
-            if class.contains("Stream/Output/Audio") {
-                let pid = if let Some(p) = node.node_pid {
-                    p
-                } else if let Some(cid) = node.client_id {
-                    cmap.get(&cid).map(|v| v.0).unwrap_or(0)
-                } else {
-                    0
-                };
+        if let Some(class) = &node.media_class
+            && class.contains("Stream/Output/Audio")
+        {
+            let pid = if let Some(p) = node.node_pid {
+                p
+            } else if let Some(cid) = node.client_id {
+                cmap.get(&cid).map(|v| v.0).unwrap_or(0)
+            } else {
+                0
+            };
 
-                if pid > 0 {
-                    result.push(ProcessInfo {
-                        pid,
-                        name: node
-                            .node_name
-                            .clone()
-                            .unwrap_or_else(|| "Unknown".to_string()),
-                        has_audio_session: true,
-                    });
-                }
+            if pid > 0 {
+                result.push(ProcessInfo {
+                    pid,
+                    name: node
+                        .node_name
+                        .clone()
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    has_audio_session: true,
+                });
             }
         }
     }

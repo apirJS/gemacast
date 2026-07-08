@@ -156,17 +156,17 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let _reg_listener = registry
         .add_listener_local()
         .global(move |global| {
-            if global.type_ == pw::types::ObjectType::Client {
-                if let Some(props) = global.props {
-                    let pid_str = props
-                        .get("application.process.id")
-                        .or_else(|| props.get("pipewire.sec.pid"));
-                    if let Some(pid_s) = pid_str
-                        && let Ok(app_pid) = pid_s.parse::<u32>()
-                    {
-                        let mut cmap = client_map_clone.lock().unwrap();
-                        cmap.insert(global.id, app_pid);
-                    }
+            if global.type_ == pw::types::ObjectType::Client
+                && let Some(props) = global.props
+            {
+                let pid_str = props
+                    .get("application.process.id")
+                    .or_else(|| props.get("pipewire.sec.pid"));
+                if let Some(pid_s) = pid_str
+                    && let Ok(app_pid) = pid_s.parse::<u32>()
+                {
+                    let mut cmap = client_map_clone.lock().unwrap();
+                    cmap.insert(global.id, app_pid);
                 }
             } else if global.type_ == pw::types::ObjectType::Node
                 && let Some(props) = global.props
