@@ -150,13 +150,20 @@ mod tests {
         // and the PipeWire daemon runs in the background.
         // pw::init() shouldn't panic if PipeWire is properly available.
         if is_pipewire_available() {
-            // Further check: can we create a main loop and context?
-            let mainloop_res = pw::main_loop::MainLoopRc::new(None);
-            assert!(mainloop_res.is_ok(), "Failed to create PipeWire MainLoop");
+            // Further check: can we create a thread loop and context?
+            // Uses ThreadLoopBox (matching production code) so that proxy
+            // cleanup happens under the lock, avoiding "impl_ext_end_proxy
+            // called from wrong context" warnings.
+            let mainloop =
+                unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-init-test"), None) };
+            assert!(mainloop.is_ok(), "Failed to create PipeWire ThreadLoop");
 
-            let mainloop = mainloop_res.unwrap();
-            let context = pw::context::ContextRc::new(&mainloop, None);
+            let mainloop = mainloop.unwrap();
+            let context = pw::context::ContextBox::new(mainloop.loop_(), None);
             assert!(context.is_ok(), "Failed to create PipeWire Context");
+
+            // Drop context before mainloop (correct order).
+            drop(context);
         } else {
             // We only print a warning so the test passes on developers'
             // machines that don't have PipeWire, but fails loudly if

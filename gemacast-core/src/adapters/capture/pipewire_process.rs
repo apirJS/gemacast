@@ -113,6 +113,10 @@ pub fn create_pipewire_process_loopback(
 /// Connects to PipeWire, enumerates all nodes via the Registry, and
 /// matches the `application.process.id` property against the target PID.
 ///
+/// Uses [`ThreadLoopBox`] so that all proxy objects (registry, core, listeners)
+/// are created and destroyed under the thread loop's lock, satisfying PipeWire's
+/// context-safety model and avoiding `impl_ext_end_proxy` warnings.
+///
 /// # Returns
 ///
 /// The PipeWire node `object.serial` or ID as a string suitable for
@@ -120,14 +124,18 @@ pub fn create_pipewire_process_loopback(
 fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-discover"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -149,7 +157,7 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
@@ -185,29 +193,29 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         })
         .register();
 
-    // Request a sync. The returned ID will be passed to the 'done' event
-    // when all previously issued commands (like the registry enumeration)
-    // have completed.
-    let mainloop_weak = mainloop.downgrade();
+    // Request a sync. When the 'done' event fires with our seq ID,
+    // all registry globals have been delivered. Signal the thread loop
+    // to wake our waiting thread (instead of quit + run which would
+    // drop proxies outside the loop context).
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let _core_listener = core
+    let mainloop_ref = mainloop.clone();
+    let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync
-                && let Some(ml) = mainloop_weak.upgrade()
-            {
-                ml.quit();
+            if _seq == pending_sync {
+                mainloop_ref.signal(false);
             }
         })
         .register();
 
-    // Run the main loop. It will block until the `done` event fires and
-    // calls quit(), which takes less than 5ms in practice.
-    mainloop.run();
+    // Block (releasing the lock) until the done callback signals us.
+    // wait() atomically releases the lock, sleeps, and re-acquires it.
+    mainloop.wait();
 
+    // We're still holding the lock here — process results.
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut found_node_id = None;
@@ -231,9 +239,22 @@ fn discover_node_for_pid(pid: u32) -> Result<String, GemaCastError> {
         }
     }
 
-    let result = found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))?;
+    // Drop mutex guards before destroying proxies.
+    drop(tnodes);
+    drop(cmap);
 
-    Ok(result)
+    // Destroy all proxies under the lock (in-context) to avoid
+    // "impl_ext_end_proxy called from wrong context" warnings.
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(lock);
+
+    mainloop.stop();
+
+    found_node_id.ok_or(GemaCastError::Audio(AudioError::ProcessNotFound(pid)))
 }
 
 /// Internal: runs the PipeWire capture loop for a specific node.

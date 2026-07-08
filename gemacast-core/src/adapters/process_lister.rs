@@ -138,6 +138,10 @@ fn linux_list_processes() -> Vec<ProcessInfo> {
 /// Connects to PipeWire, iterates all global Node objects, and filters
 /// for those with `media.class` containing `"Stream/Output/Audio"` (application
 /// audio playback streams). Deduplicates by process name.
+///
+/// Uses [`ThreadLoopBox`] so that all proxy objects are created and destroyed
+/// under the thread loop's lock, satisfying PipeWire's context-safety model
+/// and avoiding `impl_ext_end_proxy` warnings.
 #[cfg(target_os = "linux")]
 fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::error::GemaCastError>
 {
@@ -147,14 +151,18 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("MainLoop: {e}")))?;
+    let mainloop = unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-enumerate"), None) }
+        .map_err(|e| AudioError::PipeWireConnectionFailed(format!("ThreadLoop: {e}")))?;
 
-    let context = pw::context::ContextRc::new(&mainloop, None)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Context: {e}")))?;
 
+    // Start the thread loop and hold the lock while creating proxies.
+    mainloop.start();
+    let lock = mainloop.lock();
+
     let core = context
-        .connect_rc(None)
+        .connect(None)
         .map_err(|e| AudioError::PipeWireConnectionFailed(format!("Core: {e}")))?;
 
     let registry = core
@@ -180,7 +188,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     let temp_nodes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<TempNode>::new()));
     let temp_nodes_clone = temp_nodes.clone();
 
-    let _listener = registry
+    let reg_listener = registry
         .add_listener_local()
         .global(move |global| {
             if global.type_ == pw::types::ObjectType::Client {
@@ -224,29 +232,27 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
         })
         .register();
 
-    // Request a sync. The returned ID will be passed to the 'done' event
-    // when all previously issued commands (like the registry enumeration)
-    // have completed.
-    let mainloop_weak = mainloop.downgrade();
+    // Request a sync. When the 'done' event fires with our seq ID,
+    // all registry globals have been delivered.
     let pending_sync = core
         .sync(0)
         .map_err(|e| AudioError::PipeWireError(format!("Sync: {e}")))?;
 
-    let _core_listener = core
+    let mainloop_ref = mainloop.clone();
+    let core_listener = core
         .add_listener_local()
         .done(move |_id, _seq| {
-            if _seq == pending_sync
-                && let Some(ml) = mainloop_weak.upgrade()
-            {
-                ml.quit();
+            if _seq == pending_sync {
+                mainloop_ref.signal(false);
             }
         })
         .register();
 
-    // Run the main loop. It will block until the `done` event fires,
-    // which takes less than 5ms rather than a hardcoded 1 second.
-    mainloop.run();
+    // Block (releasing the lock) until the done callback signals us.
+    // wait() atomically releases the lock, sleeps, and re-acquires it.
+    mainloop.wait();
 
+    // We're still holding the lock here — process results.
     let cmap = client_map.lock().unwrap();
     let tnodes = temp_nodes.lock().unwrap();
     let mut map = found_nodes.lock().unwrap();
@@ -287,6 +293,22 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 
     // Sort alphabetically (all have audio sessions)
     processes.sort_by_key(|a| a.name.to_lowercase());
+
+    // Drop mutex guards before destroying proxies.
+    drop(map);
+    drop(tnodes);
+    drop(cmap);
+
+    // Destroy all proxies under the lock (in-context) to avoid
+    // "impl_ext_end_proxy called from wrong context" warnings.
+    drop(core_listener);
+    drop(reg_listener);
+    drop(registry);
+    drop(core);
+    drop(context);
+    drop(lock);
+
+    mainloop.stop();
 
     Ok(processes)
 }
