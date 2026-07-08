@@ -385,6 +385,7 @@ fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
     /// Generate a silent WAV file (48 kHz, stereo, s16) and return its path.
     fn create_silent_wav(duration_secs: u32) -> String {
@@ -434,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI

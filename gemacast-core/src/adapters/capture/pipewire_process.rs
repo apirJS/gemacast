@@ -415,6 +415,7 @@ fn run_process_capture_loop(
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
     /// Generate a silent WAV file (48 kHz, stereo, s16) of the given duration in
     /// seconds and return its path. The file is placed in std::env::temp_dir().
@@ -471,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_process_capture_not_found() {
         if is_pipewire_available() {
             // PID 999999 is guaranteed not to have a PipeWire node
@@ -491,6 +493,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
@@ -581,6 +584,7 @@ mod tests {
     /// 4. Asserts both captures succeed and don't interfere
     /// 5. Drops both handles cleanly
     #[test]
+    #[serial(pipewire)]
     fn test_multi_process_capture() {
         if !is_pipewire_available() {
             println!("PipeWire is not available, skipping multi-process capture test.");

@@ -154,7 +154,7 @@ jobs:
           # routing, pw-cat sink connections) which some tests depend on.
           # PipeWire stderr is suppressed to avoid harmless "XOpenDisplay() failed"
           # warnings in headless CI.
-          dbus-run-session -- sh -c '
+          PIPEWIRE_LOG_LEVEL=2 dbus-run-session -- sh -c '
             pipewire 2>/dev/null &
             sleep 2
             wireplumber 2>/dev/null &

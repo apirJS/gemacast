@@ -142,8 +142,10 @@ pub fn is_pipewire_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial(pipewire)]
     fn test_pipewire_initialization() {
         // This test acts as a smoke test in our CI pipeline.
         // In the headless CI environment, dbus-run-session sets up DBus,

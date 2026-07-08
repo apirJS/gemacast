@@ -266,6 +266,7 @@ fn run_desktop_capture_loop(
 mod tests {
     use super::*;
     use crate::adapters::capture::pipewire_common::is_pipewire_available;
+    use serial_test::serial;
 
     /// Generate a silent WAV file (48 kHz, stereo, s16) and return its path.
     fn create_silent_wav(duration_secs: u32) -> String {
@@ -315,6 +316,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pipewire)]
     fn test_create_desktop_loopback() {
         if is_pipewire_available() {
             let result = create_pipewire_desktop_loopback();
@@ -342,6 +344,7 @@ mod tests {
     /// 4. Waits for samples to appear in the ring buffer consumer
     /// 5. Asserts that we received > 0 samples
     #[test]
+    #[serial(pipewire)]
     fn test_desktop_capture_receives_audio() {
         if !is_pipewire_available() {
             println!("PipeWire is not available, skipping desktop capture receives audio test.");
