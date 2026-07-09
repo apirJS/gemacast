@@ -247,16 +247,21 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // 1. Stop the background thread (joins it)
-    mainloop.stop();
-
-    // 2. Lock the loop to safely destroy proxies and context
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup protocol messages via impl_ext_end_proxy,
+    // which calls pw_loop_check(). This check passes only when the loop thread
+    // is still alive AND the caller holds the lock. So we must:
+    //   1. Lock (thread still running → pw_loop_check passes)
+    //   2. Drop proxies under lock (cleanup messages sent correctly)
+    //   3. Unlock
+    //   4. Stop (joins the now-idle background thread)
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
     drop(loop_guard);
+    mainloop.stop();
 
     Ok(())
 }

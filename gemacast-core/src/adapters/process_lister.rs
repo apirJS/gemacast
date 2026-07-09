@@ -302,10 +302,10 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(tnodes);
     drop(cmap);
 
-    // 1. Stop the background thread (joins it)
-    mainloop.stop();
-
-    // 2. Lock the loop to safely destroy proxies and context
+    // Teardown order matters for PipeWire 1.2.x context-safety:
+    // Proxy Drop impls send cleanup messages via impl_ext_end_proxy, which
+    // calls pw_loop_check(). This passes only when the loop thread is alive
+    // AND the caller holds the lock.
     let loop_guard = mainloop.lock();
     drop(core_listener);
     drop(reg_listener);
@@ -313,6 +313,7 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(core);
     drop(context);
     drop(loop_guard);
+    mainloop.stop();
 
     Ok(processes)
 }
