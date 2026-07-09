@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.12](https://github.com/apirJS/gemacast/compare/v0.5.11...v0.5.12) (2026-07-09)
+
+
+### Bug Fixes
+
+* clippy collapsible_if warning ([9c03649](https://github.com/apirJS/gemacast/commit/9c0364988a01ec429232d762b74f9ad4d6f2d765))
+* correctly drop PipeWire context inside ThreadLoop lock ([0c7a4e9](https://github.com/apirJS/gemacast/commit/0c7a4e9e38dfbe712b8937ab82717e8caacbc90e))
+* impl_ext_end_proxy called from wrong context ([7a82057](https://github.com/apirJS/gemacast/commit/7a8205770518fe9cc4ca1fccbb46966c1aa7017b))
+* impl_ext_end_proxy warnings ([92884c9](https://github.com/apirJS/gemacast/commit/92884c9f82225c835fcd3f7753ba14971835cd03))
+* linux compile errors for pipewire refactor ([ac4681b](https://github.com/apirJS/gemacast/commit/ac4681b90bbf8afb22601e6167aad70860b02ee5))
+* pipewire teardown is stop → lock → drop → unlock to lock → drop → unlock → stop ([004dc0c](https://github.com/apirJS/gemacast/commit/004dc0c19e78d11fb1450e6b25e07ec66a65b673))
+* pw_thread_loop_stop() must be called WITHOUT the lock held. Once it returns, the background thread is joined and no callbacks can fire. Only then is it safe to destroy proxies. ([f7d6efb](https://github.com/apirJS/gemacast/commit/f7d6efb0a252ac1d7e415908c9711a5d7e34b4d1))
+* resolve pipewire wrong context warnings by swapping teardown order ([77036ca](https://github.com/apirJS/gemacast/commit/77036ca4d2d417c6c2973b30ce6180f76838e725))
+* shutdown order ([621f72f](https://github.com/apirJS/gemacast/commit/621f72f7aee013392f0784eeeab095898e44f485))
+* ThreadLoopBox isn't Clone ([38964ff](https://github.com/apirJS/gemacast/commit/38964ff0d024527474eb7c318efa023090f393f8))
+
 ## [0.5.11](https://github.com/apirJS/gemacast/compare/v0.5.10...v0.5.11) (2026-07-07)
 
 
