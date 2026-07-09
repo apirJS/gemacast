@@ -302,7 +302,10 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(tnodes);
     drop(cmap);
 
-    // 1. Lock the loop to safely destroy proxies and context
+    // 1. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 2. Lock the loop to safely destroy proxies and context
     let loop_guard = mainloop.lock();
     drop(core_listener);
     drop(reg_listener);
@@ -310,9 +313,6 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
     drop(core);
     drop(context);
     drop(loop_guard);
-
-    // 2. Stop the background thread (joins it)
-    mainloop.stop();
 
     Ok(processes)
 }

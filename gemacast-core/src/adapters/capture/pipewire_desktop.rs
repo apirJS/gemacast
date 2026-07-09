@@ -247,16 +247,16 @@ fn run_desktop_capture_loop(
 
     tracing::info!("[PipeWire Desktop] Capture main loop exited");
 
-    // 1. Lock the loop to safely destroy proxies and context
+    // 1. Stop the background thread (joins it)
+    mainloop.stop();
+
+    // 2. Lock the loop to safely destroy proxies and context
     let loop_guard = mainloop.lock();
     drop(_listener);
     drop(stream);
     drop(core);
     drop(context);
     drop(loop_guard);
-
-    // 2. Stop the background thread (joins it)
-    mainloop.stop();
 
     Ok(())
 }

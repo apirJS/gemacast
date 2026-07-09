@@ -1,2 +1,6 @@
 {
+    "rust-analyzer.files.exclude": [
+        "**/TEMP/**",
+        "**/vendor/**"
+    ]
 }
