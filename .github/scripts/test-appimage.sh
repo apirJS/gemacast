@@ -14,6 +14,9 @@ if [ ! -f "$APPIMAGE" ]; then
   exit 1
 fi
 
+# Downloaded files from GitHub releases don't have +x permission
+chmod +x "$APPIMAGE"
+
 # Verify file exists and is executable
 if [ -x "$APPIMAGE" ]; then
   echo "PASS: AppImage is executable"

@@ -8,6 +8,10 @@ if (-not $version) {
     exit 1
 }
 
+# MSI only supports numeric versions (major.minor.build).
+# Strip any pre-release suffix like "-rc.2" for the WiX build.
+$msiVersion = $version -replace '-.*$', ''
+
 $sourceDir = (Resolve-Path "wix\msi\staging").Path
 $iconDir = (Resolve-Path "wix\assets").Path
 
@@ -17,7 +21,7 @@ Write-Host "  IconDir=$iconDir"
 
 dotnet build wix\msi\msi.wixproj `
     -c Release `
-    "-p:Version=$version" `
+    "-p:Version=$msiVersion" `
     "-p:SourceDir=$sourceDir" `
     "-p:IconDir=$iconDir"
 

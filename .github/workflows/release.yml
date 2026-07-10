@@ -258,13 +258,19 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          # Upload artifacts to the release created by release-please
+          # Check if the release already exists (e.g., created by release-please)
+          if ! gh release view "${{ needs.plan.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Release not found. Creating a new release..."
+            gh release create "${{ needs.plan.outputs.tag }}" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file $RUNNER_TEMP/notes.txt
+          else
+            echo "Release found. Appending cargo-dist notes to existing changelog..."
+            OLD_BODY=$(gh release view "${{ needs.plan.outputs.tag }}" --json body -q .body)
+            echo -e "$OLD_BODY\n\n$(cat $RUNNER_TEMP/notes.txt)" > $RUNNER_TEMP/combined_notes.txt
+            gh release edit "${{ needs.plan.outputs.tag }}" --notes-file "$RUNNER_TEMP/combined_notes.txt"
+          fi
+
+          # Upload artifacts to the release
           gh release upload "${{ needs.plan.outputs.tag }}" artifacts/* --clobber
-          
-          # Append the cargo-dist checksum table to the release-please changelog
-          OLD_BODY=$(gh release view "${{ needs.plan.outputs.tag }}" --json body -q .body)
-          echo -e "$OLD_BODY\n\n$(cat $RUNNER_TEMP/notes.txt)" > $RUNNER_TEMP/combined_notes.txt
-          gh release edit "${{ needs.plan.outputs.tag }}" --notes-file "$RUNNER_TEMP/combined_notes.txt"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Phase 3: Build platform-specific installers
@@ -705,6 +711,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Install gh CLI
         run: dnf install -y gh
 
@@ -716,10 +726,6 @@ jobs:
             -p "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm" \
             --dir rpm_download \
             --repo ${{ github.repository }}
-
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
 
       - name: Test RPM (install, verify, smoke test, uninstall)
         env:
@@ -984,14 +990,14 @@ jobs:
        needs.sign-release.result == 'failure')
     runs-on: ubuntu-24.04
     env:
-      GH_TOKEN: ${{ secrets.GH_PAT }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
       REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rollback release
         run: bash .github/scripts/rollback-release.sh
