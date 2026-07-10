@@ -883,6 +883,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Import GPG key
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
@@ -897,10 +901,6 @@ jobs:
         run: |
           mkdir -p assets
           gh release download "$TAG" --dir assets --repo ${{ github.repository }}
-
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
 
       - name: Sign all assets
         env:
