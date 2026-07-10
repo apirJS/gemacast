@@ -122,7 +122,7 @@ jobs:
             pip3 install cargo-zigbuild ziglang --break-system-packages || pip3 install cargo-zigbuild ziglang
 
             # Build PipeWire from source
-            .github/scripts/install-pipewire.sh
+            bash .github/scripts/install-pipewire.sh
           fi
       - name: Build artifacts
         run: |
@@ -133,7 +133,7 @@ jobs:
         shell: bash
         env:
           MANIFEST_PATH: dist-manifest.json
-        run: .github/scripts/verify-adb-in-archives.sh
+        run: bash .github/scripts/verify-adb-in-archives.sh
       - id: cargo-dist
         name: Post-build
         shell: bash
@@ -317,14 +317,14 @@ jobs:
         shell: pwsh
         env:
           DIST_EXTRACTED: dist_extracted
-        run: .github\scripts\stage-wix-binaries.ps1
+        run: pwsh .github\scripts\stage-wix-binaries.ps1
 
       - name: Install WiX v6 toolset
         run: dotnet tool install --global wix --version 6.0.2
 
       - name: Build MSI
         shell: pwsh
-        run: .github\scripts\build-msi.ps1
+        run: pwsh .github\scripts\build-msi.ps1
 
       - name: Upload MSI as workflow artifact
         uses: actions/upload-artifact@v7
@@ -391,7 +391,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           DIST_EXTRACTED: dist_extracted
-        run: .github/scripts/build-deb.sh
+        run: bash .github/scripts/build-deb.sh
 
       - name: Build .rpm package
         env:
@@ -399,13 +399,13 @@ jobs:
           APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
         run: |
           sudo apt-get install -y alien rpm
-          .github/scripts/build-rpm.sh
+          bash .github/scripts/build-rpm.sh
 
       - name: Build AppImage
         env:
           ARCH: ${{ matrix.appimage_arch }}
           DIST_EXTRACTED: dist_extracted
-        run: .github/scripts/build-appimage.sh
+        run: bash .github/scripts/build-appimage.sh
 
       - name: Upload packages as workflow artifacts
         uses: actions/upload-artifact@v7
@@ -461,10 +461,10 @@ jobs:
         run: brew install create-dmg
 
       - name: Create .app bundles
-        run: .github/scripts/create-macos-app-bundles.sh
+        run: bash .github/scripts/create-macos-app-bundles.sh
 
       - name: Create universal .app bundle
-        run: .github/scripts/create-macos-universal.sh
+        run: bash .github/scripts/create-macos-universal.sh
 
       - name: Create .app.tar.gz archives
         run: |
@@ -473,7 +473,7 @@ jobs:
           tar -czf "gemacast-pc-universal-apple-darwin.app.tar.gz" "Gemacast-universal.app"
 
       - name: Create DMG files
-        run: .github/scripts/create-dmg.sh
+        run: bash .github/scripts/create-dmg.sh
 
       - name: Upload to GitHub Release
         run: |
@@ -624,7 +624,7 @@ jobs:
 
       - name: Test MSI (install, verify, uninstall, verify cleanup)
         shell: pwsh
-        run: .github\scripts\test-msi.ps1
+        run: pwsh .github\scripts\test-msi.ps1
 
   # ── Test Linux packages ──────────────────────────────────────────────────
   test-linux-packages:
@@ -672,15 +672,15 @@ jobs:
             libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libxdo-dev zenity pipewire
 
       - name: Test .deb (install, verify, uninstall, verify cleanup)
-        run: .github/scripts/test-deb.sh
+        run: bash .github/scripts/test-deb.sh
 
       - name: Verify .rpm structure
-        run: .github/scripts/test-rpm-structure.sh
+        run: bash .github/scripts/test-rpm-structure.sh
 
       - name: Test AppImage
         env:
           ARCH: ${{ matrix.appimage_arch }}
-        run: .github/scripts/test-appimage.sh
+        run: bash .github/scripts/test-appimage.sh
 
   # ── Test RPM in Fedora container ─────────────────────────────────────────
   test-rpm:
@@ -724,7 +724,7 @@ jobs:
       - name: Test RPM (install, verify, smoke test, uninstall)
         env:
           RPM_DIR: rpm_download
-        run: .github/scripts/test-rpm-fedora.sh
+        run: bash .github/scripts/test-rpm-fedora.sh
 
   # ── Test macOS DMG ──────────────────────────────────────────────────────
   test-macos-dmg:
@@ -762,14 +762,14 @@ jobs:
           tar -xJf gemacast-pc-aarch64-apple-darwin.tar.xz -C mac_arm64 --strip-components=1
 
           # Recreate .app bundles (matching the build step)
-          .github/scripts/create-macos-app-bundles.sh
-          .github/scripts/create-macos-universal.sh
+          bash .github/scripts/create-macos-app-bundles.sh
+          bash .github/scripts/create-macos-universal.sh
 
           # Extract .app.tar.gz archives for content verification
           # (the test script verifies these can be extracted and contain the binary)
 
       - name: Test macOS installers
-        run: .github/scripts/test-macos.sh
+        run: bash .github/scripts/test-macos.sh
 
   # ── Test Android APK ────────────────────────────────────────────────────
   test-android-apk:
@@ -818,7 +818,7 @@ jobs:
           arch: x86_64
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
-          script: .github/scripts/test-android-emulator.sh
+          script: bash .github/scripts/test-android-emulator.sh
 
   # ── Installer tests gate ─────────────────────────────────────────────────
   installer-tests-gate:
@@ -899,7 +899,7 @@ jobs:
       - name: Sign all assets
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: .github/scripts/sign-release-assets.sh
+        run: bash .github/scripts/sign-release-assets.sh
 
       - name: Upload signatures
         run: gh release upload "$TAG" assets/*.sig --clobber --repo ${{ github.repository }}
@@ -923,7 +923,7 @@ jobs:
           persist-credentials: false
 
       - name: Generate updater.json
-        run: .github/scripts/generate-updater.sh
+        run: bash .github/scripts/generate-updater.sh
 
       - name: Upload updater.json
         run: gh release upload "$TAG" updater.json --clobber --repo "$REPO"
@@ -948,7 +948,7 @@ jobs:
           submodules: recursive
 
       - name: Generate and Update Release Notes
-        run: .github/scripts/generate-release-notes.sh
+        run: bash .github/scripts/generate-release-notes.sh
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Rollback: Runs on failure after release was created
@@ -994,4 +994,4 @@ jobs:
           token: ${{ secrets.GH_PAT }}
 
       - name: Rollback release
-        run: .github/scripts/rollback-release.sh
+        run: bash .github/scripts/rollback-release.sh
