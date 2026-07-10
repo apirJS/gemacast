@@ -9,9 +9,9 @@
 # * builds artifacts with dist (archives, installers, hashes)
 # * uploads those artifacts to temporary workflow zip
 # * on success, uploads the artifacts to a GitHub Release
+# * tests all platform-specific installers (MSI, deb, rpm, AppImage, DMG, APK)
+# * on any failure after release creation, rolls back (deletes tag + release, reverts versions)
 #
-# Note that the GitHub Release will be created with a generated
-# title/body based on your changelogs.
 
 name: Release
 permissions:
@@ -19,32 +19,20 @@ permissions:
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
-# Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
-# PACKAGE_NAME must be the name of a Cargo package in your workspace, and VERSION
-# must be a Cargo-style SemVer Version (must have at least major.minor.patch).
-#
-# If PACKAGE_NAME is specified, then the announcement will be for that
-# package (erroring out if it doesn't have the given version or isn't dist-able).
-#
-# If PACKAGE_NAME isn't specified, then the announcement will be for all
-# (dist-able) packages in the workspace with that version (this mode is
-# intended for workspaces with only one dist-able package, or with all dist-able
-# packages versioned/released in lockstep).
-#
-# If you push multiple tags at once, separate instances of this workflow will
-# spin up, creating an independent announcement for each one. However, GitHub
-# will hard limit this to 3 tags per commit, as it will assume more tags is a
-# mistake.
-#
-# If there's a prerelease-style suffix to the version, then the release(s)
-# will be marked as a prerelease.
 on:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
+# Initialize the placeholder here so IDE knows it exists
+# Value will filled later
+env:
+  MSI_PATH: "" 
+
 jobs:
-  # Run 'dist plan' (or host) to determine what tasks we need to do
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 0: Plan
+  # ═══════════════════════════════════════════════════════════════════════════
   plan:
     runs-on: "ubuntu-24.04"
     outputs:
@@ -60,8 +48,6 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
       - name: Cache dist
@@ -69,8 +55,6 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
-      # This workflow only triggers on tag pushes (no PR dry-runs).
-      # Always run `dist host --steps=create` to prepare the release.
       - id: plan
         run: |
           dist host --steps=create --tag=${{ github.ref_name }} --output-format=json > plan-dist-manifest.json
@@ -83,25 +67,16 @@ jobs:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
-  # Build and packages all the platform-specific things
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Build cargo-dist artifacts
+  # ═══════════════════════════════════════════════════════════════════════════
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
-    # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
-      # Target platforms/runners are computed by dist in create-release.
-      # Each member of the matrix has the following arguments:
-      #
-      # - runner: the github runner
-      # - dist-args: cli flags to pass to dist
-      # - install-dist: expression to run to install dist on the runner
-      #
-      # Typically there will be:
-      # - 1 "global" task that builds universal installers
-      # - N "local" tasks that build each platform's binaries and platform-specific installers
       matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
     runs-on: ${{ contains(matrix.targets, 'aarch64-unknown-linux-gnu') && 'ubuntu-22.04-arm' || (startsWith(matrix.runner, 'ubuntu') && 'ubuntu-22.04' || matrix.runner) }}
     container: ${{ matrix.container && matrix.container.image || null }}
@@ -128,7 +103,6 @@ jobs:
       - name: Throttle Mac Compilers to prevent OOM crash
         if: contains(matrix.runner, 'macos')
         run: echo "CARGO_BUILD_JOBS=2" >> $GITHUB_ENV
-      # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@v8
         with:
@@ -143,26 +117,12 @@ jobs:
             sudo apt-get update && sudo apt-get install -y clang libasound2-dev libgtk-3-dev \
               libayatana-appindicator3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev \
               ninja-build cmake meson pkg-config libudev-dev libdbus-1-dev python3-docutils python3-pip
-            
+
             # Install cargo-zigbuild and ziglang for Linux ARM cross-compilation
             pip3 install cargo-zigbuild ziglang --break-system-packages || pip3 install cargo-zigbuild ziglang
-            
-            # Build PipeWire 1.2.7 from source for pipewire-rs 0.10 headers
-            # (Ubuntu 22.04 apt only ships PipeWire 0.3.48 headers)
-            PW_VERSION=1.2.7
-            curl -sSL "https://gitlab.freedesktop.org/pipewire/pipewire/-/archive/${PW_VERSION}/pipewire-${PW_VERSION}.tar.gz" | tar xz
-            cd "pipewire-${PW_VERSION}"
-            meson setup builddir --prefix=/usr \
-              -Dspa-plugins=disabled -Dpipewire-v4l2=disabled -Dpipewire-jack=disabled \
-              -Dpipewire-alsa=disabled -Dlibjack-path="" -Dalsa=disabled \
-              -Dsession-managers=[] -Dtests=disabled -Dexamples=disabled -Dman=disabled \
-              -Ddocs=disabled -Dgstreamer=disabled -Dbluez5=disabled -Davahi=disabled \
-              -Draop=disabled -Dudevrulesdir=""
-            ninja -C builddir
-            sudo ninja -C builddir install
-            sudo ldconfig
-            cd ..
-            rm -rf "pipewire-${PW_VERSION}"
+
+            # Build PipeWire from source
+            .github/scripts/install-pipewire.sh
           fi
       - name: Build artifacts
         run: |
@@ -171,32 +131,13 @@ jobs:
           echo "dist ran successfully"
       - name: Verify ADB is bundled in artifacts
         shell: bash
-        run: |
-          for archive in $(dist print-upload-files-from-manifest --manifest dist-manifest.json); do
-            if [[ "$archive" == *.zip ]]; then
-              # Buffer listing to avoid broken pipe with pipefail
-              listing=$(unzip -l "$archive" 2>/dev/null || true)
-              if ! echo "$listing" | grep -q 'adb'; then
-                echo "::error::ADB not found in $archive"
-                exit 1
-              fi
-            elif [[ "$archive" == *.tar.gz ]] || [[ "$archive" == *.tar.xz ]]; then
-              listing=$(tar -tf "$archive" 2>/dev/null || true)
-              if ! echo "$listing" | grep -q 'adb'; then
-                echo "::error::ADB not found in $archive"
-                exit 1
-              fi
-            fi
-          done
-          echo "ADB successfully verified in all archives!"
+        env:
+          MANIFEST_PATH: dist-manifest.json
+        run: .github/scripts/verify-adb-in-archives.sh
       - id: cargo-dist
         name: Post-build
-        # We force bash here just because github makes it really hard to get values up
-        # to "real" actions without writing to env-vars, and writing to env-vars has
-        # inconsistent syntax between shell and powershell.
         shell: bash
         run: |
-          # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -210,7 +151,6 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
-  # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
       - plan
@@ -230,7 +170,6 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
         uses: actions/download-artifact@v8
         with:
@@ -243,7 +182,6 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
 
-          # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -256,13 +194,15 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
-  # Determines if we should publish/announce
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 2: Create GitHub Release
+  # ═══════════════════════════════════════════════════════════════════════════
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -280,7 +220,6 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
         uses: actions/download-artifact@v8
         with:
@@ -297,10 +236,8 @@ jobs:
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v7
         with:
-          # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
-      # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@v8
         with:
@@ -329,7 +266,11 @@ jobs:
           echo -e "$OLD_BODY\n\n$(cat $RUNNER_TEMP/notes.txt)" > $RUNNER_TEMP/combined_notes.txt
           gh release edit "${{ needs.plan.outputs.tag }}" --notes-file "$RUNNER_TEMP/combined_notes.txt"
 
-  # Build and upload WiX MSI installer for Windows
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 3: Build platform-specific installers
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Windows MSI ──────────────────────────────────────────────────────────
   build-msi:
     name: Build Windows MSI Installer
     needs:
@@ -374,63 +315,23 @@ jobs:
 
       - name: Stage binaries for WiX
         shell: pwsh
-        run: |
-          $stagingDir = "wix\msi\staging"
-          New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
-
-          # Find and copy the main executable
-          $exe = Get-ChildItem -Path dist_extracted -Filter "gemacast-pc.exe" -Recurse | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "gemacast-pc.exe not found in extracted archive"
-            exit 1
-          }
-          Copy-Item $exe.FullName -Destination $stagingDir
-          Write-Host "Staged: gemacast-pc.exe"
-
-          # Copy ADB binaries (bundled by cargo-dist alongside the executable)
-          foreach ($fileName in @("adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll")) {
-            $found = Get-ChildItem -Path dist_extracted -Filter $fileName -Recurse | Select-Object -First 1
-            if ($found) {
-              Copy-Item $found.FullName -Destination $stagingDir
-              Write-Host "Staged: $fileName"
-            } else {
-              Write-Error "$fileName not found in archive — crashing build!"
-              exit 1
-            }
-          }
-
-          Write-Host "Staging complete. Contents:"
-          Get-ChildItem $stagingDir | Format-Table Name, Length
+        env:
+          DIST_EXTRACTED: dist_extracted
+        run: .github\scripts\stage-wix-binaries.ps1
 
       - name: Install WiX v6 toolset
         run: dotnet tool install --global wix --version 6.0.2
 
       - name: Build MSI
         shell: pwsh
-        run: |
-          $sourceDir = (Resolve-Path "wix\msi\staging").Path
-          $iconDir = (Resolve-Path "wix\assets").Path
+        run: .github\scripts\build-msi.ps1
 
-          Write-Host "Building MSI with Version=$env:VERSION"
-          Write-Host "  SourceDir=$sourceDir"
-          Write-Host "  IconDir=$iconDir"
-
-          dotnet build wix\msi\msi.wixproj `
-            -c Release `
-            "-p:Version=$env:VERSION" `
-            "-p:SourceDir=$sourceDir" `
-            "-p:IconDir=$iconDir"
-
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          # Verify MSI was produced
-          $msi = Get-ChildItem -Path wix\msi\bin -Filter "gemacast-pc-x86_64-pc-windows-msvc.msi" -Recurse | Select-Object -First 1
-          if (-not $msi) {
-            Write-Error "gemacast-pc-x86_64-pc-windows-msvc.msi was not produced by the build"
-            exit 1
-          }
-          Write-Host "MSI built successfully: $($msi.FullName) ($([math]::Round($msi.Length / 1MB, 2)) MB)"
-          echo "MSI_PATH=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Upload MSI as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-msi
+          path: ${{ env.MSI_PATH }} 
+          retention-days: 1
 
       - name: Upload installer to GitHub Release
         shell: pwsh
@@ -439,7 +340,7 @@ jobs:
           gh release upload $env:TAG $env:MSI_PATH --clobber
           Write-Host "Upload complete!"
 
-  # Build Linux packages (.deb, .rpm, .AppImage) for amd64 and arm64
+  # ── Linux packages (.deb, .rpm, .AppImage) ──────────────────────────────
   build-linux-packages:
     name: Build Linux Packages (${{ matrix.arch }})
     needs:
@@ -486,114 +387,36 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfuse2 file
 
-      # -- .deb via dpkg-deb (direct packaging) ------------------
       - name: Build .deb package
-        run: |
-          PKG_NAME="gemacast-pc_${VERSION}_${{ matrix.arch }}"
-          mkdir -p "${PKG_NAME}/DEBIAN"
-          mkdir -p "${PKG_NAME}/usr/bin"
-          mkdir -p "${PKG_NAME}/usr/lib/gemacast"
-          mkdir -p "${PKG_NAME}/usr/share/applications"
-          mkdir -p "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps"
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIST_EXTRACTED: dist_extracted
+        run: .github/scripts/build-deb.sh
 
-          # Binary
-          cp dist_extracted/gemacast-pc "${PKG_NAME}/usr/bin/"
-          chmod 755 "${PKG_NAME}/usr/bin/gemacast-pc"
-
-          # ADB
-          if [ -f dist_extracted/adb ]; then
-            cp dist_extracted/adb "${PKG_NAME}/usr/lib/gemacast/"
-            chmod 755 "${PKG_NAME}/usr/lib/gemacast/adb"
-          else
-            echo "::error::ADB binary not found in extracted archive — .deb would be incomplete"
-            exit 1
-          fi
-
-          # Desktop entry & icon
-          cp linux/gemacast-pc.desktop "${PKG_NAME}/usr/share/applications/"
-          cp linux/gemacast-pc.png "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps/"
-
-          # Control file — written field-by-field to avoid heredoc whitespace issues
-          {
-            echo "Package: gemacast-pc"
-            echo "Version: ${VERSION}"
-            echo "Section: sound"
-            echo "Priority: optional"
-            echo "Architecture: ${{ matrix.arch }}"
-            echo "Maintainer: Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>"
-            echo "Description: Low-latency real-time audio streaming from PC to Android"
-            echo " Gemacast streams audio from your PC to Android devices over a local"
-            echo " network with minimal latency using Opus codec and UDP transport."
-            echo "Homepage: https://github.com/apirJS/gemacast"
-          } > "${PKG_NAME}/DEBIAN/control"
-
-          dpkg-deb --build --root-owner-group "${PKG_NAME}"
-          echo "Built: ${PKG_NAME}.deb"
-
-      # -- .rpm via alien (convert from .deb) ----------------------
       - name: Build .rpm package
+        env:
+          ARCH: ${{ matrix.arch }}
+          APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
         run: |
           sudo apt-get install -y alien rpm
-          DEB_FILE="gemacast-pc_${VERSION}_${{ matrix.arch }}.deb"
-          # Generate the RPM build directory and spec file with correct target architecture
-          sudo alien --generate --to-rpm --target=${{ matrix.appimage_arch }} --scripts "$DEB_FILE"
-          SPEC_FILE=$(find . -name '*.spec' | head -1)
-          # Add AutoReqProv: no to prevent scraping x86_64 ADB dependencies on arm64
-          sudo sed -i '/Summary:/a AutoReqProv: no' "$SPEC_FILE"
-          # Build the RPM package from the modified spec file
-          BUILD_DIR=$(dirname "$SPEC_FILE")
-          RPMBUILD_OUT=$(sudo rpmbuild --define "_rpmdir $(pwd)" --buildroot "$(pwd)/$BUILD_DIR" --target ${{ matrix.appimage_arch }} -bb "$SPEC_FILE" 2>&1)
-          echo "$RPMBUILD_OUT"
-          # Parse the output path from rpmbuild's "Wrote:" line (rpmbuild may write to ../ or a subdirectory)
-          RPM_FILE=$(echo "$RPMBUILD_OUT" | grep '^Wrote:' | awk '{print $2}' | head -1)
-          if [ -z "$RPM_FILE" ] || [ ! -f "$RPM_FILE" ]; then
-            echo "::error::rpmbuild did not produce an RPM file (parsed: '$RPM_FILE')"
-            exit 1
-          fi
-          mv "$RPM_FILE" "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
-          echo "Built: gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm"
+          .github/scripts/build-rpm.sh
 
-      # -- AppImage ----------------------------------------------
       - name: Build AppImage
         env:
           ARCH: ${{ matrix.appimage_arch }}
-        run: |
-          APPDIR="Gemacast.AppDir"
-          mkdir -p "$APPDIR/usr/bin"
-          mkdir -p "$APPDIR/usr/share/applications"
-          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          DIST_EXTRACTED: dist_extracted
+        run: .github/scripts/build-appimage.sh
 
-          cp dist_extracted/gemacast-pc "$APPDIR/usr/bin/"
+      - name: Upload packages as workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-linux-${{ matrix.arch }}
+          path: |
+            gemacast-pc_*.deb
+            gemacast-pc-*.rpm
+            gemacast-pc-*.AppImage
+          retention-days: 1
 
-          # Only bundle adb if it matches the target architecture
-          if [ -f dist_extracted/adb ]; then
-            ADB_ARCH=$(file dist_extracted/adb | grep -oP 'ELF \d+-bit .+?, \K[^,]+')
-            if echo "$ADB_ARCH" | grep -qi "$ARCH\|$([ "$ARCH" = "x86_64" ] && echo 'X86-64' || echo 'AArch64')"; then
-              cp dist_extracted/adb "$APPDIR/usr/bin/"
-            else
-              echo "Skipping adb (arch mismatch: $ADB_ARCH vs target $ARCH)"
-            fi
-          fi
-          chmod +x "$APPDIR/usr/bin/"*
-
-          cp linux/gemacast-pc.desktop "$APPDIR/"
-          cp linux/gemacast-pc.desktop "$APPDIR/usr/share/applications/"
-          cp linux/gemacast-pc.png "$APPDIR/gemacast-pc.png"
-          cp linux/gemacast-pc.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/gemacast-pc.png"
-          cp linux/gemacast-pc.png "$APPDIR/.DirIcon"
-
-          # Create AppRun — written via printf to avoid heredoc/YAML conflicts
-          printf '#!/bin/bash\nSELF="$(readlink -f "$0")"\nHERE="${SELF%%/*}"\nexport PATH="${HERE}/usr/bin:${PATH}"\nexec "${HERE}/usr/bin/gemacast-pc" "$@"\n' > "$APPDIR/AppRun"
-          chmod +x "$APPDIR/AppRun"
-
-          # Download appimagetool for the current architecture
-          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage" -O appimagetool
-          chmod +x appimagetool
-
-          ./appimagetool --appimage-extract-and-run --no-appstream "$APPDIR" \
-            "gemacast-pc-${VERSION}-${ARCH}.AppImage"
-
-      # -- Upload all to release ---------------------------------
       - name: Upload packages to GitHub Release
         run: |
           gh release upload "$TAG" \
@@ -602,7 +425,7 @@ jobs:
             gemacast-pc-*.AppImage \
             --clobber
 
-  # Build macOS .app bundles, .dmg installers, and .app.tar.gz archives
+  # ── macOS DMG & App Bundle ──────────────────────────────────────────────
   build-macos-dmg:
     name: Build macOS DMG & App Bundle
     needs:
@@ -637,86 +460,21 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
-      # -- Per-architecture .app bundles -------------------------
       - name: Create .app bundles
-        run: |
-          for ARCH in x64:mac_x64 aarch64:mac_arm64; do
-            ARCH_NAME="${ARCH%%:*}"
-            ARCH_DIR="${ARCH##*:}"
+        run: .github/scripts/create-macos-app-bundles.sh
 
-            APP="Gemacast-${ARCH_NAME}.app"
-            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-            # Binary + ADB
-            cp "$ARCH_DIR/gemacast-pc" "$APP/Contents/MacOS/"
-            [ -f "$ARCH_DIR/adb" ] && cp "$ARCH_DIR/adb" "$APP/Contents/MacOS/"
-            chmod +x "$APP/Contents/MacOS/"*
-
-            # Info.plist with version
-            sed "s/VERSION_PLACEHOLDER/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
-
-            # Icon
-            cp gemacast-mobile/src-tauri/icons/icon.icns "$APP/Contents/Resources/AppIcon.icns"
-          done
-
-      # -- Universal binary via lipo -----------------------------
       - name: Create universal .app bundle
-        run: |
-          APP="Gemacast-universal.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+        run: .github/scripts/create-macos-universal.sh
 
-          lipo -create -output "$APP/Contents/MacOS/gemacast-pc" \
-            mac_x64/gemacast-pc mac_arm64/gemacast-pc
-
-          # ADB: prefer x64 for Intel compatibility since arm64 would need Rosetta.
-          # If only arm64 exists, fall back to it (runs via Rosetta on Intel).
-          if [ -f mac_x64/adb ] && [ -f mac_arm64/adb ]; then
-            lipo -create -output "$APP/Contents/MacOS/adb" mac_x64/adb mac_arm64/adb 2>/dev/null \
-              || cp mac_x64/adb "$APP/Contents/MacOS/"
-          elif [ -f mac_x64/adb ]; then
-            cp mac_x64/adb "$APP/Contents/MacOS/"
-          elif [ -f mac_arm64/adb ]; then
-            cp mac_arm64/adb "$APP/Contents/MacOS/"
-          fi
-          chmod +x "$APP/Contents/MacOS/"*
-
-          sed "s/VERSION_PLACEHOLDER/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
-          cp gemacast-mobile/src-tauri/icons/icon.icns "$APP/Contents/Resources/AppIcon.icns"
-
-      # -- Create .app.tar.gz archives ---------------------------
       - name: Create .app.tar.gz archives
         run: |
           tar -czf "gemacast-pc-x64-apple-darwin.app.tar.gz" "Gemacast-x64.app"
           tar -czf "gemacast-pc-aarch64-apple-darwin.app.tar.gz" "Gemacast-aarch64.app"
           tar -czf "gemacast-pc-universal-apple-darwin.app.tar.gz" "Gemacast-universal.app"
 
-      # -- Create .dmg files -------------------------------------
       - name: Create DMG files
-        run: |
-          for VARIANT in x64 aarch64 universal; do
-            DMG="gemacast-pc-${VARIANT}-apple-darwin.dmg"
-            create-dmg \
-              --volname "Gemacast" \
-              --volicon "gemacast-mobile/src-tauri/icons/icon.icns" \
-              --window-pos 200 120 \
-              --window-size 600 400 \
-              --icon-size 100 \
-              --icon "Gemacast-${VARIANT}.app" 150 190 \
-              --app-drop-link 450 190 \
-              --hide-extension "Gemacast-${VARIANT}.app" \
-              "$DMG" \
-              "Gemacast-${VARIANT}.app" || true
-            # create-dmg returns non-zero when code signing is skipped; this is expected for unsigned builds
+        run: .github/scripts/create-dmg.sh
 
-            # Verify the DMG was actually produced despite the || true
-            if [ ! -f "$DMG" ] || [ ! -s "$DMG" ]; then
-              echo "::error::$DMG was not produced by create-dmg"
-              exit 1
-            fi
-            echo "Created: $DMG ($(du -h "$DMG" | cut -f1))"
-          done
-
-      # -- Upload all to release ---------------------------------
       - name: Upload to GitHub Release
         run: |
           gh release upload "$TAG" \
@@ -724,6 +482,7 @@ jobs:
             gemacast-pc-*-apple-darwin.app.tar.gz \
             --clobber
 
+  # ── Android APK ──────────────────────────────────────────────────────────
   build-android:
     name: Build Android APK
     needs:
@@ -823,25 +582,296 @@ jobs:
       - name: Archive Signed APK
         uses: actions/upload-artifact@v7
         with:
-          name: gemacast-android-signed
+          name: installer-android
           path: gemacast-mobile.apk
+          retention-days: 1
 
       - name: Upload Signed APK to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$RELEASE_TAG" "gemacast-mobile.apk" --clobber
 
-  # Sign all release assets with GPG
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 4: Test installers
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Test MSI ─────────────────────────────────────────────────────────────
+  test-msi:
+    name: Test MSI Installer
+    needs:
+      - plan
+      - build-msi
+    runs-on: windows-latest
+    if: ${{ needs.build-msi.result == 'success' }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download MSI from release
+        shell: pwsh
+        run: |
+          $tag = $env:TAG
+          $version = $tag -replace '^v', ''
+          gh release download $tag -p "gemacast-pc-x86_64-pc-windows-msvc.msi" --dir msi_download
+          $msi = Get-ChildItem -Path msi_download -Filter "*.msi" | Select-Object -First 1
+          if (-not $msi) { Write-Error "MSI not found in release"; exit 1 }
+          echo "MSI_PATH=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Downloaded: $($msi.FullName)"
+
+      - name: Test MSI (install, verify, uninstall, verify cleanup)
+        shell: pwsh
+        run: .github\scripts\test-msi.ps1
+
+  # ── Test Linux packages ──────────────────────────────────────────────────
+  test-linux-packages:
+    name: Test Linux Packages (${{ matrix.arch }})
+    needs:
+      - plan
+      - build-linux-packages
+    if: ${{ needs.build-linux-packages.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            appimage_arch: x86_64
+            runs_on: ubuntu-24.04
+          - arch: arm64
+            appimage_arch: aarch64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Parse version and download packages
+        run: |
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "APPIMAGE_ARCH=${{ matrix.appimage_arch }}" >> $GITHUB_ENV
+          
+          gh release download "$TAG" \
+            -p "gemacast-pc_${VERSION}_${{ matrix.arch }}.deb" \
+            -p "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm" \
+            -p "gemacast-pc-${VERSION}-${{ matrix.appimage_arch }}.AppImage" \
+            --dir .
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libfuse2 file libayatana-appindicator3-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libxdo-dev zenity pipewire
+
+      - name: Test .deb (install, verify, uninstall, verify cleanup)
+        run: .github/scripts/test-deb.sh
+
+      - name: Verify .rpm structure
+        run: .github/scripts/test-rpm-structure.sh
+
+      - name: Test AppImage
+        env:
+          ARCH: ${{ matrix.appimage_arch }}
+        run: .github/scripts/test-appimage.sh
+
+  # ── Test RPM in Fedora container ─────────────────────────────────────────
+  test-rpm:
+    name: Test RPM Installation (${{ matrix.arch }})
+    needs:
+      - plan
+      - build-linux-packages
+    if: ${{ needs.build-linux-packages.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            appimage_arch: x86_64
+            runs_on: ubuntu-24.04
+          - arch: arm64
+            appimage_arch: aarch64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
+    container: fedora:latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - name: Install gh CLI
+        run: dnf install -y gh
+
+      - name: Download RPM from release
+        run: |
+          VERSION="${TAG#v}"
+          mkdir -p rpm_download
+          gh release download "$TAG" \
+            -p "gemacast-pc-${VERSION}.${{ matrix.appimage_arch }}.rpm" \
+            --dir rpm_download \
+            --repo ${{ github.repository }}
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test RPM (install, verify, smoke test, uninstall)
+        env:
+          RPM_DIR: rpm_download
+        run: .github/scripts/test-rpm-fedora.sh
+
+  # ── Test macOS DMG ──────────────────────────────────────────────────────
+  test-macos-dmg:
+    name: Test macOS DMG & App Bundle
+    needs:
+      - plan
+      - build-macos-dmg
+    if: ${{ needs.build-macos-dmg.result == 'success' }}
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Parse version and download macOS installers
+        run: |
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+          gh release download "$TAG" \
+            -p "gemacast-pc-*-apple-darwin.dmg" \
+            -p "gemacast-pc-*-apple-darwin.app.tar.gz" \
+            -p "gemacast-pc-aarch64-apple-darwin.tar.xz" \
+            -p "gemacast-pc-x86_64-apple-darwin.tar.xz" \
+            --dir .
+
+      - name: Extract archives and create .app bundles for verification
+        run: |
+          # Extract raw binaries for .app bundle creation
+          mkdir -p mac_x64 mac_arm64
+          tar -xJf gemacast-pc-x86_64-apple-darwin.tar.xz -C mac_x64 --strip-components=1
+          tar -xJf gemacast-pc-aarch64-apple-darwin.tar.xz -C mac_arm64 --strip-components=1
+
+          # Recreate .app bundles (matching the build step)
+          .github/scripts/create-macos-app-bundles.sh
+          .github/scripts/create-macos-universal.sh
+
+          # Extract .app.tar.gz archives for content verification
+          # (the test script verifies these can be extracted and contain the binary)
+
+      - name: Test macOS installers
+        run: .github/scripts/test-macos.sh
+
+  # ── Test Android APK ────────────────────────────────────────────────────
+  test-android-apk:
+    name: Test Android APK
+    needs:
+      - plan
+      - build-android
+    if: ${{ needs.build-android.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download APK from release
+        run: |
+          gh release download "$TAG" -p "gemacast-mobile.apk" --dir .
+          echo "APK_PATH=$(pwd)/gemacast-mobile.apk" >> $GITHUB_ENV
+
+      - name: Verify APK metadata
+        run: |
+          # Setup Android SDK for aapt2
+          sudo apt-get update && sudo apt-get install -y android-sdk-build-tools
+
+          AAPT2=$(find /usr -name "aapt2" 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$AAPT2" ]; then
+            "$AAPT2" dump badging "$APK_PATH" | head -20
+            PKG=$("$AAPT2" dump badging "$APK_PATH" | grep "package:" | head -1)
+            if echo "$PKG" | grep -q "com.apir.gemacast"; then
+              echo "PASS: Package name is com.apir.gemacast"
+            else
+              echo "FAIL: Unexpected package name: $PKG"
+              exit 1
+            fi
+          else
+            echo "::notice::aapt2 not found, skipping APK metadata check"
+          fi
+
+      - name: Install and launch APK on emulator
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: 31
+          arch: x86_64
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: .github/scripts/test-android-emulator.sh
+
+  # ── Installer tests gate ─────────────────────────────────────────────────
+  installer-tests-gate:
+    name: All Installer Tests Passed
+    needs:
+      - test-msi
+      - test-linux-packages
+      - test-rpm
+      - test-macos-dmg
+      - test-android-apk
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check results
+        run: |
+          echo "=== Installer Test Results ==="
+          echo "MSI:            ${{ needs.test-msi.result }}"
+          echo "Linux packages: ${{ needs.test-linux-packages.result }}"
+          echo "Fedora RPM:     ${{ needs.test-rpm.result }}"
+          echo "macOS DMG:      ${{ needs.test-macos-dmg.result }}"
+          echo "Android APK:    ${{ needs.test-android-apk.result }}"
+          echo ""
+
+          FAILED=0
+          for result in \
+            "${{ needs.test-msi.result }}" \
+            "${{ needs.test-linux-packages.result }}" \
+            "${{ needs.test-rpm.result }}" \
+            "${{ needs.test-macos-dmg.result }}" \
+            "${{ needs.test-android-apk.result }}"; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              FAILED=$((FAILED+1))
+            fi
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo "::error::$FAILED installer test job(s) failed"
+            exit 1
+          fi
+          echo "All installer tests passed!"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 5: Finalize (sign, updater, announce)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── GPG Sign ─────────────────────────────────────────────────────────────
   sign-release:
     name: Sign Release Assets (GPG)
     needs:
       - plan
       - host
-      - build-msi
-      - build-linux-packages
-      - build-macos-dmg
-      - build-android
-    if: ${{ always() && needs.host.result == 'success' && (needs.build-msi.result == 'skipped' || needs.build-msi.result == 'success') && (needs.build-linux-packages.result == 'skipped' || needs.build-linux-packages.result == 'success') && (needs.build-macos-dmg.result == 'skipped' || needs.build-macos-dmg.result == 'success') && (needs.build-android.result == 'skipped' || needs.build-android.result == 'success') }}
+      - installer-tests-gate
+    if: ${{ always() && needs.host.result == 'success' && needs.installer-tests-gate.result == 'success' }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -850,7 +880,6 @@ jobs:
       - name: Import GPG key
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          # Verify at least one secret key was imported
           KEY_COUNT=$(gpg --list-secret-keys --keyid-format SHORT 2>/dev/null | grep -c '^sec' || true)
           if [ "$KEY_COUNT" -eq 0 ]; then
             echo "::error::GPG key import failed — no secret keys found"
@@ -863,149 +892,55 @@ jobs:
           mkdir -p assets
           gh release download "$TAG" --dir assets --repo ${{ github.repository }}
 
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Sign all assets
-        run: |
-          cd assets
-          SIGNED=0
-          for file in *.msi *.deb *.rpm *.AppImage *.dmg *.app.tar.gz *.tar.xz *.zip *.apk; do
-            if [ -f "$file" ]; then
-              echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --pinentry-mode loopback \
-                --passphrase-fd 0 \
-                --detach-sign --armor --output "${file}.sig" "$file"
-              SIGNED=$((SIGNED+1))
-            fi
-          done
-          if [ "$SIGNED" -eq 0 ]; then
-            echo "::error::No files were signed — check that release assets were downloaded"
-            exit 1
-          fi
-          echo "Signed $SIGNED file(s)"
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: .github/scripts/sign-release-assets.sh
 
       - name: Upload signatures
         run: gh release upload "$TAG" assets/*.sig --clobber --repo ${{ github.repository }}
 
-  # Generate updater.json metadata for future auto-update support
+  # ── Generate updater.json ────────────────────────────────────────────────
   generate-updater:
     name: Generate updater.json
     needs:
       - plan
       - host
-      - build-msi
-      - build-linux-packages
-      - build-macos-dmg
-      - build-android
       - sign-release
-    if: ${{ always() && needs.host.result == 'success' && (needs.build-msi.result == 'skipped' || needs.build-msi.result == 'success') && (needs.build-linux-packages.result == 'skipped' || needs.build-linux-packages.result == 'success') && (needs.build-macos-dmg.result == 'skipped' || needs.build-macos-dmg.result == 'success') && (needs.build-android.result == 'skipped' || needs.build-android.result == 'success') && (needs.sign-release.result == 'skipped' || needs.sign-release.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && needs.sign-release.result == 'success' }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
       REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Generate updater.json
-        run: |
-          VERSION="${TAG#v}"
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
-
-          # Download all release artifacts to compute SHA-256 checksums.
-          mkdir -p dl
-          declare -A FILES=(
-            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi"
-            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg"
-            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg"
-            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg"
-            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage"
-            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage"
-            ["android"]="gemacast-mobile.apk"
-          )
-
-          declare -A SIGS=(
-            ["windows-x86_64"]="gemacast-pc-x86_64-pc-windows-msvc.msi.sig"
-            ["darwin-x86_64"]="gemacast-pc-x64-apple-darwin.dmg.sig"
-            ["darwin-aarch64"]="gemacast-pc-aarch64-apple-darwin.dmg.sig"
-            ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg.sig"
-            ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage.sig"
-            ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage.sig"
-            ["android"]="gemacast-mobile.apk.sig"
-          )
-
-          # Download each artifact and compute its SHA-256 hash.
-          declare -A HASHES
-          for platform in "${!FILES[@]}"; do
-            file="${FILES[$platform]}"
-            if gh release download "$TAG" --pattern "$file" --dir dl --repo "$REPO" 2>/dev/null; then
-              HASHES[$platform]=$(sha256sum "dl/$file" | cut -d' ' -f1)
-              echo "SHA-256 for $platform ($file): ${HASHES[$platform]}"
-            else
-              echo "WARNING: Could not download $file for $platform — omitting sha256"
-              HASHES[$platform]=""
-            fi
-          done
-
-          # Build the JSON using jq for proper escaping (avoids fragile heredoc whitespace)
-          jq -n \
-            --arg version "$VERSION" \
-            --arg pub_date "$PUB_DATE" \
-            --arg base_url "$BASE_URL" \
-            --arg win_file "${FILES[windows-x86_64]}" \
-            --arg win_sig "${SIGS[windows-x86_64]}" \
-            --arg win_hash "${HASHES[windows-x86_64]}" \
-            --arg dar_x64_file "${FILES[darwin-x86_64]}" \
-            --arg dar_x64_sig "${SIGS[darwin-x86_64]}" \
-            --arg dar_x64_hash "${HASHES[darwin-x86_64]}" \
-            --arg dar_arm_file "${FILES[darwin-aarch64]}" \
-            --arg dar_arm_sig "${SIGS[darwin-aarch64]}" \
-            --arg dar_arm_hash "${HASHES[darwin-aarch64]}" \
-            --arg dar_uni_file "${FILES[darwin-universal]}" \
-            --arg dar_uni_sig "${SIGS[darwin-universal]}" \
-            --arg dar_uni_hash "${HASHES[darwin-universal]}" \
-            --arg lin_x64_file "${FILES[linux-x86_64]}" \
-            --arg lin_x64_sig "${SIGS[linux-x86_64]}" \
-            --arg lin_x64_hash "${HASHES[linux-x86_64]}" \
-            --arg lin_arm_file "${FILES[linux-aarch64]}" \
-            --arg lin_arm_sig "${SIGS[linux-aarch64]}" \
-            --arg lin_arm_hash "${HASHES[linux-aarch64]}" \
-            --arg android_file "${FILES[android]}" \
-            --arg android_sig "${SIGS[android]}" \
-            --arg android_hash "${HASHES[android]}" \
-            '{
-              version: $version,
-              pub_date: $pub_date,
-              platforms: {
-                "windows-x86_64": { url: "\($base_url)/\($win_file)", signature: "\($base_url)/\($win_sig)", sha256: $win_hash },
-                "darwin-x86_64":  { url: "\($base_url)/\($dar_x64_file)", signature: "\($base_url)/\($dar_x64_sig)", sha256: $dar_x64_hash },
-                "darwin-aarch64": { url: "\($base_url)/\($dar_arm_file)", signature: "\($base_url)/\($dar_arm_sig)", sha256: $dar_arm_hash },
-                "darwin-universal": { url: "\($base_url)/\($dar_uni_file)", signature: "\($base_url)/\($dar_uni_sig)", sha256: $dar_uni_hash },
-                "linux-x86_64":   { url: "\($base_url)/\($lin_x64_file)", signature: "\($base_url)/\($lin_x64_sig)", sha256: $lin_x64_hash },
-                "linux-aarch64":  { url: "\($base_url)/\($lin_arm_file)", signature: "\($base_url)/\($lin_arm_sig)", sha256: $lin_arm_hash },
-                "android":        { url: "\($base_url)/\($android_file)", signature: "\($base_url)/\($android_sig)", sha256: $android_hash }
-              }
-            }' > updater.json
-
-          echo "Generated updater.json:"
-          cat updater.json
+        run: .github/scripts/generate-updater.sh
 
       - name: Upload updater.json
         run: gh release upload "$TAG" updater.json --clobber --repo "$REPO"
 
+  # ── Announce ─────────────────────────────────────────────────────────────
   announce:
     needs:
       - plan
       - host
-      - build-msi
-      - build-linux-packages
-      - build-macos-dmg
-      - build-android
       - sign-release
       - generate-updater
-    # use "always() && ..." to allow us to wait for all publish jobs while
-    # still allowing individual publish jobs to skip themselves (for prereleases).
-    # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.build-msi.result == 'skipped' || needs.build-msi.result == 'success') && (needs.build-linux-packages.result == 'skipped' || needs.build-linux-packages.result == 'success') && (needs.build-macos-dmg.result == 'skipped' || needs.build-macos-dmg.result == 'success') && (needs.build-android.result == 'skipped' || needs.build-android.result == 'success') && (needs.sign-release.result == 'skipped' || needs.sign-release.result == 'success') && (needs.generate-updater.result == 'skipped' || needs.generate-updater.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.sign-release.result == 'skipped' || needs.sign-release.result == 'success') && (needs.generate-updater.result == 'skipped' || needs.generate-updater.result == 'success') }}
     runs-on: "ubuntu-24.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1013,54 +948,50 @@ jobs:
           submodules: recursive
 
       - name: Generate and Update Release Notes
-        run: |
-          TAG="${{ needs.plan.outputs.tag }}"
-          VERSION="${TAG#v}"
-          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          
-          # Extract the changelog for the current version from release-plz generated CHANGELOG.md
-          if [ -f "gemacast-pc/CHANGELOG.md" ]; then
-            awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" gemacast-pc/CHANGELOG.md > current_changelog.md
-          else
-            echo "" > current_changelog.md
-          fi
+        run: .github/scripts/generate-release-notes.sh
 
-          # Preserve the existing release body (contains cargo-dist checksum table)
-          EXISTING_BODY=$(gh release view "$TAG" --json body -q .body 2>/dev/null || echo "")
-          
-          # Extract the cargo-dist checksum table if present
-          CHECKSUM_TABLE=""
-          if echo "$EXISTING_BODY" | grep -q "checksum"; then
-            CHECKSUM_TABLE=$(echo "$EXISTING_BODY" | sed -n '/^|.*checksum/I,$ p')
-          fi
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Rollback: Runs on failure after release was created
+  # ═══════════════════════════════════════════════════════════════════════════
+  rollback:
+    name: "⚠️ Rollback Failed Release"
+    needs:
+      - plan
+      - host
+      - build-msi
+      - build-linux-packages
+      - build-macos-dmg
+      - build-android
+      - test-msi
+      - test-linux-packages
+      - test-rpm
+      - test-macos-dmg
+      - test-android-apk
+      - installer-tests-gate
+      - sign-release
+    if: >-
+      always() && needs.host.result == 'success' &&
+      (needs.build-msi.result == 'failure' ||
+       needs.build-linux-packages.result == 'failure' ||
+       needs.build-macos-dmg.result == 'failure' ||
+       needs.build-android.result == 'failure' ||
+       needs.test-msi.result == 'failure' ||
+       needs.test-linux-packages.result == 'failure' ||
+       needs.test-rpm.result == 'failure' ||
+       needs.test-macos-dmg.result == 'failure' ||
+       needs.test-android-apk.result == 'failure' ||
+       needs.installer-tests-gate.result == 'failure' ||
+       needs.sign-release.result == 'failure')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GH_PAT }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
 
-          # Create the download matrix — written via echo to avoid heredoc/YAML conflicts
-          {
-            echo "## Gemacast ${VERSION} Downloads"
-            echo ""
-            echo "### Desktop Installers"
-            echo "* **Windows**: [MSI Installer (x64)](${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi)"
-            echo "* **macOS (Universal)**: [DMG Installer](${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-universal-apple-darwin.app.tar.gz)"
-            echo "* **macOS (Apple Silicon)**: [DMG Installer](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.app.tar.gz)"
-            echo "* **macOS (Intel)**: [DMG Installer](${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-x64-apple-darwin.app.tar.gz)"
-            echo "* **Linux (Debian/Ubuntu)**: [amd64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_amd64.deb) | [arm64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_arm64.deb)"
-            echo "* **Linux (Fedora/RHEL)**: [x86_64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.x86_64.rpm) | [aarch64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.aarch64.rpm)"
-            echo "* **Linux (Portable)**: [x86_64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage) | [aarch64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage)"
-            echo ""
-            echo "### Mobile"
-            echo "* **Android**: [APK Installer](${BASE_URL}/gemacast-mobile.apk)"
-            echo ""
-            echo "### Security"
-            echo "All binaries are cryptographically signed. Download the corresponding \`.sig\` file to verify."
-            echo ""
-            echo "---"
-            echo ""
-            echo "### Changelog"
-          } > custom_header.md
-          
-          # Combine: download matrix + changelog + cargo-dist checksums
-          cat custom_header.md current_changelog.md > new_notes.md
-          if [ -n "$CHECKSUM_TABLE" ]; then
-            printf "\n\n---\n\n### Checksums\n\n%s\n" "$CHECKSUM_TABLE" >> new_notes.md
-          fi
-          gh release edit "$TAG" --notes-file new_notes.md --draft=false
+      - name: Rollback release
+        run: .github/scripts/rollback-release.sh

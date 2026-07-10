@@ -30,7 +30,7 @@ wix/**/obj/
 wix/**/bin/
 
 # Playground pwsl scripts
-**/*.ps1
+nuke.ps1
 
 # Temporary
 TEMP/

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Generate formatted release notes with download matrix.
+# Expects env vars: TAG, REPO
+set -euo pipefail
+
+TAG="${TAG:?TAG is required}"
+REPO="${REPO:?REPO is required}"
+
+VERSION="${TAG#v}"
+BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+# Extract the changelog for the current version from release-plz generated CHANGELOG.md
+if [ -f "gemacast-pc/CHANGELOG.md" ]; then
+  awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" gemacast-pc/CHANGELOG.md > current_changelog.md
+else
+  echo "" > current_changelog.md
+fi
+
+# Preserve the existing release body (contains cargo-dist checksum table)
+EXISTING_BODY=$(gh release view "$TAG" --json body -q .body 2>/dev/null || echo "")
+
+# Extract the cargo-dist checksum table if present
+CHECKSUM_TABLE=""
+if echo "$EXISTING_BODY" | grep -q "checksum"; then
+  CHECKSUM_TABLE=$(echo "$EXISTING_BODY" | sed -n '/^|.*checksum/I,$ p')
+fi
+
+# Create the download matrix
+{
+  echo "## Gemacast ${VERSION} Downloads"
+  echo ""
+  echo "### Desktop Installers"
+  echo "* **Windows**: [MSI Installer (x64)](${BASE_URL}/gemacast-pc-x86_64-pc-windows-msvc.msi)"
+  echo "* **macOS (Universal)**: [DMG Installer](${BASE_URL}/gemacast-pc-universal-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-universal-apple-darwin.app.tar.gz)"
+  echo "* **macOS (Apple Silicon)**: [DMG Installer](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-aarch64-apple-darwin.app.tar.gz)"
+  echo "* **macOS (Intel)**: [DMG Installer](${BASE_URL}/gemacast-pc-x64-apple-darwin.dmg) | [App Bundle](${BASE_URL}/gemacast-pc-x64-apple-darwin.app.tar.gz)"
+  echo "* **Linux (Debian/Ubuntu)**: [amd64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_amd64.deb) | [arm64 .deb](${BASE_URL}/gemacast-pc_${VERSION}_arm64.deb)"
+  echo "* **Linux (Fedora/RHEL)**: [x86_64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.x86_64.rpm) | [aarch64 .rpm](${BASE_URL}/gemacast-pc-${VERSION}.aarch64.rpm)"
+  echo "* **Linux (Portable)**: [x86_64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-x86_64.AppImage) | [aarch64 AppImage](${BASE_URL}/gemacast-pc-${VERSION}-aarch64.AppImage)"
+  echo ""
+  echo "### Mobile"
+  echo "* **Android**: [APK Installer](${BASE_URL}/gemacast-mobile.apk)"
+  echo ""
+  echo "### Security"
+  echo "All binaries are cryptographically signed. Download the corresponding \`.sig\` file to verify."
+  echo ""
+  echo "---"
+  echo ""
+  echo "### Changelog"
+} > custom_header.md
+
+# Combine: download matrix + changelog + cargo-dist checksums
+cat custom_header.md current_changelog.md > new_notes.md
+if [ -n "$CHECKSUM_TABLE" ]; then
+  printf "\n\n---\n\n### Checksums\n\n%s\n" "$CHECKSUM_TABLE" >> new_notes.md
+fi
+gh release edit "$TAG" --notes-file new_notes.md --draft=false
