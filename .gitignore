@@ -34,3 +34,8 @@ nuke.ps1
 
 # Temporary
 TEMP/
+LOGS/
+
+# Local confs
+**/*.cmake
+.cargo/

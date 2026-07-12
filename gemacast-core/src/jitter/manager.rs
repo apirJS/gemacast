@@ -21,6 +21,25 @@ const MAX_MISSING: u32 = 2000 / MILLIS_PER_FRAME;
 /// Reorder tolerance: ~30ms window to wait for a reordered packet.
 const REORDER_TOLERANCE: u32 = 30 / MILLIS_PER_FRAME;
 
+/// Hysteresis half-width in frames. The effective target only moves when the
+/// raw computed target deviates by more than this many frames.
+const HYSTERESIS_BAND: u32 = 3;
+/// How many consecutive callbacks the raw target must stay outside the
+/// hysteresis band before we commit to the new effective target.
+const HYSTERESIS_DWELL: u32 = 40;
+/// Snap effective target to multiples of this many frames to reduce
+/// the total number of discrete target transitions.
+const TARGET_QUANTUM: u32 = 4;
+/// Cooldown period in callbacks after a starvation bump. While active,
+/// no new bumps are applied — prevents positive-feedback ratcheting.
+const STARVATION_COOLDOWN: u32 = 400;
+/// Rate-limit interval: effective target moves by at most ±1 frame every
+/// this many callbacks, smoothing transitions for artifact-free playback.
+const RAMP_INTERVAL: u32 = 5;
+/// When the network has been stable for a sustained period, try probing
+/// lower every this many callbacks. One quantum step down per probe.
+const PROBE_DOWN_INTERVAL: u32 = 200;
+
 /// Coordinates the full jitter buffer pipeline.
 ///
 /// Owns the buffer and Opus decoder. Runs entirely within the cpal audio callback thread.
@@ -63,8 +82,8 @@ pub struct JitterBufferManager {
     /// Unstable network (e.g. 2.4GHz scan cycle) regime expiration.
     unstable_regime_until: Option<Instant>,
 
-    /// Consecutive packets with jitter < 1 frame (5ms).
-    /// Used to infer network quality: high streak = stable 5GHz-like link.
+    /// Consecutive packets with jitter below the adaptive clean threshold.
+    /// Used to infer network quality: high streak = stable link.
     clean_streak: u32,
     /// EWMA of jitter² for variance tracking.
     /// Combined with `ema_jitter`, yields coefficient of variation (CV = σ/μ)
@@ -79,6 +98,26 @@ pub struct JitterBufferManager {
     wsola_buf: Vec<f32>,
     /// Countdown to reduce config lock polling: only check every 100 frames (~500ms).
     config_check_countdown: u32,
+
+    // --- Hysteresis & rate-limiting state (Fix 1, 2, 6) ---
+    /// The currently locked-in effective target depth (frames). Only moves when
+    /// the raw computed target exits the hysteresis band for HYSTERESIS_DWELL callbacks.
+    effective_target: u32,
+    /// How many consecutive callbacks the raw target has been outside the band.
+    target_exit_count: u32,
+    /// The quantized goal that `effective_target` is ramping toward.
+    ramp_goal: u32,
+    /// Countdown for rate-limited ramping (one step per RAMP_INTERVAL callbacks).
+    ramp_countdown: u32,
+
+    // --- Starvation bump cooldown (Fix 4) ---
+    /// Cooldown countdown after a starvation bump. While >0, no new bumps are applied.
+    starvation_bump_cooldown: u32,
+    /// Countdown for active downward probing when the network is stable.
+    probe_down_countdown: u32,
+    /// Learned floor: the lowest effective_target that caused starvation.
+    /// Probing won't go below this. Reset when network conditions genuinely change.
+    probe_floor: u32,
 }
 
 impl JitterBufferManager {
@@ -132,6 +171,13 @@ impl JitterBufferManager {
             unstable_regime_until: None,
             clean_streak: 0,
             ema_jitter_var: 0.0,
+            effective_target: 2,
+            target_exit_count: 0,
+            ramp_goal: 2,
+            ramp_countdown: 0,
+            starvation_bump_cooldown: 0,
+            probe_down_countdown: PROBE_DOWN_INTERVAL,
+            probe_floor: 0,
         }
     }
 
@@ -150,6 +196,24 @@ impl JitterBufferManager {
     /// Ramps linearly over 400 consecutive clean packets (~2 seconds).
     fn stability_ratio(&self) -> f32 {
         self.clean_streak.min(400) as f32 / 400.0
+    }
+
+    /// Adaptive clean threshold based on observed baseline jitter.
+    /// On 2.4GHz (ema_jitter ~4–8 frames), threshold ≈ 7–13 frames.
+    /// On 5GHz (ema_jitter ~0.5 frames), threshold ≈ 1.75 frames.
+    /// This allows the clean streak to build even on noisy networks,
+    /// as long as jitter stays near the established baseline.
+    fn clean_threshold(&self) -> f32 {
+        (self.ema_jitter * 1.5 + 1.0).min(10.0)
+    }
+
+    /// Snap a raw target to the nearest quantum level.
+    /// Reduces the total number of discrete target transitions.
+    fn quantize_target(raw: u32) -> u32 {
+        if TARGET_QUANTUM == 0 {
+            return raw;
+        }
+        ((raw + TARGET_QUANTUM / 2) / TARGET_QUANTUM) * TARGET_QUANTUM
     }
 
     /// Pure computation of the target buffer depth from observed jitter statistics.
@@ -194,15 +258,17 @@ impl JitterBufferManager {
                     let jitter_ms = (iat_actual - iat_expected).max(0.0);
                     let jitter_frames = jitter_ms / MILLIS_PER_FRAME as f32;
 
-                    // --- Clean streak tracking ---
-                    // A packet with jitter < 1 frame (5ms) is "clean".
-                    // Consecutive clean packets indicate a stable network (5GHz-like).
-                    if jitter_frames < 1.0 {
+                    // --- Clean streak tracking (regime-aware) ---
+                    // A packet is "clean" if its jitter is below the adaptive threshold.
+                    // On 2.4GHz where baseline jitter is ~20ms, the threshold rises to
+                    // accommodate the network's natural behavior, letting the streak build.
+                    let clean_thresh = self.clean_threshold();
+                    if jitter_frames < clean_thresh {
                         self.clean_streak = self.clean_streak.saturating_add(1);
                     } else {
-                        // Any spike resets the streak. Spikes > 4 frames (20ms)
-                        // are severe — slam to zero. Moderate spikes decay gently.
-                        if jitter_frames > 4.0 {
+                        // Spikes well above threshold are severe — slam to zero.
+                        // Moderate spikes (up to 2x threshold) decay gently.
+                        if jitter_frames > clean_thresh * 2.0 {
                             self.clean_streak = 0;
                         } else {
                             self.clean_streak /= 2;
@@ -320,10 +386,12 @@ impl JitterBufferManager {
     fn process_next_frame(&mut self) {
         // Proportional bleed for starvation bump: bigger bumps recover faster.
         // Base rate 0.05 + 3% of current bump per callback.
-        // 20-frame bump: bleeds at ~0.65 frames/cb → recovers in ~30 callbacks (150ms)
+        // 12-frame bump: bleeds at ~0.41 frames/cb → recovers in ~29 callbacks (145ms)
         // 2-frame bump:  bleeds at ~0.11 frames/cb → recovers in ~18 callbacks (90ms)
         let bleed = 0.05 + self.starvation_bump * 0.03;
         self.starvation_bump = (self.starvation_bump - bleed).max(0.0);
+        // Tick starvation bump cooldown.
+        self.starvation_bump_cooldown = self.starvation_bump_cooldown.saturating_sub(1);
         let mut pending_flush: Option<u32> = None;
         self.config_check_countdown += 1;
         let should_check_config = self.config_check_countdown >= 100;
@@ -340,7 +408,15 @@ impl JitterBufferManager {
                 self.starvation_bump = 0.0;
                 self.clean_streak = 0;
                 self.ema_jitter_var = 0.0;
-                let new_target = Self::ms_to_frames_ceil(new_config.min_depth_ms).max(2);
+                // Reset hysteresis + ramp state for the new config.
+                self.effective_target = Self::ms_to_frames_ceil(new_config.min_depth_ms).max(2);
+                self.ramp_goal = self.effective_target;
+                self.target_exit_count = 0;
+                self.ramp_countdown = 0;
+                self.starvation_bump_cooldown = 0;
+                self.probe_down_countdown = PROBE_DOWN_INTERVAL;
+                self.probe_floor = 0;
+                let new_target = self.effective_target;
                 let flush_target = new_target + new_target / 2;
                 if self.buffer.occupied_count() > flush_target {
                     pending_flush = Some(flush_target);
@@ -352,19 +428,13 @@ impl JitterBufferManager {
             }
         }
         if let Some(flush_target) = pending_flush {
-            while self.buffer.occupied_count() > flush_target {
-                if let Some(pkt) = self.buffer.pop_next() {
-                    self.capture_pcm(&pkt);
-                } else {
-                    self.buffer.advance_one();
-                }
-            }
+            self.flush_with_crossfade(flush_target);
         }
 
         let min_depth = self.min_depth_frames();
         let tcp_mode = self.is_tcp_mode.load(Ordering::Relaxed);
         // USB/ADB multiplexing proxy naturally introduces transient OS locks and micro-jitter.
-        let target = if tcp_mode {
+        let raw_target = if tcp_mode {
             // Cap at 12 frames (60ms) to prevent overbuffering on USB.
             // If the user selected a low-latency preset like Wired, this also overrides their
             // native comfort cap (e.g. 4 frames) so ADB can safely absorb massive USB-transit batching.
@@ -381,6 +451,68 @@ impl JitterBufferManager {
 
         let is_no_buffer = self.config.static_target_ms == Some(0);
 
+        // --- Hysteresis + quantization + rate-limited ramping ---
+        // Static and No Buffer modes bypass hysteresis entirely.
+        let target = if self.config.static_target_ms.is_some() {
+            self.effective_target = raw_target;
+            self.ramp_goal = raw_target;
+            raw_target
+        } else {
+            let quantized = Self::quantize_target(raw_target).max(min_depth);
+            let diff = self.effective_target.abs_diff(quantized);
+
+            if diff <= HYSTERESIS_BAND {
+                // Inside the dead-zone: no change, reset dwell counter.
+                self.target_exit_count = 0;
+            } else {
+                self.target_exit_count += 1;
+                if self.target_exit_count >= HYSTERESIS_DWELL {
+                    // Sustained deviation — commit to new ramp goal.
+                    self.ramp_goal = quantized;
+                    self.target_exit_count = 0;
+                    // If the target is moving UP, conditions changed — reset probe floor
+                    // so future probing can re-discover the new optimal depth.
+                    if quantized > self.effective_target {
+                        self.probe_floor = 0;
+                    }
+                }
+            }
+
+            // Rate-limited ramp toward the goal.
+            if self.effective_target != self.ramp_goal {
+                if self.ramp_countdown == 0 {
+                    if self.effective_target < self.ramp_goal {
+                        self.effective_target += 1;
+                    } else {
+                        self.effective_target -= 1;
+                    }
+                    self.ramp_countdown = RAMP_INTERVAL;
+                }
+                self.ramp_countdown = self.ramp_countdown.saturating_sub(1);
+            } else if self.stability_ratio() > 0.2
+                && self.effective_target > min_depth
+                && self.starvation_bump < 0.5
+                && self.starvation_bump_cooldown == 0
+                && !self.unstable_regime_until
+                    .map_or(false, |until| Instant::now() < until)
+            {
+                // Active downward probing: when the network has been calm for
+                // a sustained period AND not in unstable regime, slowly nudge
+                // the target down to discover the lowest stable depth.
+                self.probe_down_countdown = self.probe_down_countdown.saturating_sub(1);
+                if self.probe_down_countdown == 0 {
+                    self.probe_down_countdown = PROBE_DOWN_INTERVAL;
+                    let probe_goal = Self::quantize_target(
+                        self.effective_target.saturating_sub(TARGET_QUANTUM)
+                    ).max(min_depth).max(self.probe_floor);
+                    if probe_goal < self.effective_target {
+                        self.ramp_goal = probe_goal;
+                    }
+                }
+            }
+            self.effective_target
+        };
+
         let flush_ceiling = if is_no_buffer {
             target + 3
         } else {
@@ -392,15 +524,7 @@ impl JitterBufferManager {
             } else {
                 target + 30
             };
-            if !is_no_buffer || self.buffer.occupied_count() > flush_to + 20 {
-                let _ = self.decoder.reset_state();
-                self.opus_next_expected_seq = None;
-            }
-            while self.buffer.occupied_count() > flush_to {
-                if self.buffer.pop_next().is_none() {
-                    self.buffer.advance_one();
-                }
-            }
+            self.flush_with_crossfade(flush_to);
         }
 
         if self.is_prebuffering {
@@ -457,10 +581,39 @@ impl JitterBufferManager {
             self.gap_hold_count = 0;
             self.missing_count = 0;
 
-            // Apply starvation bump if we just emerged from starvation.
+            // Apply starvation bump if we just emerged from starvation,
+            // but only if the cooldown has expired (prevents ratcheting).
             if self.starvation_count > 0 && !tcp_mode {
-                let bump = (self.ema_peak * 2.0 + 4.0).min(20.0);
-                self.starvation_bump = self.starvation_bump.max(bump);
+                if self.starvation_bump_cooldown == 0 {
+                    // Differentiate probe-induced starvation from genuine network outage.
+                    // If we were recently stable (probing), use a mild bump that just
+                    // returns to the previous level. If genuinely unstable, use full bump.
+                    let is_probe_failure = self.stability_ratio() > 0.3;
+                    if is_probe_failure {
+                        // Mild bump: go back up one quantum step, not a full rocket.
+                        let mild_bump = (TARGET_QUANTUM as f32).max(2.0);
+                        self.starvation_bump = self.starvation_bump.max(mild_bump);
+                        // Set floor using the full dynamic formula, not just +1 quantum.
+                        // This prevents repeated starvation on bad networks: if ema_peak
+                        // is 20 frames (100ms), floor jumps to ~200ms immediately.
+                        let dynamic_floor = self.compute_target_depth(None);
+                        self.probe_floor = self.probe_floor
+                            .max(dynamic_floor)
+                            .max(self.effective_target.saturating_add(TARGET_QUANTUM));
+                    } else {
+                        let bump = (self.ema_peak * 1.5 + 2.0).min(12.0);
+                        self.starvation_bump = self.starvation_bump.max(bump);
+                    }
+                    self.starvation_bump_cooldown = STARVATION_COOLDOWN;
+                    // Upward bump bypasses hysteresis dwell for immediate safety.
+                    let boosted = Self::quantize_target(
+                        self.compute_target_depth(None),
+                    ).max(self.min_depth_frames());
+                    if boosted > self.effective_target {
+                        self.ramp_goal = boosted;
+                        self.target_exit_count = 0;
+                    }
+                }
                 self.starvation_count = 0;
             }
 
@@ -474,12 +627,12 @@ impl JitterBufferManager {
                 let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
                 if rms < 0.005 {
                     // Silence fast-forward: append current frame AND pop extra(s).
-                    // When buffer is far above target (>4 excess), shed up to 2 extra
-                    // frames per callback for faster convergence.
+                    // Proportional shedding: drain bursts faster to prevent
+                    // the burst-accumulation → starvation → pause cycle.
                     self.playback_buf
                         .extend(&self.decode_buf[..self.decode_len]);
                     let excess = occupied.saturating_sub(wsola_threshold);
-                    let shed_count = if excess > 4 { 2u32 } else { 1 };
+                    let shed_count = (excess / 2).min(6).max(1);
                     for _ in 0..shed_count {
                         if self.buffer.has_next() {
                             let extra = self.buffer.pop_next().unwrap();
@@ -621,6 +774,35 @@ impl JitterBufferManager {
         }
     }
 
+    /// Flush buffer down to `flush_to` frames with a WSOLA crossfade across
+    /// the skip boundary. Keeps the decoder state warm by decoding every
+    /// skipped packet (output is discarded), then splices the pre-flush and
+    /// post-flush audio with the existing Hann OLA window.
+    fn flush_with_crossfade(&mut self, flush_to: u32) {
+        if self.buffer.occupied_count() <= flush_to {
+            return;
+        }
+        // 1. Snapshot the current decoded PCM into wsola_buf.
+        let pre_flush_len = self.decode_len;
+        if pre_flush_len > 0 {
+            self.wsola_buf[..pre_flush_len]
+                .copy_from_slice(&self.decode_buf[..pre_flush_len]);
+        }
+        // 2. Skip frames, feeding each to the decoder to keep its state warm.
+        //    This avoids the hard transient click that reset_state() causes.
+        while self.buffer.occupied_count() > flush_to {
+            if let Some(pkt) = self.buffer.pop_next() {
+                self.capture_pcm(&pkt);
+            } else {
+                self.buffer.advance_one();
+            }
+        }
+        // 3. Crossfade between pre-flush and post-flush audio.
+        if pre_flush_len > 0 && self.decode_len > 0 {
+            self.wsola_overlap_add_internal(pre_flush_len);
+        }
+    }
+
     fn trigger_reset(&mut self) {
         self.buffer.reset();
         self.is_prebuffering = true;
@@ -638,6 +820,13 @@ impl JitterBufferManager {
         self.startup_flush_remaining = 0;
         self.clean_streak = 0;
         self.ema_jitter_var = 0.0;
+        self.effective_target = 2;
+        self.ramp_goal = 2;
+        self.target_exit_count = 0;
+        self.ramp_countdown = 0;
+        self.starvation_bump_cooldown = 0;
+        self.probe_down_countdown = PROBE_DOWN_INTERVAL;
+        self.probe_floor = 0;
     }
 
     /// Linear interpolation between two values.
@@ -1310,6 +1499,242 @@ mod tests {
         assert!(
             bleed_large > bleed_small * 2.0,
             "Large bump bleed ({bleed_large}) should be > 2x small bump bleed ({bleed_small})"
+        );
+    }
+    #[test]
+    fn hysteresis_should_ignore_transient_spikes() {
+        let (mut manager, _, _, _) = setup_env();
+        manager.is_prebuffering = false;
+
+        // Set a known effective target and ramp goal.
+        manager.effective_target = 12;
+        manager.ramp_goal = 12;
+        manager.target_exit_count = 0;
+
+        // Simulate a single 100ms jitter spike.
+        manager.ema_jitter = 0.0;
+        manager.ema_peak = 0.0;
+        manager.starvation_bump = 0.0;
+
+        // Inject a spike that raises ema_jitter temporarily.
+        manager.ema_jitter = 10.0; // This would compute a high raw_target.
+        manager.ema_peak = 15.0;
+
+        // Call process_next_frame once (no packets, will generate PLC).
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+
+        // The effective_target must NOT have jumped to the spike-induced value.
+        // Hysteresis requires HYSTERESIS_DWELL (40) consecutive callbacks outside the band.
+        assert_eq!(
+            manager.effective_target, 12,
+            "Effective target should stay at 12 after a single spike-induced fill_output, got {}",
+            manager.effective_target
+        );
+    }
+
+    #[test]
+    fn starvation_bump_cooldown_should_prevent_ratcheting() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+        let mut seq = 1u64;
+
+        // Fill to exit prebuffering.
+        for _ in 0..MIN_DEPTH {
+            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 0..MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Trigger first starvation (buffer drains completely).
+        for _ in 0..15 {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(manager.is_prebuffering);
+
+        // Recover: push contiguous packets from where we left off.
+        // Push extra packets to ensure has_next() fires after prebuffering exits.
+        let recover_count = MIN_DEPTH + 4;
+        for _ in 0..recover_count {
+            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Drain enough frames to exit prebuffering and let the bump apply.
+        for _ in 0..4 {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(!manager.is_prebuffering, "Should have exited prebuffering");
+        let bump_after_first = manager.starvation_bump;
+        assert!(
+            bump_after_first > 0.0,
+            "First starvation bump should have been applied, got {bump_after_first}"
+        );
+
+        // Drain remaining packets to trigger a second starvation.
+        for _ in 0..20 {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Recover again with contiguous packets.
+        let recover2_count = MIN_DEPTH + 4;
+        for _ in 0..recover2_count {
+            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+        for _ in 0..4 {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // The second bump should NOT have been applied (cooldown still active).
+        // starvation_bump should have only bled from the first bump, not re-applied.
+        assert!(
+            manager.starvation_bump < bump_after_first,
+            "Second starvation within cooldown should NOT re-apply bump. \
+             bump_after_first={bump_after_first}, current={}",
+            manager.starvation_bump,
+        );
+    }
+
+    #[test]
+    fn regime_aware_clean_threshold_should_build_streak_on_2_4ghz() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Simulate 2.4GHz-like jitter: consistent 20ms jitter per packet.
+        // Each packet arrives at 30ms intervals instead of the expected 10ms.
+        // IAT = 30ms, expected = 10ms, jitter = 20ms = 2 frames.
+        //
+        // With the old fixed threshold (< 1 frame = 5ms), clean_streak would never build.
+        // With the adaptive threshold, ema_jitter settles around 2 frames,
+        // clean_threshold ≈ 2*1.5+1.0 = 4.0 frames, and 2-frame jitter counts as "clean".
+
+        for i in 1..=200u64 {
+            let mut pkt = make_packet(&mut encoder, i, base_time);
+            // 30ms spacing creates 20ms jitter (30ms actual - 10ms expected per frame).
+            pkt.arrival_time = base_time + std::time::Duration::from_millis(i * 30);
+            assert!(prod.try_push(pkt).is_ok());
+        }
+        manager.ingest_packets(&mut cons);
+
+        // ema_jitter should have settled around 2 frames (20ms jitter / 10ms per frame).
+        assert!(
+            manager.ema_jitter > 1.0,
+            "Expected ema_jitter > 1.0 for 20ms baseline jitter, got {}",
+            manager.ema_jitter
+        );
+
+        // clean_streak should have built up because jitter is consistent
+        // (below the adaptive threshold of ema_jitter * 1.5 + 1.0).
+        assert!(
+            manager.clean_streak >= 50,
+            "Expected clean_streak >= 50 on consistent 2.4GHz jitter, got {}",
+            manager.clean_streak
+        );
+
+        // stability_ratio should be meaningfully positive.
+        assert!(
+            manager.stability_ratio() > 0.1,
+            "Expected stability_ratio > 0.1, got {}",
+            manager.stability_ratio()
+        );
+    }
+
+    #[test]
+    fn should_not_oscillate_target_under_high_jitter_variance() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Feed 500 packets with wildly varying inter-arrival times
+        // to simulate a terrible 2.4GHz connection.
+        for i in 1..=500u64 {
+            let mut pkt = make_packet(&mut encoder, i, base_time);
+            // Alternate: even packets arrive 0ms late, odd packets arrive 80ms late.
+            let jitter_ms = if i % 2 == 0 { 0u64 } else { 80 };
+            pkt.arrival_time = base_time
+                + std::time::Duration::from_millis(i * MILLIS_PER_FRAME as u64 + jitter_ms);
+            assert!(prod.try_push(pkt).is_ok());
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Now simulate 200 process_next_frame calls and count how many times
+        // effective_target changes.
+        manager.is_prebuffering = false;
+        // Pre-fill buffer so we don't starve.
+        for i in 501..=700u64 {
+            let pkt = make_packet(&mut encoder, i, base_time);
+            assert!(prod.try_push(pkt).is_ok());
+        }
+        manager.ingest_packets(&mut cons);
+
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        let mut changes = 0u32;
+        let mut last_target = manager.effective_target;
+        for _ in 0..200 {
+            manager.fill_output(&mut output, 1.0);
+            if manager.effective_target != last_target {
+                changes += 1;
+                last_target = manager.effective_target;
+            }
+        }
+
+        // With hysteresis + quantization + rate-limiting, the target should change
+        // fewer than 15 times across 200 callbacks (vs. potentially every callback before).
+        assert!(
+            changes < 15,
+            "Expected fewer than 15 target changes across 200 callbacks, got {changes}"
+        );
+    }
+
+    #[test]
+    fn flush_with_crossfade_should_produce_output_without_decoder_reset() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Fill buffer way beyond target.
+        for i in 1..=100u64 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        manager.is_prebuffering = false;
+
+        // Decode one packet to populate decode_buf.
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+
+        // Record opus_next_expected_seq before flush.
+        let seq_before = manager.opus_next_expected_seq;
+
+        // Manually flush down to 10 frames using the crossfade path.
+        manager.flush_with_crossfade(10);
+
+        // The decoder state should NOT have been hard-reset.
+        // opus_next_expected_seq should still be Some (not None, which reset_state sets).
+        assert!(
+            manager.opus_next_expected_seq.is_some(),
+            "opus_next_expected_seq should be Some after crossfade flush"
+        );
+
+        // The sequence should have advanced (decoder was fed through skipped frames).
+        assert!(
+            manager.opus_next_expected_seq > seq_before,
+            "opus_next_expected_seq should have advanced past flushed frames"
+        );
+
+        // Buffer should be at or below the flush target.
+        assert!(
+            manager.buffer.occupied_count() <= 10,
+            "Buffer should be <= 10 after flush, got {}",
+            manager.buffer.occupied_count()
         );
     }
 }
