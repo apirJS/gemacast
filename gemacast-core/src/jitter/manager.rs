@@ -259,9 +259,15 @@ impl JitterBufferManager {
     /// probe overshoot (80ms→40ms skip over the 60ms floor).
     fn adaptive_quantum(&self) -> u32 {
         let cap = self.comfort_cap_frames() as u32;
-        if cap <= 8 { 1 }
-        else if cap >= 100 { 2 }  // Auto/Resilient: 20ms steps
-        else { TARGET_QUANTUM }   // Balanced/Stable: 40ms steps
+        if cap <= 8 {
+            1
+        } else if cap >= 100 {
+            2
+        }
+        // Auto/Resilient: 20ms steps
+        else {
+            TARGET_QUANTUM
+        } // Balanced/Stable: 40ms steps
     }
 
     /// Adaptive hysteresis: narrow band for low-cap presets so the
@@ -278,9 +284,17 @@ impl JitterBufferManager {
     /// more headroom. Low-cap presets stay conservative.
     fn adaptive_dwell(&self) -> u32 {
         let cap = self.comfort_cap_frames() as u32;
-        if cap <= 8 { 40 }        // Low-cap: keep conservative
-        else if cap >= 100 { 15 } // High-cap (Auto/Resilient): react faster
-        else { 25 }               // Mid-cap (Balanced/Stable)
+        if cap <= 8 {
+            40
+        }
+        // Low-cap: keep conservative
+        else if cap >= 100 {
+            15
+        }
+        // High-cap (Auto/Resilient): react faster
+        else {
+            25
+        } // Mid-cap (Balanced/Stable)
     }
 
     /// Pure computation of the target buffer depth from observed jitter statistics.
@@ -411,15 +425,18 @@ impl JitterBufferManager {
                             }
                         }
                     }
-                    
+
                     // --- NetEQ 2-Peak Trigger State Machine (Method 6) ---
                     // A peak is a delay spike that exceeds the target + threshold (approx 3 frames).
                     // If we see 2 peaks within a 10s window, we lock the peak height as the target.
                     let target_level = self.effective_target as f32;
                     let threshold = 3.9; // 78ms at 20ms/frame
-                    if jitter_frames > target_level + threshold || jitter_frames > 2.0 * target_level {
+                    if jitter_frames > target_level + threshold
+                        || jitter_frames > 2.0 * target_level
+                    {
                         if let Some(last) = self.last_peak_time {
-                            let period_ms = pkt.arrival_time.duration_since(last).as_millis() as u64;
+                            let period_ms =
+                                pkt.arrival_time.duration_since(last).as_millis() as u64;
                             if period_ms <= 10000 {
                                 self.peak_history.push_back((period_ms, jitter_frames));
                                 if self.peak_history.len() > 8 {
@@ -436,10 +453,11 @@ impl JitterBufferManager {
                             self.last_peak_time = Some(pkt.arrival_time);
                         }
                     }
-                    
+
                     if self.peak_history.len() >= 2 {
                         if let Some(last) = self.last_peak_time {
-                            let max_period = self.peak_history.iter().map(|(p, _)| *p).max().unwrap_or(1);
+                            let max_period =
+                                self.peak_history.iter().map(|(p, _)| *p).max().unwrap_or(1);
                             let elapsed = pkt.arrival_time.duration_since(last).as_millis() as u64;
                             self.peak_mode_active = elapsed <= 2 * max_period;
                         }
@@ -448,11 +466,15 @@ impl JitterBufferManager {
                     }
 
                     // ema_peak: slow-decay peak tracker.
-                    // Instead of jumping on every single spurious frame, it only jumps when 
+                    // Instead of jumping on every single spurious frame, it only jumps when
                     // the NetEQ Peak State Machine verifies a recurring delay spike.
                     self.ema_peak = self.ema_peak * current_decay_alpha;
                     if self.peak_mode_active {
-                        let max_peak = self.peak_history.iter().map(|(_, h)| *h).fold(0.0f32, |a, b| a.max(b));
+                        let max_peak = self
+                            .peak_history
+                            .iter()
+                            .map(|(_, h)| *h)
+                            .fold(0.0f32, |a, b| a.max(b));
                         self.ema_peak = self.ema_peak.max(max_peak);
                     }
                 }
@@ -503,7 +525,8 @@ impl JitterBufferManager {
         // so that massive batching (e.g. 10 packets arriving at once via USB) doesn't
         // trigger an instantaneous flush.
         let alpha = 254.0 / 256.0;
-        self.filtered_buffer_level = self.filtered_buffer_level * alpha + (self.buffer.occupied_count() as f32) * (1.0 - alpha);
+        self.filtered_buffer_level = self.filtered_buffer_level * alpha
+            + (self.buffer.occupied_count() as f32) * (1.0 - alpha);
 
         // Proportional bleed for starvation bump: bigger bumps recover faster.
         // Increased rate from 0.05+3% to 0.08+5% — recovers ~40% faster.
@@ -635,7 +658,7 @@ impl JitterBufferManager {
                 // a sustained period, nudge the target down to discover the
                 // lowest stable depth. Speed scales with confidence.
                 let probe_interval = if self.stability_ratio() > 0.8 {
-                    60  // High confidence: probe every ~300ms
+                    60 // High confidence: probe every ~300ms
                 } else {
                     120 // Normal: probe every ~600ms
                 };
@@ -645,7 +668,9 @@ impl JitterBufferManager {
                     let probe_goal = Self::quantize_target(
                         self.effective_target.saturating_sub(quantum),
                         quantum,
-                    ).max(min_depth).max(self.probe_floor);
+                    )
+                    .max(min_depth)
+                    .max(self.probe_floor);
                     if probe_goal < self.effective_target {
                         self.ramp_goal = probe_goal;
                     }
@@ -739,7 +764,8 @@ impl JitterBufferManager {
                         // This prevents repeated starvation on bad networks: if ema_peak
                         // is 20 frames (100ms), floor jumps to ~200ms immediately.
                         let dynamic_floor = self.compute_target_depth(None);
-                        self.probe_floor = self.probe_floor
+                        self.probe_floor = self
+                            .probe_floor
                             .max(dynamic_floor)
                             .max(self.effective_target.saturating_add(quantum));
                     } else {
@@ -753,7 +779,8 @@ impl JitterBufferManager {
                     let boosted = Self::quantize_target(
                         self.compute_target_depth(None),
                         self.adaptive_quantum(),
-                    ).max(self.min_depth_frames());
+                    )
+                    .max(self.min_depth_frames());
                     if boosted > self.effective_target {
                         self.ramp_goal = boosted;
                         self.target_exit_count = 0;
@@ -797,8 +824,7 @@ impl JitterBufferManager {
                     let excess = occupied.saturating_sub(wsola_threshold);
                     let shed_count = (excess / 2).min(4).max(1);
                     for _ in 0..shed_count {
-                        if self.buffer.occupied_count() > wsola_threshold
-                            && self.buffer.has_next()
+                        if self.buffer.occupied_count() > wsola_threshold && self.buffer.has_next()
                         {
                             let extra = self.buffer.pop_next().unwrap();
                             self.capture_pcm(&extra);
@@ -831,7 +857,7 @@ impl JitterBufferManager {
             // Note: trickle acceleration (drain when occupied is between target
             // and target+2) was removed — it caused audible clicking from
             // too-frequent OLA crossfades at 48kHz/10ms frame granularity.
-            
+
             // --- Method 1: Preemptive Expand ---
             let min_depth = self.min_depth_frames();
             let is_low_buffer = self.filtered_buffer_level < min_depth as f32;
@@ -968,7 +994,7 @@ impl JitterBufferManager {
             self.playback_buf
                 .extend(&self.decode_buf[tail_start..pcm2_len]);
         }
-        
+
         true
     }
 
@@ -978,11 +1004,15 @@ impl JitterBufferManager {
     fn try_wsola_expand_internal(&mut self) -> bool {
         let ch = OPUS_CHANNELS as usize;
         let n = self.decode_len / ch;
-        if n < OLA_LEN + 16 { return false; }
-        
+        if n < OLA_LEN + 16 {
+            return false;
+        }
+
         let anchor = n - OLA_LEN;
         let search_limit = SEARCH_RANGE.min(anchor.saturating_sub(16));
-        if search_limit == 0 { return false; }
+        if search_limit == 0 {
+            return false;
+        }
 
         let mut mono_ref = [0.0f32; OLA_LEN];
         let mut ref_energy = 0.0f32;
@@ -1040,7 +1070,8 @@ impl JitterBufferManager {
         // 3. pcm[best_d+OLA_LEN..end] verbatim
         let tail_start = (best_d + OLA_LEN) * ch;
         if tail_start < self.decode_len {
-            self.playback_buf.extend(&self.decode_buf[tail_start .. self.decode_len]);
+            self.playback_buf
+                .extend(&self.decode_buf[tail_start..self.decode_len]);
         }
 
         true
@@ -1151,8 +1182,7 @@ impl JitterBufferManager {
         }
 
         // 1. [0..best_d] verbatim
-        self.playback_buf
-            .extend(&self.decode_buf[..best_d * ch]);
+        self.playback_buf.extend(&self.decode_buf[..best_d * ch]);
 
         // 2. Hann OLA crossfade between the two pitch-aligned sections
         for i in 0..OLA_LEN {
@@ -1161,7 +1191,8 @@ impl JitterBufferManager {
             for c in 0..ch {
                 let early = self.decode_buf[(best_d + i) * ch + c];
                 let late = self.decode_buf[(splice_start + i) * ch + c];
-                self.playback_buf.push_back(early * hann_out + late * hann_in);
+                self.playback_buf
+                    .push_back(early * hann_out + late * hann_in);
             }
         }
 
@@ -1186,8 +1217,7 @@ impl JitterBufferManager {
         // 1. Snapshot the current decoded PCM into wsola_buf.
         let pre_flush_len = self.decode_len;
         if pre_flush_len > 0 {
-            self.wsola_buf[..pre_flush_len]
-                .copy_from_slice(&self.decode_buf[..pre_flush_len]);
+            self.wsola_buf[..pre_flush_len].copy_from_slice(&self.decode_buf[..pre_flush_len]);
         }
         // 2. Skip frames, feeding each to the decoder to keep its state warm.
         //    This avoids the hard transient click that reset_state() causes.
@@ -1202,7 +1232,8 @@ impl JitterBufferManager {
         if pre_flush_len > 0 && self.decode_len > 0 {
             if !self.try_wsola_overlap_add_internal(pre_flush_len, true) {
                 self.playback_buf.extend(&self.wsola_buf[..pre_flush_len]);
-                self.playback_buf.extend(&self.decode_buf[..self.decode_len]);
+                self.playback_buf
+                    .extend(&self.decode_buf[..self.decode_len]);
             }
         }
     }
@@ -1960,7 +1991,10 @@ mod tests {
 
         // Fill to exit prebuffering.
         for _ in 0..MIN_DEPTH {
-            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
             seq += 1;
         }
         manager.ingest_packets(&mut cons);
@@ -1979,7 +2013,10 @@ mod tests {
         // Push extra packets to ensure has_next() fires after prebuffering exits.
         let recover_count = MIN_DEPTH + 4;
         for _ in 0..recover_count {
-            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
             seq += 1;
         }
         manager.ingest_packets(&mut cons);
@@ -2003,7 +2040,10 @@ mod tests {
         // Recover again with contiguous packets.
         let recover2_count = MIN_DEPTH + 4;
         for _ in 0..recover2_count {
-            assert!(prod.try_push(make_packet(&mut encoder, seq, base_time)).is_ok());
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
             seq += 1;
         }
         manager.ingest_packets(&mut cons);

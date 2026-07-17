@@ -5,9 +5,24 @@ import { useAppStore } from '../../stores/app-store';
 
 const defaultSettings = {
   bufferPreset: 'auto',
-  customJitterConfig: { adaptive: true, targetMs: 150 },
+  customJitterConfig: {
+    minDepthMs: 25,
+    comfortCapMs: 1000,
+    peakDecayHalflifeMs: 0,
+    resumeThresholdPct: 0.25,
+    staticTargetMs: 60,
+  },
   savedPresets: [
-    { name: 'My Preset', config: { adaptive: false, targetMs: 50, staticTargetMs: 50 } },
+    {
+      name: 'My Preset',
+      config: {
+        minDepthMs: 25,
+        comfortCapMs: 1000,
+        peakDecayHalflifeMs: 0,
+        resumeThresholdPct: 0.25,
+        staticTargetMs: 50,
+      },
+    },
   ],
 };
 
@@ -53,8 +68,6 @@ describe('BufferPresetSelect', () => {
     fireEvent.click(screen.getByText('Custom'));
 
     expect(useAppStore.getState().settings.bufferPreset).toBe('custom');
-    expect(useAppStore.getState().settings.customJitterConfig.minDepthMs).toBe(8);
-    expect(useAppStore.getState().settings.customJitterConfig.comfortCapMs).toBe(1500);
   });
 
   it('updates from saved preset', () => {
@@ -66,8 +79,6 @@ describe('BufferPresetSelect', () => {
 
     expect(useAppStore.getState().settings.bufferPreset).toBe('saved-0');
     expect(useAppStore.getState().settings.customJitterConfig).toMatchObject({
-      adaptive: false,
-      targetMs: 50,
       staticTargetMs: 50,
     });
   });

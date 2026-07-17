@@ -70,18 +70,26 @@ export function BufferPresetSelect() {
       const idx = parseInt(value.replace('saved-', ''), 10);
       const savedPreset = settings.savedPresets[idx];
       if (savedPreset) {
+        // Migrate legacy adaptive presets: ensure staticTargetMs is set
+        const migratedConfig = savedPreset.config.staticTargetMs == null
+          ? { ...savedPreset.config, staticTargetMs: 0 }
+          : savedPreset.config;
         update({
           bufferPreset: value,
-          customJitterConfig: savedPreset.config,
+          customJitterConfig: migratedConfig,
         });
       }
     } else if (value === 'custom') {
-      // Selecting generic "Custom" = start fresh from Auto preset config
-      const autoPreset = JITTER_PRESETS.find((p) => p.id === 'auto');
-      const autoConfig = autoPreset?.config ?? settings.customJitterConfig;
+      // Selecting generic "Custom" = start fresh with static 0ms
       update({
         bufferPreset: 'custom',
-        customJitterConfig: autoConfig,
+        customJitterConfig: {
+          minDepthMs: 25,
+          comfortCapMs: 1000,
+          peakDecayHalflifeMs: 0,
+          resumeThresholdPct: 0.25,
+          staticTargetMs: 0,
+        },
       });
     } else {
       update({ bufferPreset: value as PresetId });

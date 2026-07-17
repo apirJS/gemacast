@@ -3,30 +3,12 @@ export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
     title: 'Buffer Preset',
     body: 'Choose how much audio Gemacast stores before playing it. More buffer = smoother audio but slightly delayed. Less buffer = faster response but more sensitive to Wi-Fi hiccups.\n\n• No Buffer — Plays audio instantly with no delay. Great for testing or rock-solid wired connections. Will crackle if your network has any hiccups.\n\n• Auto (Recommended) — Figures out the best setting for your network automatically. Just set it and forget it.\n\n• Wired — For USB cable or ADB connections. Ultra-low delay since the cable handles the heavy lifting.\n\n• Fast — For strong 5 GHz Wi-Fi (e.g., same room as your router). Very snappy, with just enough buffer to handle tiny glitches.\n\n• Balanced — Works well on most home networks. Good mix of low delay and smooth playback.\n\n• Stable — For weaker Wi-Fi (e.g., 2.4 GHz, different floor from router, or crowded apartment Wi-Fi). Adds more buffer to ride out interference.\n\n• Resilient — For unreliable connections or when you turn your screen off while streaming. Prioritizes uninterrupted playback over low delay.\n\n• Custom — Set each buffer parameter yourself. For advanced users only.',
   },
-  'buffer-mode': {
-    title: 'Buffer Mode',
-    body: 'Controls whether the buffer size stays fixed or adjusts on its own.\n\nStatic — The buffer stays at one fixed size you choose. The delay never changes, but audio may stutter if your network gets worse.\nExample: Good for a wired setup where conditions never change.\n\nAdaptive — The buffer automatically grows when your network gets choppy, then shrinks back down when things stabilize.\nExample: If someone starts a video call on your Wi-Fi, the buffer expands briefly to keep your audio smooth, then tightens back up when the call ends.',
-  },
+
   'static-depth': {
     title: 'Static Buffer Depth',
     body: "Sets the exact amount of delay (in milliseconds) before audio plays.\n\n• Lower values (e.g., 10–20 ms) — Audio feels nearly instant, but may stutter on imperfect networks.\n• Higher values (e.g., 40–80 ms) — Rock-solid playback, but you'll notice a slight delay.\n\nTip: Start around 30 ms and increase if you hear crackling or gaps.",
   },
-  'min-depth': {
-    title: 'Minimum Buffer Depth',
-    body: "The lowest delay the adaptive buffer is allowed to reach (in milliseconds). Even when your network is perfect, the buffer won't go below this value.\n\nWhy change it? If you hear occasional tiny pops or glitches on an otherwise good connection, try raising this a bit (e.g., from 8 ms to 15 ms). It gives the buffer a bigger safety net.\n\nExample: On a solid 5 GHz Wi-Fi, a min depth of 5–10 ms is usually enough. On 2.4 GHz, try 25–50 ms.",
-  },
-  'comfort-cap': {
-    title: 'Maximum Buffer Depth',
-    body: "The highest delay the adaptive buffer is allowed to reach (in milliseconds). Even during severe network problems, the delay won't exceed this limit.\n\nWhy it matters: Without a cap, a big Wi-Fi hiccup could push the buffer to several seconds of delay. The comfort cap prevents that.\n\nExample: A cap of 150 ms means your audio is never more than 150 ms behind your PC — about the delay of a Bluetooth speaker. A cap of 500 ms gives more room to survive heavy interference.",
-  },
-  bounce: {
-    title: 'Peak Decay Half-life',
-    body: "After the buffer grows to handle a network hiccup, this controls how quickly it shrinks back to normal.\n\n• 0 (Auto) — Recommended. Lets Gemacast decide the best recovery speed.\n• Lower values (e.g., 500 ms) — Snaps back to low delay fast, but may stutter if the network hiccup isn't fully over.\n• Higher values (e.g., 5000+ ms) — Stays cautious and shrinks slowly, which is safer on unstable Wi-Fi.\n\nExample: If your Wi-Fi stutters every few seconds (e.g., microwave interference), use a higher value so the buffer doesn't keep bouncing up and down.",
-  },
-  resume: {
-    title: 'Resume Threshold',
-    body: "When audio cuts out due to a network drop, this controls how much buffer must refill before playback restarts.\n\nThe value goes from 0 to 1 (think of it as a percentage):\n• 0.2 (20%) — Resumes playback quickly, but risks another stutter if the network isn't stable yet.\n• 0.7 (70%) — Waits longer to build up a bigger safety cushion before resuming.\n\nExample: If you notice audio stopping and starting repeatedly, raise this to 0.5 or higher so Gemacast waits until it has enough buffered audio before playing again.",
-  },
+
   'exclusive-mode': {
     title: 'Exclusive Mode',
     body: "Gives Gemacast direct access to your phone's audio hardware, bypassing Android's built-in audio mixer. This can slightly reduce delay.\n\nKeep in mind:\n• Not all phones support this — if yours doesn't, Gemacast will silently fall back to normal mode.\n• While active, other apps may not be able to play sound at the same time.\n\nRecommendation: Leave this off unless you need the absolute lowest latency and don't mind other apps being muted.",
