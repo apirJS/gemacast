@@ -74,7 +74,22 @@ class MainActivity : TauriActivity() {
             
             val activeTransports = mutableSetOf<String>()
             if (caps != null) {
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) activeTransports.add("WIFI")
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    // Include WiFi frequency for band detection (2.4GHz vs 5GHz)
+                    // WifiInfo.getFrequency() available since API 21, Tauri requires API 24+
+                    try {
+                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                        val wifiInfo = wifiManager.connectionInfo
+                        val freq = wifiInfo?.frequency ?: 0
+                        if (freq > 0) {
+                            activeTransports.add("WIFI:$freq")
+                        } else {
+                            activeTransports.add("WIFI")
+                        }
+                    } catch (e: Exception) {
+                        activeTransports.add("WIFI")
+                    }
+                }
                 if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) activeTransports.add("ETHERNET")
             }
             

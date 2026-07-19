@@ -1,4 +1,4 @@
-use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
+use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig, NetworkLink};
 use std::net::IpAddr;
 
 /// Parameters for starting a new audio playback session.
@@ -43,6 +43,8 @@ pub struct ConnectParams {
     pub exclusive_mode: bool,
     pub jitter_config: JitterConfig,
     pub bitrate: Option<i32>,
+    /// Pre-detected phone network link (from discovery service).
+    pub phone_network_link: Option<NetworkLink>,
 }
 
 /// Parameters for resuming audio playback with an HTTP reconnect.

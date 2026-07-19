@@ -3,6 +3,7 @@ import { StatusChip } from '../device/StatusChip';
 import { SenderList } from '../senders/SenderList';
 import { ManualConnect } from '../senders/ManualConnect';
 import { LatencyStats } from '../latency/LatencyStats';
+import { NetworkLinkBadge } from '../latency/NetworkLinkBadge';
 import { ToastContainer } from '../feedback/ToastContainer';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
 import { useWakeLock } from '../../hooks/use-wake-lock';
@@ -31,6 +32,7 @@ export function AppShell() {
         <section className="mt-auto flex flex-col items-center gap-2 pt-4">
           <StatusChip />
           <LatencyStats />
+          <NetworkLinkBadge />
         </section>
       </main>
     </>

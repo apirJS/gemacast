@@ -16,7 +16,7 @@ pub struct HttpControlClient {
 impl HttpControlClient {
     pub fn new(target_ip: IpAddr) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
 

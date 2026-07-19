@@ -246,6 +246,9 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             let result = transport.receive_audio_packet(&mut recv_buff);
             let (len, sender_addr) = match result {
                 Ok(r) => {
+                    if !first_packet_received {
+                        tracing::info!("[Receiver] First audio packet received from {}", r.1,);
+                    }
                     last_packet_time = std::time::Instant::now();
                     first_packet_received = true;
                     r
@@ -258,7 +261,13 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
                         break;
                     }
                     let timeout = if first_packet_received { 3 } else { 10 };
-                    if last_packet_time.elapsed().as_secs() >= timeout {
+                    let elapsed = last_packet_time.elapsed().as_secs();
+                    if elapsed >= timeout {
+                        tracing::warn!(
+                            "[Receiver] Network timeout: no packets for {}s (threshold={}s), disconnecting",
+                            elapsed,
+                            timeout,
+                        );
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }

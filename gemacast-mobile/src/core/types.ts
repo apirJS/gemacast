@@ -68,6 +68,24 @@ export type JitterConfig = {
   staticTargetMs?: number | null;
 };
 
+/** Detected network link type for one side of the connection. */
+export type NetworkLink =
+  | 'adb'
+  | 'usbTether'
+  | 'wifi5Ghz'
+  | 'wifi2_4Ghz'
+  | 'ethernet'
+  | 'wifiUnknown'
+  | 'unknown';
+
+/** Network link pair info from the backend (both sides + effective). */
+export type NetworkLinkPairInfo = {
+  phone: NetworkLink;
+  pc: NetworkLink;
+  effective: NetworkLink;
+  effectiveLabel: string;
+};
+
 export type SavedPreset = {
   name: string;
   config: JitterConfig;
@@ -143,4 +161,6 @@ export type AppState = {
   currentAudioSource: AudioSource;
   senderCapabilities: SenderCapabilities | null;
   processList: ProcessInfo[];
+  /** Detected network link pair from the active connection. */
+  networkLinkPair: NetworkLinkPairInfo | null;
 };

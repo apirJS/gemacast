@@ -300,11 +300,20 @@ pub mod mocks {
 
     #[async_trait]
     impl SenderControlClient for MockSenderControlClient {
-        async fn connect(&self, req: ConnectReq) -> Result<(), String> {
+        async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
             self.calls.lock().unwrap().push(ControlClientCall::Connect {
                 device_id: req.device_id.clone(),
             });
-            self.connect_result.lock().unwrap().clone()
+            self.connect_result
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|_| PresenceResponse {
+                    device_id: DeviceId("test-sender".to_string()),
+                    sender_name: "Test Sender".to_string(),
+                    is_offline: false,
+                    pc_network_link: None,
+                })
         }
 
         async fn disconnect(&self, device_id: DeviceId) -> Result<(), String> {
@@ -340,6 +349,7 @@ pub mod mocks {
                 device_id: DeviceId("test-sender".to_string()),
                 sender_name: "Test Sender".to_string(),
                 is_offline: false,
+                pc_network_link: None,
             })
         }
 

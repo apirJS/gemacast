@@ -48,6 +48,7 @@ pub fn run() {
                 notifier: notifier.clone(),
                 platform: platform.clone(),
                 is_streaming: is_streaming.clone(),
+                cached_link_pair: std::sync::Mutex::new(None),
             });
 
             // -- Register managed state ----------------------------------
@@ -95,6 +96,7 @@ pub fn run() {
             domains::audio::commands::establish_websocket,
             domains::audio::commands::probe_sender,
             domains::audio::commands::set_audio_gain,
+            domains::audio::commands::get_network_link_pair,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

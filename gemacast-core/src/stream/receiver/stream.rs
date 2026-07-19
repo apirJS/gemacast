@@ -96,6 +96,10 @@ pub fn build_playback_stream(
         .default_output_device()
         .ok_or(AudioError::NoOutputDevice)?;
 
+    if let Ok(desc) = device.description() {
+        tracing::info!("[Playback] Output device: {}", desc.name());
+    }
+
     let mut buffer_size = cpal::BufferSize::Default;
 
     if let Ok(mut supported_configs) = device.supported_output_configs()
@@ -108,9 +112,19 @@ pub fn build_playback_stream(
         match config.buffer_size() {
             cpal::SupportedBufferSize::Range { min, max } => {
                 let desired = OPUS_FRAME_SAMPLES as u32;
-                buffer_size = cpal::BufferSize::Fixed(desired.clamp(*min, *max));
+                let clamped = desired.clamp(*min, *max);
+                tracing::info!(
+                    "[Playback] Buffer size: requested={}, negotiated={} (range={}..{})",
+                    desired,
+                    clamped,
+                    min,
+                    max,
+                );
+                buffer_size = cpal::BufferSize::Fixed(clamped);
             }
-            cpal::SupportedBufferSize::Unknown => {}
+            cpal::SupportedBufferSize::Unknown => {
+                tracing::info!("[Playback] Buffer size: using driver default (unknown range)");
+            }
         }
     }
 

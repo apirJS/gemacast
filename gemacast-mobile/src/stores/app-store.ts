@@ -7,6 +7,7 @@ import type {
   DeviceInfo,
   DiscoveredSender,
   LatencyStats,
+  NetworkLinkPairInfo,
   ProcessInfo,
   SenderCapabilities,
 } from '../core/types';
@@ -38,6 +39,7 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     currentAudioSource: { type: 'desktop' } as AudioSource,
     senderCapabilities: null,
     processList: [],
+    networkLinkPair: null,
   };
 }
 
@@ -73,6 +75,7 @@ type AppActions = {
   setCurrentAudioSource: (source: AudioSource) => void;
   setSenderCapabilities: (caps: SenderCapabilities | null) => void;
   setProcessList: (list: ProcessInfo[]) => void;
+  setNetworkLinkPair: (pair: NetworkLinkPairInfo | null) => void;
 
   patch: (partial: Partial<AppState>) => void;
 };
@@ -187,6 +190,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setCurrentAudioSource: (source) => set({ currentAudioSource: source }),
   setSenderCapabilities: (caps) => set({ senderCapabilities: caps }),
   setProcessList: (list) => set({ processList: list }),
+  setNetworkLinkPair: (pair) => set({ networkLinkPair: pair }),
 
   patch: (partial) => set(partial),
 }));

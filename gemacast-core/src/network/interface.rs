@@ -78,8 +78,25 @@ pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
 }
 
 pub fn classify_interface(interface: &netdev::Interface) -> (bool, bool) {
+    let if_type = &interface.if_type;
     let name_lower = interface.name.to_lowercase();
+    let desc_lower = interface
+        .description
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+    let friendly_lower = interface
+        .friendly_name
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
 
+    // 1. Cellular check
+    if *if_type == netdev::prelude::InterfaceType::Wwanpp
+        || *if_type == netdev::prelude::InterfaceType::Wwanpp2
+    {
+        return (false, false);
+    }
     let is_cellular = name_lower.contains("rmnet")
         || name_lower.contains("ccmni")
         || name_lower.contains("ppp")
@@ -92,18 +109,31 @@ pub fn classify_interface(interface: &netdev::Interface) -> (bool, bool) {
         return (false, false);
     }
 
-    let is_wifi = name_lower.contains("wlan") || name_lower.contains("wifi");
-    let is_usb = name_lower.contains("rndis")
+    // 2. WiFi check (100% native via OS)
+    let is_wifi = *if_type == netdev::prelude::InterfaceType::Wireless80211
+        // Fallback for Android/Linux where if_type might just be Ethernet or Unknown
+        || name_lower.contains("wlan")
+        || name_lower.contains("wifi");
+
+    // 3. USB Tethering check (NDIS / RNDIS)
+    // Windows/macOS reports USB tethering as Ethernet, so we check descriptions for "ndis".
+    // Android reports it as "rndis0".
+    let is_ndis = name_lower.contains("rndis")
         || name_lower.contains("ndis")
-        || (!name_lower.contains("wlan")
-            && !name_lower.contains("wi-fi")
-            && !name_lower.contains("wifi")
-            && !name_lower.contains("wireless")
+        || desc_lower.contains("ndis")
+        || friendly_lower.contains("ndis");
+
+    let is_usb = is_ndis
+        // Aggressive fallback for Android: if it's not WiFi/Loopback/VPN, assume it's the USB cable.
+        // We restrict this aggressive fallback slightly by checking it's not a known PC Ethernet.
+        || (!is_wifi
+            && *if_type != netdev::prelude::InterfaceType::Loopback
             && !name_lower.contains("lo")
-            && !name_lower.contains("swlan")
-            && !name_lower.contains("p2p")
             && !name_lower.contains("dummy")
-            && !name_lower.contains("tun"));
+            && !name_lower.contains("tun")
+            && !desc_lower.contains("pcie")
+            && !desc_lower.contains("gigabit")
+            && !desc_lower.contains("ethernet")); // basic guards to prevent PC physical ethernet from matching
 
     (is_wifi, is_usb)
 }
@@ -132,12 +162,266 @@ pub fn is_usb_tether_ip(ip: &std::net::IpAddr) -> bool {
             })
     })
 }
+use crate::domain::types::{ConnectionMode, NetworkLink};
+/// Classify a WiFi channel number into a band.
+///
+/// - Channels 1–14 → 2.4 GHz
+/// - Channels 32+ → 5 GHz / 6 GHz
+/// - Channel 0 → unknown
+pub fn classify_channel(channel: u32) -> NetworkLink {
+    if channel == 0 {
+        NetworkLink::WifiUnknown
+    } else if channel <= 14 {
+        NetworkLink::Wifi2_4Ghz
+    } else {
+        NetworkLink::Wifi5Ghz
+    }
+}
+
+/// Detect the PC's network link type for a specific connection.
+///
+/// Strategy — use the phone's `client_ip` (from the TCP connection) to
+/// determine the transport without guessing:
+///
+/// 1. Loopback IP (127.x) → ADB port-forwarding.
+/// 2. Known USB-tether subnet → USB tether.
+/// 4. If WiFi, query the OS for the connected channel to derive the band.
+/// 5. Fallback: [`NetworkLink::WifiUnknown`] if query fails.
+pub fn detect_pc_link(mode: ConnectionMode, client_ip: std::net::IpAddr) -> NetworkLink {
+    tracing::info!(?mode, %client_ip, "Detecting PC network link");
+
+    // 1. ADB mode → Always ADB
+    if mode == ConnectionMode::Adb {
+        tracing::info!(link = ?NetworkLink::Adb, "PC link detected (ADB mode)");
+        return NetworkLink::Adb;
+    }
+
+    // 2. USB mode → Always USB Tether
+    if mode == ConnectionMode::Usb {
+        tracing::info!(link = ?NetworkLink::UsbTether, "PC link detected (USB mode)");
+        return NetworkLink::UsbTether;
+    }
+
+    // 3. WIFI mode → Find the local interface whose /24 subnet contains the client IP
+    let interfaces = cached_interfaces();
+    let primary = if let std::net::IpAddr::V4(client_v4) = client_ip {
+        let ct = client_v4.octets();
+        interfaces.iter().find(|iface| {
+            iface.ipv4.iter().any(|net| {
+                let lo = net.addr().octets();
+                lo[0] == ct[0] && lo[1] == ct[1] && lo[2] == ct[2]
+            })
+        })
+    } else {
+        None
+    }
+    // Fallback: first non-loopback interface
+    .or_else(|| {
+        interfaces
+            .iter()
+            .find(|iface| iface.ipv4.iter().any(|net| !net.addr().is_loopback()))
+    });
+
+    let Some(primary) = primary else {
+        tracing::warn!("No matching interface found, PC link = Unknown");
+        return NetworkLink::Unknown;
+    };
+
+    let (is_wifi, _is_usb) = classify_interface(primary);
+    tracing::info!(
+        iface = %primary.name,
+        is_wifi,
+        "PC link: matched interface for client"
+    );
+
+    if !is_wifi {
+        tracing::info!(link = ?NetworkLink::Ethernet, iface = %primary.name, "PC link detected");
+        return NetworkLink::Ethernet;
+    }
+
+    // Query the OS for the connected Wi-Fi channel instantly (no hardware scan).
+    let link = get_connected_wifi_channel();
+    tracing::info!(?link, "PC link detected (connected channel query)");
+    link
+}
+
+/// Query the OS for the channel the Wi-Fi interface is currently connected to.
+///
+/// Uses platform-specific CLI commands that return instantly (<50ms),
+/// as opposed to hardware scans which block for 3-5 seconds.
+fn get_connected_wifi_channel() -> NetworkLink {
+    #[cfg(target_os = "android")]
+    return NetworkLink::WifiUnknown;
+
+    #[cfg(target_os = "windows")]
+    {
+        // `netsh wlan show interfaces` outputs key-value lines like:
+        //     Channel                : 36
+        let output = std::process::Command::new("netsh")
+            .args(["wlan", "show", "interfaces"])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if let Some(channel) = parse_netsh_channel(&stdout) {
+                    let link = classify_channel(channel);
+                    tracing::info!(channel, ?link, "Connected Wi-Fi channel (netsh)");
+                    link
+                } else {
+                    tracing::warn!("Could not parse channel from netsh output");
+                    NetworkLink::WifiUnknown
+                }
+            }
+            Ok(out) => {
+                tracing::warn!(code = ?out.status.code(), "netsh exited with error");
+                NetworkLink::WifiUnknown
+            }
+            Err(e) => {
+                tracing::warn!("Failed to run netsh: {e}");
+                NetworkLink::WifiUnknown
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // `system_profiler SPAirPortDataType` outputs lines like:
+        //     Channel: 149 (5GHz, 80MHz)
+        let output = std::process::Command::new("system_profiler")
+            .arg("SPAirPortDataType")
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if let Some(channel) = parse_system_profiler_channel(&stdout) {
+                    let link = classify_channel(channel);
+                    tracing::info!(channel, ?link, "Connected Wi-Fi channel (system_profiler)");
+                    link
+                } else {
+                    tracing::warn!("Could not parse channel from system_profiler output");
+                    NetworkLink::WifiUnknown
+                }
+            }
+            Ok(out) => {
+                tracing::warn!(code = ?out.status.code(), "system_profiler exited with error");
+                NetworkLink::WifiUnknown
+            }
+            Err(e) => {
+                tracing::warn!("Failed to run system_profiler: {e}");
+                NetworkLink::WifiUnknown
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try `iwgetid --channel --raw` first (outputs bare channel number like "6").
+        // Falls back to `nmcli` if iwgetid is unavailable.
+        let output = std::process::Command::new("iwgetid")
+            .args(["--channel", "--raw"])
+            .output();
+
+        if let Ok(out) = output
+            && out.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if let Ok(channel) = stdout.trim().parse::<u32>() {
+                let link = classify_channel(channel);
+                tracing::info!(channel, ?link, "Connected Wi-Fi channel (iwgetid)");
+                return link;
+            }
+        }
+
+        // Fallback: nmcli -t -f IN-USE,CHAN dev wifi list
+        // Connected network line starts with "*:", e.g. "*:36"
+        let output = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "IN-USE,CHAN", "dev", "wifi", "list"])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if let Some(channel) = parse_nmcli_channel(&stdout) {
+                    let link = classify_channel(channel);
+                    tracing::info!(channel, ?link, "Connected Wi-Fi channel (nmcli)");
+                    link
+                } else {
+                    tracing::warn!("Could not find connected network in nmcli output");
+                    NetworkLink::WifiUnknown
+                }
+            }
+            _ => {
+                tracing::warn!("Both iwgetid and nmcli failed, cannot determine Wi-Fi channel");
+                NetworkLink::WifiUnknown
+            }
+        }
+    }
+}
+
+/// Parse `Channel : 36` from `netsh wlan show interfaces` output.
+#[cfg(target_os = "windows")]
+fn parse_netsh_channel(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // Match lines like "Channel                : 36"
+        if let Some(rest) = trimmed.strip_prefix("Channel")
+            && let Some(value) = rest.trim().strip_prefix(':')
+        {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// Parse `Channel: 149 (5GHz, 80MHz)` from `system_profiler SPAirPortDataType` output.
+/// Only looks in the "Current Network Information" section.
+#[cfg(target_os = "macos")]
+fn parse_system_profiler_channel(output: &str) -> Option<u32> {
+    let mut in_current_network = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("Current Network Information") {
+            in_current_network = true;
+            continue;
+        }
+        if in_current_network
+            && let Some(rest) = trimmed.strip_prefix("Channel:")
+        {
+            // "149 (5GHz, 80MHz)" → take the number before the space/paren
+            let channel_str = rest.trim().split(|c: char| !c.is_ascii_digit()).next()?;
+            return channel_str.parse().ok();
+        }
+    }
+    None
+}
+
+/// Parse the connected network channel from `nmcli -t -f IN-USE,CHAN dev wifi list`.
+/// Connected line looks like `*:36`.
+#[cfg(target_os = "linux")]
+fn parse_nmcli_channel(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("*:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {
-    fn make_interface(name: &str) -> netdev::Interface {
+    fn make_interface(
+        name: &str,
+        if_type: netdev::prelude::InterfaceType,
+        description: Option<&str>,
+        friendly_name: Option<&str>,
+    ) -> netdev::Interface {
         let mut iface = netdev::Interface::dummy();
         iface.name = name.to_string();
+        iface.if_type = if_type;
+        iface.description = description.map(|s| s.to_string());
+        iface.friendly_name = friendly_name.map(|s| s.to_string());
         iface
     }
 
@@ -145,27 +429,86 @@ mod tests {
         use super::*;
 
         #[test]
-        fn should_identify_wlan_as_wifi() {
-            let iface = make_interface("wlan0");
+        fn should_identify_native_wireless_as_wifi() {
+            let iface = make_interface(
+                "{WIFI-UUID}",
+                netdev::prelude::InterfaceType::Wireless80211,
+                Some("Intel Wi-Fi 6 AX200"),
+                Some("Wi-Fi"),
+            );
             let (is_wifi, is_usb) = super::super::classify_interface(&iface);
-            assert!(is_wifi, "Expected wlan0 to be classified as wifi");
+            assert!(
+                is_wifi,
+                "Expected Wireless80211 to be classified as wifi natively"
+            );
+            assert!(!is_usb, "Wireless80211 should not be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_fallback_wlan0_as_wifi() {
+            // Testing fallback for Android where if_type might just be unknown/ethernet
+            let iface = make_interface(
+                "wlan0",
+                netdev::prelude::InterfaceType::Ethernet,
+                None,
+                None,
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(is_wifi, "Expected wlan0 fallback to be classified as wifi");
             assert!(!is_usb, "wlan0 should not be classified as usb");
         }
 
         #[test]
-        fn should_identify_rndis_as_usb() {
-            let iface = make_interface("rndis0");
+        fn should_identify_windows_rndis_as_usb() {
+            // Windows reports USB tether as Ethernet but sets description to include NDIS
+            let iface = make_interface(
+                "{ETH-UUID}",
+                netdev::prelude::InterfaceType::Ethernet,
+                Some("Remote NDIS based Internet Sharing Device"),
+                Some("Ethernet 2"),
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "RNDIS should not be classified as wifi");
+            assert!(is_usb, "Expected NDIS description to be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_android_rndis0_as_usb() {
+            let iface = make_interface(
+                "rndis0",
+                netdev::prelude::InterfaceType::Unknown,
+                None,
+                None,
+            );
             let (is_wifi, is_usb) = super::super::classify_interface(&iface);
             assert!(!is_wifi, "rndis0 should not be classified as wifi");
             assert!(is_usb, "Expected rndis0 to be classified as usb");
         }
 
         #[test]
-        fn should_identify_rmnet_as_cellular_returning_both_false() {
-            let iface = make_interface("rmnet0");
+        fn should_identify_wwan_as_cellular_returning_both_false() {
+            let iface = make_interface(
+                "{WWAN-UUID}",
+                netdev::prelude::InterfaceType::Wwanpp,
+                Some("Generic Mobile Broadband Adapter"),
+                Some("Cellular"),
+            );
             let (is_wifi, is_usb) = super::super::classify_interface(&iface);
-            assert!(!is_wifi, "rmnet0 should not be wifi");
-            assert!(!is_usb, "rmnet0 should not be usb");
+            assert!(!is_wifi, "WWAN should not be wifi");
+            assert!(!is_usb, "WWAN should not be usb");
+        }
+
+        #[test]
+        fn should_not_classify_standard_ethernet_as_usb() {
+            let iface = make_interface(
+                "{ETH-UUID}",
+                netdev::prelude::InterfaceType::Ethernet,
+                Some("Realtek PCIe GbE Family Controller"),
+                Some("Ethernet"),
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "Standard ethernet is not wifi");
+            assert!(!is_usb, "Standard ethernet is not usb");
         }
     }
 
@@ -195,6 +538,43 @@ mod tests {
                 super::super::is_usb_tether_ip(&ip),
                 "172.20.10.x is a known USB tether subnet"
             );
+        }
+    }
+
+    mod classify_channel {
+        use super::super::classify_channel;
+        use crate::domain::types::NetworkLink;
+
+        #[test]
+        fn channel_0_should_be_unknown() {
+            assert_eq!(classify_channel(0), NetworkLink::WifiUnknown);
+        }
+
+        #[test]
+        fn channels_1_to_14_should_be_2_4ghz() {
+            for ch in 1..=14 {
+                assert_eq!(
+                    classify_channel(ch),
+                    NetworkLink::Wifi2_4Ghz,
+                    "Channel {ch} should be 2.4GHz"
+                );
+            }
+        }
+
+        #[test]
+        fn channel_36_should_be_5ghz() {
+            assert_eq!(classify_channel(36), NetworkLink::Wifi5Ghz);
+        }
+
+        #[test]
+        fn channel_149_should_be_5ghz() {
+            assert_eq!(classify_channel(149), NetworkLink::Wifi5Ghz);
+        }
+
+        #[test]
+        fn channel_15_should_be_5ghz() {
+            // Channel 15 is technically unused but falls into 5GHz by our rule
+            assert_eq!(classify_channel(15), NetworkLink::Wifi5Ghz);
         }
     }
 }

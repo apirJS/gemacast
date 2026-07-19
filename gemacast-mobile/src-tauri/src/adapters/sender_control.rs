@@ -22,12 +22,11 @@ impl HttpSenderControlClient {
 
 #[async_trait]
 impl SenderControlClient for HttpSenderControlClient {
-    async fn connect(&self, req: ConnectReq) -> Result<(), String> {
+    async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
         self.client
             .send_connect_request(req)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+            .map_err(|e| e.to_string())
     }
 
     async fn disconnect(&self, device_id: DeviceId) -> Result<(), String> {

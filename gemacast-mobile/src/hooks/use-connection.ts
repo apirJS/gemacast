@@ -89,6 +89,12 @@ export async function connectToSender(
     fetchProcessList(sender);
     startProbing(ip, state.deviceInfo.deviceId);
 
+    // Fetch the detected network link pair for UI display
+    tauriBridge
+      .getNetworkLinkPair()
+      .then((pair) => store.getState().setNetworkLinkPair(pair))
+      .catch((e) => console.warn('Failed to fetch network link pair:', e));
+
     // Re-apply persisted audio gain setting
     const gainDb = store.getState().settings.gainDb;
     if (gainDb !== 0) {
@@ -143,6 +149,7 @@ export async function disconnect(
         reconnectAttempts: 0,
         isLoading: false,
         isSuspended: !forgetSender,
+        networkLinkPair: null,
       });
       store.getState().resetLatency();
       tauriBridge.notifyStreamingStopped().catch(console.warn);
@@ -176,6 +183,7 @@ export async function disconnect(
       currentAudioSource: { type: 'desktop' },
       senderCapabilities: null,
       processList: [],
+      networkLinkPair: null,
     });
     store.getState().resetLatency();
     if (forgetSender) toast.getState().show('info', 'Disconnected');

@@ -468,7 +468,7 @@ impl JitterBufferManager {
                     // ema_peak: slow-decay peak tracker.
                     // Instead of jumping on every single spurious frame, it only jumps when
                     // the NetEQ Peak State Machine verifies a recurring delay spike.
-                    self.ema_peak = self.ema_peak * current_decay_alpha;
+                    self.ema_peak *= current_decay_alpha;
                     if self.peak_mode_active {
                         let max_peak = self
                             .peak_history
@@ -547,6 +547,15 @@ impl JitterBufferManager {
         if should_check_config && let Ok(guard) = self.config_ref.try_read() {
             let new_config = guard.clone();
             if new_config != self.config {
+                tracing::info!(
+                    "[JitterMgr] Config changed: min_depth={}ms→{}ms, comfort_cap={}ms→{}ms, static={:?}→{:?}",
+                    self.config.min_depth_ms,
+                    new_config.min_depth_ms,
+                    self.config.comfort_cap_ms,
+                    new_config.comfort_cap_ms,
+                    self.config.static_target_ms,
+                    new_config.static_target_ms,
+                );
                 self.is_prebuffering = true;
                 // Reset jitter tracking for clean convergence.
                 self.ema_jitter = 0.0;
@@ -620,6 +629,15 @@ impl JitterBufferManager {
                 self.target_exit_count += 1;
                 if self.target_exit_count >= self.adaptive_dwell() {
                     // Sustained deviation — commit to new ramp goal.
+                    tracing::debug!(
+                        "[JitterMgr] Target transition: effective={}→ramp_goal={}, raw={}, ema_jitter={:.2}, ema_peak={:.2}, stability={:.2}",
+                        self.effective_target,
+                        quantized,
+                        raw_target,
+                        self.ema_jitter,
+                        self.ema_peak,
+                        self.stability_ratio(),
+                    );
                     self.ramp_goal = quantized;
                     self.target_exit_count = 0;
                     // If the target is moving UP, conditions changed — reset probe floor
@@ -652,7 +670,7 @@ impl JitterBufferManager {
                 // is locally high enough — the regime lock is a coarse heuristic
                 // and the probe_floor prevents re-probing below safe levels.
                 && !self.unstable_regime_until
-                    .map_or(false, |until| Instant::now() < until && self.stability_ratio() < 0.5)
+                    .is_some_and(|until| Instant::now() < until && self.stability_ratio() < 0.5)
             {
                 // Active downward probing: when the network has been calm for
                 // a sustained period, nudge the target down to discover the
@@ -672,6 +690,13 @@ impl JitterBufferManager {
                     .max(min_depth)
                     .max(self.probe_floor);
                     if probe_goal < self.effective_target {
+                        tracing::debug!(
+                            "[JitterMgr] Probe down: effective={}→probe_goal={}, floor={}, stability={:.2}",
+                            self.effective_target,
+                            probe_goal,
+                            self.probe_floor,
+                            self.stability_ratio(),
+                        );
                         self.ramp_goal = probe_goal;
                     }
                 }
@@ -701,6 +726,12 @@ impl JitterBufferManager {
             let unpause_threshold =
                 ((target as f32 * self.config.resume_threshold_pct) as u32).max(min_depth);
             if self.buffer.occupied_count() >= unpause_threshold {
+                tracing::info!(
+                    "[JitterMgr] Prebuffer complete: occupied={}, threshold={}, target={}",
+                    self.buffer.occupied_count(),
+                    unpause_threshold,
+                    target,
+                );
                 self.is_prebuffering = false;
                 // No startup_flush — the fast acceleration tier will
                 // gradually drain excess while maintaining phase continuity.
@@ -774,6 +805,15 @@ impl JitterBufferManager {
                         let bump = (self.ema_jitter * 2.0 + 2.0).min(8.0);
                         self.starvation_bump = self.starvation_bump.max(bump);
                     }
+                    tracing::info!(
+                        "[JitterMgr] Starvation bump: type={}, bump={:.1}, effective_target={}, ema_jitter={:.2}, ema_peak={:.2}, starvation_frames={}",
+                        if is_probe_failure { "probe" } else { "genuine" },
+                        self.starvation_bump,
+                        self.effective_target,
+                        self.ema_jitter,
+                        self.ema_peak,
+                        self.starvation_count,
+                    );
                     self.starvation_bump_cooldown = STARVATION_COOLDOWN;
                     // Upward bump bypasses hysteresis dwell for immediate safety.
                     let boosted = Self::quantize_target(
@@ -822,7 +862,7 @@ impl JitterBufferManager {
                     self.playback_buf
                         .extend(&self.decode_buf[..self.decode_len]);
                     let excess = occupied.saturating_sub(wsola_threshold);
-                    let shed_count = (excess / 2).min(4).max(1);
+                    let shed_count = (excess / 2).clamp(1, 4);
                     for _ in 0..shed_count {
                         if self.buffer.occupied_count() > wsola_threshold && self.buffer.has_next()
                         {
@@ -844,13 +884,20 @@ impl JitterBufferManager {
                 let fast_threshold = target.saturating_mul(3);
                 let is_fast = occupied > fast_threshold;
                 let is_quiet_enough = rms < 0.08;
-                if is_fast || (self.timescale_cooldown == 0 && is_quiet_enough) {
-                    if self.try_accelerate_internal(is_fast) {
-                        if !is_fast {
-                            self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
-                        }
-                        return;
+                if (is_fast || (self.timescale_cooldown == 0 && is_quiet_enough))
+                    && self.try_accelerate_internal(is_fast)
+                {
+                    tracing::trace!(
+                        "[JitterMgr] Accelerate: occupied={}, target={}, fast={}, rms={:.4}",
+                        occupied,
+                        target,
+                        is_fast,
+                        rms,
+                    );
+                    if !is_fast {
+                        self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
                     }
+                    return;
                 }
             }
 
@@ -868,6 +915,12 @@ impl JitterBufferManager {
                 // buffer briefly dip below min_depth; packets will refill naturally.
                 // rms > 0.001 excludes true silence (nothing to stretch).
                 if rms < 0.08 && rms > 0.001 && self.try_wsola_expand_internal() {
+                    tracing::trace!(
+                        "[JitterMgr] Expand: filtered_level={:.1}, min_depth={}, rms={:.4}",
+                        self.filtered_buffer_level,
+                        min_depth,
+                        rms,
+                    );
                     return;
                 }
             }
@@ -882,6 +935,14 @@ impl JitterBufferManager {
         if self.buffer.occupied_count() == 0 {
             self.gap_hold_count = 0;
             self.starvation_count += 1;
+            if self.starvation_count == 1 {
+                tracing::warn!(
+                    "[JitterMgr] Starvation started: effective_target={}, ema_jitter={:.2}, ema_peak={:.2}",
+                    self.effective_target,
+                    self.ema_jitter,
+                    self.ema_peak,
+                );
+            }
         }
 
         if self.missing_count > MAX_MISSING {
@@ -903,6 +964,11 @@ impl JitterBufferManager {
             };
 
             if self.starvation_count >= starvation_threshold {
+                tracing::warn!(
+                    "[JitterMgr] Starvation→rebuffer: starvation_count={}, threshold={}",
+                    self.starvation_count,
+                    starvation_threshold,
+                );
                 self.is_prebuffering = true;
             }
         }
@@ -1214,6 +1280,12 @@ impl JitterBufferManager {
         if self.buffer.occupied_count() <= flush_to {
             return;
         }
+        tracing::info!(
+            "[JitterMgr] Flush: occupied={}→target={}, effective_target={}",
+            self.buffer.occupied_count(),
+            flush_to,
+            self.effective_target,
+        );
         // 1. Snapshot the current decoded PCM into wsola_buf.
         let pre_flush_len = self.decode_len;
         if pre_flush_len > 0 {
@@ -1229,16 +1301,21 @@ impl JitterBufferManager {
             }
         }
         // 3. Crossfade between pre-flush and post-flush audio.
-        if pre_flush_len > 0 && self.decode_len > 0 {
-            if !self.try_wsola_overlap_add_internal(pre_flush_len, true) {
-                self.playback_buf.extend(&self.wsola_buf[..pre_flush_len]);
-                self.playback_buf
-                    .extend(&self.decode_buf[..self.decode_len]);
-            }
+        if pre_flush_len > 0
+            && self.decode_len > 0
+            && !self.try_wsola_overlap_add_internal(pre_flush_len, true)
+        {
+            self.playback_buf.extend(&self.wsola_buf[..pre_flush_len]);
+            self.playback_buf
+                .extend(&self.decode_buf[..self.decode_len]);
         }
     }
 
     fn trigger_reset(&mut self) {
+        tracing::warn!(
+            "[JitterMgr] Stream reset: missing_count exceeded {}ms silence threshold",
+            MAX_MISSING * MILLIS_PER_FRAME,
+        );
         self.buffer.reset();
         self.is_prebuffering = true;
         self.missing_count = 0;
@@ -1284,23 +1361,23 @@ impl JitterBufferManager {
     /// Silence frames output zeros without touching the decoder state.
     /// Uncompressed PCM frames are copied directly without decoder interaction.
     fn capture_pcm(&mut self, pkt: &RawPacket) {
-        if let Some(expected) = self.opus_next_expected_seq {
-            if pkt.seq_num != expected {
-                let gap = pkt.seq_num.saturating_sub(expected);
-                if gap > 20 {
-                    // Large discontinuity (>100ms): full decoder reset.
-                    let _ = self.decoder.reset_state();
-                } else if gap > 0 && gap <= 5 {
-                    // Small forward gap (5-25ms): feed PLC frames to keep decoder
-                    // state warm for smooth concealment. This prevents the hard
-                    // transient click that reset_state() would cause.
-                    for _ in 0..gap {
-                        let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
-                    }
+        if let Some(expected) = self.opus_next_expected_seq
+            && pkt.seq_num != expected
+        {
+            let gap = pkt.seq_num.saturating_sub(expected);
+            if gap > 20 {
+                // Large discontinuity (>100ms): full decoder reset.
+                let _ = self.decoder.reset_state();
+            } else if gap > 0 && gap <= 5 {
+                // Small forward gap (5-25ms): feed PLC frames to keep decoder
+                // state warm for smooth concealment. This prevents the hard
+                // transient click that reset_state() would cause.
+                for _ in 0..gap {
+                    let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
                 }
-                // Gaps 6-20: decoder continues without intervention.
-                // PLC quality degrades naturally but no hard reset click.
             }
+            // Gaps 6-20: decoder continues without intervention.
+            // PLC quality degrades naturally but no hard reset click.
         }
 
         if pkt.is_silence {
