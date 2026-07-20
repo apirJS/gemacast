@@ -1,4 +1,5 @@
 use super::buffer::JitterBuffer;
+use super::decoder::FrameDecoder;
 use super::stats::JitterStats;
 use super::target::TargetController;
 use super::types::RawPacket;
@@ -37,21 +38,15 @@ const MIN_TIMESCALE_INTERVAL: u32 = 6;
 /// Owns the buffer and Opus decoder. Runs entirely within the cpal audio callback thread.
 /// Communication with the network thread happens via the lock-free SPSC `HeapCons`.
 pub struct JitterBufferManager {
-    decoder: Decoder,
+    /// Opus decoder + reusable decode buffer.
+    decoder: FrameDecoder,
     buffer: JitterBuffer,
     /// Accumulator of processed PCM samples ready for cpal to consume.
     /// Decouples the Opus frame size (960 samples) from cpal's variable buffer size.
     playback_buf: VecDeque<f32>,
-    /// Reusable buffer for Opus decode output (avoids per-frame allocation).
-    /// IMPORTANT: Always kept at full capacity (OPUS_FRAME_SAMPLES) — never truncated.
-    decode_buf: Vec<f32>,
-    /// How many valid samples are in decode_buf after the last decode.
-    decode_len: usize,
     is_prebuffering: bool,
     missing_count: u32,
     starvation_count: u32,
-    /// Tracks the exact sequence number the Opus predictive state machine is calibrated for.
-    opus_next_expected_seq: Option<u64>,
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
     /// How many consecutive callbacks we've been waiting for the current gap slot.
@@ -108,15 +103,12 @@ impl JitterBufferManager {
         let stats = JitterStats::new(&initial_config);
 
         Self {
-            decoder,
+            decoder: FrameDecoder::new(decoder),
             buffer: JitterBuffer::new(),
             playback_buf: VecDeque::with_capacity(OPUS_FRAME_SAMPLES * 100),
-            decode_buf: vec![0.0f32; OPUS_FRAME_SAMPLES],
-            decode_len: 0,
             is_prebuffering: true,
             missing_count: 0,
             starvation_count: 0,
-            opus_next_expected_seq: None,
             latency_metric,
             gap_hold_count: 0,
             startup_flush_remaining: 0,
@@ -163,8 +155,7 @@ impl JitterBufferManager {
 
             use super::buffer::InsertResult;
             if matches!(self.buffer.insert(pkt), InsertResult::StreamRestarted) {
-                let _ = self.decoder.reset_state();
-                self.opus_next_expected_seq = None;
+                self.decoder.resync();
             }
         }
     }
@@ -330,8 +321,7 @@ impl JitterBufferManager {
                 let diff = lo.saturating_sub(self.buffer.next_play_seq());
                 self.buffer.fast_forward(lo);
                 if diff > 20 {
-                    let _ = self.decoder.reset_state();
-                    self.opus_next_expected_seq = None;
+                    self.decoder.resync();
                 }
                 self.gap_hold_count = 0;
             }
@@ -357,17 +347,17 @@ impl JitterBufferManager {
             let pkt = self.buffer.pop_next().expect("has_next was true");
             let delay_ms = Instant::now().duration_since(pkt.arrival_time).as_millis() as u32;
             self.latency_metric.store(delay_ms, Ordering::Relaxed);
-            self.capture_pcm(&pkt);
+            self.decoder.capture(&pkt);
 
             // Smooth PLC→real audio transition: when the first real packet
             // arrives after starvation, apply a 2ms linear fade-in to mask
             // the spectral discontinuity between Opus PLC prediction and
             // real decoded audio. 96 samples = 2ms at 48kHz.
             if self.starvation_count > 0 {
-                let fade_len = 96.min(self.decode_len);
+                let fade_len = 96.min(self.decoder.decode_len);
                 for i in 0..fade_len {
                     let gain = i as f32 / fade_len as f32;
-                    self.decode_buf[i] *= gain;
+                    self.decoder.decode_buf[i] *= gain;
                 }
             }
             let occupied = self.buffer.occupied_count();
@@ -379,20 +369,20 @@ impl JitterBufferManager {
             // This matches WebRTC's `prev_mode != kModeExpand` check that
             // prevents the drain→starve→refill→drain saw-tooth cycle.
             if occupied > wsola_threshold && self.starvation_recovery == 0 {
-                let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
+                let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
                 let is_passive = rms < 0.005;
                 if is_passive && self.buffer.has_next() {
                     // Silence fast-forward: append current frame AND pop extra(s).
                     // Cap shedding so we never drain below the target.
                     self.playback_buf
-                        .extend(&self.decode_buf[..self.decode_len]);
+                        .extend(&self.decoder.decode_buf[..self.decoder.decode_len]);
                     let excess = occupied.saturating_sub(wsola_threshold);
                     let shed_count = (excess / 2).clamp(1, 4);
                     for _ in 0..shed_count {
                         if self.buffer.occupied_count() > wsola_threshold && self.buffer.has_next()
                         {
                             let extra = self.buffer.pop_next().unwrap();
-                            self.capture_pcm(&extra);
+                            self.decoder.capture(&extra);
                         }
                     }
                     self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
@@ -434,7 +424,7 @@ impl JitterBufferManager {
             let min_depth = self.min_depth_frames();
             let is_low_buffer = self.filtered_buffer_level < min_depth as f32;
             if is_low_buffer {
-                let rms = Self::get_rms(&self.decode_buf[..self.decode_len]);
+                let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
                 // Only stretch quiet audio — WSOLA expansion on loud music causes
                 // audible "slowing down" artifacts. On loud active audio, let the
                 // buffer briefly dip below min_depth; packets will refill naturally.
@@ -451,7 +441,7 @@ impl JitterBufferManager {
             }
 
             self.playback_buf
-                .extend(&self.decode_buf[..self.decode_len]);
+                .extend(&self.decoder.decode_buf[..self.decoder.decode_len]);
             return;
         }
 
@@ -504,13 +494,13 @@ impl JitterBufferManager {
 
     /// Hann Overlap-Add WSOLA splice (allocation-free).
     ///
-    /// Reads pcm1 from `self.wsola_buf[..pcm1_len]` and pcm2 from `self.decode_buf[..self.decode_len]`.
+    /// Reads pcm1 from `self.wsola_buf[..pcm1_len]` and pcm2 from `self.decoder.decode_buf[..self.decoder.decode_len]`.
     /// Finds the best phase-aligned splice point via **mono-downmixed** normalized
     /// cross-correlation (halves FMA count vs full-stereo, enables NEON auto-vectorization),
     /// then applies a Hann-windowed crossfade on full stereo. Writes output to `self.playback_buf`.
     fn try_wsola_overlap_add_internal(&mut self, pcm1_len: usize, force_crossfade: bool) -> bool {
         let ch = OPUS_CHANNELS as usize;
-        let pcm2_len = self.decode_len;
+        let pcm2_len = self.decoder.decode_len;
         let n1 = pcm1_len / ch;
         let n2 = pcm2_len / ch;
 
@@ -546,9 +536,9 @@ impl JitterBufferManager {
             for (i, &m) in mono_ref.iter().enumerate() {
                 let base = (d + i) * ch;
                 let mono_cand = if ch == 2 {
-                    (self.decode_buf[base] + self.decode_buf[base + 1]) * 0.5
+                    (self.decoder.decode_buf[base] + self.decoder.decode_buf[base + 1]) * 0.5
                 } else {
-                    self.decode_buf[base]
+                    self.decoder.decode_buf[base]
                 };
                 cross += m * mono_cand;
                 cand_energy += mono_cand * mono_cand;
@@ -575,7 +565,7 @@ impl JitterBufferManager {
             let hann_out = 1.0 - hann_in;
             for c in 0..ch {
                 let r = self.wsola_buf[(anchor + i) * ch + c];
-                let s = self.decode_buf[(best_d + i) * ch + c];
+                let s = self.decoder.decode_buf[(best_d + i) * ch + c];
                 self.playback_buf.push_back(r * hann_out + s * hann_in);
             }
         }
@@ -584,7 +574,7 @@ impl JitterBufferManager {
         let tail_start = (best_d + OLA_LEN) * ch;
         if tail_start < pcm2_len {
             self.playback_buf
-                .extend(&self.decode_buf[tail_start..pcm2_len]);
+                .extend(&self.decoder.decode_buf[tail_start..pcm2_len]);
         }
 
         true
@@ -595,7 +585,7 @@ impl JitterBufferManager {
     /// to slow down playback and prevent an imminent starvation gap.
     fn try_wsola_expand_internal(&mut self) -> bool {
         let ch = OPUS_CHANNELS as usize;
-        let n = self.decode_len / ch;
+        let n = self.decoder.decode_len / ch;
         if n < OLA_LEN + 16 {
             return false;
         }
@@ -611,9 +601,9 @@ impl JitterBufferManager {
         for (i, m) in mono_ref.iter_mut().enumerate() {
             let base = (anchor + i) * ch;
             let mono = if ch == 2 {
-                (self.decode_buf[base] + self.decode_buf[base + 1]) * 0.5
+                (self.decoder.decode_buf[base] + self.decoder.decode_buf[base + 1]) * 0.5
             } else {
-                self.decode_buf[base]
+                self.decoder.decode_buf[base]
             };
             *m = mono;
             ref_energy += mono * mono;
@@ -627,9 +617,9 @@ impl JitterBufferManager {
             for (i, &m) in mono_ref.iter().enumerate() {
                 let base = (d + i) * ch;
                 let mono_cand = if ch == 2 {
-                    (self.decode_buf[base] + self.decode_buf[base + 1]) * 0.5
+                    (self.decoder.decode_buf[base] + self.decoder.decode_buf[base + 1]) * 0.5
                 } else {
-                    self.decode_buf[base]
+                    self.decoder.decode_buf[base]
                 };
                 cross += m * mono_cand;
                 cand_energy += mono_cand * mono_cand;
@@ -648,22 +638,22 @@ impl JitterBufferManager {
         }
 
         // 1. pcm[0..anchor] verbatim
-        self.playback_buf.extend(&self.decode_buf[..anchor * ch]);
+        self.playback_buf.extend(&self.decoder.decode_buf[..anchor * ch]);
         // 2. Hann OLA crossfade
         for i in 0..OLA_LEN {
             let hann_in = self.hann_window[i];
             let hann_out = 1.0 - hann_in;
             for c in 0..ch {
-                let r = self.decode_buf[(anchor + i) * ch + c];
-                let s = self.decode_buf[(best_d + i) * ch + c];
+                let r = self.decoder.decode_buf[(anchor + i) * ch + c];
+                let s = self.decoder.decode_buf[(best_d + i) * ch + c];
                 self.playback_buf.push_back(r * hann_out + s * hann_in);
             }
         }
         // 3. pcm[best_d+OLA_LEN..end] verbatim
         let tail_start = (best_d + OLA_LEN) * ch;
-        if tail_start < self.decode_len {
+        if tail_start < self.decoder.decode_len {
             self.playback_buf
-                .extend(&self.decode_buf[tail_start..self.decode_len]);
+                .extend(&self.decoder.decode_buf[tail_start..self.decoder.decode_len]);
         }
 
         true
@@ -680,7 +670,7 @@ impl JitterBufferManager {
     /// because periodic signals repeat themselves within a single frame.
     fn try_accelerate_internal(&mut self, fast_mode: bool) -> bool {
         let ch = OPUS_CHANNELS as usize;
-        let n = self.decode_len / ch;
+        let n = self.decoder.decode_len / ch;
         // Need at least 2*OLA_LEN to have non-overlapping search + reference
         if n < 2 * OLA_LEN + 16 {
             return false;
@@ -701,9 +691,9 @@ impl JitterBufferManager {
         for (i, m) in mono_ref.iter_mut().enumerate() {
             let base = (anchor + i) * ch;
             let mono = if ch == 2 {
-                (self.decode_buf[base] + self.decode_buf[base + 1]) * 0.5
+                (self.decoder.decode_buf[base] + self.decoder.decode_buf[base + 1]) * 0.5
             } else {
-                self.decode_buf[base]
+                self.decoder.decode_buf[base]
             };
             *m = mono;
             ref_energy += mono * mono;
@@ -718,9 +708,9 @@ impl JitterBufferManager {
             for (i, &m) in mono_ref.iter().enumerate() {
                 let base = (d + i) * ch;
                 let mono_cand = if ch == 2 {
-                    (self.decode_buf[base] + self.decode_buf[base + 1]) * 0.5
+                    (self.decoder.decode_buf[base] + self.decoder.decode_buf[base + 1]) * 0.5
                 } else {
-                    self.decode_buf[base]
+                    self.decoder.decode_buf[base]
                 };
                 cross += m * mono_cand;
                 cand_energy += mono_cand * mono_cand;
@@ -774,15 +764,15 @@ impl JitterBufferManager {
         }
 
         // 1. [0..best_d] verbatim
-        self.playback_buf.extend(&self.decode_buf[..best_d * ch]);
+        self.playback_buf.extend(&self.decoder.decode_buf[..best_d * ch]);
 
         // 2. Hann OLA crossfade between the two pitch-aligned sections
         for i in 0..OLA_LEN {
             let hann_in = self.hann_window[i];
             let hann_out = 1.0 - hann_in;
             for c in 0..ch {
-                let early = self.decode_buf[(best_d + i) * ch + c];
-                let late = self.decode_buf[(splice_start + i) * ch + c];
+                let early = self.decoder.decode_buf[(best_d + i) * ch + c];
+                let late = self.decoder.decode_buf[(splice_start + i) * ch + c];
                 self.playback_buf
                     .push_back(early * hann_out + late * hann_in);
             }
@@ -790,9 +780,9 @@ impl JitterBufferManager {
 
         // 3. Tail after the crossfade
         let tail_start = (splice_start + OLA_LEN) * ch;
-        if tail_start < self.decode_len {
+        if tail_start < self.decoder.decode_len {
             self.playback_buf
-                .extend(&self.decode_buf[tail_start..self.decode_len]);
+                .extend(&self.decoder.decode_buf[tail_start..self.decoder.decode_len]);
         }
 
         true
@@ -813,27 +803,27 @@ impl JitterBufferManager {
             self.control.effective_target,
         );
         // 1. Snapshot the current decoded PCM into wsola_buf.
-        let pre_flush_len = self.decode_len;
+        let pre_flush_len = self.decoder.decode_len;
         if pre_flush_len > 0 {
-            self.wsola_buf[..pre_flush_len].copy_from_slice(&self.decode_buf[..pre_flush_len]);
+            self.wsola_buf[..pre_flush_len].copy_from_slice(&self.decoder.decode_buf[..pre_flush_len]);
         }
         // 2. Skip frames, feeding each to the decoder to keep its state warm.
         //    This avoids the hard transient click that reset_state() causes.
         while self.buffer.occupied_count() > flush_to {
             if let Some(pkt) = self.buffer.pop_next() {
-                self.capture_pcm(&pkt);
+                self.decoder.capture(&pkt);
             } else {
                 self.buffer.advance_one();
             }
         }
         // 3. Crossfade between pre-flush and post-flush audio.
         if pre_flush_len > 0
-            && self.decode_len > 0
+            && self.decoder.decode_len > 0
             && !self.try_wsola_overlap_add_internal(pre_flush_len, true)
         {
             self.playback_buf.extend(&self.wsola_buf[..pre_flush_len]);
             self.playback_buf
-                .extend(&self.decode_buf[..self.decode_len]);
+                .extend(&self.decoder.decode_buf[..self.decoder.decode_len]);
         }
     }
 
@@ -848,9 +838,7 @@ impl JitterBufferManager {
         self.starvation_count = 0;
         self.gap_hold_count = 0;
         self.playback_buf.clear();
-        self.decode_buf.fill(0.0);
-        self.decode_len = 0;
-        let _ = self.decoder.reset_state();
+        self.decoder.reset();
         self.stats.reset_on_stream_restart();
         self.control.reset();
         self.startup_flush_remaining = 0;
@@ -864,105 +852,21 @@ impl JitterBufferManager {
         (sum_sq / samples.len() as f32).sqrt()
     }
 
-    /// Decode a packet's payload into `self.decode_buf[..self.decode_len]`.
-    ///
-    /// Zero-allocation: all output goes into the pre-allocated decode buffer.
-    /// Silence frames output zeros without touching the decoder state.
-    /// Uncompressed PCM frames are copied directly without decoder interaction.
-    fn capture_pcm(&mut self, pkt: &RawPacket) {
-        if let Some(expected) = self.opus_next_expected_seq
-            && pkt.seq_num != expected
-        {
-            let gap = pkt.seq_num.saturating_sub(expected);
-            if gap > 20 {
-                // Large discontinuity (>100ms): full decoder reset.
-                let _ = self.decoder.reset_state();
-            } else if gap > 0 && gap <= 5 {
-                // Small forward gap (5-25ms): feed PLC frames to keep decoder
-                // state warm for smooth concealment. This prevents the hard
-                // transient click that reset_state() would cause.
-                for _ in 0..gap {
-                    let _ = self.decoder.decode_float(&[], &mut self.decode_buf, false);
-                }
-            }
-            // Gaps 6-20: decoder continues without intervention.
-            // PLC quality degrades naturally but no hard reset click.
-        }
-
-        if pkt.is_silence {
-            // Silence is intentional (sender detected quiet audio), not a loss
-            // event. Don't feed PLC — it would poison the decoder's internal
-            // state with hallucinated spectral data, causing a brief "warble"
-            // artifact when real audio resumes.
-            self.decode_buf[..OPUS_FRAME_SAMPLES].fill(0.0);
-            self.decode_len = OPUS_FRAME_SAMPLES;
-        } else if pkt.is_uncompressed {
-            let f32_len = pkt.payload_len / std::mem::size_of::<f32>();
-            if f32_len == 0 {
-                // Empty uncompressed payload — generate PLC as fallback
-                self.decode_plc_to_buf();
-            } else {
-                // Copy raw PCM directly without decoder interaction.
-                // Don't feed PLC — uncompressed frames are a format choice,
-                // not a loss event. Mixing PLC state into a non-Opus path
-                // only poisons future Opus decode transitions.
-                for (i, chunk) in pkt.payload_data[..pkt.payload_len]
-                    .chunks_exact(4)
-                    .enumerate()
-                {
-                    self.decode_buf[i] = f32::from_ne_bytes(chunk.try_into().unwrap());
-                }
-                self.decode_len = f32_len.min(self.decode_buf.len());
-            }
-        } else if !self.decode_opus(&pkt.payload_data[..pkt.payload_len]) {
-            self.decode_plc_to_buf();
-        }
-        self.opus_next_expected_seq = Some(pkt.seq_num + 1);
-    }
-
-    fn decode_opus(&mut self, opus_data: &[u8]) -> bool {
-        match self
-            .decoder
-            .decode_float(opus_data, &mut self.decode_buf, false)
-        {
-            Ok(samples_per_channel) => {
-                self.decode_len = samples_per_channel * OPUS_CHANNELS as usize;
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn decode_plc_to_buf(&mut self) {
-        match self
-            .decoder
-            .decode_float(&[] as &[u8], &mut self.decode_buf, false)
-        {
-            Ok(samples_per_channel) => {
-                self.decode_len = samples_per_channel * OPUS_CHANNELS as usize;
-            }
-            Err(_) => {
-                self.decode_buf.fill(0.0);
-                self.decode_len = OPUS_FRAME_SAMPLES;
-            }
-        }
-    }
-
     fn generate_plc(&mut self) {
-        self.decode_plc_to_buf();
+        self.decoder.decode_plc();
 
         // Gradually fade PLC output to silence over frames 4-7 of starvation.
         // Opus PLC quality degrades rapidly after ~3 frames (15ms). Beyond that,
         // the prediction sounds robotic — silence is less jarring than bad prediction.
         if self.starvation_count > 3 {
             let fade = (1.0 - ((self.starvation_count - 3) as f32 / 4.0)).max(0.0);
-            for s in &mut self.decode_buf[..self.decode_len] {
+            for s in &mut self.decoder.decode_buf[..self.decoder.decode_len] {
                 *s *= fade;
             }
         }
 
         self.playback_buf
-            .extend(&self.decode_buf[..self.decode_len]);
+            .extend(&self.decoder.decode_buf[..self.decoder.decode_len]);
     }
 
     pub fn reset(&mut self) {
@@ -1367,7 +1271,7 @@ mod tests {
         assert_eq!(manager.buffer.next_play_seq(), future_seq + 1);
         // And the decoder state MUST be preserved (opus_next_expected_seq should not be None).
         // Since we waited REORDER_TOLERANCE frames, opus_next_expected_seq advanced via PLC!
-        assert!(manager.opus_next_expected_seq.is_some());
+        assert!(manager.decoder.opus_next_expected_seq.is_some());
     }
 
     #[test]
@@ -1757,7 +1661,7 @@ mod tests {
         manager.fill_output(&mut output, 1.0);
 
         // Record opus_next_expected_seq before flush.
-        let seq_before = manager.opus_next_expected_seq;
+        let seq_before = manager.decoder.opus_next_expected_seq;
 
         // Manually flush down to 10 frames using the crossfade path.
         manager.flush_with_crossfade(10);
@@ -1765,13 +1669,13 @@ mod tests {
         // The decoder state should NOT have been hard-reset.
         // opus_next_expected_seq should still be Some (not None, which reset_state sets).
         assert!(
-            manager.opus_next_expected_seq.is_some(),
+            manager.decoder.opus_next_expected_seq.is_some(),
             "opus_next_expected_seq should be Some after crossfade flush"
         );
 
         // The sequence should have advanced (decoder was fed through skipped frames).
         assert!(
-            manager.opus_next_expected_seq > seq_before,
+            manager.decoder.opus_next_expected_seq > seq_before,
             "opus_next_expected_seq should have advanced past flushed frames"
         );
 
