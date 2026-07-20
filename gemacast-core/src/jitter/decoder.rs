@@ -29,6 +29,11 @@ impl FrameDecoder {
         }
     }
 
+    /// The valid decoded samples from the last `capture`/`decode_plc`.
+    pub fn decoded(&self) -> &[f32] {
+        &self.decode_buf[..self.decode_len]
+    }
+
     /// Decode a packet's payload into `self.decode_buf[..self.decode_len]`.
     ///
     /// Zero-allocation: all output goes into the pre-allocated decode buffer.

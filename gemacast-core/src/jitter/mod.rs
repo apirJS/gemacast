@@ -4,6 +4,7 @@ mod decoder;
 pub mod manager;
 mod stats;
 mod target;
+mod timescale;
 pub mod types;
 
 pub use buffer::*;
