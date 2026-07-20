@@ -1,4 +1,5 @@
 use super::buffer::JitterBuffer;
+use super::stats::JitterStats;
 use super::types::RawPacket;
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE};
 use crate::domain::types::JitterConfig;
@@ -72,35 +73,15 @@ pub struct JitterBufferManager {
     starvation_count: u32,
     /// Tracks the exact sequence number the Opus predictive state machine is calibrated for.
     opus_next_expected_seq: Option<u64>,
-    last_network_arrival: Option<Instant>,
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
     /// How many consecutive callbacks we've been waiting for the current gap slot.
     /// Prevents spurious PLC for late-arriving reordered packets on 2.4GHz.
     gap_hold_count: u32,
-    /// EWMA of inter-arrival jitter (frames).
-    ema_jitter: f32,
-    /// Slow-decay peak tracker for worst-case jitter (frames).
-    ema_peak: f32,
     /// Additive target bump after starvation, bleeds continuously.
     starvation_bump: f32,
-    /// Last ingested sequence number to detect consecutive packets for IAT.
-    last_ingest_seq: Option<u64>,
     /// Countdown for continuous startup flush.
     startup_flush_remaining: u32,
-    ema_peak_decay_alpha: f32,
-    /// When the last major jitter spike (>50ms) occurred
-    last_macro_spike: Option<Instant>,
-    /// Unstable network (e.g. 2.4GHz scan cycle) regime expiration.
-    unstable_regime_until: Option<Instant>,
-
-    /// Consecutive packets with jitter below the adaptive clean threshold.
-    /// Used to infer network quality: high streak = stable link.
-    clean_streak: u32,
-    /// EWMA of jitter² for variance tracking.
-    /// Combined with `ema_jitter`, yields coefficient of variation (CV = σ/μ)
-    /// to distinguish stable-low-jitter from spiky-bursty networks.
-    ema_jitter_var: f32,
     config: JitterConfig,
     config_ref: Arc<RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
@@ -132,13 +113,8 @@ pub struct JitterBufferManager {
     probe_floor: u32,
     /// NetEQ-style IIR filtered buffer level to ignore instantaneous OS batching spikes.
     filtered_buffer_level: f32,
-    // --- NetEQ Peak Detection State ---
-    /// History of recent peaks (period_ms, height_frames)
-    peak_history: VecDeque<(u64, f32)>,
-    /// Time of the last detected peak
-    last_peak_time: Option<Instant>,
-    /// Whether peak mode is currently active
-    peak_mode_active: bool,
+    /// Rolling network-condition statistics (jitter EMAs, clean streak, peak detection).
+    stats: JitterStats,
     /// Cooldown counter for timescale operations (acceleration/expansion).
     /// While > 0, no new acceleration is attempted. Prevents rapid-fire
     /// time-stretching that causes audible artifacts on music.
@@ -169,9 +145,7 @@ impl JitterBufferManager {
         is_tcp_mode: Arc<AtomicBool>,
     ) -> Self {
         let initial_config = config_ref.read().unwrap().clone();
-        let halflife_ticks =
-            (initial_config.peak_decay_halflife_ms.max(10) as f32) / (MILLIS_PER_FRAME as f32);
-        let ema_peak_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
+        let stats = JitterStats::new(&initial_config);
 
         Self {
             decoder,
@@ -183,13 +157,9 @@ impl JitterBufferManager {
             missing_count: 0,
             starvation_count: 0,
             opus_next_expected_seq: None,
-            last_network_arrival: None,
             latency_metric,
             gap_hold_count: 0,
-            ema_jitter: 0.0,
-            ema_peak: 0.0,
             starvation_bump: 0.0,
-            last_ingest_seq: None,
             startup_flush_remaining: 0,
             config: initial_config,
             config_ref,
@@ -197,11 +167,6 @@ impl JitterBufferManager {
             hann_window: Self::make_hann_window(),
             wsola_buf: vec![0.0f32; OPUS_FRAME_SAMPLES],
             config_check_countdown: 0,
-            ema_peak_decay_alpha,
-            last_macro_spike: None,
-            unstable_regime_until: None,
-            clean_streak: 0,
-            ema_jitter_var: 0.0,
             effective_target: 2,
             target_exit_count: 0,
             ramp_goal: 2,
@@ -210,9 +175,7 @@ impl JitterBufferManager {
             probe_down_countdown: PROBE_DOWN_INTERVAL,
             probe_floor: 0,
             filtered_buffer_level: 0.0,
-            peak_history: VecDeque::with_capacity(8),
-            last_peak_time: None,
-            peak_mode_active: false,
+            stats,
             timescale_cooldown: 0,
             starvation_recovery: 0,
         }
@@ -230,18 +193,9 @@ impl JitterBufferManager {
 
     /// Compute the stability ratio from the clean streak counter.
     /// Returns 0.0 (unstable) to 1.0 (highly stable).
-    /// Ramps linearly over 400 consecutive clean packets (~2 seconds).
+    /// Delegates to the [`JitterStats`] actor.
     fn stability_ratio(&self) -> f32 {
-        self.clean_streak.min(400) as f32 / 400.0
-    }
-
-    /// Adaptive clean threshold based on observed baseline jitter.
-    /// On 2.4GHz (ema_jitter ~4–8 frames), threshold ≈ 7–13 frames.
-    /// On 5GHz (ema_jitter ~0.5 frames), threshold ≈ 1.75 frames.
-    /// This allows the clean streak to build even on noisy networks,
-    /// as long as jitter stays near the established baseline.
-    fn clean_threshold(&self) -> f32 {
-        (self.ema_jitter * 1.5 + 1.0).min(10.0)
+        self.stats.stability_ratio()
     }
 
     /// Snap a raw target to the nearest quantum level.
@@ -307,7 +261,7 @@ impl JitterBufferManager {
         // jitter_margin contribution so the target converges to min_depth faster.
         let stability = self.stability_ratio();
         let margin_scale = 1.0 - stability * 0.4; // At full stability: 60% of raw margin
-        let jitter_margin = (self.ema_jitter * 2.0 + self.ema_peak) * margin_scale;
+        let jitter_margin = (self.stats.ema_jitter * 2.0 + self.stats.ema_peak) * margin_scale;
         // Target is natively built on top of the user's requested minimum floor.
         // We do not add artificial hardcoded safety margins here.
         let target = self.min_depth_frames() as f32 + jitter_margin + self.starvation_bump;
@@ -322,165 +276,16 @@ impl JitterBufferManager {
     /// Updates Dual-EMA jitter statistics from observed inter-arrival times.
     pub fn ingest_packets(&mut self, consumer: &mut HeapCons<RawPacket>) {
         while let Some(pkt) = consumer.try_pop() {
-            if let Some(last_time) = self.last_network_arrival
-                && let Some(last_seq) = self.last_ingest_seq
-                // Only compute for forward progress. Ignore reordered packets for jitter math.
-                && pkt.seq_num > last_seq
-            {
-                let seq_diff = pkt.seq_num - last_seq;
-                // If the gap is impossibly large (> 5 seconds), it's likely a complete stream resume.
-                // We don't want to record 5000ms of jitter. Discard extreme anomalies.
-                if seq_diff < 1000 {
-                    let iat_actual = match pkt.arrival_time.checked_duration_since(last_time) {
-                        Some(d) => d.as_millis() as f32,
-                        None => continue,
-                    };
-                    let iat_expected = (seq_diff as f32) * (MILLIS_PER_FRAME as f32);
-                    let jitter_ms = (iat_actual - iat_expected).max(0.0);
-                    let jitter_frames = jitter_ms / MILLIS_PER_FRAME as f32;
-
-                    // --- Clean streak tracking (regime-aware) ---
-                    // A packet is "clean" if its jitter is below the adaptive threshold.
-                    // On 2.4GHz where baseline jitter is ~20ms, the threshold rises to
-                    // accommodate the network's natural behavior, letting the streak build.
-                    let clean_thresh = self.clean_threshold();
-                    if jitter_frames < clean_thresh {
-                        self.clean_streak = self.clean_streak.saturating_add(1);
-                    } else {
-                        // Spikes well above threshold are severe — slam to zero.
-                        // Moderate spikes (up to 2x threshold) decay gently.
-                        if jitter_frames > clean_thresh * 2.0 {
-                            self.clean_streak = 0;
-                        } else {
-                            self.clean_streak /= 2;
-                        }
-                    }
-
-                    // --- Jitter variance tracking (EWMA of jitter²) ---
-                    let jitter_sq = jitter_frames * jitter_frames;
-                    self.ema_jitter_var = self.ema_jitter_var * 0.95 + jitter_sq * 0.05;
-
-                    // --- Stability-aware jitter EMA decay ---
-                    // Fast attack (α=0.15) on spikes, stability-scaled decay on clean packets.
-                    // Stable 5GHz: α_decay ≈ 0.04 → halves in ~85 callbacks (~425ms)
-                    // Unstable 2.4GHz: α_decay ≈ 0.005 → halves in ~700 callbacks (~3.5s)
-                    let stability = self.stability_ratio();
-                    let alpha = if jitter_frames > self.ema_jitter {
-                        0.15 // Fast attack
-                    } else {
-                        Self::lerp(0.005, 0.04, stability)
-                    };
-                    self.ema_jitter = self.ema_jitter * (1.0 - alpha) + jitter_frames * alpha;
-
-                    // --- Peak decay: stability-aware continuous interpolation ---
-                    let mut current_decay_alpha = self.ema_peak_decay_alpha;
-                    if self.config.peak_decay_halflife_ms == 0 {
-                        // Smart Mode (Auto): interpolate half-life based on stability.
-                        // Stable network: 1.5s half-life (aggressive shedding)
-                        // Unstable network: 34.6s half-life (cautious retention)
-                        let mut is_unstable = false;
-                        if let Some(unstable_until) = self.unstable_regime_until
-                            && pkt.arrival_time < unstable_until
-                        {
-                            is_unstable = true;
-                        }
-
-                        let halflife_ms = if is_unstable {
-                            // In unstable regime, clamp to slow decay regardless of streak
-                            // Reduced from 34.6s: still cautious but recovers in seconds, not minutes
-                            15000.0
-                        } else {
-                            // Continuous interpolation: 10s → 0.8s based on stability
-                            // Compressed from 34.6s/1.5s: enables recovery from isolated
-                            // spikes within seconds instead of minutes
-                            Self::lerp(10000.0, 800.0, stability)
-                        };
-                        let halflife_ticks = halflife_ms / MILLIS_PER_FRAME as f32;
-                        current_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
-
-                        // Track spikes > 50ms (10 frames)
-                        if jitter_frames >= 10.0 {
-                            let mut is_new_macro_spike = false;
-                            if let Some(last_spike) = self.last_macro_spike {
-                                let interval =
-                                    pkt.arrival_time.duration_since(last_spike).as_millis();
-                                if interval > 500 {
-                                    // Debounce burst packets
-                                    is_new_macro_spike = true;
-                                    // If spikes are frequent (<10s), network is chronically poor
-                                    if interval < 10000 {
-                                        // Reduced from 60s: 20s is long enough to absorb
-                                        // a burst of spikes without permanently locking
-                                        // the target at elevated levels
-                                        self.unstable_regime_until = Some(
-                                            pkt.arrival_time + std::time::Duration::from_secs(20),
-                                        );
-                                    }
-                                }
-                            } else {
-                                is_new_macro_spike = true;
-                            }
-                            if is_new_macro_spike {
-                                self.last_macro_spike = Some(pkt.arrival_time);
-                            }
-                        }
-                    }
-
-                    // --- NetEQ 2-Peak Trigger State Machine (Method 6) ---
-                    // A peak is a delay spike that exceeds the target + threshold (approx 3 frames).
-                    // If we see 2 peaks within a 10s window, we lock the peak height as the target.
-                    let target_level = self.effective_target as f32;
-                    let threshold = 3.9; // 78ms at 20ms/frame
-                    if jitter_frames > target_level + threshold
-                        || jitter_frames > 2.0 * target_level
-                    {
-                        if let Some(last) = self.last_peak_time {
-                            let period_ms =
-                                pkt.arrival_time.duration_since(last).as_millis() as u64;
-                            if period_ms <= 10000 {
-                                self.peak_history.push_back((period_ms, jitter_frames));
-                                if self.peak_history.len() > 8 {
-                                    self.peak_history.pop_front();
-                                }
-                                self.last_peak_time = Some(pkt.arrival_time);
-                            } else if period_ms <= 20000 {
-                                self.last_peak_time = Some(pkt.arrival_time);
-                            } else {
-                                self.peak_history.clear();
-                                self.last_peak_time = Some(pkt.arrival_time);
-                            }
-                        } else {
-                            self.last_peak_time = Some(pkt.arrival_time);
-                        }
-                    }
-
-                    if self.peak_history.len() >= 2 {
-                        if let Some(last) = self.last_peak_time {
-                            let max_period =
-                                self.peak_history.iter().map(|(p, _)| *p).max().unwrap_or(1);
-                            let elapsed = pkt.arrival_time.duration_since(last).as_millis() as u64;
-                            self.peak_mode_active = elapsed <= 2 * max_period;
-                        }
-                    } else {
-                        self.peak_mode_active = false;
-                    }
-
-                    // ema_peak: slow-decay peak tracker.
-                    // Instead of jumping on every single spurious frame, it only jumps when
-                    // the NetEQ Peak State Machine verifies a recurring delay spike.
-                    self.ema_peak *= current_decay_alpha;
-                    if self.peak_mode_active {
-                        let max_peak = self
-                            .peak_history
-                            .iter()
-                            .map(|(_, h)| *h)
-                            .fold(0.0f32, |a, b| a.max(b));
-                        self.ema_peak = self.ema_peak.max(max_peak);
-                    }
-                }
+            // Update jitter statistics from this arrival. Returns false to drop the
+            // packet entirely (clock ran backwards vs. the last forward arrival).
+            if !self.stats.observe(
+                pkt.seq_num,
+                pkt.arrival_time,
+                &self.config,
+                self.effective_target,
+            ) {
+                continue;
             }
-            self.last_network_arrival = Some(pkt.arrival_time);
-            self.last_ingest_seq = Some(pkt.seq_num);
 
             use super::buffer::InsertResult;
             if matches!(self.buffer.insert(pkt), InsertResult::StreamRestarted) {
@@ -558,11 +363,8 @@ impl JitterBufferManager {
                 );
                 self.is_prebuffering = true;
                 // Reset jitter tracking for clean convergence.
-                self.ema_jitter = 0.0;
-                self.ema_peak = 0.0;
+                self.stats.reset_on_config_change();
                 self.starvation_bump = 0.0;
-                self.clean_streak = 0;
-                self.ema_jitter_var = 0.0;
                 // Reset hysteresis + ramp state for the new config.
                 self.effective_target = Self::ms_to_frames_ceil(new_config.min_depth_ms).max(2);
                 self.ramp_goal = self.effective_target;
@@ -572,17 +374,12 @@ impl JitterBufferManager {
                 self.probe_down_countdown = PROBE_DOWN_INTERVAL;
                 self.probe_floor = 0;
                 self.filtered_buffer_level = 0.0;
-                self.peak_history.clear();
-                self.last_peak_time = None;
-                self.peak_mode_active = false;
                 let new_target = self.effective_target;
                 let flush_target = new_target + new_target / 2;
                 if self.buffer.occupied_count() > flush_target {
                     pending_flush = Some(flush_target);
                 }
-                let halflife_ticks =
-                    (new_config.peak_decay_halflife_ms.max(10) as f32) / (MILLIS_PER_FRAME as f32);
-                self.ema_peak_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
+                self.stats.recompute_decay_alpha(&new_config);
                 self.config = new_config;
             }
         }
@@ -634,8 +431,8 @@ impl JitterBufferManager {
                         self.effective_target,
                         quantized,
                         raw_target,
-                        self.ema_jitter,
-                        self.ema_peak,
+                        self.stats.ema_jitter,
+                        self.stats.ema_peak,
                         self.stability_ratio(),
                     );
                     self.ramp_goal = quantized;
@@ -669,7 +466,7 @@ impl JitterBufferManager {
                 // Allow probing even during unstable regime if current stability
                 // is locally high enough — the regime lock is a coarse heuristic
                 // and the probe_floor prevents re-probing below safe levels.
-                && !self.unstable_regime_until
+                && !self.stats.unstable_regime_until()
                     .is_some_and(|until| Instant::now() < until && self.stability_ratio() < 0.5)
             {
                 // Active downward probing: when the network has been calm for
@@ -802,7 +599,7 @@ impl JitterBufferManager {
                     } else {
                         // Genuine starvation: use ema_jitter (stable estimate) instead
                         // of ema_peak (spike-driven, can be vastly inflated). Cap at 8.
-                        let bump = (self.ema_jitter * 2.0 + 2.0).min(8.0);
+                        let bump = (self.stats.ema_jitter * 2.0 + 2.0).min(8.0);
                         self.starvation_bump = self.starvation_bump.max(bump);
                     }
                     tracing::info!(
@@ -810,8 +607,8 @@ impl JitterBufferManager {
                         if is_probe_failure { "probe" } else { "genuine" },
                         self.starvation_bump,
                         self.effective_target,
-                        self.ema_jitter,
-                        self.ema_peak,
+                        self.stats.ema_jitter,
+                        self.stats.ema_peak,
                         self.starvation_count,
                     );
                     self.starvation_bump_cooldown = STARVATION_COOLDOWN;
@@ -939,8 +736,8 @@ impl JitterBufferManager {
                 tracing::warn!(
                     "[JitterMgr] Starvation started: effective_target={}, ema_jitter={:.2}, ema_peak={:.2}",
                     self.effective_target,
-                    self.ema_jitter,
-                    self.ema_peak,
+                    self.stats.ema_jitter,
+                    self.stats.ema_peak,
                 );
             }
         }
@@ -960,7 +757,8 @@ impl JitterBufferManager {
                 10
             } else {
                 let base = 10u32;
-                base.saturating_add((self.ema_peak as u32).min(20)).min(40)
+                base.saturating_add((self.stats.ema_peak as u32).min(20))
+                    .min(40)
             };
 
             if self.starvation_count >= starvation_threshold {
@@ -1325,13 +1123,9 @@ impl JitterBufferManager {
         self.decode_buf.fill(0.0);
         self.decode_len = 0;
         let _ = self.decoder.reset_state();
-        self.ema_jitter = 0.0;
-        self.ema_peak = 0.0;
+        self.stats.reset_on_stream_restart();
         self.starvation_bump = 0.0;
-        self.last_ingest_seq = None;
         self.startup_flush_remaining = 0;
-        self.clean_streak = 0;
-        self.ema_jitter_var = 0.0;
         self.effective_target = 2;
         self.ramp_goal = 2;
         self.target_exit_count = 0;
@@ -1339,12 +1133,6 @@ impl JitterBufferManager {
         self.starvation_bump_cooldown = 0;
         self.probe_down_countdown = PROBE_DOWN_INTERVAL;
         self.probe_floor = 0;
-    }
-
-    /// Linear interpolation between two values.
-    #[inline]
-    fn lerp(a: f32, b: f32, t: f32) -> f32 {
-        a + (b - a) * t
     }
 
     fn get_rms(samples: &[f32]) -> f32 {
@@ -1748,8 +1536,8 @@ mod tests {
         );
 
         // Even with massive jitter, static target should not change
-        manager.ema_jitter = 50.0;
-        manager.ema_peak = 100.0;
+        manager.stats.ema_jitter = 50.0;
+        manager.stats.ema_peak = 100.0;
         let target_after_jitter = manager.compute_target_depth(None);
         assert_eq!(
             target_after_jitter, expected,
@@ -1922,9 +1710,9 @@ mod tests {
 
         // clean_streak should be high (all packets had jitter < 1 frame)
         assert!(
-            manager.clean_streak >= 90,
+            manager.stats.clean_streak >= 90,
             "Expected clean_streak >= 90 after 100 clean packets, got {}",
-            manager.clean_streak
+            manager.stats.clean_streak
         );
 
         // stability_ratio should be meaningfully positive
@@ -1943,7 +1731,7 @@ mod tests {
 
         // Severe spike (>4 frames) should slam clean_streak to 0
         assert_eq!(
-            manager.clean_streak, 0,
+            manager.stats.clean_streak, 0,
             "Expected clean_streak = 0 after severe spike"
         );
     }
@@ -1969,17 +1757,17 @@ mod tests {
         manager1.ingest_packets(&mut cons1);
         manager2.ingest_packets(&mut cons2);
 
-        let spike_jitter1 = manager1.ema_jitter;
-        let spike_jitter2 = manager2.ema_jitter;
+        let spike_jitter1 = manager1.stats.ema_jitter;
+        let spike_jitter2 = manager2.stats.ema_jitter;
         assert!(
             (spike_jitter1 - spike_jitter2).abs() < 0.01,
             "Both managers should have the same jitter after the spike"
         );
 
         // Manager 1: simulate a stable network (400 clean packets → full stability)
-        manager1.clean_streak = 400;
+        manager1.stats.clean_streak = 400;
         // Manager 2: simulate an unstable network (0 clean streak)
-        manager2.clean_streak = 0;
+        manager2.stats.clean_streak = 0;
 
         // Feed 200 clean packets to both (zero jitter)
         for i in 3..=202 {
@@ -1993,10 +1781,10 @@ mod tests {
 
         // The stable manager should have decayed significantly faster
         assert!(
-            manager1.ema_jitter < manager2.ema_jitter,
+            manager1.stats.ema_jitter < manager2.stats.ema_jitter,
             "Stable network jitter ({}) should be less than unstable ({})",
-            manager1.ema_jitter,
-            manager2.ema_jitter
+            manager1.stats.ema_jitter,
+            manager2.stats.ema_jitter
         );
     }
 
@@ -2039,13 +1827,13 @@ mod tests {
         manager.target_exit_count = 0;
 
         // Simulate a single 100ms jitter spike.
-        manager.ema_jitter = 0.0;
-        manager.ema_peak = 0.0;
+        manager.stats.ema_jitter = 0.0;
+        manager.stats.ema_peak = 0.0;
         manager.starvation_bump = 0.0;
 
         // Inject a spike that raises ema_jitter temporarily.
-        manager.ema_jitter = 10.0; // This would compute a high raw_target.
-        manager.ema_peak = 15.0;
+        manager.stats.ema_jitter = 10.0; // This would compute a high raw_target.
+        manager.stats.ema_peak = 15.0;
 
         // Call process_next_frame once (no packets, will generate PLC).
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
@@ -2161,17 +1949,17 @@ mod tests {
 
         // ema_jitter should have settled around 2 frames (20ms jitter / 10ms per frame).
         assert!(
-            manager.ema_jitter > 1.0,
+            manager.stats.ema_jitter > 1.0,
             "Expected ema_jitter > 1.0 for 20ms baseline jitter, got {}",
-            manager.ema_jitter
+            manager.stats.ema_jitter
         );
 
         // clean_streak should have built up because jitter is consistent
         // (below the adaptive threshold of ema_jitter * 1.5 + 1.0).
         assert!(
-            manager.clean_streak >= 50,
+            manager.stats.clean_streak >= 50,
             "Expected clean_streak >= 50 on consistent 2.4GHz jitter, got {}",
-            manager.clean_streak
+            manager.stats.clean_streak
         );
 
         // stability_ratio should be meaningfully positive.
