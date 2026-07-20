@@ -1,11 +1,12 @@
 use super::buffer::JitterBuffer;
+use super::consts::{MILLIS_PER_FRAME, ms_to_frames_ceil};
 use super::decoder::FrameDecoder;
 use super::flow::PlaybackFlow;
 use super::stats::JitterStats;
 use super::target::TargetController;
 use super::timescale::TimeScaler;
 use super::types::RawPacket;
-use crate::audio::{OPUS_FRAME_SAMPLES, OPUS_FRAME_SIZE, OPUS_SAMPLE_RATE};
+use crate::audio::OPUS_FRAME_SAMPLES;
 use crate::domain::types::JitterConfig;
 use opus::Decoder;
 use ringbuf::{HeapCons, traits::*};
@@ -15,7 +16,6 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
-const MILLIS_PER_FRAME: u32 = (OPUS_FRAME_SIZE as u32 * 1000) / OPUS_SAMPLE_RATE;
 /// 2000ms max silence before resetting stream
 const MAX_MISSING: u32 = 2000 / MILLIS_PER_FRAME;
 /// Reorder tolerance: ~30ms window to wait for a reordered packet.
@@ -42,8 +42,6 @@ pub struct JitterBufferManager {
     playback_buf: VecDeque<f32>,
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
-    /// Countdown for continuous startup flush.
-    startup_flush_remaining: u32,
     config: JitterConfig,
     config_ref: Arc<RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
@@ -66,11 +64,6 @@ pub struct JitterBufferManager {
 }
 
 impl JitterBufferManager {
-    /// Convert milliseconds to frames using ceiling division.
-    /// Prevents truncation to 0 for sub-frame values (e.g. 2ms / 5ms = 1 frame, not 0).
-    fn ms_to_frames_ceil(ms: u32) -> u32 {
-        ms.div_ceil(MILLIS_PER_FRAME)
-    }
     pub fn new(
         decoder: Decoder,
         latency_metric: Arc<AtomicU32>,
@@ -85,7 +78,6 @@ impl JitterBufferManager {
             buffer: JitterBuffer::new(),
             playback_buf: VecDeque::with_capacity(OPUS_FRAME_SAMPLES * 100),
             latency_metric,
-            startup_flush_remaining: 0,
             config: initial_config,
             config_ref,
             is_tcp_mode,
@@ -100,7 +92,7 @@ impl JitterBufferManager {
 
     /// Get the minimum buffer depth in frames.
     fn min_depth_frames(&self) -> u32 {
-        Self::ms_to_frames_ceil(self.config.min_depth_ms)
+        ms_to_frames_ceil(self.config.min_depth_ms)
     }
 
     /// Pure computation of the target buffer depth from observed jitter statistics.
@@ -216,7 +208,7 @@ impl JitterBufferManager {
             let dynamic = self.compute_target_depth(Some(12.0));
             // Allow user to overwrite natively if they chose Static
             if let Some(static_ms) = self.config.static_target_ms {
-                Self::ms_to_frames_ceil(static_ms).max(self.min_depth_frames())
+                ms_to_frames_ceil(static_ms).max(self.min_depth_frames())
             } else {
                 dynamic
             }
@@ -522,7 +514,6 @@ impl JitterBufferManager {
         self.decoder.reset();
         self.stats.reset_on_stream_restart();
         self.control.reset();
-        self.startup_flush_remaining = 0;
     }
 
     fn get_rms(samples: &[f32]) -> f32 {
