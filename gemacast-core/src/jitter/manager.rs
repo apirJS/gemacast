@@ -1,5 +1,6 @@
 use super::buffer::JitterBuffer;
 use super::decoder::FrameDecoder;
+use super::flow::PlaybackFlow;
 use super::stats::JitterStats;
 use super::target::TargetController;
 use super::timescale::TimeScaler;
@@ -39,14 +40,8 @@ pub struct JitterBufferManager {
     /// Accumulator of processed PCM samples ready for cpal to consume.
     /// Decouples the Opus frame size (960 samples) from cpal's variable buffer size.
     playback_buf: VecDeque<f32>,
-    is_prebuffering: bool,
-    missing_count: u32,
-    starvation_count: u32,
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
-    /// How many consecutive callbacks we've been waiting for the current gap slot.
-    /// Prevents spurious PLC for late-arriving reordered packets on 2.4GHz.
-    gap_hold_count: u32,
     /// Countdown for continuous startup flush.
     startup_flush_remaining: u32,
     config: JitterConfig,
@@ -57,22 +52,17 @@ pub struct JitterBufferManager {
     /// Countdown to reduce config lock polling: only check every 100 frames (~500ms).
     config_check_countdown: u32,
 
-    /// NetEQ-style IIR filtered buffer level to ignore instantaneous OS batching spikes.
-    filtered_buffer_level: f32,
     /// Rolling network-condition statistics (jitter EMAs, clean streak, peak detection).
     stats: JitterStats,
     /// Adaptive target-depth controller (hysteresis, ramp, probe, starvation bump).
     control: TargetController,
+    /// Playback-lifecycle state (prebuffer / starvation / gap-hold counters,
+    /// starvation-recovery guard, and the IIR-filtered buffer level).
+    flow: PlaybackFlow,
     /// Cooldown counter for timescale operations (acceleration/expansion).
     /// While > 0, no new acceleration is attempted. Prevents rapid-fire
     /// time-stretching that causes audible artifacts on music.
     timescale_cooldown: u32,
-    /// NetEQ-style starvation recovery guard. After the buffer drains to
-    /// near-zero (starvation), suppress ALL acceleration for this many
-    /// callbacks to let the buffer refill. Prevents the drain→starve→
-    /// refill→drain saw-tooth cycle. Matches `prev_mode != kModeExpand`
-    /// guard in WebRTC's decision_logic.cc:278.
-    starvation_recovery: u32,
 }
 
 impl JitterBufferManager {
@@ -94,11 +84,7 @@ impl JitterBufferManager {
             decoder: FrameDecoder::new(decoder),
             buffer: JitterBuffer::new(),
             playback_buf: VecDeque::with_capacity(OPUS_FRAME_SAMPLES * 100),
-            is_prebuffering: true,
-            missing_count: 0,
-            starvation_count: 0,
             latency_metric,
-            gap_hold_count: 0,
             startup_flush_remaining: 0,
             config: initial_config,
             config_ref,
@@ -106,10 +92,9 @@ impl JitterBufferManager {
             timescale: TimeScaler::new(),
             config_check_countdown: 0,
             control: TargetController::new(),
-            filtered_buffer_level: 0.0,
+            flow: PlaybackFlow::new(),
             stats,
             timescale_cooldown: 0,
-            starvation_recovery: 0,
         }
     }
 
@@ -177,18 +162,14 @@ impl JitterBufferManager {
 
     /// Process one Opus frame from the jitter buffer into the playback buffer.
     fn process_next_frame(&mut self) {
-        // --- NetEQ IIR Buffer Filter (Method 5) ---
-        // Alpha = 254/256 ≈ 0.9921875. Heavily low-passes the instantaneous buffer level
-        // so that massive batching (e.g. 10 packets arriving at once via USB) doesn't
-        // trigger an instantaneous flush.
-        let alpha = 254.0 / 256.0;
-        self.filtered_buffer_level = self.filtered_buffer_level * alpha
-            + (self.buffer.occupied_count() as f32) * (1.0 - alpha);
+        // NetEQ IIR buffer-level filter: low-pass the instantaneous occupancy so
+        // OS batching spikes don't trigger a flush.
+        self.flow.filter_buffer_level(self.buffer.occupied_count());
 
         // Proportional bleed for the starvation bump + bump-cooldown tick.
         self.control.tick_bleed();
         self.timescale_cooldown = self.timescale_cooldown.saturating_sub(1);
-        self.starvation_recovery = self.starvation_recovery.saturating_sub(1);
+        self.flow.tick_recovery();
         let mut pending_flush: Option<u32> = None;
         self.config_check_countdown += 1;
         let should_check_config = self.config_check_countdown >= 100;
@@ -207,12 +188,12 @@ impl JitterBufferManager {
                     self.config.static_target_ms,
                     new_config.static_target_ms,
                 );
-                self.is_prebuffering = true;
+                self.flow.is_prebuffering = true;
                 // Reset jitter tracking for clean convergence.
                 self.stats.reset_on_config_change();
                 // Reset hysteresis + ramp state for the new config.
                 let new_target = self.control.reset_for_config(&new_config);
-                self.filtered_buffer_level = 0.0;
+                self.flow.filtered_buffer_level = 0.0;
                 let flush_target = new_target + new_target / 2;
                 if self.buffer.occupied_count() > flush_target {
                     pending_flush = Some(flush_target);
@@ -257,7 +238,7 @@ impl JitterBufferManager {
         // unbounded buildup when acceleration alone can't keep up.
         if is_no_buffer {
             let flush_ceiling = target + 3;
-            if self.filtered_buffer_level as u32 > flush_ceiling {
+            if self.flow.filtered_buffer_level as u32 > flush_ceiling {
                 self.flush_with_crossfade(target + 1);
             }
         } else {
@@ -265,12 +246,12 @@ impl JitterBufferManager {
             // 3× target. This is far gentler than the old flush (which went
             // to target+1). Leaves plenty of headroom for smooth acceleration.
             let gentle_ceiling = target.saturating_mul(5);
-            if self.filtered_buffer_level as u32 > gentle_ceiling {
+            if self.flow.filtered_buffer_level as u32 > gentle_ceiling {
                 self.flush_with_crossfade(target.saturating_mul(3));
             }
         }
 
-        if self.is_prebuffering {
+        if self.flow.is_prebuffering {
             let unpause_threshold =
                 ((target as f32 * self.config.resume_threshold_pct) as u32).max(min_depth);
             if self.buffer.occupied_count() >= unpause_threshold {
@@ -280,7 +261,7 @@ impl JitterBufferManager {
                     unpause_threshold,
                     target,
                 );
-                self.is_prebuffering = false;
+                self.flow.is_prebuffering = false;
                 // No startup_flush — the fast acceleration tier will
                 // gradually drain excess while maintaining phase continuity.
             } else {
@@ -289,19 +270,19 @@ impl JitterBufferManager {
             }
         }
         if self.buffer.occupied_count() > 0 && !self.buffer.has_next() {
-            self.gap_hold_count += 1;
+            self.flow.gap_hold_count += 1;
             let mut fast_forward_seq = None;
 
             let tolerance = if is_no_buffer { 0 } else { REORDER_TOLERANCE };
 
             if let Some(lo) = self.buffer.lowest_available_seq() {
                 let diff = lo.abs_diff(self.buffer.next_play_seq());
-                if diff > 20 || self.gap_hold_count >= tolerance {
+                if diff > 20 || self.flow.gap_hold_count >= tolerance {
                     fast_forward_seq = Some(lo);
                 }
-            } else if self.gap_hold_count >= tolerance {
+            } else if self.flow.gap_hold_count >= tolerance {
                 self.buffer.advance_one();
-                self.gap_hold_count = 0;
+                self.flow.gap_hold_count = 0;
             }
 
             if let Some(lo) = fast_forward_seq {
@@ -310,25 +291,25 @@ impl JitterBufferManager {
                 if diff > 20 {
                     self.decoder.resync();
                 }
-                self.gap_hold_count = 0;
+                self.flow.gap_hold_count = 0;
             }
         }
 
         if self.buffer.has_next() {
-            self.gap_hold_count = 0;
-            self.missing_count = 0;
+            self.flow.gap_hold_count = 0;
+            self.flow.missing_count = 0;
 
             // Apply starvation bump if we just emerged from starvation,
             // but only if the cooldown has expired (prevents ratcheting).
-            if self.starvation_count > 0 && !tcp_mode {
+            if self.flow.starvation_count > 0 && !tcp_mode {
                 // NetEQ guard: after starvation, suppress acceleration for
                 // 50 callbacks (~500ms) to let the buffer refill safely.
                 // This prevents the drain→starve→refill→drain saw-tooth.
-                self.starvation_recovery = 50;
+                self.flow.starvation_recovery = 50;
 
                 self.control
-                    .apply_starvation_bump(&self.config, &self.stats, self.starvation_count);
-                self.starvation_count = 0;
+                    .apply_starvation_bump(&self.config, &self.stats, self.flow.starvation_count);
+                self.flow.starvation_count = 0;
             }
 
             let pkt = self.buffer.pop_next().expect("has_next was true");
@@ -340,7 +321,7 @@ impl JitterBufferManager {
             // arrives after starvation, apply a 2ms linear fade-in to mask
             // the spectral discontinuity between Opus PLC prediction and
             // real decoded audio. 96 samples = 2ms at 48kHz.
-            if self.starvation_count > 0 {
+            if self.flow.starvation_count > 0 {
                 let fade_len = 96.min(self.decoder.decode_len);
                 for i in 0..fade_len {
                     let gain = i as f32 / fade_len as f32;
@@ -355,7 +336,7 @@ impl JitterBufferManager {
             // NetEQ guard: skip ALL acceleration during starvation recovery.
             // This matches WebRTC's `prev_mode != kModeExpand` check that
             // prevents the drain→starve→refill→drain saw-tooth cycle.
-            if occupied > wsola_threshold && self.starvation_recovery == 0 {
+            if occupied > wsola_threshold && self.flow.starvation_recovery == 0 {
                 let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
                 let is_passive = rms < 0.005;
                 if is_passive && self.buffer.has_next() {
@@ -413,7 +394,7 @@ impl JitterBufferManager {
 
             // --- Method 1: Preemptive Expand ---
             let min_depth = self.min_depth_frames();
-            let is_low_buffer = self.filtered_buffer_level < min_depth as f32;
+            let is_low_buffer = self.flow.filtered_buffer_level < min_depth as f32;
             if is_low_buffer {
                 let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
                 // Only stretch quiet audio — WSOLA expansion on loud music causes
@@ -428,7 +409,7 @@ impl JitterBufferManager {
                 {
                     tracing::trace!(
                         "[JitterMgr] Expand: filtered_level={:.1}, min_depth={}, rms={:.4}",
-                        self.filtered_buffer_level,
+                        self.flow.filtered_buffer_level,
                         min_depth,
                         rms,
                     );
@@ -441,12 +422,12 @@ impl JitterBufferManager {
             return;
         }
 
-        self.missing_count += 1;
+        self.flow.missing_count += 1;
 
         if self.buffer.occupied_count() == 0 {
-            self.gap_hold_count = 0;
-            self.starvation_count += 1;
-            if self.starvation_count == 1 {
+            self.flow.gap_hold_count = 0;
+            self.flow.starvation_count += 1;
+            if self.flow.starvation_count == 1 {
                 tracing::warn!(
                     "[JitterMgr] Starvation started: effective_target={}, ema_jitter={:.2}, ema_peak={:.2}",
                     self.control.effective_target,
@@ -456,7 +437,7 @@ impl JitterBufferManager {
             }
         }
 
-        if self.missing_count > MAX_MISSING {
+        if self.flow.missing_count > MAX_MISSING {
             self.trigger_reset();
             self.playback_buf
                 .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
@@ -475,13 +456,13 @@ impl JitterBufferManager {
                     .min(40)
             };
 
-            if self.starvation_count >= starvation_threshold {
+            if self.flow.starvation_count >= starvation_threshold {
                 tracing::warn!(
                     "[JitterMgr] Starvation→rebuffer: starvation_count={}, threshold={}",
-                    self.starvation_count,
+                    self.flow.starvation_count,
                     starvation_threshold,
                 );
-                self.is_prebuffering = true;
+                self.flow.is_prebuffering = true;
             }
         }
 
@@ -536,10 +517,7 @@ impl JitterBufferManager {
             MAX_MISSING * MILLIS_PER_FRAME,
         );
         self.buffer.reset();
-        self.is_prebuffering = true;
-        self.missing_count = 0;
-        self.starvation_count = 0;
-        self.gap_hold_count = 0;
+        self.flow.reset_on_stream_restart();
         self.playback_buf.clear();
         self.decoder.reset();
         self.stats.reset_on_stream_restart();
@@ -561,8 +539,8 @@ impl JitterBufferManager {
         // Gradually fade PLC output to silence over frames 4-7 of starvation.
         // Opus PLC quality degrades rapidly after ~3 frames (15ms). Beyond that,
         // the prediction sounds robotic — silence is less jarring than bad prediction.
-        if self.starvation_count > 3 {
-            let fade = (1.0 - ((self.starvation_count - 3) as f32 / 4.0)).max(0.0);
+        if self.flow.starvation_count > 3 {
+            let fade = (1.0 - ((self.flow.starvation_count - 3) as f32 / 4.0)).max(0.0);
             for s in &mut self.decoder.decode_buf[..self.decoder.decode_len] {
                 *s *= fade;
             }
@@ -643,7 +621,7 @@ mod tests {
         for &sample in &output {
             assert_eq!(sample, 0.0, "Expected silence while prebuffering");
         }
-        assert!(manager.is_prebuffering);
+        assert!(manager.flow.is_prebuffering);
         // Push the final packet to reach MIN_DEPTH: should exit prebuffering.
         assert!(
             prod.try_push(make_packet(&mut encoder, MIN_DEPTH as u64, base_time))
@@ -651,7 +629,7 @@ mod tests {
         );
         manager.ingest_packets(&mut cons);
         manager.fill_output(&mut output, 1.0);
-        assert!(!manager.is_prebuffering);
+        assert!(!manager.flow.is_prebuffering);
     }
 
     #[test]
@@ -668,7 +646,7 @@ mod tests {
         manager.ingest_packets(&mut cons);
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
         manager.fill_output(&mut output, 1.0);
-        assert!(!manager.is_prebuffering);
+        assert!(!manager.flow.is_prebuffering);
         // Push a packet with a gap (skip one seq num) to simulate packet loss.
         let gap_seq = (MIN_DEPTH + 2) as u64;
         assert!(
@@ -688,8 +666,8 @@ mod tests {
         for _ in 0..(REORDER_TOLERANCE - 1) {
             manager.fill_output(&mut output, 1.0);
         }
-        assert_eq!(manager.missing_count, 0);
-        assert!(!manager.is_prebuffering);
+        assert_eq!(manager.flow.missing_count, 0);
+        assert!(!manager.flow.is_prebuffering);
     }
 
     #[test]
@@ -708,23 +686,23 @@ mod tests {
         for _ in 1..=MIN_DEPTH {
             manager.fill_output(&mut output, 1.0);
         }
-        assert!(!manager.is_prebuffering);
+        assert!(!manager.flow.is_prebuffering);
         // Frame 1 empty -> PLC
         manager.fill_output(&mut output, 1.0);
-        assert_eq!(manager.starvation_count, 1);
-        assert!(!manager.is_prebuffering);
+        assert_eq!(manager.flow.starvation_count, 1);
+        assert!(!manager.flow.is_prebuffering);
         // Frame 2 empty -> PLC
         manager.fill_output(&mut output, 1.0);
-        assert_eq!(manager.starvation_count, 2);
-        assert!(!manager.is_prebuffering);
+        assert_eq!(manager.flow.starvation_count, 2);
+        assert!(!manager.flow.is_prebuffering);
         // Drain to exactly 10 starvation frames (50ms) to hit the >= 10 threshold.
         for _ in 3..=10 {
             manager.fill_output(&mut output, 1.0);
         }
         // On the 10th starvation call, is_prebuffering = true.
         // starvation_count is preserved (not reset) so the bounce can use it later.
-        assert_eq!(manager.starvation_count, 10);
-        assert!(manager.is_prebuffering);
+        assert_eq!(manager.flow.starvation_count, 10);
+        assert!(manager.flow.is_prebuffering);
     }
 
     #[test]
@@ -759,8 +737,8 @@ mod tests {
             manager.fill_output(&mut output, 1.0);
         }
         // After REORDER_TOLERANCE calls, advance_one was called and missing_count incremented.
-        assert_eq!(manager.missing_count, 0);
-        assert!(!manager.is_prebuffering);
+        assert_eq!(manager.flow.missing_count, 0);
+        assert!(!manager.flow.is_prebuffering);
     }
 
     #[test]
@@ -785,7 +763,7 @@ mod tests {
             manager.fill_output(&mut output, 1.0);
         }
         // The manager must be heavily in prebuffering mode, waiting out the extreme lag
-        assert!(manager.is_prebuffering);
+        assert!(manager.flow.is_prebuffering);
         // 3. Fresh batch arrives. ingest_packets directly inserts them (no flush).
         //    The jitter buffer is empty (starvation drained it), so it re-anchors at batch_start.
         let batch_start = MIN_DEPTH as u64 + 100;
@@ -800,7 +778,7 @@ mod tests {
         // 4. fill_output: exits prebuffering (151 packets >= 100 limit), then sees a large gap
         //    (batch_start - old_next_play ≫ 20 frames) → large-gap fast_forward fires immediately.
         manager.fill_output(&mut output, 1.0);
-        assert!(!manager.is_prebuffering);
+        assert!(!manager.flow.is_prebuffering);
         assert!(manager.buffer.next_play_seq() >= batch_start);
     }
 
@@ -1019,7 +997,7 @@ mod tests {
         );
 
         // It should not have starved, because it played packets.
-        assert_eq!(manager.starvation_count, 0);
+        assert_eq!(manager.flow.starvation_count, 0);
     }
 
     #[test]
@@ -1122,7 +1100,7 @@ mod tests {
 
         // Simulate a large starvation bump
         manager.control.starvation_bump = 20.0;
-        manager.is_prebuffering = false;
+        manager.flow.is_prebuffering = false;
 
         // Record the bleed rate at 20.0
         let initial = manager.control.starvation_bump;
@@ -1147,7 +1125,7 @@ mod tests {
     #[test]
     fn hysteresis_should_ignore_transient_spikes() {
         let (mut manager, _, _, _) = setup_env();
-        manager.is_prebuffering = false;
+        manager.flow.is_prebuffering = false;
 
         // Set a known effective target and ramp goal.
         manager.control.effective_target = 12;
@@ -1200,7 +1178,7 @@ mod tests {
         for _ in 0..15 {
             manager.fill_output(&mut output, 1.0);
         }
-        assert!(manager.is_prebuffering);
+        assert!(manager.flow.is_prebuffering);
 
         // Recover: push contiguous packets from where we left off.
         // Push extra packets to ensure has_next() fires after prebuffering exits.
@@ -1218,7 +1196,7 @@ mod tests {
         for _ in 0..4 {
             manager.fill_output(&mut output, 1.0);
         }
-        assert!(!manager.is_prebuffering, "Should have exited prebuffering");
+        assert!(!manager.flow.is_prebuffering, "Should have exited prebuffering");
         let bump_after_first = manager.control.starvation_bump;
         assert!(
             bump_after_first > 0.0,
@@ -1317,7 +1295,7 @@ mod tests {
 
         // Now simulate 200 process_next_frame calls and count how many times
         // effective_target changes.
-        manager.is_prebuffering = false;
+        manager.flow.is_prebuffering = false;
         // Pre-fill buffer so we don't starve.
         for i in 501..=700u64 {
             let pkt = make_packet(&mut encoder, i, base_time);
@@ -1357,7 +1335,7 @@ mod tests {
             );
         }
         manager.ingest_packets(&mut cons);
-        manager.is_prebuffering = false;
+        manager.flow.is_prebuffering = false;
 
         // Decode one packet to populate decode_buf.
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
