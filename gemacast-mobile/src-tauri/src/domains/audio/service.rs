@@ -106,6 +106,7 @@ impl AudioService {
                 mode: params.mode,
                 device_id: params.device_id.to_string(),
                 bitrate: params.bitrate,
+                network_link: link_pair.effective_link(),
             })
             .await?;
 

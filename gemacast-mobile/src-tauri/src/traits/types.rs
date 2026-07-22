@@ -11,6 +11,10 @@ pub struct SessionParams {
     pub mode: ConnectionMode,
     pub device_id: String,
     pub bitrate: Option<i32>,
+    /// Effective network link for the session, used for runtime link-aware
+    /// jitter policy (e.g. reorder tolerance). Derived from the connect-time
+    /// [`LinkPair`]'s `effective_link()`.
+    pub network_link: NetworkLink,
 }
 
 /// Snapshot of an active session's metadata.

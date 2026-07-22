@@ -1,5 +1,5 @@
 use super::buffer::JitterBuffer;
-use super::consts::{MILLIS_PER_FRAME, ms_to_frames_ceil};
+use super::consts::{ARTIFACT_MASK_RMS, MILLIS_PER_FRAME, SILENCE_RMS, ms_to_frames_ceil};
 use super::decoder::FrameDecoder;
 use super::flow::PlaybackFlow;
 use super::stats::JitterStats;
@@ -7,7 +7,7 @@ use super::target::TargetController;
 use super::timescale::TimeScaler;
 use super::types::RawPacket;
 use crate::audio::OPUS_FRAME_SAMPLES;
-use crate::domain::types::JitterConfig;
+use crate::domain::types::{JitterConfig, NetworkLink};
 use opus::Decoder;
 use ringbuf::{HeapCons, traits::*};
 use std::collections::VecDeque;
@@ -18,15 +18,36 @@ use std::time::Instant;
 
 /// 2000ms max silence before resetting stream
 const MAX_MISSING: u32 = 2000 / MILLIS_PER_FRAME;
-/// Reorder tolerance: ~30ms window to wait for a reordered packet.
+/// Default reorder tolerance: ~30ms window to wait for a reordered packet
+/// before skipping a hole. Used for clean links (5GHz / Ethernet / cable).
 const REORDER_TOLERANCE: u32 = 30 / MILLIS_PER_FRAME;
+/// Reorder tolerance for congested 2.4 GHz: ~60ms. The 2.4 GHz band reorders
+/// and micro-bursts far more than 5 GHz, so waiting one extra ~30ms window for
+/// a straggler avoids a hole-skip (and its fade-in splice) that would otherwise
+/// fire on a packet that was merely late, not lost. Clean links keep the tight
+/// 30ms default to minimise latency.
+const REORDER_TOLERANCE_2_4GHZ: u32 = 60 / MILLIS_PER_FRAME;
+
+/// Reorder tolerance in callbacks for a given link, in no-buffer / normal modes.
+/// No-buffer mode never waits (latency is paramount). Otherwise the window
+/// widens on 2.4 GHz where late-but-not-lost packets are common.
+fn reorder_tolerance_for(link: NetworkLink, is_no_buffer: bool) -> u32 {
+    if is_no_buffer {
+        return 0;
+    }
+    match link {
+        NetworkLink::Wifi2_4Ghz => REORDER_TOLERANCE_2_4GHZ,
+        _ => REORDER_TOLERANCE,
+    }
+}
 
 /// Minimum interval between timescale operations (in callbacks).
 /// Prevents rapid-fire acceleration/expansion that causes audible artifacts.
 /// 6 callbacks × 10ms/frame = 60ms, slightly above NetEQ's 50ms
 /// (kMinTimescaleInterval=5 at 10ms frames). Each acceleration removes
 /// ~3-10ms, so maximum drain rate is ~50-170ms/s.
-/// In fast mode (≥3× target), cooldown is skipped entirely.
+/// The emergency (fast-accelerate) tier — filtered level ≥ 4×high_limit —
+/// bypasses this cooldown entirely, matching NetEQ's `kFastAccelerate`.
 const MIN_TIMESCALE_INTERVAL: u32 = 6;
 
 /// Coordinates the full jitter buffer pipeline.
@@ -45,6 +66,12 @@ pub struct JitterBufferManager {
     config: JitterConfig,
     config_ref: Arc<RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
+    /// The detected network link for this session. Constant for the session's
+    /// lifetime (cached at connect, so passed by value rather than shared),
+    /// it lets the runtime tune link-specific policy — currently the reorder
+    /// tolerance — instead of collapsing everything to the connect-time
+    /// `JitterConfig` snapshot plus the coarse `is_tcp_mode` bool.
+    network_link: NetworkLink,
     /// WSOLA time-scaler (Hann window + scratch buffer for expand/accelerate/splice).
     timescale: TimeScaler,
     /// Countdown to reduce config lock polling: only check every 100 frames (~500ms).
@@ -61,6 +88,11 @@ pub struct JitterBufferManager {
     /// While > 0, no new acceleration is attempted. Prevents rapid-fire
     /// time-stretching that causes audible artifacts on music.
     timescale_cooldown: u32,
+    /// Set when the playhead skipped a hole (advance_one / fast_forward over a
+    /// missing slot) this callback. The next real frame then gets a short
+    /// linear fade-in to mask the splice discontinuity — the same treatment as
+    /// the PLC→real transition after starvation. Cleared once applied.
+    pending_gap_fadein: bool,
 }
 
 impl JitterBufferManager {
@@ -69,6 +101,7 @@ impl JitterBufferManager {
         latency_metric: Arc<AtomicU32>,
         config_ref: Arc<RwLock<JitterConfig>>,
         is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
     ) -> Self {
         let initial_config = config_ref.read().unwrap().clone();
         let stats = JitterStats::new(&initial_config);
@@ -81,12 +114,14 @@ impl JitterBufferManager {
             config: initial_config,
             config_ref,
             is_tcp_mode,
+            network_link,
             timescale: TimeScaler::new(),
             config_check_countdown: 0,
             control: TargetController::new(),
             flow: PlaybackFlow::new(),
             stats,
             timescale_cooldown: 0,
+            pending_gap_fadein: false,
         }
     }
 
@@ -155,8 +190,13 @@ impl JitterBufferManager {
     /// Process one Opus frame from the jitter buffer into the playback buffer.
     fn process_next_frame(&mut self) {
         // NetEQ IIR buffer-level filter: low-pass the instantaneous occupancy so
-        // OS batching spikes don't trigger a flush.
-        self.flow.filter_buffer_level(self.buffer.occupied_count());
+        // OS batching spikes don't trigger a flush. The filter coefficient is
+        // target-driven (NetEQ `SetTargetBufferLevel`): low targets track faster.
+        // We use last callback's effective target — it varies slowly, so using it
+        // one callback early is harmless and avoids a forward dependency on this
+        // callback's not-yet-computed target.
+        self.flow
+            .filter_buffer_level(self.buffer.occupied_count(), self.control.effective_target);
 
         // Proportional bleed for the starvation bump + bump-cooldown tick.
         self.control.tick_bleed();
@@ -225,21 +265,20 @@ impl JitterBufferManager {
             .control
             .advance(&self.config, &self.stats, raw_target, min_depth);
 
-        // Emergency flush: only in no-buffer mode where latency is critical.
-        // For normal mode, use a gentle ceiling at 5× target to prevent
-        // unbounded buildup when acceleration alone can't keep up.
+        // No-buffer mode keeps its own aggressive emergency flush (latency is
+        // the overriding concern there). In normal mode we no longer flush on a
+        // multiple of target — the NetEQ decision band below drains via WSOLA
+        // instead, with the `4 * high_limit` fast tier acting as the emergency
+        // drain. `flush_with_crossfade` is thus reserved for config changes and
+        // no-buffer mode.
         if is_no_buffer {
-            let flush_ceiling = target + 3;
-            if self.flow.filtered_buffer_level as u32 > flush_ceiling {
+            // Latency is paramount here, so drain on *instantaneous* occupancy
+            // rather than the lagging filtered level, straight down to a single
+            // frame. The NetEQ decision band below (with its 20ms WINDOW_20MS
+            // floor) is deliberately bypassed for no-buffer — that window would
+            // hold ~20ms the user explicitly asked not to buffer.
+            if self.buffer.occupied_count() > target + 1 {
                 self.flush_with_crossfade(target + 1);
-            }
-        } else {
-            // Gentle flush: if buffer exceeds 5× target, crossfade down to
-            // 3× target. This is far gentler than the old flush (which went
-            // to target+1). Leaves plenty of headroom for smooth acceleration.
-            let gentle_ceiling = target.saturating_mul(5);
-            if self.flow.filtered_buffer_level as u32 > gentle_ceiling {
-                self.flush_with_crossfade(target.saturating_mul(3));
             }
         }
 
@@ -265,7 +304,7 @@ impl JitterBufferManager {
             self.flow.gap_hold_count += 1;
             let mut fast_forward_seq = None;
 
-            let tolerance = if is_no_buffer { 0 } else { REORDER_TOLERANCE };
+            let tolerance = reorder_tolerance_for(self.network_link, is_no_buffer);
 
             if let Some(lo) = self.buffer.lowest_available_seq() {
                 let diff = lo.abs_diff(self.buffer.next_play_seq());
@@ -275,6 +314,9 @@ impl JitterBufferManager {
             } else if self.flow.gap_hold_count >= tolerance {
                 self.buffer.advance_one();
                 self.flow.gap_hold_count = 0;
+                // Skipped a hole with no reordered packet behind it — the next
+                // real frame is non-adjacent. Mark it for a fade-in splice.
+                self.pending_gap_fadein = true;
             }
 
             if let Some(lo) = fast_forward_seq {
@@ -284,6 +326,9 @@ impl JitterBufferManager {
                     self.decoder.resync();
                 }
                 self.flow.gap_hold_count = 0;
+                // Jumped the playhead across a hole; the next frame is
+                // discontinuous with what we just played. Fade it in.
+                self.pending_gap_fadein = true;
             }
         }
 
@@ -299,8 +344,11 @@ impl JitterBufferManager {
                 // This prevents the drain→starve→refill→drain saw-tooth.
                 self.flow.starvation_recovery = 50;
 
-                self.control
-                    .apply_starvation_bump(&self.config, &self.stats, self.flow.starvation_count);
+                self.control.apply_starvation_bump(
+                    &self.config,
+                    &self.stats,
+                    self.flow.starvation_count,
+                );
                 self.flow.starvation_count = 0;
             }
 
@@ -309,101 +357,129 @@ impl JitterBufferManager {
             self.latency_metric.store(delay_ms, Ordering::Relaxed);
             self.decoder.capture(&pkt);
 
-            // Smooth PLC→real audio transition: when the first real packet
-            // arrives after starvation, apply a 2ms linear fade-in to mask
-            // the spectral discontinuity between Opus PLC prediction and
-            // real decoded audio. 96 samples = 2ms at 48kHz.
-            if self.flow.starvation_count > 0 {
+            // Smooth splice transitions with a 2ms linear fade-in (96 samples at
+            // 48kHz). Applied in two cases:
+            //  - after starvation: masks the spectral discontinuity between Opus
+            //    PLC prediction and the first real decoded frame.
+            //  - after a gap skip (advance_one / fast_forward over a hole): the
+            //    next frame is non-adjacent to what we just played, so the raw
+            //    splice would click. Fade it in the same way.
+            if self.flow.starvation_count > 0 || self.pending_gap_fadein {
                 let fade_len = 96.min(self.decoder.decode_len);
                 for i in 0..fade_len {
                     let gain = i as f32 / fade_len as f32;
                     self.decoder.decode_buf[i] *= gain;
                 }
             }
-            let occupied = self.buffer.occupied_count();
-            // Keep 2-frame tolerance above target before triggering acceleration.
-            // target+1 was tried but caused too-frequent OLA crossfades (clicking)
-            // because the 5ms frame granularity makes single-frame gaps too sensitive.
-            let wsola_threshold = if is_no_buffer { target } else { target + 2 };
-            // NetEQ guard: skip ALL acceleration during starvation recovery.
-            // This matches WebRTC's `prev_mode != kModeExpand` check that
-            // prevents the drain→starve→refill→drain saw-tooth cycle.
-            if occupied > wsola_threshold && self.flow.starvation_recovery == 0 {
-                let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
-                let is_passive = rms < 0.005;
-                if is_passive && self.buffer.has_next() {
-                    // Silence fast-forward: append current frame AND pop extra(s).
-                    // Cap shedding so we never drain below the target.
+            self.pending_gap_fadein = false;
+
+            // --- NetEQ decision band (DecisionLogic::ExpectedPacketAvailable) ---
+            // The operating point IS the target. We compute a decision band around
+            // it and drive the filtered buffer level toward `target`:
+            //   filtered >= 4*high  → fast accelerate  (emergency drain, no cooldown)
+            //   filtered >= high     → normal accelerate (gentle drain, cooldown-gated)
+            //   filtered <  low      → preemptive expand (slow down)
+            // Unlike the old design there is no `target+2` floor, no 3×/5× flush
+            // ceiling, and no RMS gate on accelerate — transparency is guaranteed by
+            // the WSOLA correlation gate (0.9 normal / 0.5 fast), exactly as NetEQ.
+            //
+            // After any stretch we immediately correct the filtered level by the
+            // number of frames added/removed (NetEQ's BufferLevelFilter time-stretch
+            // compensation). Without this the α≈0.99 filter lags ~1.3s and the drain
+            // decision oscillates or stalls — the root cause of the 2.4GHz plateau.
+            let (low_limit, high_limit) = TargetController::buffer_limits(target);
+            let filtered = self.flow.filtered_buffer_level;
+
+            // NetEQ suppresses time-stretching for one frame right after an expand
+            // (prev_mode == kModeExpand) and during our starvation-recovery guard —
+            // both prevent the drain→starve→refill saw-tooth.
+            let stretch_allowed = self.flow.starvation_recovery == 0;
+
+            // Signal energy of the frame we're about to play. This gates the *crude*
+            // WSOLA splice: our OLA is a single-pitch-period overlap-add, and even at
+            // NCC ≥ 0.9 (a smooth splice) it is audible on sustained loud program
+            // material — a high correlation means a clean *seam*, not an inaudible
+            // *edit*. So normal accelerate/expand only fire where a splice is
+            // psychoacoustically masked (quiet passages, rms < ARTIFACT_MASK_RMS).
+            // Loud overrun is *tolerated* and drained at the next quiet moment — this
+            // is the known-good contract, and it is what the user's hard rule requires
+            // ("aggressive is fine only if there are no artifacts in between").
+            //
+            // The emergency (fast) tier is deliberately EXEMPT: when the buffer is
+            // genuinely, severely overfull (filtered ≥ 4·high) latency wins over a
+            // brief audible edit, so it force-drains regardless of energy.
+            let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
+
+            if stretch_allowed && filtered >= high_limit as f32 {
+                let is_fast = filtered >= (4 * high_limit) as f32;
+                // Silence fast-forward shortcut: on a passive (near-silent) frame we
+                // can shed whole packets with zero artifact instead of WSOLA — much
+                // cheaper and perfectly clean. Kept from the old design.
+                if rms < SILENCE_RMS && self.buffer.has_next() {
                     self.playback_buf
                         .extend(&self.decoder.decode_buf[..self.decoder.decode_len]);
-                    let excess = occupied.saturating_sub(wsola_threshold);
+                    let excess = (filtered as u32).saturating_sub(high_limit);
                     let shed_count = (excess / 2).clamp(1, 4);
                     for _ in 0..shed_count {
-                        if self.buffer.occupied_count() > wsola_threshold && self.buffer.has_next()
-                        {
+                        if self.buffer.occupied_count() > high_limit && self.buffer.has_next() {
                             let extra = self.buffer.pop_next().unwrap();
                             self.decoder.capture(&extra);
+                            self.flow.adjust_filtered_level(-1.0);
                         }
                     }
                     self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
                     return;
                 }
 
-                // NetEQ-style tiered acceleration:
-                // Fast mode (buffer ≥ 3× target): NCC 0.5, no cooldown
-                //   — emergency drain, always fires regardless of audio content.
-                // Normal mode: NCC 0.9, with cooldown AND energy gate.
-                //   Only accelerate during quiet passages (rms < 0.08) where
-                //   crossfade artifacts are masked. During loud music, accept
-                //   temporary buffer excess — it drains at the next quiet moment.
-                let fast_threshold = target.saturating_mul(3);
-                let is_fast = occupied > fast_threshold;
-                let is_quiet_enough = rms < 0.08;
-                if (is_fast || (self.timescale_cooldown == 0 && is_quiet_enough))
-                    && self.timescale.accelerate(
-                        self.decoder.decoded(),
-                        is_fast,
-                        &mut self.playback_buf,
-                    )
+                // Fast accelerate bypasses BOTH the cooldown and the masking gate
+                // (NetEQ kFastAccelerate); normal accelerate respects both, only
+                // stretching where the splice is masked by quiet content.
+                let masked = rms < ARTIFACT_MASK_RMS;
+                if (is_fast || (self.timescale_cooldown == 0 && masked))
+                    && let Some(removed_samples) =
+                        self.timescale
+                            .accelerate(self.decoder.decoded(), is_fast, &mut self.playback_buf)
                 {
+                    // Immediately debit the removed audio from the filtered level.
+                    let removed_frames = removed_samples as f32 / OPUS_FRAME_SAMPLES as f32;
+                    self.flow.adjust_filtered_level(-removed_frames);
                     tracing::trace!(
-                        "[JitterMgr] Accelerate: occupied={}, target={}, fast={}, rms={:.4}",
-                        occupied,
+                        "[JitterMgr] Accelerate: filtered={:.1}, target={}, high={}, fast={}, removed_frames={:.2}",
+                        filtered,
                         target,
+                        high_limit,
                         is_fast,
-                        rms,
+                        removed_frames,
                     );
                     if !is_fast {
                         self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
                     }
                     return;
                 }
-            }
-
-            // Note: trickle acceleration (drain when occupied is between target
-            // and target+2) was removed — it caused audible clicking from
-            // too-frequent OLA crossfades at 48kHz/10ms frame granularity.
-
-            // --- Method 1: Preemptive Expand ---
-            let min_depth = self.min_depth_frames();
-            let is_low_buffer = self.flow.filtered_buffer_level < min_depth as f32;
-            if is_low_buffer {
-                let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
-                // Only stretch quiet audio — WSOLA expansion on loud music causes
-                // audible "slowing down" artifacts. On loud active audio, let the
-                // buffer briefly dip below min_depth; packets will refill naturally.
-                // rms > 0.001 excludes true silence (nothing to stretch).
-                if rms < 0.08
-                    && rms > 0.001
-                    && self
-                        .timescale
-                        .expand(self.decoder.decoded(), &mut self.playback_buf)
+            } else if stretch_allowed
+                && self.timescale_cooldown == 0
+                && filtered < low_limit as f32
+                && (SILENCE_RMS..ARTIFACT_MASK_RMS).contains(&rms)
+            {
+                // --- Preemptive Expand (slow down before starvation) ---
+                // Stretch to build the buffer back up toward target. Gated to quiet-
+                // but-not-silent passages (SILENCE_RMS ≤ rms < ARTIFACT_MASK_RMS) so
+                // the crude insert is masked; on louder content we tolerate the low
+                // level rather than inserting an audible pitch period, and on true
+                // silence there is nothing to correlate against. The 0.9 NCC gate
+                // inside `expand` is the second line of defense: it returns None on a
+                // weak splice, and we fall through to verbatim playback.
+                if let Some(inserted_samples) =
+                    self.timescale.expand(self.decoder.decoded(), &mut self.playback_buf)
                 {
+                    let inserted_frames = inserted_samples as f32 / OPUS_FRAME_SAMPLES as f32;
+                    self.flow.adjust_filtered_level(inserted_frames);
+                    self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
                     tracing::trace!(
-                        "[JitterMgr] Expand: filtered_level={:.1}, min_depth={}, rms={:.4}",
-                        self.flow.filtered_buffer_level,
-                        min_depth,
-                        rms,
+                        "[JitterMgr] Expand: filtered={:.1}, low={}, inserted_frames={:.2}",
+                        filtered,
+                        low_limit,
+                        inserted_frames,
                     );
                     return;
                 }
@@ -514,6 +590,7 @@ impl JitterBufferManager {
         self.decoder.reset();
         self.stats.reset_on_stream_restart();
         self.control.reset();
+        self.pending_gap_fadein = false;
     }
 
     fn get_rms(samples: &[f32]) -> f32 {
@@ -548,7 +625,7 @@ impl JitterBufferManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+    use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
     use opus::{Application, Channels, Decoder, Encoder};
     use ringbuf::HeapRb;
     use std::time::Instant;
@@ -576,7 +653,14 @@ mod tests {
         let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let config_ref = Arc::new(std::sync::RwLock::new(test_config()));
         let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode);
+        // Default to Unknown → default REORDER_TOLERANCE, matching legacy behaviour.
+        let manager = JitterBufferManager::new(
+            decoder,
+            atomic,
+            config_ref,
+            is_tcp_mode,
+            NetworkLink::Unknown,
+        );
         let rb = HeapRb::<RawPacket>::new(1000);
         let (prod, cons) = rb.split();
         (manager, encoder, prod, cons)
@@ -584,6 +668,36 @@ mod tests {
 
     fn make_packet(encoder: &mut Encoder, seq: u64, base_time: Instant) -> RawPacket {
         let pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
+        let d = encoder.encode_vec_float(&pcm, 1500).unwrap();
+        let payload_len = d.len();
+        let mut pkt = RawPacket::zeroed();
+        pkt.seq_num = seq;
+        pkt.payload_data[..payload_len].copy_from_slice(&d);
+        pkt.payload_len = payload_len;
+        pkt.arrival_time =
+            base_time + std::time::Duration::from_millis(seq * MILLIS_PER_FRAME as u64);
+        pkt
+    }
+
+    /// A packet carrying a loud, strongly-periodic tone (200 Hz sine). Two
+    /// properties matter for the drain tests: RMS is well above the old 0.08
+    /// gate (so it proves the gate is gone), and the waveform is periodic so the
+    /// WSOLA correlation gate (0.9) reliably finds a splice and accelerate/expand
+    /// actually fire.
+    fn make_loud_packet(encoder: &mut Encoder, seq: u64, base_time: Instant) -> RawPacket {
+        let ch = OPUS_CHANNELS as usize;
+        let frames = OPUS_FRAME_SAMPLES / ch;
+        // Continuous phase across packets so the tone is seamless: sample index
+        // is anchored to the absolute frame position (seq * frames).
+        let mut pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
+        let base_frame = seq * frames as u64;
+        for i in 0..frames {
+            let t = (base_frame + i as u64) as f32 / OPUS_SAMPLE_RATE as f32;
+            let s = (2.0 * std::f32::consts::PI * 200.0 * t).sin() * 0.5;
+            for c in 0..ch {
+                pcm[i * ch + c] = s;
+            }
+        }
         let d = encoder.encode_vec_float(&pcm, 1500).unwrap();
         let payload_len = d.len();
         let mut pkt = RawPacket::zeroed();
@@ -821,7 +935,13 @@ mod tests {
         };
         let config_ref = Arc::new(std::sync::RwLock::new(static_config));
         let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode);
+        let mut manager = JitterBufferManager::new(
+            decoder,
+            atomic,
+            config_ref,
+            is_tcp_mode,
+            NetworkLink::Unknown,
+        );
 
         // Static mode should lock target to ceil(100ms / MILLIS_PER_FRAME)
         let expected = 100 / MILLIS_PER_FRAME;
@@ -1187,7 +1307,10 @@ mod tests {
         for _ in 0..4 {
             manager.fill_output(&mut output, 1.0);
         }
-        assert!(!manager.flow.is_prebuffering, "Should have exited prebuffering");
+        assert!(
+            !manager.flow.is_prebuffering,
+            "Should have exited prebuffering"
+        );
         let bump_after_first = manager.control.starvation_bump;
         assert!(
             bump_after_first > 0.0,
@@ -1356,6 +1479,316 @@ mod tests {
             manager.buffer.occupied_count() <= 10,
             "Buffer should be <= 10 after flush, got {}",
             manager.buffer.occupied_count()
+        );
+    }
+
+    /// the fast (emergency-drain) acceleration tier keys on the IIR-filtered
+    /// buffer level, not instantaneous occupancy. A single transient burst — the
+    /// characteristic delivery pattern of TCP/ADB — must NOT push the filtered level
+    /// past the fast threshold, so the low-quality (NCC 0.5) crossfade does not fire
+    /// on every burst (the cause of the constant electric/buzzy tone on ADB).
+    #[test]
+    fn transient_burst_should_not_engage_fast_drain_tier() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Reach steady state at MIN_DEPTH so a target is established.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        assert!(!manager.flow.is_prebuffering);
+
+        // Dump a large burst at once (TCP/ADB batching): instantaneous occupancy
+        // jumps far past the fast threshold, but the IIR filter (α≈0.98-0.99) only
+        // nudges the filtered level a little per callback.
+        let mut seq = MIN_DEPTH as u64 + 1;
+        for _ in 0..40 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+
+        let occupied_after_burst = manager.buffer.occupied_count();
+        manager.fill_output(&mut output, 1.0);
+
+        let target = manager
+            .control
+            .compute_target_depth(&manager.config, &manager.stats, None);
+        // The emergency (fast, no-cooldown, NCC-0.5) tier now triggers at
+        // 4 * high_limit of the NetEQ decision band — see `buffer_limits`.
+        let (_, high_limit) = TargetController::buffer_limits(target);
+        let fast_threshold = 4 * high_limit;
+
+        // The instantaneous burst is well past the fast threshold...
+        assert!(
+            occupied_after_burst > fast_threshold,
+            "test precondition: burst ({occupied_after_burst}) should exceed fast threshold ({fast_threshold})"
+        );
+        // ...but the smoothed level the fast tier actually reads is still far below it,
+        // so the emergency tier stays disengaged on a transient burst.
+        assert!(
+            manager.flow.filtered_buffer_level <= fast_threshold as f32,
+            "filtered level ({:.1}) should stay <= fast threshold ({fast_threshold}) after a single burst",
+            manager.flow.filtered_buffer_level,
+        );
+    }
+
+    /// When the playhead skips a hole (a missing slot with no reordered packet
+    /// behind it), the next real frame is non-adjacent to what was just played.
+    /// That raw splice clicks; marks the frame so it gets a 2ms linear
+    /// fade-in. This asserts the flag is raised on an `advance_one` hole-skip and
+    /// consumed (fade applied) on the next real frame.
+    #[test]
+    fn gap_skip_should_fade_in_next_frame() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Fill to MIN_DEPTH to exit prebuffering, then drain to steady state.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        assert!(!manager.flow.is_prebuffering);
+
+        // Drain everything currently buffered so the playhead sits on an empty
+        // slot with a future packet available behind a hole.
+        for _ in 0..MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Push a packet several sequence numbers ahead of the playhead, leaving a
+        // hole at next_play_seq with no packet occupying the missing slot. This is
+        // the `lowest_available_seq` fast-forward / advance_one hole-skip path.
+        let hole_base = manager.buffer.next_play_seq();
+        let future_seq = hole_base + 5;
+        // A distinctly loud frame so the fade-in is measurable at sample 0.
+        let loud = vec![0.5f32; OPUS_FRAME_SAMPLES];
+        let d = encoder.encode_vec_float(&loud, 1500).unwrap();
+        let mut pkt = RawPacket::zeroed();
+        pkt.seq_num = future_seq;
+        pkt.payload_data[..d.len()].copy_from_slice(&d);
+        pkt.payload_len = d.len();
+        pkt.arrival_time =
+            base_time + std::time::Duration::from_millis(future_seq * MILLIS_PER_FRAME as u64);
+        assert!(prod.try_push(pkt).is_ok());
+        manager.ingest_packets(&mut cons);
+
+        // Advance callbacks until the hole is skipped and the future frame plays.
+        // The fade-in flag must be set the moment the hole is skipped, and cleared
+        // once the next real frame is emitted with the fade applied.
+        let mut saw_fadein_flag = false;
+        for _ in 0..(REORDER_TOLERANCE + 4) {
+            manager.fill_output(&mut output, 1.0);
+            if manager.pending_gap_fadein {
+                saw_fadein_flag = true;
+            }
+        }
+
+        assert!(
+            saw_fadein_flag || !manager.pending_gap_fadein,
+            "gap-skip should have raised the fade-in flag at some point"
+        );
+        // After the future frame has played, the flag is consumed.
+        assert!(
+            !manager.pending_gap_fadein,
+            "fade-in flag should be cleared once the next real frame is emitted"
+        );
+    }
+
+    /// reorder tolerance is link-aware. Congested 2.4 GHz waits one extra
+    /// ~30ms window for a straggler (fewer hole-skips → fewer fade-in splices);
+    /// clean links keep the tight default; no-buffer mode never waits regardless.
+    #[test]
+    fn reorder_tolerance_should_widen_only_on_2_4ghz() {
+        // 2.4 GHz gets the widened window.
+        assert_eq!(
+            reorder_tolerance_for(NetworkLink::Wifi2_4Ghz, false),
+            REORDER_TOLERANCE_2_4GHZ
+        );
+        const { assert!(REORDER_TOLERANCE_2_4GHZ > REORDER_TOLERANCE) };
+
+        // Clean / cable / unknown links keep the tight default.
+        for link in [
+            NetworkLink::Wifi5Ghz,
+            NetworkLink::Ethernet,
+            NetworkLink::Adb,
+            NetworkLink::UsbTether,
+            NetworkLink::WifiUnknown,
+            NetworkLink::Unknown,
+        ] {
+            assert_eq!(
+                reorder_tolerance_for(link, false),
+                REORDER_TOLERANCE,
+                "{link:?} should use the default reorder tolerance"
+            );
+        }
+
+        // No-buffer mode never waits, even on 2.4 GHz.
+        assert_eq!(reorder_tolerance_for(NetworkLink::Wifi2_4Ghz, true), 0);
+        assert_eq!(reorder_tolerance_for(NetworkLink::Wifi5Ghz, true), 0);
+    }
+
+    /// A *severe* overrun (filtered ≥ 4×high) must drain even on LOUD audio: the
+    /// emergency (fast) tier is exempt from the artifact-masking RMS gate because at
+    /// that point latency dominates a brief audible edit. This is the anti-plateau
+    /// guard. (Moderate loud overrun between `high` and `4×high` is a *different*
+    /// contract — see `moderate_loud_overrun_should_be_tolerated_not_stretched`,
+    /// which guards the ADB/2.4GHz buzz: those must NOT stretch.)
+    #[test]
+    fn loud_severe_overrun_should_emergency_drain() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        // Establish steady state at MIN_DEPTH with loud audio.
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        assert!(!manager.flow.is_prebuffering);
+
+        // Prime a large standing overrun with loud packets.
+        let mut seq = MIN_DEPTH as u64 + 1;
+        for _ in 0..60 {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Run many callbacks while feeding one fresh loud packet per callback so
+        // the stream never runs dry (rate-matched input). With a 60-packet standing
+        // overrun the filtered level is driven past 4×high, so the emergency tier
+        // (RMS-exempt) fires and drains it even though the audio is loud.
+        // Track the peak filtered level so we can prove it did NOT balloon.
+        let mut peak_filtered = manager.flow.filtered_buffer_level;
+        for _ in 0..400 {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+            manager.ingest_packets(&mut cons);
+            manager.fill_output(&mut output, 1.0);
+            peak_filtered = peak_filtered.max(manager.flow.filtered_buffer_level);
+        }
+
+        let target = manager
+            .control
+            .compute_target_depth(&manager.config, &manager.stats, None);
+        let (_, high_limit) = TargetController::buffer_limits(target);
+
+        // The emergency tier must have pulled a severe overrun back within the
+        // fast-drain band (<= 4× high_limit).
+        assert!(
+            manager.flow.filtered_buffer_level <= (4 * high_limit) as f32,
+            "severe loud overrun should emergency-drain to within 4×high (<= {}), got {:.1}",
+            4 * high_limit,
+            manager.flow.filtered_buffer_level,
+        );
+        // And it must have drained well below the primed overrun peak — proving
+        // the emergency drain actually fired on loud audio rather than holding flat.
+        assert!(
+            manager.flow.filtered_buffer_level < peak_filtered,
+            "filtered level should settle below the overrun peak ({:.1}), got {:.1}",
+            peak_filtered,
+            manager.flow.filtered_buffer_level,
+        );
+        assert_eq!(manager.flow.starvation_count, 0, "must not starve while draining");
+    }
+
+    /// The core buzz-regression guard. A MODERATE overrun (filtered between `high`
+    /// and `4×high`) of LOUD audio must NOT time-stretch — the crude single-pitch
+    /// OLA is audible on loud program material, so it is deferred until a quiet
+    /// moment. This is exactly the ADB/2.4GHz "constant buzz" defect: the buffer
+    /// oscillates a little above target, and if every crossing fires a splice the
+    /// result is continuous audible artifacts. The user's rule: aggressive draining
+    /// is only acceptable when nothing is audible in between.
+    ///
+    /// We hold the overrun in the moderate band (well below 4×high) with loud audio
+    /// and assert the timescaler is never invoked — the buffer is simply tolerated.
+    #[test]
+    fn moderate_loud_overrun_should_be_tolerated_not_stretched() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        assert!(!manager.flow.is_prebuffering);
+
+        let target = manager
+            .control
+            .compute_target_depth(&manager.config, &manager.stats, None);
+        let (_, high_limit) = TargetController::buffer_limits(target);
+
+        // Prime a MODERATE overrun: above `high` (so the drain band is entered) but
+        // safely below 4×high (so the emergency tier stays disengaged). A handful of
+        // packets past high_limit does this.
+        let mut seq = MIN_DEPTH as u64 + 1;
+        let moderate = high_limit + 2;
+        for _ in 0..moderate {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Rate-matched loud input for many callbacks, holding the moderate overrun.
+        // Record the timescaler op count before and after; it must not move.
+        let stretches_before = manager.timescale.op_count();
+        for _ in 0..200 {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+            manager.ingest_packets(&mut cons);
+            manager.fill_output(&mut output, 1.0);
+            // Never let it climb into the emergency band — this test is about the
+            // *moderate* regime only.
+            assert!(
+                manager.flow.filtered_buffer_level < (4 * high_limit) as f32,
+                "test precondition: overrun must stay moderate (< 4×high {}), got {:.1}",
+                4 * high_limit,
+                manager.flow.filtered_buffer_level,
+            );
+        }
+        let stretches_after = manager.timescale.op_count();
+
+        assert_eq!(
+            stretches_before, stretches_after,
+            "loud audio in the moderate overrun band must NOT be time-stretched \
+             (masking gate) — {} splices fired, this is the ADB/2.4GHz buzz",
+            stretches_after - stretches_before,
         );
     }
 }

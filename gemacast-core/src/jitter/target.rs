@@ -164,6 +164,30 @@ impl TargetController {
         self.starvation_bump_cooldown = self.starvation_bump_cooldown.saturating_sub(1);
     }
 
+    /// NetEQ `DelayManager::BufferLimits` — the drain decision band around the
+    /// effective target, in whole frames. The orchestrator compares the filtered
+    /// buffer level against these:
+    ///   - `filtered >= 4 * high`  → emergency drain (fast accelerate, no cooldown)
+    ///   - `filtered >= high`      → gentle drain (normal accelerate, cooldown)
+    ///   - `filtered <  low`       → preemptive expand (slow down)
+    ///
+    /// `low = 0.75 * target`; `high = max(target, low + MIN_BAND)`. The minimum
+    /// spread guarantees a dead-band between the expand and accelerate decisions so
+    /// we don't ping-pong between them. NetEQ uses a 20ms window; we widen it to
+    /// 40ms because on jittery links (2.4GHz) the filtered level micro-oscillates by
+    /// 60-100ms, and a 20ms band let every small swing cross a limit and fire a
+    /// splice per oscillation — the per-oscillation stutter. A 40ms dead-band keeps
+    /// those micro-swings inside it; only genuine excursions cross. Mirrors
+    /// `delay_manager.cc:358-375` (adapted from Q8 packets to whole frames).
+    pub fn buffer_limits(target: u32) -> (u32, u32) {
+        /// Minimum low→high spread in frames (40ms / MILLIS_PER_FRAME). Wider than
+        /// NetEQ's 20ms to absorb 2.4GHz micro-oscillation without triggering drain.
+        const MIN_BAND: u32 = 40 / super::consts::MILLIS_PER_FRAME;
+        let low = target * 3 / 4;
+        let high = target.max(low + MIN_BAND);
+        (low, high)
+    }
+
     /// Reset hysteresis + ramp + probe state for a new config. Returns the new
     /// effective target so the orchestrator can compute its flush target.
     pub fn reset_for_config(&mut self, config: &JitterConfig) -> u32 {

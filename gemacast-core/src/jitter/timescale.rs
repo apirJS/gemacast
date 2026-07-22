@@ -18,6 +18,11 @@ pub(super) struct TimeScaler {
     hann_window: Vec<f32>,
     /// Pre-allocated buffer for WSOLA: holds the first frame's PCM while decoding the second.
     wsola_buf: Vec<f32>,
+    /// Count of successful accelerate/expand splices. Test-only observability: lets
+    /// artifact-regression tests assert that loud audio is NOT time-stretched.
+    /// `Cell` because the stretch methods take `&self`.
+    #[cfg(test)]
+    op_count: std::cell::Cell<usize>,
 }
 
 impl TimeScaler {
@@ -25,7 +30,22 @@ impl TimeScaler {
         Self {
             hann_window: Self::make_hann_window(),
             wsola_buf: vec![0.0f32; OPUS_FRAME_SAMPLES],
+            #[cfg(test)]
+            op_count: std::cell::Cell::new(0),
         }
+    }
+
+    /// Number of successful time-stretch splices performed so far (test-only).
+    #[cfg(test)]
+    pub fn op_count(&self) -> usize {
+        self.op_count.get()
+    }
+
+    /// Record a successful splice (test-only, no-op in release).
+    #[inline]
+    fn note_op(&self) {
+        #[cfg(test)]
+        self.op_count.set(self.op_count.get() + 1);
     }
 
     fn make_hann_window() -> Vec<f32> {
@@ -144,17 +164,21 @@ impl TimeScaler {
     /// NetEQ Preemptive Expand (Method 1).
     /// Stretches the current decode buffer by exactly one pitch period (up to 15ms)
     /// to slow down playback and prevent an imminent starvation gap.
-    pub fn expand(&self, pcm: &[f32], playback_buf: &mut VecDeque<f32>) -> bool {
+    ///
+    /// Returns `Some(n)` where `n` is the number of **interleaved samples inserted**
+    /// (so the orchestrator can immediately correct the filtered buffer level, as
+    /// NetEQ's `BufferLevelFilter` does), or `None` if no stretch was performed.
+    pub fn expand(&self, pcm: &[f32], playback_buf: &mut VecDeque<f32>) -> Option<usize> {
         let ch = OPUS_CHANNELS as usize;
         let n = pcm.len() / ch;
         if n < OLA_LEN + 16 {
-            return false;
+            return None;
         }
 
         let anchor = n - OLA_LEN;
         let search_limit = SEARCH_RANGE.min(anchor.saturating_sub(16));
         if search_limit == 0 {
-            return false;
+            return None;
         }
 
         let mut mono_ref = [0.0f32; OLA_LEN];
@@ -195,7 +219,7 @@ impl TimeScaler {
 
         // NetEQ requires strong correlation (>0.9) to stretch, otherwise it causes robotic artifacts
         if best_corr < 0.9 {
-            return false;
+            return None;
         }
 
         // 1. pcm[0..anchor] verbatim
@@ -216,7 +240,10 @@ impl TimeScaler {
             playback_buf.extend(&pcm[tail_start..]);
         }
 
-        true
+        // Inserted audio = one pitch period (anchor - best_d) of sample-frames.
+        // The output is longer than the input by exactly this many sample-frames.
+        self.note_op();
+        Some((anchor - best_d) * ch)
     }
 
     /// NetEQ-style single-frame acceleration.
@@ -228,12 +255,21 @@ impl TimeScaler {
     /// signal **with itself** (autocorrelation), not two different packets.
     /// Autocorrelation on tonal audio (speech, music) almost always succeeds
     /// because periodic signals repeat themselves within a single frame.
-    pub fn accelerate(&self, pcm: &[f32], fast_mode: bool, playback_buf: &mut VecDeque<f32>) -> bool {
+    ///
+    /// Returns `Some(n)` where `n` is the number of **interleaved samples removed**
+    /// (so the orchestrator can immediately correct the filtered buffer level, as
+    /// NetEQ's `BufferLevelFilter` does), or `None` if no stretch was performed.
+    pub fn accelerate(
+        &self,
+        pcm: &[f32],
+        fast_mode: bool,
+        playback_buf: &mut VecDeque<f32>,
+    ) -> Option<usize> {
         let ch = OPUS_CHANNELS as usize;
         let n = pcm.len() / ch;
         // Need at least 2*OLA_LEN to have non-overlapping search + reference
         if n < 2 * OLA_LEN + 16 {
-            return false;
+            return None;
         }
 
         // Reference: the TAIL of the frame (last OLA_LEN sample-frames)
@@ -241,7 +277,7 @@ impl TimeScaler {
         // Search limit: search window must not overlap the reference window
         let search_limit = anchor.saturating_sub(OLA_LEN);
         if search_limit == 0 {
-            return false;
+            return None;
         }
 
         // --- Step 1: Autocorrelation to find pitch period ---
@@ -288,13 +324,13 @@ impl TimeScaler {
         // slightly lower quality for much faster drain.
         let threshold = if fast_mode { 0.5 } else { 0.9 };
         if best_corr < threshold {
-            return false;
+            return None;
         }
 
         // Pitch period = distance between matching section and reference
         let pitch_period = anchor - best_d;
         if pitch_period < OLA_LEN {
-            return false;
+            return None;
         }
 
         // --- Step 2: Remove pitch period(s) via overlap-add ---
@@ -320,7 +356,7 @@ impl TimeScaler {
         // Output: [0..best_d] + crossfade([best_d..], [best_d+remove_len..]) + tail
         let splice_start = best_d + remove_len;
         if splice_start + OLA_LEN > n {
-            return false; // Not enough room for crossfade
+            return None; // Not enough room for crossfade
         }
 
         // 1. [0..best_d] verbatim
@@ -343,6 +379,9 @@ impl TimeScaler {
             playback_buf.extend(&pcm[tail_start..]);
         }
 
-        true
+        // Removed audio = `remove_len` sample-frames. The output is shorter than
+        // the input by exactly this many sample-frames (one or more pitch periods).
+        self.note_op();
+        Some(remove_len * ch)
     }
 }

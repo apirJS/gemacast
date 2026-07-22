@@ -386,9 +386,7 @@ fn parse_system_profiler_channel(output: &str) -> Option<u32> {
             in_current_network = true;
             continue;
         }
-        if in_current_network
-            && let Some(rest) = trimmed.strip_prefix("Channel:")
-        {
+        if in_current_network && let Some(rest) = trimmed.strip_prefix("Channel:") {
             // "149 (5GHz, 80MHz)" → take the number before the space/paren
             let channel_str = rest.trim().split(|c: char| !c.is_ascii_digit()).next()?;
             return channel_str.parse().ok();

@@ -266,10 +266,23 @@ impl JitterConfig {
     /// generic Auto config entirely.
     pub fn for_link_pair(pair: LinkPair) -> Self {
         match pair.effective_link() {
-            // Ultra — localhost / direct cable, near-zero jitter
+            // Direct cable / localhost (ADB, USB tether).
+            //
+            // These links have near-zero *scheduling* jitter but deliver in
+            // USB-transit BATCHES, so the honest steady-state occupancy is ~40ms
+            // (see latency logs), not the ~2ms the transport's raw latency suggests.
+            // The former `min 2ms / cap 20ms` profile collapsed the target to the
+            // 1-frame floor (`comfort_cap ≤ 8 frames` selects the finest quantum=1
+            // regime in `TargetController`), so the buffer sat permanently above the
+            // drain band and got shredded by continuous WSOLA splices — the constant
+            // ADB "buzz". `cap 100ms` (10 frames) lifts it into the quantum=2 regime
+            // and gives a target of ~3-4 frames, so `filtered` sits *below* the drain
+            // `high` limit in steady state and normal time-stretching essentially
+            // stops firing. This is not added latency — it matches the buffer's real
+            // operating point instead of chasing an unachievable 2ms.
             NetworkLink::Adb | NetworkLink::UsbTether => Self {
-                min_depth_ms: 2,
-                comfort_cap_ms: 20,
+                min_depth_ms: 30,
+                comfort_cap_ms: 100,
                 peak_decay_halflife_ms: 500,
                 resume_threshold_pct: 0.2,
                 static_target_ms: None,
@@ -282,11 +295,22 @@ impl JitterConfig {
                 resume_threshold_pct: 0.25,
                 static_target_ms: None,
             },
-            // Conservative — congested 2.4 GHz band
+            // Conservative — congested 2.4 GHz band.
+            //
+            // `peak_decay_halflife_ms: 0` selects the *adaptive* (stability-aware)
+            // peak-decay path in `JitterStats` rather than a fixed half-life. On
+            // 2.4 GHz this matters: a fixed 15s half-life pinned `ema_peak` — and
+            // therefore the target depth — near its spike level for many seconds
+            // after congestion cleared, so the observed latency ballooned to ~180ms
+            // and stuck. The adaptive path sheds the peak within seconds once the
+            // link goes quiet, while still clamping to a slow 15s decay during a
+            // *verified* unstable regime (two macro-spikes within 10s). The comfort
+            // cap is also tightened from 500ms to 200ms so a single spike can no
+            // longer inflate the target past ~20 frames.
             NetworkLink::Wifi2_4Ghz => Self {
                 min_depth_ms: 25,
-                comfort_cap_ms: 500,
-                peak_decay_halflife_ms: 15000,
+                comfort_cap_ms: 200,
+                peak_decay_halflife_ms: 0,
                 resume_threshold_pct: 0.5,
                 static_target_ms: None,
             },
@@ -529,11 +553,9 @@ mod tests {
                 phone: NetworkLink::Adb,
                 pc: NetworkLink::Ethernet,
             };
-            // ADB rank (0) < Ethernet rank (1), so PC is worse → returns Ethernet
-            // Wait: phone rank 0, pc rank 1. phone.rank < pc.rank, so pc is weaker.
-            // Actually: higher rank = worse quality. PC rank 1 > phone rank 0.
-            // phone.quality_rank() (0) >= pc.quality_rank() (1)? No. → returns pc.
-            assert_eq!(pair.effective_link(), NetworkLink::Ethernet);
+            // Direct cables bypass the quality ranking: if either side reports a
+            // wire (ADB port-forward here), `effective_link` trusts the wire.
+            assert_eq!(pair.effective_link(), NetworkLink::Adb);
         }
 
         #[test]
@@ -542,7 +564,10 @@ mod tests {
                 phone: NetworkLink::Unknown,
                 pc: NetworkLink::Ethernet,
             };
-            assert_eq!(pair.effective_link(), NetworkLink::Unknown);
+            // PC is on Ethernet but the phone can't be (phones don't use Ethernet),
+            // so it's almost certainly on Wi-Fi of an unknown band → assume a
+            // generic Wi-Fi link rather than trusting the PC's wire.
+            assert_eq!(pair.effective_link(), NetworkLink::WifiUnknown);
         }
 
         #[test]
@@ -561,26 +586,29 @@ mod tests {
         use super::*;
 
         #[test]
-        fn adb_pair_should_produce_ultra_profile() {
+        fn adb_pair_should_produce_cable_profile() {
             let pair = LinkPair {
                 phone: NetworkLink::Adb,
                 pc: NetworkLink::Ethernet,
             };
             let config = JitterConfig::for_link_pair(pair);
-            // Effective link = Ethernet (rank 1 > Adb rank 0)
-            assert_eq!(config.min_depth_ms, 5);
-            assert_eq!(config.comfort_cap_ms, 60);
+            // Direct cables bypass the ranking: ADB wins → cable profile. The cap
+            // is 100ms (10 frames) so the target lands in the quantum=2 regime and
+            // matches ADB's real ~40ms batch-delivery operating point rather than
+            // collapsing to the 1-frame floor (the constant-buzz cause).
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 100);
         }
 
         #[test]
-        fn both_adb_should_produce_ultra() {
+        fn both_adb_should_produce_cable_profile() {
             let pair = LinkPair {
                 phone: NetworkLink::Adb,
                 pc: NetworkLink::UsbTether,
             };
             let config = JitterConfig::for_link_pair(pair);
-            assert_eq!(config.min_depth_ms, 2);
-            assert_eq!(config.comfort_cap_ms, 20);
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 100);
             assert_eq!(config.peak_decay_halflife_ms, 500);
         }
 
@@ -604,8 +632,8 @@ mod tests {
             };
             let config = JitterConfig::for_link_pair(pair);
             assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 500);
-            assert_eq!(config.peak_decay_halflife_ms, 15000);
+            assert_eq!(config.comfort_cap_ms, 200);
+            assert_eq!(config.peak_decay_halflife_ms, 0);
         }
 
         #[test]
@@ -616,7 +644,7 @@ mod tests {
             };
             let config = JitterConfig::for_link_pair(pair);
             assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 500);
+            assert_eq!(config.comfort_cap_ms, 200);
             assert_eq!(config.resume_threshold_pct, 0.5);
         }
 

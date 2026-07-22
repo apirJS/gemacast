@@ -3,7 +3,7 @@ use super::stream::build_cpal_fallback_stream;
 use crate::{
     audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE},
     domain::error::{AudioError, GemaCastError, StreamDirection},
-    domain::types::JitterConfig,
+    domain::types::{JitterConfig, NetworkLink},
     jitter::RawPacket,
     network::Ports,
 };
@@ -35,6 +35,7 @@ impl AudioStreamReceiver {
     pub fn new(
         config_ref: Arc<std::sync::RwLock<JitterConfig>>,
         is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
         is_playing: Arc<AtomicBool>,
         volume: Arc<AtomicU32>,
         _exclusive_mode: bool,
@@ -50,6 +51,7 @@ impl AudioStreamReceiver {
             packet_consumer,
             config_ref,
             is_tcp_mode,
+            network_link,
             is_playing,
             volume,
             latency_metric.clone(),
@@ -64,6 +66,7 @@ impl AudioStreamReceiver {
                 packet_consumer,
                 config_ref.clone(),
                 is_tcp_mode.clone(),
+                network_link,
                 is_playing.clone(),
                 volume.clone(),
                 latency_metric.clone(),
@@ -78,6 +81,7 @@ impl AudioStreamReceiver {
                         fb_consumer,
                         config_ref,
                         is_tcp_mode,
+                        network_link,
                         is_playing,
                         volume,
                         latency_metric.clone(),

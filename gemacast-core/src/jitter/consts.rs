@@ -14,6 +14,18 @@ pub(super) const OLA_LEN: usize = 128;
 /// 720 frames = 15ms at 48kHz, covering the full human pitch period range.
 pub(super) const SEARCH_RANGE: usize = 720;
 
+/// Frames at or below this RMS are treated as silence: excess is shed by dropping
+/// whole packets (zero-artifact) rather than by a WSOLA splice.
+pub(super) const SILENCE_RMS: f32 = 0.005;
+
+/// Masking threshold for the crude single-pitch-period OLA splice. Normal
+/// (non-emergency) accelerate/expand only fire when the frame's RMS is below this,
+/// i.e. quiet enough that the edit is psychoacoustically masked. Loud program
+/// material (rms ≥ this) is left un-stretched and its overrun tolerated until a
+/// quiet moment or, if severe, the ungated emergency drain. Restoring this gate is
+/// what keeps aggressive draining artifact-free.
+pub(super) const ARTIFACT_MASK_RMS: f32 = 0.08;
+
 /// Convert milliseconds to frames using ceiling division.
 /// Prevents truncation to 0 for sub-frame values (e.g. 2ms / 5ms = 1 frame, not 0).
 pub(super) fn ms_to_frames_ceil(ms: u32) -> u32 {

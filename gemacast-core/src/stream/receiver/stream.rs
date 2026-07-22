@@ -3,7 +3,7 @@ use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES};
 use crate::{
     audio::{OPUS_SAMPLE_RATE, create_opus_decoder},
     domain::error::{AudioError, CodecDirection, GemaCastError, StreamDirection},
-    domain::types::JitterConfig,
+    domain::types::{JitterConfig, NetworkLink},
     jitter::{JitterBufferManager, RawPacket},
 };
 #[cfg(not(target_os = "android"))]
@@ -12,8 +12,8 @@ use cpal::StreamError;
 use cpal::traits::*;
 #[cfg(target_os = "android")]
 use oboe::{
-    AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBuilder, DataCallbackResult,
-    PerformanceMode, SharingMode,
+    AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBase, AudioStreamBuilder,
+    DataCallbackResult, PerformanceMode, SharingMode,
 };
 use ringbuf::traits::*;
 use std::sync::{
@@ -78,10 +78,12 @@ impl AudioOutputCallback for OboeCallback {
 }
 
 #[cfg(not(target_os = "android"))]
+#[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
 pub fn build_playback_stream(
     mut packet_consumer: ringbuf::HeapCons<RawPacket>,
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
+    network_link: NetworkLink,
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
@@ -134,8 +136,13 @@ pub fn build_playback_stream(
         buffer_size,
     };
 
-    let mut jitter_manager =
-        JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode);
+    let mut jitter_manager = JitterBufferManager::new(
+        decoder,
+        latency_metric,
+        config_ref,
+        is_tcp_mode,
+        network_link,
+    );
 
     device
         .build_output_stream(
@@ -175,6 +182,7 @@ pub fn build_cpal_fallback_stream(
     mut packet_consumer: ringbuf::HeapCons<RawPacket>,
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
+    network_link: NetworkLink,
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
@@ -198,7 +206,7 @@ pub fn build_cpal_fallback_stream(
     };
 
     let mut jitter_manager =
-        JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode);
+        JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode, network_link);
 
     let stream = device
         .build_output_stream(
@@ -234,10 +242,12 @@ pub fn build_cpal_fallback_stream(
 /// Build a playback stream on Android. Tries Oboe first for lowest latency;
 /// if Oboe fails to open the stream, automatically falls back to cpal.
 #[cfg(target_os = "android")]
+#[allow(clippy::too_many_arguments)]
 pub fn build_playback_stream(
     packet_consumer: ringbuf::HeapCons<RawPacket>,
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
+    network_link: NetworkLink,
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
@@ -254,6 +264,7 @@ pub fn build_playback_stream(
             latency_metric.clone(),
             config_ref.clone(),
             is_tcp_mode.clone(),
+            network_link,
         ),
         packet_consumer,
         volume: volume.clone(),
@@ -276,7 +287,25 @@ pub fn build_playback_stream(
         .set_callback(callback);
 
     match builder.open_stream() {
-        Ok(stream) => Ok(PlaybackStream::Oboe(stream)),
+        Ok(stream) => {
+            // Log the GRANTED stream params (not the requested ones). If the
+            // granted sample rate is not 48000, Oboe is resampling internally —
+            // the prime suspect for the reconnect-dependent buzz. This one line on
+            // a buzzy vs. clean open tells us definitively.
+            tracing::info!(
+                "[Oboe] Stream opened: granted_rate={}Hz, sharing={:?}, perf={:?}, \
+                 conv_quality={:?}, frames_per_callback={}, channels={:?}, format={:?}, requested_rate={}Hz",
+                stream.get_sample_rate(),
+                stream.get_sharing_mode(),
+                stream.get_performance_mode(),
+                stream.get_sample_rate_conversion_quality(),
+                stream.get_frames_per_callback(),
+                stream.get_channel_count(),
+                stream.get_format(),
+                OPUS_SAMPLE_RATE,
+            );
+            Ok(PlaybackStream::Oboe(stream))
+        }
         Err(oboe_err) => {
             tracing::warn!(
                 "Oboe failed to open stream ({}), falling back to cpal",

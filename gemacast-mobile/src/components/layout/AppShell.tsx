@@ -19,7 +19,7 @@ export function AppShell() {
       <SettingsDrawer />
 
       <main
-        className="mx-auto flex h-[100dvh] max-w-lg flex-col gap-6 px-6 overflow-hidden"
+        className="mx-auto flex h-dvh max-w-lg flex-col gap-6 px-6 overflow-hidden"
         style={{
           paddingTop: 'calc(4rem + env(safe-area-inset-top, 0px))',
           paddingBottom: 'calc(2rem + env(safe-area-inset-bottom, 0px))',

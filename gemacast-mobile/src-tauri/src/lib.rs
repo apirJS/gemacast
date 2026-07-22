@@ -15,6 +15,23 @@ pub(crate) const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            // Bridges the `log` facade (which our `tracing::*` calls feed via the
+            // `tracing/log` feature — see Cargo.toml) to the platform log sink.
+            // On Android `TargetKind::Stdout` is routed to logcat by the plugin,
+            // so `adb logcat` shows every gemacast-core `tracing` event. A LogDir
+            // target also persists them to a file for post-hoc capture.
+            tauri_plugin_log::Builder::new()
+                .level(tauri_plugin_log::log::LevelFilter::Info)
+                // Opus/decoder internals are noisy at debug; keep them at info.
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                ))
+                .build(),
+        )
         .setup(|app| {
             use std::sync::Arc;
             use std::sync::atomic::AtomicBool;
