@@ -93,6 +93,11 @@ pub struct JitterBufferManager {
     /// linear fade-in to mask the splice discontinuity — the same treatment as
     /// the PLC→real transition after starvation. Cleared once applied.
     pending_gap_fadein: bool,
+    /// Set when the manager is first created. After the first exit from
+    /// prebuffering, flushes excess packets that accumulated in the OS socket
+    /// buffer before the DAC callback started consuming. Cleared after the
+    /// initial flush. Not reset on mid-session stream restarts.
+    startup_flush_pending: bool,
 }
 
 impl JitterBufferManager {
@@ -122,6 +127,7 @@ impl JitterBufferManager {
             stats,
             timescale_cooldown: 0,
             pending_gap_fadein: false,
+            startup_flush_pending: true,
         }
     }
 
@@ -300,6 +306,25 @@ impl JitterBufferManager {
                 return;
             }
         }
+
+        // --- Startup flush: discard burst from OS socket buffer ---
+        // On the very first exit from prebuffering, the ring buffer may contain
+        // a burst of packets that accumulated in the OS socket buffer during
+        // session setup (the sender starts streaming the moment it receives the
+        // trigger, but the DAC callback hasn’t started consuming yet). Flush
+        // excess down to target depth with a clean crossfade so we start at
+        // optimal latency instead of draining slowly via WSOLA.
+        if self.startup_flush_pending {
+            self.startup_flush_pending = false;
+            if self.buffer.occupied_count() > target + 2 {
+                tracing::info!(
+                    "[JitterMgr] Startup flush: occupied={}, flushing to target={}",
+                    self.buffer.occupied_count(),
+                    target,
+                );
+                self.flush_with_crossfade(target);
+            }
+        }
         if self.buffer.occupied_count() > 0 && !self.buffer.has_next() {
             self.flow.gap_hold_count += 1;
             let mut fast_forward_seq = None;
@@ -343,12 +368,12 @@ impl JitterBufferManager {
                 // 50 callbacks (~500ms) to let the buffer refill safely.
                 // This prevents the drain→starve→refill→drain saw-tooth.
                 self.flow.starvation_recovery = 50;
-
                 self.control.apply_starvation_bump(
                     &self.config,
                     &self.stats,
                     self.flow.starvation_count,
                 );
+
                 self.flow.starvation_count = 0;
             }
 
@@ -436,9 +461,11 @@ impl JitterBufferManager {
                 // stretching where the splice is masked by quiet content.
                 let masked = rms < ARTIFACT_MASK_RMS;
                 if (is_fast || (self.timescale_cooldown == 0 && masked))
-                    && let Some(removed_samples) =
-                        self.timescale
-                            .accelerate(self.decoder.decoded(), is_fast, &mut self.playback_buf)
+                    && let Some(removed_samples) = self.timescale.accelerate(
+                        self.decoder.decoded(),
+                        is_fast,
+                        &mut self.playback_buf,
+                    )
                 {
                     // Immediately debit the removed audio from the filtered level.
                     let removed_frames = removed_samples as f32 / OPUS_FRAME_SAMPLES as f32;
@@ -469,8 +496,9 @@ impl JitterBufferManager {
                 // silence there is nothing to correlate against. The 0.9 NCC gate
                 // inside `expand` is the second line of defense: it returns None on a
                 // weak splice, and we fall through to verbatim playback.
-                if let Some(inserted_samples) =
-                    self.timescale.expand(self.decoder.decoded(), &mut self.playback_buf)
+                if let Some(inserted_samples) = self
+                    .timescale
+                    .expand(self.decoder.decoded(), &mut self.playback_buf)
                 {
                     let inserted_frames = inserted_samples as f32 / OPUS_FRAME_SAMPLES as f32;
                     self.flow.adjust_filtered_level(inserted_frames);
@@ -1714,7 +1742,10 @@ mod tests {
             peak_filtered,
             manager.flow.filtered_buffer_level,
         );
-        assert_eq!(manager.flow.starvation_count, 0, "must not starve while draining");
+        assert_eq!(
+            manager.flow.starvation_count, 0,
+            "must not starve while draining"
+        );
     }
 
     /// The core buzz-regression guard. A MODERATE overrun (filtered between `high`
@@ -1785,7 +1816,8 @@ mod tests {
         let stretches_after = manager.timescale.op_count();
 
         assert_eq!(
-            stretches_before, stretches_after,
+            stretches_before,
+            stretches_after,
             "loud audio in the moderate overrun band must NOT be time-stretched \
              (masking gate) — {} splices fired, this is the ADB/2.4GHz buzz",
             stretches_after - stretches_before,

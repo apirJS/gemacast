@@ -68,9 +68,6 @@ pub fn create_udp_audio_transport(
         std_socket
             .send_to(&[0u8], target_addr)
             .map_err(NetworkError::SendFailed)?;
-        std_socket
-            .send_to(&[0u8], target_addr)
-            .map_err(NetworkError::SendFailed)?;
     }
 
     let heartbeat_socket = std_socket

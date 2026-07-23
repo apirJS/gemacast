@@ -264,7 +264,7 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }
-                    let timeout = if first_packet_received { 3 } else { 10 };
+                    let timeout = 10;
                     let elapsed = last_packet_time.elapsed().as_secs();
                     if elapsed >= timeout {
                         tracing::warn!(

@@ -205,8 +205,13 @@ pub fn build_cpal_fallback_stream(
         buffer_size: cpal::BufferSize::Default,
     };
 
-    let mut jitter_manager =
-        JitterBufferManager::new(decoder, latency_metric, config_ref, is_tcp_mode, network_link);
+    let mut jitter_manager = JitterBufferManager::new(
+        decoder,
+        latency_metric,
+        config_ref,
+        is_tcp_mode,
+        network_link,
+    );
 
     let stream = device
         .build_output_stream(
