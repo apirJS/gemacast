@@ -363,14 +363,17 @@ impl JitterBufferManager {
 
             // Apply starvation bump if we just emerged from starvation,
             // but only if the cooldown has expired (prevents ratcheting).
-            if self.flow.starvation_count > 0 && !tcp_mode {
-                // NetEQ guard: after starvation, suppress acceleration for
-                // 50 callbacks (~500ms) to let the buffer refill safely.
-                self.flow.starvation_recovery = 50;
-                self.control.apply_starvation_floor(
-                    &self.config,
-                    &self.stats,
-                );
+            if self.flow.starvation_count > 0 {
+                if !tcp_mode {
+                    // NetEQ guard: after starvation, suppress acceleration for
+                    // 50 callbacks (~500ms) to let the buffer refill safely.
+                    self.flow.starvation_recovery = 50;
+                    self.control.apply_starvation_floor(
+                        &self.config,
+                        &self.stats,
+                    );
+                }
+                // Always reset — prevents permanent fade-in loop in TCP/ADB mode.
                 self.flow.starvation_count = 0;
             }
 
