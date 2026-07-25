@@ -16,9 +16,6 @@ const HYSTERESIS_BAND: u32 = 3;
 /// Snap effective target to multiples of this many frames to reduce
 /// the total number of discrete target transitions.
 const TARGET_QUANTUM: u32 = 4;
-/// Cooldown period in callbacks after a starvation bump. While active,
-/// no new bumps are applied — prevents positive-feedback ratcheting.
-const STARVATION_COOLDOWN: u32 = 200;
 /// Rate-limit interval: effective target moves by at most ±1 frame every
 /// this many callbacks, smoothing transitions for artifact-free playback.
 const RAMP_INTERVAL: u32 = 5;
@@ -38,10 +35,6 @@ pub(super) struct TargetController {
     pub ramp_goal: u32,
     /// Countdown for rate-limited ramping (one step per RAMP_INTERVAL callbacks).
     ramp_countdown: u32,
-    /// Additive target bump after starvation, bleeds continuously.
-    pub starvation_bump: f32,
-    /// Cooldown countdown after a starvation bump. While >0, no new bumps are applied.
-    starvation_bump_cooldown: u32,
     /// Countdown for active downward probing when the network is stable.
     probe_down_countdown: u32,
     /// Learned floor: the lowest effective_target that caused starvation.
@@ -56,8 +49,6 @@ impl TargetController {
             target_exit_count: 0,
             ramp_goal: 2,
             ramp_countdown: 0,
-            starvation_bump: 0.0,
-            starvation_bump_cooldown: 0,
             probe_down_countdown: PROBE_DOWN_INTERVAL,
             probe_floor: 0,
         }
@@ -137,14 +128,25 @@ impl TargetController {
         if let Some(static_ms) = config.static_target_ms {
             return ms_to_frames_ceil(static_ms).max(Self::min_depth_frames(config));
         }
-        // When the network is demonstrably stable (high clean_streak), reduce the
-        // jitter_margin contribution so the target converges to min_depth faster.
         let stability = stats.stability_ratio();
-        let margin_scale = 1.0 - stability * 0.4; // At full stability: 60% of raw margin
-        let jitter_margin = (stats.ema_jitter * 2.0 + stats.ema_peak) * margin_scale;
-        // Target is natively built on top of the user's requested minimum floor.
-        // We do not add artificial hardcoded safety margins here.
-        let target = Self::min_depth_frames(config) as f32 + jitter_margin + self.starvation_bump;
+        let margin_scale = 1.0 - stability * 0.4;
+        // Use histogram 95th-percentile as the base target. Add discrete peak
+        // height only when peak mode is active (NetEQ DelayPeakDetector style):
+        // binary on/off, drops to zero the moment peak mode deactivates.
+        // This prevents ema_peak from holding the target high for ~20s after
+        // the network calms — the root cause of the oscillation in log 2.
+        let histogram_base = stats.iat_percentile_target;
+        // NetEQ combines the histogram base and the peak height via MAX, not addition
+        // (delay_manager.cc:294 `std::max(target_level, MaxPeakHeight())`). The peak
+        // overrides the base only when it's higher; the two are never summed.
+        let peak_target = if stats.peak_mode_active() {
+            stats.peak_mode_height() * margin_scale
+        } else {
+            0.0
+        };
+        let target = (Self::min_depth_frames(config) as f32)
+            .max(histogram_base)
+            .max(peak_target);
         let cap = tcp_cap_override.unwrap_or(Self::comfort_cap_frames(config));
         let safe_cap = cap.max(Self::min_depth_frames(config) as f32);
         target
@@ -152,17 +154,6 @@ impl TargetController {
             .clamp(Self::min_depth_frames(config) as f32, safe_cap) as u32
     }
 
-    /// Per-callback bleed of the starvation bump and cooldown tick.
-    pub fn tick_bleed(&mut self) {
-        // Proportional bleed for starvation bump: bigger bumps recover faster.
-        // Increased rate from 0.05+3% to 0.08+5% — recovers ~40% faster.
-        // 8-frame bump: bleeds at ~0.48 frames/cb → recovers in ~17 callbacks (85ms)
-        // 2-frame bump: bleeds at ~0.18 frames/cb → recovers in ~11 callbacks (55ms)
-        let bleed = 0.08 + self.starvation_bump * 0.05;
-        self.starvation_bump = (self.starvation_bump - bleed).max(0.0);
-        // Tick starvation bump cooldown.
-        self.starvation_bump_cooldown = self.starvation_bump_cooldown.saturating_sub(1);
-    }
 
     /// NetEQ `DelayManager::BufferLimits` — the drain decision band around the
     /// effective target, in whole frames. The orchestrator compares the filtered
@@ -191,12 +182,10 @@ impl TargetController {
     /// Reset hysteresis + ramp + probe state for a new config. Returns the new
     /// effective target so the orchestrator can compute its flush target.
     pub fn reset_for_config(&mut self, config: &JitterConfig) -> u32 {
-        self.starvation_bump = 0.0;
         self.effective_target = ms_to_frames_ceil(config.min_depth_ms).max(2);
         self.ramp_goal = self.effective_target;
         self.target_exit_count = 0;
         self.ramp_countdown = 0;
-        self.starvation_bump_cooldown = 0;
         self.probe_down_countdown = PROBE_DOWN_INTERVAL;
         self.probe_floor = 0;
         self.effective_target
@@ -204,12 +193,10 @@ impl TargetController {
 
     /// Full reset on stream restart.
     pub fn reset(&mut self) {
-        self.starvation_bump = 0.0;
         self.effective_target = 2;
         self.ramp_goal = 2;
         self.target_exit_count = 0;
         self.ramp_countdown = 0;
-        self.starvation_bump_cooldown = 0;
         self.probe_down_countdown = PROBE_DOWN_INTERVAL;
         self.probe_floor = 0;
     }
@@ -256,8 +243,10 @@ impl TargetController {
                 );
                 self.ramp_goal = quantized;
                 self.target_exit_count = 0;
-                // If the target is moving UP, conditions changed — reset probe floor
-                // so future probing can re-discover the new optimal depth.
+                // If the target is moving UP due to genuine network worsening, reset
+                // probe floor so future probing can re-discover the new optimal depth.
+                // Don't reset when the upward move is bump-driven — that would allow
+                // re-probing back to the level that just caused starvation.
                 if quantized > self.effective_target {
                     self.probe_floor = 0;
                 }
@@ -280,8 +269,6 @@ impl TargetController {
             self.ramp_countdown = self.ramp_countdown.saturating_sub(1);
         } else if stats.stability_ratio() > 0.2
             && self.effective_target > min_depth
-            && self.starvation_bump < 0.5
-            && self.starvation_bump_cooldown == 0
             // Allow probing even during unstable regime if current stability
             // is locally high enough — the regime lock is a coarse heuristic
             // and the probe_floor prevents re-probing below safe levels.
@@ -319,62 +306,25 @@ impl TargetController {
         self.effective_target
     }
 
-    /// Apply the post-starvation bump. Called by the orchestrator when the buffer
-    /// recovers after a starvation event (and the cooldown has expired). Reads
-    /// `starvation_count` for logging only.
-    pub fn apply_starvation_bump(
+    /// Apply post-starvation probe floor update. Called by the orchestrator when
+    /// the buffer recovers after a starvation event. Sets `probe_floor` so future
+    /// probing won't descend back to the level that just caused starvation.
+    pub fn apply_starvation_floor(
         &mut self,
         config: &JitterConfig,
         stats: &JitterStats,
-        starvation_count: u32,
     ) {
-        if self.starvation_bump_cooldown != 0 {
-            return;
-        }
-        // Differentiate probe-induced starvation from genuine network outage.
-        // If we were recently stable (probing), use a mild bump that just
-        // returns to the previous level. If genuinely unstable, use full bump.
-        let is_probe_failure = stats.stability_ratio() > 0.3;
-        if is_probe_failure {
-            let quantum = Self::adaptive_quantum(config);
-            // Minimal bump: just 1 frame. The probe_floor mechanism
-            // prevents re-probing below this level, so we don't need
-            // a large bump to stay safe.
-            let mild_bump = 1.0;
-            self.starvation_bump = self.starvation_bump.max(mild_bump);
-            // Set floor using the full dynamic formula, not just +1 quantum.
-            // This prevents repeated starvation on bad networks: if ema_peak
-            // is 20 frames (100ms), floor jumps to ~200ms immediately.
-            let dynamic_floor = self.compute_target_depth(config, stats, None);
-            self.probe_floor = self
-                .probe_floor
-                .max(dynamic_floor)
-                .max(self.effective_target.saturating_add(quantum));
-        } else {
-            // Genuine starvation: use ema_jitter (stable estimate) instead
-            // of ema_peak (spike-driven, can be vastly inflated). Cap at 8.
-            let bump = (stats.ema_jitter * 2.0 + 2.0).min(8.0);
-            self.starvation_bump = self.starvation_bump.max(bump);
-        }
+        let quantum = Self::adaptive_quantum(config);
+        let dynamic_floor = self.compute_target_depth(config, stats, None);
+        self.probe_floor = self
+            .probe_floor
+            .max(dynamic_floor)
+            .max(self.effective_target.saturating_add(quantum));
         tracing::info!(
-            "[JitterMgr] Starvation bump: type={}, bump={:.1}, effective_target={}, ema_jitter={:.2}, ema_peak={:.2}, starvation_frames={}",
-            if is_probe_failure { "probe" } else { "genuine" },
-            self.starvation_bump,
+            "[JitterMgr] Starvation floor set: probe_floor={}, effective_target={}, ema_jitter={:.2}",
+            self.probe_floor,
             self.effective_target,
             stats.ema_jitter,
-            stats.ema_peak,
-            starvation_count,
         );
-        self.starvation_bump_cooldown = STARVATION_COOLDOWN;
-        // Upward bump bypasses hysteresis dwell for immediate safety.
-        let boosted = Self::quantize_target(
-            self.compute_target_depth(config, stats, None),
-            Self::adaptive_quantum(config),
-        )
-        .max(Self::min_depth_frames(config));
-        if boosted > self.effective_target {
-            self.ramp_goal = boosted;
-            self.target_exit_count = 0;
-        }
     }
 }

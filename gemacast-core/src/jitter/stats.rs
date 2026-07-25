@@ -39,6 +39,15 @@ pub(super) struct JitterStats {
     last_peak_time: Option<Instant>,
     /// Whether peak mode is currently active.
     peak_mode_active: bool,
+    // --- NetEQ IAT Histogram (Method 1) ---
+    /// 65-bin Q30 exponential-forgetting histogram of inter-arrival times.
+    /// iat_histogram[i] = probability mass that IAT == i packet-periods (Q30).
+    iat_histogram: [i64; 65],
+    /// Forgetting-factor convergence counter. Starts at 0, converges toward
+    /// `IAT_FACTOR_STEADY` (≈0.9993 in Q15) over the first ~1000 packets.
+    iat_factor: i64,
+    /// 95th-percentile IAT in frames, derived from the histogram each update.
+    pub iat_percentile_target: f32,
 }
 
 impl JitterStats {
@@ -46,7 +55,7 @@ impl JitterStats {
         let halflife_ticks =
             (config.peak_decay_halflife_ms.max(10) as f32) / (MILLIS_PER_FRAME as f32);
         let ema_peak_decay_alpha = 0.5f32.powf(1.0 / halflife_ticks);
-        Self {
+        let mut s = Self {
             ema_jitter: 0.0,
             ema_peak: 0.0,
             ema_jitter_var: 0.0,
@@ -59,7 +68,78 @@ impl JitterStats {
             peak_history: VecDeque::with_capacity(8),
             last_peak_time: None,
             peak_mode_active: false,
+            iat_histogram: [0i64; 65],
+            iat_factor: 0,
+            iat_percentile_target: 0.0,
+        };
+        s.reset_histogram_to_seed();
+        s
+    }
+
+    /// Seed the IAT histogram with NetEQ's `ResetHistogram` distribution:
+    /// bin[i] = (1<<30) * 0.5^(i+1) in Q30. This geometric distribution places
+    /// the 95th-percentile at bin 4 (40ms), giving a stable 4-frame start target
+    /// before any packets arrive — prevents the cold-start target collapse to 0.
+    fn reset_histogram_to_seed(&mut self) {
+        let mut val: i64 = 1 << 29; // 0.5 in Q30
+        for bin in self.iat_histogram.iter_mut() {
+            *bin = val;
+            val >>= 1;
         }
+        self.iat_factor = 0;
+        self.iat_percentile_target = 4.0;
+    }
+
+    /// NetEQ `DelayManager::UpdateHistogram` + `CalculateTargetLevel` port.
+    ///
+    /// Feeds the observed inter-arrival time (in whole packet-periods) into a
+    /// 65-bin Q30 exponential-forgetting histogram, then walks the reverse CDF to
+    /// find the 95th-percentile IAT. Result is stored in `iat_percentile_target`
+    /// (frames). Mirrors `delay_manager.cc:262-303`.
+    fn update_iat_histogram(&mut self, iat_frames: f32) {
+        /// Steady-state forgetting factor (≈0.9993 in Q15). ~1000-update half-life.
+        const IAT_FACTOR_STEADY: i64 = 32745;
+        /// 5% tail probability in Q30 → 95th percentile.
+        const LIMIT_PROBABILITY: i64 = (1 << 30) / 20;
+
+        let iat_packets = (iat_frames.max(0.0) as usize).min(64);
+
+        // Exponential forgetting: scale every bin by iat_factor/32768.
+        let mut vector_sum: i64 = 0;
+        for bin in self.iat_histogram.iter_mut() {
+            *bin = (*bin * self.iat_factor) >> 15;
+            vector_sum += *bin;
+        }
+        // Bump the observed bin by (1 - iat_factor) in Q30.
+        let increment = (32768 - self.iat_factor) << 15;
+        self.iat_histogram[iat_packets] += increment;
+        vector_sum += increment;
+
+        // Correct rounding drift so the histogram sums to exactly 1.0 in Q30.
+        vector_sum -= 1 << 30;
+        if vector_sum != 0 {
+            let flip = if vector_sum > 0 { -1i64 } else { 1i64 };
+            for bin in self.iat_histogram.iter_mut() {
+                if vector_sum == 0 {
+                    break;
+                }
+                let correction = flip * vector_sum.abs().min(*bin >> 4);
+                *bin += correction;
+                vector_sum += correction;
+            }
+        }
+
+        // Converge iat_factor toward steady state.
+        self.iat_factor += (IAT_FACTOR_STEADY - self.iat_factor + 3) >> 2;
+
+        // Reverse-CDF walk: accumulate from the tail until we cross the 5% limit.
+        let mut sum: i64 = (1 << 30) - self.iat_histogram[0];
+        let mut index = 0usize;
+        while sum > LIMIT_PROBABILITY && index < 63 {
+            index += 1;
+            sum -= self.iat_histogram[index];
+        }
+        self.iat_percentile_target = index as f32;
     }
 
     /// Compute the stability ratio from the clean streak counter.
@@ -90,6 +170,22 @@ impl JitterStats {
         self.unstable_regime_until
     }
 
+    /// Whether the discrete NetEQ peak detector is currently active (≥2 peaks
+    /// within the tracking window and not yet timed out).
+    pub fn peak_mode_active(&self) -> bool {
+        self.peak_mode_active
+    }
+
+    /// The maximum peak height (frames) currently recorded in the peak history.
+    /// Only meaningful when `peak_mode_active()` is true. Unlike `ema_peak`, this
+    /// drops to 0 the moment peak mode deactivates — no 20s lingering decay.
+    pub fn peak_mode_height(&self) -> f32 {
+        self.peak_history
+            .iter()
+            .map(|(_, h)| *h)
+            .fold(0.0f32, f32::max)
+    }
+
     /// Observe a single forward packet's arrival, updating all jitter statistics.
     ///
     /// `effective_target` is the controller's current locked-in depth, read by the
@@ -100,7 +196,6 @@ impl JitterStats {
         seq_num: u64,
         arrival_time: Instant,
         config: &JitterConfig,
-        effective_target: u32,
     ) -> bool {
         if let Some(last_time) = self.last_network_arrival
             && let Some(last_seq) = self.last_ingest_seq
@@ -118,6 +213,16 @@ impl JitterStats {
                 let iat_expected = (seq_diff as f32) * (MILLIS_PER_FRAME as f32);
                 let jitter_ms = (iat_actual - iat_expected).max(0.0);
                 let jitter_frames = jitter_ms / MILLIS_PER_FRAME as f32;
+
+                // --- NetEQ IAT histogram update ---
+                // Feed the actual inter-arrival time (in packet-times) into the Q30 histogram.
+                // NetEQ model: record the full wall-clock gap, then subtract the missing-packet
+                // count (seq_diff - 1). For consecutive packets seq_diff==1, so the raw gap is
+                // recorded directly — capturing gap-then-burst spikes that the old divide-by-seq_diff
+                // normalization washed out.
+                let iat_packets = iat_actual / MILLIS_PER_FRAME as f32;
+                let iat_adjusted = (iat_packets - (seq_diff as f32 - 1.0)).max(0.0);
+                self.update_iat_histogram(iat_adjusted);
 
                 // --- Clean streak tracking (regime-aware) ---
                 // A packet is "clean" if its jitter is below the adaptive threshold.
@@ -204,7 +309,11 @@ impl JitterStats {
                 // --- NetEQ 2-Peak Trigger State Machine (Method 6) ---
                 // A peak is a delay spike that exceeds the target + threshold (approx 3 frames).
                 // If we see 2 peaks within a 10s window, we lock the peak height as the target.
-                let target_level = effective_target as f32;
+                // Use the histogram base (NetEQ base_target_level) as the peak threshold,
+                // NOT the peak-inflated effective_target. Using effective_target creates a
+                // feedback loop: peaks raise the target, which raises the threshold, which
+                // stops peaks from registering, which collapses the target — oscillation.
+                let target_level = self.iat_percentile_target;
                 let threshold = 3.9; // 78ms at 20ms/frame
                 if jitter_frames > target_level + threshold || jitter_frames > 2.0 * target_level {
                     if let Some(last) = self.last_peak_time {
@@ -265,10 +374,9 @@ impl JitterStats {
         self.last_ingest_seq = None;
         self.clean_streak = 0;
         self.ema_jitter_var = 0.0;
+        self.reset_histogram_to_seed();
     }
 
-    /// Partial reset on config change (matches the legacy config-reconcile field set):
-    /// clears the jitter EMAs, streak, and the full peak-detection state.
     pub fn reset_on_config_change(&mut self) {
         self.ema_jitter = 0.0;
         self.ema_peak = 0.0;
@@ -277,5 +385,6 @@ impl JitterStats {
         self.peak_history.clear();
         self.last_peak_time = None;
         self.peak_mode_active = false;
+        self.reset_histogram_to_seed();
     }
 }

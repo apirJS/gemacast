@@ -16,8 +16,8 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
-/// 2000ms max silence before resetting stream
-const MAX_MISSING: u32 = 2000 / MILLIS_PER_FRAME;
+/// 1000ms max silence before resetting stream (NetEQ kReinitAfterExpands=100 frames)
+const MAX_MISSING: u32 = 1000 / MILLIS_PER_FRAME;
 /// Default reorder tolerance: ~30ms window to wait for a reordered packet
 /// before skipping a hole. Used for clean links (5GHz / Ethernet / cable).
 const REORDER_TOLERANCE: u32 = 30 / MILLIS_PER_FRAME;
@@ -153,7 +153,6 @@ impl JitterBufferManager {
                 pkt.seq_num,
                 pkt.arrival_time,
                 &self.config,
-                self.control.effective_target,
             ) {
                 continue;
             }
@@ -204,8 +203,6 @@ impl JitterBufferManager {
         self.flow
             .filter_buffer_level(self.buffer.occupied_count(), self.control.effective_target);
 
-        // Proportional bleed for the starvation bump + bump-cooldown tick.
-        self.control.tick_bleed();
         self.timescale_cooldown = self.timescale_cooldown.saturating_sub(1);
         self.flow.tick_recovery();
         let mut pending_flush: Option<u32> = None;
@@ -316,13 +313,16 @@ impl JitterBufferManager {
         // optimal latency instead of draining slowly via WSOLA.
         if self.startup_flush_pending {
             self.startup_flush_pending = false;
-            if self.buffer.occupied_count() > target + 2 {
+            // Jitter stats are zero at startup; don't flush below 2×min_depth or
+            // the buffer starves before the network has been observed.
+            let safe_flush_target = target.max(min_depth * 2).max(3);
+            if self.buffer.occupied_count() > safe_flush_target + 2 {
                 tracing::info!(
                     "[JitterMgr] Startup flush: occupied={}, flushing to target={}",
                     self.buffer.occupied_count(),
-                    target,
+                    safe_flush_target,
                 );
-                self.flush_with_crossfade(target);
+                self.flush_with_crossfade(safe_flush_target);
             }
         }
         if self.buffer.occupied_count() > 0 && !self.buffer.has_next() {
@@ -366,14 +366,11 @@ impl JitterBufferManager {
             if self.flow.starvation_count > 0 && !tcp_mode {
                 // NetEQ guard: after starvation, suppress acceleration for
                 // 50 callbacks (~500ms) to let the buffer refill safely.
-                // This prevents the drain→starve→refill→drain saw-tooth.
                 self.flow.starvation_recovery = 50;
-                self.control.apply_starvation_bump(
+                self.control.apply_starvation_floor(
                     &self.config,
                     &self.stats,
-                    self.flow.starvation_count,
                 );
-
                 self.flow.starvation_count = 0;
             }
 
@@ -538,28 +535,6 @@ impl JitterBufferManager {
             self.playback_buf
                 .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
             return;
-        }
-
-        if self.buffer.occupied_count() == 0 {
-            // Adaptive starvation threshold: on jittery UDP networks,
-            // tolerate longer starvation before triggering a full rebuffer.
-            // TCP/ADB is reliable, so keep the threshold tight.
-            let starvation_threshold = if tcp_mode {
-                10
-            } else {
-                let base = 10u32;
-                base.saturating_add((self.stats.ema_peak as u32).min(20))
-                    .min(40)
-            };
-
-            if self.flow.starvation_count >= starvation_threshold {
-                tracing::warn!(
-                    "[JitterMgr] Starvation→rebuffer: starvation_count={}, threshold={}",
-                    self.flow.starvation_count,
-                    starvation_threshold,
-                );
-                self.flow.is_prebuffering = true;
-            }
         }
 
         self.generate_plc();
@@ -804,7 +779,12 @@ mod tests {
     }
 
     #[test]
-    fn should_enter_prebuffering_after_sustained_starvation() {
+    fn sustained_starvation_should_play_plc_not_rebuffer() {
+        // NetEQ alignment: mid-stream starvation must NEVER re-enter prebuffering.
+        // The manager plays PLC (expand) indefinitely and only the MAX_MISSING
+        // (1s) timeout triggers a decoder reset — matching NetEQ's kExpand /
+        // kReinitAfterExpands model. This replaces the old
+        // `should_enter_prebuffering_after_sustained_starvation` test.
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // Fill enough to exit prebuffering.
@@ -820,22 +800,18 @@ mod tests {
             manager.fill_output(&mut output, 1.0);
         }
         assert!(!manager.flow.is_prebuffering);
-        // Frame 1 empty -> PLC
-        manager.fill_output(&mut output, 1.0);
-        assert_eq!(manager.flow.starvation_count, 1);
-        assert!(!manager.flow.is_prebuffering);
-        // Frame 2 empty -> PLC
-        manager.fill_output(&mut output, 1.0);
-        assert_eq!(manager.flow.starvation_count, 2);
-        assert!(!manager.flow.is_prebuffering);
-        // Drain to exactly 10 starvation frames (50ms) to hit the >= 10 threshold.
-        for _ in 3..=10 {
+        // Sustained starvation well past the old rebuffer threshold (10).
+        // is_prebuffering must remain false the entire time — PLC plays instead.
+        for _ in 1..=30 {
             manager.fill_output(&mut output, 1.0);
+            assert!(
+                !manager.flow.is_prebuffering,
+                "Mid-stream starvation must play PLC, never re-enter prebuffering \
+                 (starvation_count={})",
+                manager.flow.starvation_count,
+            );
         }
-        // On the 10th starvation call, is_prebuffering = true.
-        // starvation_count is preserved (not reset) so the bounce can use it later.
-        assert_eq!(manager.flow.starvation_count, 10);
-        assert!(manager.flow.is_prebuffering);
+        assert_eq!(manager.flow.starvation_count, 30);
     }
 
     #[test]
@@ -1234,34 +1210,6 @@ mod tests {
     }
 
     #[test]
-    fn proportional_bleed_should_recover_large_bumps_faster() {
-        let (mut manager, _, _, _) = setup_env();
-
-        // Simulate a large starvation bump
-        manager.control.starvation_bump = 20.0;
-        manager.flow.is_prebuffering = false;
-
-        // Record the bleed rate at 20.0
-        let initial = manager.control.starvation_bump;
-        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        manager.fill_output(&mut output, 1.0);
-        let after_one = manager.control.starvation_bump;
-        let bleed_large = initial - after_one;
-
-        // Now set a small bump and measure bleed rate
-        manager.control.starvation_bump = 2.0;
-        let initial_small = manager.control.starvation_bump;
-        manager.fill_output(&mut output, 1.0);
-        let after_one_small = manager.control.starvation_bump;
-        let bleed_small = initial_small - after_one_small;
-
-        // The large bump should bleed faster (proportional bleed)
-        assert!(
-            bleed_large > bleed_small * 2.0,
-            "Large bump bleed ({bleed_large}) should be > 2x small bump bleed ({bleed_small})"
-        );
-    }
-    #[test]
     fn hysteresis_should_ignore_transient_spikes() {
         let (mut manager, _, _, _) = setup_env();
         manager.flow.is_prebuffering = false;
@@ -1274,7 +1222,6 @@ mod tests {
         // Simulate a single 100ms jitter spike.
         manager.stats.ema_jitter = 0.0;
         manager.stats.ema_peak = 0.0;
-        manager.control.starvation_bump = 0.0;
 
         // Inject a spike that raises ema_jitter temporarily.
         manager.stats.ema_jitter = 10.0; // This would compute a high raw_target.
@@ -1290,87 +1237,6 @@ mod tests {
             manager.control.effective_target, 12,
             "Effective target should stay at 12 after a single spike-induced fill_output, got {}",
             manager.control.effective_target
-        );
-    }
-
-    #[test]
-    fn starvation_bump_cooldown_should_prevent_ratcheting() {
-        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
-        let base_time = Instant::now();
-        let mut seq = 1u64;
-
-        // Fill to exit prebuffering.
-        for _ in 0..MIN_DEPTH {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, seq, base_time))
-                    .is_ok()
-            );
-            seq += 1;
-        }
-        manager.ingest_packets(&mut cons);
-        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
-        for _ in 0..MIN_DEPTH {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        // Trigger first starvation (buffer drains completely).
-        for _ in 0..15 {
-            manager.fill_output(&mut output, 1.0);
-        }
-        assert!(manager.flow.is_prebuffering);
-
-        // Recover: push contiguous packets from where we left off.
-        // Push extra packets to ensure has_next() fires after prebuffering exits.
-        let recover_count = MIN_DEPTH + 4;
-        for _ in 0..recover_count {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, seq, base_time))
-                    .is_ok()
-            );
-            seq += 1;
-        }
-        manager.ingest_packets(&mut cons);
-
-        // Drain enough frames to exit prebuffering and let the bump apply.
-        for _ in 0..4 {
-            manager.fill_output(&mut output, 1.0);
-        }
-        assert!(
-            !manager.flow.is_prebuffering,
-            "Should have exited prebuffering"
-        );
-        let bump_after_first = manager.control.starvation_bump;
-        assert!(
-            bump_after_first > 0.0,
-            "First starvation bump should have been applied, got {bump_after_first}"
-        );
-
-        // Drain remaining packets to trigger a second starvation.
-        for _ in 0..20 {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        // Recover again with contiguous packets.
-        let recover2_count = MIN_DEPTH + 4;
-        for _ in 0..recover2_count {
-            assert!(
-                prod.try_push(make_packet(&mut encoder, seq, base_time))
-                    .is_ok()
-            );
-            seq += 1;
-        }
-        manager.ingest_packets(&mut cons);
-        for _ in 0..4 {
-            manager.fill_output(&mut output, 1.0);
-        }
-
-        // The second bump should NOT have been applied (cooldown still active).
-        // starvation_bump should have only bled from the first bump, not re-applied.
-        assert!(
-            manager.control.starvation_bump < bump_after_first,
-            "Second starvation within cooldown should NOT re-apply bump. \
-             bump_after_first={bump_after_first}, current={}",
-            manager.control.starvation_bump,
         );
     }
 
@@ -1478,6 +1344,9 @@ mod tests {
         }
         manager.ingest_packets(&mut cons);
         manager.flow.is_prebuffering = false;
+        // Disable the startup flush so it doesn't drain the buffer before the
+        // manual flush_with_crossfade call this test is exercising.
+        manager.startup_flush_pending = false;
 
         // Decode one packet to populate decode_buf.
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];

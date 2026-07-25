@@ -309,7 +309,7 @@ impl JitterConfig {
             // longer inflate the target past ~20 frames.
             NetworkLink::Wifi2_4Ghz => Self {
                 min_depth_ms: 25,
-                comfort_cap_ms: 200,
+                comfort_cap_ms: 500,
                 peak_decay_halflife_ms: 0,
                 resume_threshold_pct: 0.5,
                 static_target_ms: None,
@@ -632,7 +632,7 @@ mod tests {
             };
             let config = JitterConfig::for_link_pair(pair);
             assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 200);
+            assert_eq!(config.comfort_cap_ms, 500);
             assert_eq!(config.peak_decay_halflife_ms, 0);
         }
 
@@ -644,7 +644,7 @@ mod tests {
             };
             let config = JitterConfig::for_link_pair(pair);
             assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 200);
+            assert_eq!(config.comfort_cap_ms, 500);
             assert_eq!(config.resume_threshold_pct, 0.5);
         }
 
