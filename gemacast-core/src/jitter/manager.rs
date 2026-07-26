@@ -325,6 +325,17 @@ impl JitterBufferManager {
                 self.flush_with_crossfade(safe_flush_target);
             }
         }
+        // Static non-zero targets: pin buffer to target depth. Unlike
+        // no-buffer mode (which flushes to target+1 on instantaneous occupancy),
+        // this uses the gentler flush_with_crossfade to keep the decoder warm and
+        // mask the skip. The WSOLA decision band below becomes naturally redundant
+        // (occupied never climbs to high_limit), while expansion still defends
+        // against underrun.
+        let is_static_nonzero = self.config.static_target_ms.map_or(false, |ms| ms > 0);
+        if is_static_nonzero && self.buffer.occupied_count() > target + 1 {
+            self.flush_with_crossfade(target);
+        }
+
         if self.buffer.occupied_count() > 0 && !self.buffer.has_next() {
             self.flow.gap_hold_count += 1;
             let mut fast_forward_seq = None;
@@ -1693,6 +1704,93 @@ mod tests {
             "loud audio in the moderate overrun band must NOT be time-stretched \
              (masking gate) — {} splices fired, this is the ADB/2.4GHz buzz",
             stretches_after - stretches_before,
+        );
+    }
+
+    /// Static non-zero targets (e.g. Custom preset with 60ms) must aggressively
+    /// flush excess packets so the buffer stays pinned at the configured depth.
+    /// After a burst, occupied should never exceed target + 1 frame.
+    #[test]
+    fn static_nonzero_target_should_pin_buffer_at_configured_depth() {
+        let decoder = Decoder::new(OPUS_SAMPLE_RATE, Channels::Stereo).unwrap();
+        let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let static_config = JitterConfig {
+            min_depth_ms: 20,
+            comfort_cap_ms: 60,
+            peak_decay_halflife_ms: 1000,
+            resume_threshold_pct: 0.5,
+            static_target_ms: Some(60), // Fixed 60ms = 6 frames
+        };
+        let config_ref = Arc::new(std::sync::RwLock::new(static_config));
+        let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut manager = JitterBufferManager::new(
+            decoder,
+            atomic,
+            config_ref,
+            is_tcp_mode,
+            NetworkLink::Unknown,
+        );
+
+        let mut encoder =
+            Encoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
+        let rb = HeapRb::<RawPacket>::new(1000);
+        let (mut prod, mut cons) = rb.split();
+        let base_time = Instant::now();
+
+        let target_frames = 60 / MILLIS_PER_FRAME; // 6 frames
+
+        // Fill buffer to exit prebuffering (need resume_threshold * target = 3 frames).
+        for i in 1..=(target_frames + 2) {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+        assert!(!manager.flow.is_prebuffering);
+
+        // Inject a 20-packet burst (simulating network batching).
+        let mut seq = (target_frames + 3) as u64;
+        for _ in 0..20 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+
+        // After one fill_output, the static flush should have drained the excess.
+        manager.fill_output(&mut output, 1.0);
+
+        assert!(
+            manager.buffer.occupied_count() <= target_frames + 1,
+            "Static 60ms target should pin buffer at ≤{} frames, got {}",
+            target_frames + 1,
+            manager.buffer.occupied_count()
+        );
+
+        // Run several more callbacks to confirm it stays pinned.
+        for _ in 0..10 {
+            assert!(
+                prod.try_push(make_packet(&mut encoder, seq, base_time))
+                    .is_ok()
+            );
+            seq += 1;
+            manager.ingest_packets(&mut cons);
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        assert!(
+            manager.buffer.occupied_count() <= target_frames + 1,
+            "Buffer should remain pinned after steady-state operation, got {}",
+            manager.buffer.occupied_count()
+        );
+        assert_eq!(
+            manager.flow.starvation_count, 0,
+            "Static flush must not cause starvation"
         );
     }
 }

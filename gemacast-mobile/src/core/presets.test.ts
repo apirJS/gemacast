@@ -15,9 +15,10 @@ describe('getPresetConfig', () => {
     expect(config.comfortCapMs).toBe(1000);
   });
 
-  it('returns wired preset config', () => {
+  it('returns wired preset config with static target', () => {
     const config = getPresetConfig('wired', fallback);
-    expect(config.minDepthMs).toBe(2);
+    expect(config.minDepthMs).toBe(0);
+    expect(config.staticTargetMs).toBe(10);
   });
 
   it('returns custom config for "custom" preset', () => {

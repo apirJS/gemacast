@@ -38,7 +38,9 @@ export function BufferPresetSelect() {
     const saved = settings.savedPresets.map((sp, i) => ({
       value: `saved-${i}`,
       label: sp.name,
-      description: 'User-saved preset',
+      description: sp.config.staticTargetMs != null
+        ? `Fixed ${sp.config.staticTargetMs}ms buffer`
+        : 'User-saved preset',
     }));
 
     return [...builtIn, ...saved];

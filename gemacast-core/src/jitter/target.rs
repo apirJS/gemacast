@@ -125,8 +125,9 @@ impl TargetController {
         tcp_cap_override: Option<f32>,
     ) -> u32 {
         // Static mode: lock buffer to exact user-specified depth, bypass all adaptive math.
+        // min_depth is intentionally not applied — the user's explicit target is authoritative.
         if let Some(static_ms) = config.static_target_ms {
-            return ms_to_frames_ceil(static_ms).max(Self::min_depth_frames(config));
+            return ms_to_frames_ceil(static_ms);
         }
         let stability = stats.stability_ratio();
         let margin_scale = 1.0 - stability * 0.4;

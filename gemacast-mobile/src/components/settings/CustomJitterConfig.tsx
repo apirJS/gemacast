@@ -112,17 +112,10 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
         </div>
       )}
 
-      <div className="mt-1 flex gap-2">
+      <div className="mt-1">
         <button
           type="button"
-          className="flex-1 rounded-[6px] border border-border bg-muted p-[0.6rem] text-[0.9rem] font-semibold text-foreground transition-opacity hover:opacity-90 active:opacity-80"
-          onClick={editor.handleReset}
-        >
-          Reset
-        </button>
-        <button
-          type="button"
-          className="flex-[2] rounded-[6px] bg-primary p-[0.6rem] text-[0.9rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full rounded-[6px] bg-primary p-[0.6rem] text-[0.9rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           onClick={editor.handleSave}
           disabled={!editor.canSave}
         >
