@@ -49,9 +49,9 @@ export function Toggle({
         </span>
         <div
           className={`
-            absolute left-[2px] top-[2px] h-[26px] w-[36px] rounded-[16px] bg-primary
+            absolute left-0.5 top-0.5 h-6.5 w-9 rounded-[16px] bg-primary
             shadow-[0_1px_3px_rgba(0,0,0,0.2)] transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]
-            ${checked ? 'translate-x-[38px]' : 'translate-x-0'}
+            ${checked ? 'translate-x-9.5' : 'translate-x-0'}
           `}
         />
       </div>

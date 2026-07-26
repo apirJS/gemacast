@@ -65,7 +65,7 @@ export function SenderList() {
       {isEmpty && <EmptyState />}
 
       <ul
-        className="flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-2 min-h-[20rem]"
+        className="flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-2 min-h-80"
         aria-label="Discovered senders"
       >
         {senders.map((sender) => {

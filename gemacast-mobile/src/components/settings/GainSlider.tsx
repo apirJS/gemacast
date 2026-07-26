@@ -60,8 +60,8 @@ export function GainSlider() {
             localDb === 0
               ? 'text-muted-foreground'
               : localDb > 0
-                ? 'text-amber-400'
-                : 'text-sky-400'
+                ? 'text-accent-yellow'
+                : 'text-accent-aqua'
           }`}
         >
           {formatDb(localDb)}

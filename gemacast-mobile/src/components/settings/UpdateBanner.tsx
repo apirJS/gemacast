@@ -88,7 +88,7 @@ export function UpdateBanner() {
 
       {state.status === 'error' && (
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0 flex-1 text-yellow-500">
+          <div className="flex items-center gap-2 min-w-0 flex-1 text-status-warn">
             <AlertTriangle className="h-4 w-4 shrink-0" />
             <span className="text-[0.8rem] truncate">{state.errorMessage}</span>
           </div>

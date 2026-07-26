@@ -20,9 +20,9 @@ export function Toast({ toast }: { toast: ToastType }) {
     <div
       className={`
         pointer-events-auto flex items-center gap-3
-        rounded-[var(--radius-default)] border
-        px-4 py-3 shadow-[0_4px_6px_-1px_rgb(0_0_0/0.1),0_2px_4px_-2px_rgb(0_0_0/0.1)]
-        min-w-[250px] max-w-[350px]
+        rounded-default border
+        px-4 py-3 shadow-md
+        min-w-62.5 max-w-87.5
         ${
           toast.closing
             ? 'animate-[toast-slide-out_200ms_ease-in_forwards]'
@@ -63,13 +63,13 @@ export function Toast({ toast }: { toast: ToastType }) {
       {isError && toast.fullLog && (
         <dialog
           ref={dialogRef}
-          className="fixed inset-0 z-[10001] m-auto w-[min(90vw,600px)] rounded-[var(--radius-lg)] border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
+          className="fixed inset-0 z-10001 m-auto w-[min(90vw,600px)] rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
           onClick={(e) => {
             if (e.target === dialogRef.current) dialogRef.current.close();
           }}
         >
           <h3 className="mb-3 text-base font-semibold">Error Details</h3>
-          <div className="mb-4 min-h-[100px] max-h-[50vh] overflow-x-auto overflow-y-auto rounded-[var(--radius-default)] bg-secondary p-3 text-xs whitespace-pre font-mono">
+          <div className="mb-4 min-h-25 max-h-[50vh] overflow-x-auto overflow-y-auto rounded-default bg-secondary p-3 text-xs whitespace-pre font-mono">
             {toast.fullLog}
           </div>
           <button

@@ -3,9 +3,9 @@ import { Status } from '../../core/types';
 
 function getLatencyColor(ms: number | null): string {
   if (ms === null) return 'bg-muted-foreground/40';
-  if (ms <= 30) return 'bg-emerald-400';
-  if (ms <= 60) return 'bg-amber-400';
-  return 'bg-red-400';
+  if (ms <= 30) return 'bg-status-ok';
+  if (ms <= 60) return 'bg-status-warn';
+  return 'bg-status-lost';
 }
 
 function StatItem({

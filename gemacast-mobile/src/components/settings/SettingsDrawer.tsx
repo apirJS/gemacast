@@ -61,10 +61,10 @@ export function SettingsDrawer() {
       <dialog
         ref={dialogRef}
         className={`
-          fixed inset-y-0 left-0 z-50 m-0 h-[100vh] max-h-none w-[100vw] max-w-[100vw]
+          fixed inset-y-0 left-0 z-50 m-0 h-screen max-h-none w-screen max-w-[100vw]
           border-none border-r border-border bg-background p-0 text-foreground
           shadow-[4px_0_24px_rgba(0,0,0,0.2)]
-          backdrop:bg-black/30 backdrop:backdrop-blur-[4px]
+          backdrop:bg-black/30 backdrop:backdrop-blur-xs
           ${open ? 'animate-[slide-from-left_350ms_cubic-bezier(0.32,0.72,0,1)]' : ''}
         `}
         style={{

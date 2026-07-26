@@ -13,15 +13,15 @@ type LinkMeta = {
 function getLinkMeta(link: NetworkLink): LinkMeta {
   switch (link) {
     case 'adb':
-      return { icon: Cable, label: 'ADB', color: 'text-emerald-400' };
+      return { icon: Cable, label: 'ADB', color: 'text-accent-green' };
     case 'usbTether':
-      return { icon: Usb, label: 'USB', color: 'text-emerald-400' };
+      return { icon: Usb, label: 'USB', color: 'text-accent-green' };
     case 'wifi5Ghz':
-      return { icon: Wifi, label: '5 GHz', color: 'text-sky-400' };
+      return { icon: Wifi, label: '5 GHz', color: 'text-accent-aqua' };
     case 'wifi2_4Ghz':
-      return { icon: Wifi, label: '2.4 GHz', color: 'text-amber-400' };
+      return { icon: Wifi, label: '2.4 GHz', color: 'text-accent-yellow' };
     case 'ethernet':
-      return { icon: Globe, label: 'Ethernet', color: 'text-sky-400' };
+      return { icon: Globe, label: 'Ethernet', color: 'text-accent-aqua' };
     case 'wifiUnknown':
       return { icon: Wifi, label: 'WiFi', color: 'text-muted-foreground' };
     default:

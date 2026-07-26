@@ -97,7 +97,7 @@ export function ProcessSelect({
       </button>
 
       {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-[var(--radius-default)] border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] animate-[fade-in_150ms_ease-out]">
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] animate-[fade-in_150ms_ease-out]">
           <div className="flex items-stretch border-b border-border">
             <input
               type="text"
@@ -148,7 +148,7 @@ export function ProcessSelect({
             </button>
           </div>
 
-          <div className="max-h-[16rem] min-h-[8rem] overflow-y-auto py-1">
+          <div className="max-h-64 min-h-32 overflow-y-auto py-1">
             {hasDesktop && (
               <button
                 type="button"

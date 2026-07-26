@@ -14,7 +14,7 @@ export function NoBufferWarningDialog({
   return (
     <dialog
       ref={dialogRef}
-      className="fixed inset-0 z-50 m-auto w-[min(90vw,360px)] rounded-[var(--radius-lg)] border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
+      className="fixed inset-0 z-50 m-auto w-[min(90vw,360px)] rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
     >
       <h2 className="mb-2 text-base font-semibold text-foreground">No Buffer Mode</h2>
       <p className="mb-4 text-sm text-muted-foreground">
@@ -45,7 +45,7 @@ export function NoBufferWarningDialog({
       <div className="flex justify-end">
         <button
           type="button"
-          className="rounded-[var(--radius-default)] bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80"
+          className="rounded-default bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80"
           onClick={handleOk}
         >
           Ok

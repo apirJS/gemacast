@@ -11,7 +11,7 @@ export function ManualConnect() {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="relative z-0 mb-1 rounded-[var(--radius-default)] border border-border bg-card shadow-sm overflow-hidden">
+    <div className="relative z-0 mb-1 rounded-default border border-border bg-card shadow-sm overflow-hidden">
       <button
         type="button"
         className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-card-foreground transition-colors hover:bg-secondary/50"
