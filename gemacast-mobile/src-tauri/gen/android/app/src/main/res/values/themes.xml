@@ -1,6 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+    <!-- Gruvbox Light theme -->
     <style name="Theme.GemacastMobile" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <item name="android:statusBarColor">@color/gruvbox_bg</item>
+        <item name="android:navigationBarColor">@color/gruvbox_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

@@ -3,50 +3,59 @@
 @theme {
   --font-sans: 'Inter', 'Avenir', 'Helvetica', 'Arial', sans-serif;
 
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(222.2 84% 4.9%);
+  /* Gruvbox Light (default) */
+  --color-background: #fbf1c7;
+  --color-foreground: #3c3836;
 
-  --color-card: hsl(0 0% 100%);
-  --color-card-foreground: hsl(222.2 84% 4.9%);
+  --color-card: #fbf1c7;
+  --color-card-foreground: #3c3836;
 
-  --color-popover: hsl(0 0% 100%);
-  --color-popover-foreground: hsl(222.2 84% 4.9%);
+  --color-popover: #ebdbb2;
+  --color-popover-foreground: #3c3836;
 
-  --color-primary: hsl(222.2 47.4% 11.2%);
-  --color-primary-foreground: hsl(210 40% 98%);
+  --color-primary: #3c3836;
+  --color-primary-foreground: #fbf1c7;
 
-  --color-secondary: hsl(210 40% 96.1%);
-  --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
+  --color-secondary: #ebdbb2;
+  --color-secondary-foreground: #504945;
 
-  --color-muted: hsl(210 40% 96.1%);
-  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
+  --color-muted: #ebdbb2;
+  --color-muted-foreground: #7c6f64;
 
-  --color-accent: hsl(210 40% 96.1%);
-  --color-accent-foreground: hsl(222.2 47.4% 11.2%);
+  --color-accent: #d5c4a1;
+  --color-accent-foreground: #3c3836;
 
-  --color-destructive: hsl(0 84.2% 60.2%);
-  --color-destructive-foreground: hsl(210 40% 98%);
-  --color-destructive-muted: hsla(0 84.2% 60.2% / 0.1);
+  --color-destructive: #9d0006;
+  --color-destructive-foreground: #fbf1c7;
+  --color-destructive-muted: #9d000618;
 
-  --color-border: hsl(214.3 31.8% 91.4%);
-  --color-input: hsl(214.3 31.8% 91.4%);
-  --color-ring: hsl(222.2 84% 4.9%);
+  --color-border: #d5c4a1;
+  --color-input: #d5c4a1;
+  --color-ring: #3c3836;
 
-  --color-status-ok: hsl(142 71% 45%);
-  --color-status-ok-bg: hsl(142 71% 95%);
-  --color-status-ok-border: hsl(142 71% 80%);
+  --color-status-ok: #79740e;
+  --color-status-ok-bg: #ebdbb2;
+  --color-status-ok-border: #bdae93;
 
-  --color-status-warn: hsl(38 92% 50%);
-  --color-status-warn-bg: hsl(48 96% 95%);
-  --color-status-warn-border: hsl(38 92% 75%);
+  --color-status-warn: #b57614;
+  --color-status-warn-bg: #ebdbb2;
+  --color-status-warn-border: #bdae93;
 
-  --color-status-lost: hsl(0 72% 51%);
-  --color-status-lost-bg: hsl(0 86% 97%);
-  --color-status-lost-border: hsl(0 86% 85%);
+  --color-status-lost: #9d0006;
+  --color-status-lost-bg: #ebdbb2;
+  --color-status-lost-border: #bdae93;
 
-  --color-status-connecting: hsl(217 91% 60%);
-  --color-status-connecting-bg: hsl(217 91% 97%);
-  --color-status-connecting-border: hsl(217 91% 80%);
+  --color-status-connecting: #076678;
+  --color-status-connecting-bg: #ebdbb2;
+  --color-status-connecting-border: #bdae93;
+
+  /* Gruvbox accent colors (faded for light mode) */
+  --color-accent-red: #9d0006;
+  --color-accent-green: #79740e;
+  --color-accent-yellow: #b57614;
+  --color-accent-blue: #076678;
+  --color-accent-aqua: #427b58;
+  --color-accent-orange: #af3a03;
 
   --radius-default: 0.5rem;
   --radius-lg: 0.75rem;
@@ -67,90 +76,114 @@
   }
 
   .dark {
-    --color-background: hsl(222.2 84% 4.9%);
-    --color-foreground: hsl(210 40% 98%);
+    /* Gruvbox Dark */
+    --color-background: #282828;
+    --color-foreground: #ebdbb2;
 
-    --color-card: hsl(222.2 84% 4.9%);
-    --color-card-foreground: hsl(210 40% 98%);
+    --color-card: #282828;
+    --color-card-foreground: #ebdbb2;
 
-    --color-popover: hsl(222.2 84% 4.9%);
-    --color-popover-foreground: hsl(210 40% 98%);
+    --color-popover: #3c3836;
+    --color-popover-foreground: #ebdbb2;
 
-    --color-primary: hsl(210 40% 98%);
-    --color-primary-foreground: hsl(222.2 47.4% 11.2%);
+    --color-primary: #ebdbb2;
+    --color-primary-foreground: #282828;
 
-    --color-secondary: hsl(217.2 32.6% 17.5%);
-    --color-secondary-foreground: hsl(210 40% 98%);
+    --color-secondary: #3c3836;
+    --color-secondary-foreground: #d5c4a1;
 
-    --color-muted: hsl(217.2 32.6% 17.5%);
-    --color-muted-foreground: hsl(215 20.2% 65.1%);
+    --color-muted: #3c3836;
+    --color-muted-foreground: #a89984;
 
-    --color-accent: hsl(217.2 32.6% 17.5%);
-    --color-accent-foreground: hsl(210 40% 98%);
+    --color-accent: #504945;
+    --color-accent-foreground: #ebdbb2;
 
-    --color-destructive: hsl(0 62.8% 50%);
-    --color-destructive-foreground: hsl(210 40% 98%);
-    --color-destructive-muted: hsla(0 62.8% 50% / 0.15);
+    --color-destructive: #fb4934;
+    --color-destructive-foreground: #ebdbb2;
+    --color-destructive-muted: #fb493426;
 
-    --color-border: hsl(217.2 32.6% 17.5%);
-    --color-input: hsl(217.2 32.6% 17.5%);
-    --color-ring: hsl(212.7 26.8% 83.9%);
+    --color-border: #504945;
+    --color-input: #504945;
+    --color-ring: #fe8019;
 
-    --color-status-ok-bg: hsl(142 71% 10%);
-    --color-status-ok-border: hsl(142 71% 25%);
+    --color-status-ok: #b8bb26;
+    --color-status-ok-bg: #3c3836;
+    --color-status-ok-border: #504945;
 
-    --color-status-warn-bg: hsl(48 70% 10%);
-    --color-status-warn-border: hsl(38 80% 30%);
+    --color-status-warn: #fabd2f;
+    --color-status-warn-bg: #3c3836;
+    --color-status-warn-border: #504945;
 
-    --color-status-lost-bg: hsl(0 60% 10%);
-    --color-status-lost-border: hsl(0 60% 30%);
+    --color-status-lost: #fb4934;
+    --color-status-lost-bg: #3c3836;
+    --color-status-lost-border: #504945;
 
-    --color-status-connecting-bg: hsl(217 60% 12%);
-    --color-status-connecting-border: hsl(217 80% 35%);
+    --color-status-connecting: #83a598;
+    --color-status-connecting-bg: #3c3836;
+    --color-status-connecting-border: #504945;
+
+    /* Gruvbox accent colors (bright for dark mode) */
+    --color-accent-red: #fb4934;
+    --color-accent-green: #b8bb26;
+    --color-accent-yellow: #fabd2f;
+    --color-accent-blue: #83a598;
+    --color-accent-aqua: #8ec07c;
+    --color-accent-orange: #fe8019;
   }
 
   @media (prefers-color-scheme: dark) {
     :root:not(.light) {
-      --color-background: hsl(222.2 84% 4.9%);
-      --color-foreground: hsl(210 40% 98%);
+      --color-background: #282828;
+      --color-foreground: #ebdbb2;
 
-      --color-card: hsl(222.2 84% 4.9%);
-      --color-card-foreground: hsl(210 40% 98%);
+      --color-card: #282828;
+      --color-card-foreground: #ebdbb2;
 
-      --color-popover: hsl(222.2 84% 4.9%);
-      --color-popover-foreground: hsl(210 40% 98%);
+      --color-popover: #3c3836;
+      --color-popover-foreground: #ebdbb2;
 
-      --color-primary: hsl(210 40% 98%);
-      --color-primary-foreground: hsl(222.2 47.4% 11.2%);
+      --color-primary: #ebdbb2;
+      --color-primary-foreground: #282828;
 
-      --color-secondary: hsl(217.2 32.6% 17.5%);
-      --color-secondary-foreground: hsl(210 40% 98%);
+      --color-secondary: #3c3836;
+      --color-secondary-foreground: #d5c4a1;
 
-      --color-muted: hsl(217.2 32.6% 17.5%);
-      --color-muted-foreground: hsl(215 20.2% 65.1%);
+      --color-muted: #3c3836;
+      --color-muted-foreground: #a89984;
 
-      --color-accent: hsl(217.2 32.6% 17.5%);
-      --color-accent-foreground: hsl(210 40% 98%);
+      --color-accent: #504945;
+      --color-accent-foreground: #ebdbb2;
 
-      --color-destructive: hsl(0 62.8% 50%);
-      --color-destructive-foreground: hsl(210 40% 98%);
-      --color-destructive-muted: hsla(0 62.8% 50% / 0.15);
+      --color-destructive: #fb4934;
+      --color-destructive-foreground: #ebdbb2;
+      --color-destructive-muted: #fb493426;
 
-      --color-border: hsl(217.2 32.6% 17.5%);
-      --color-input: hsl(217.2 32.6% 17.5%);
-      --color-ring: hsl(212.7 26.8% 83.9%);
+      --color-border: #504945;
+      --color-input: #504945;
+      --color-ring: #fe8019;
 
-      --color-status-ok-bg: hsl(142 71% 10%);
-      --color-status-ok-border: hsl(142 71% 25%);
+      --color-status-ok: #b8bb26;
+      --color-status-ok-bg: #3c3836;
+      --color-status-ok-border: #504945;
 
-      --color-status-warn-bg: hsl(48 70% 10%);
-      --color-status-warn-border: hsl(38 80% 30%);
+      --color-status-warn: #fabd2f;
+      --color-status-warn-bg: #3c3836;
+      --color-status-warn-border: #504945;
 
-      --color-status-lost-bg: hsl(0 60% 10%);
-      --color-status-lost-border: hsl(0 60% 30%);
+      --color-status-lost: #fb4934;
+      --color-status-lost-bg: #3c3836;
+      --color-status-lost-border: #504945;
 
-      --color-status-connecting-bg: hsl(217 60% 12%);
-      --color-status-connecting-border: hsl(217 80% 35%);
+      --color-status-connecting: #83a598;
+      --color-status-connecting-bg: #3c3836;
+      --color-status-connecting-border: #504945;
+
+      --color-accent-red: #fb4934;
+      --color-accent-green: #b8bb26;
+      --color-accent-yellow: #fabd2f;
+      --color-accent-blue: #83a598;
+      --color-accent-aqua: #8ec07c;
+      --color-accent-orange: #fe8019;
     }
   }
 
@@ -177,7 +210,7 @@
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center rounded-[var(--radius-default)] px-4 py-2 text-sm font-medium transition-colors duration-150;
+    @apply inline-flex items-center justify-center rounded-default px-4 py-2 text-sm font-medium transition-colors duration-150;
     @apply focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring;
     @apply disabled:pointer-events-none disabled:opacity-50;
   }
@@ -201,10 +234,10 @@
 
 @layer components {
   .status-chip {
-    background: hsla(217 30% 50% / 0.08);
+    background: color-mix(in srgb, var(--color-muted-foreground) 10%, transparent);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    border: 1px solid hsla(217 30% 50% / 0.12);
+    border: 1px solid color-mix(in srgb, var(--color-muted-foreground) 15%, transparent);
   }
 }
 
@@ -342,8 +375,8 @@
   outline: none;
   background: linear-gradient(
     to right,
-    hsl(199 89% 48% / 0.35) 0%,
-    hsl(199 89% 48% / 0.35) var(--zero-pos),
+    color-mix(in srgb, var(--color-accent-aqua) 40%, transparent) 0%,
+    color-mix(in srgb, var(--color-accent-aqua) 40%, transparent) var(--zero-pos),
     var(--color-border) var(--zero-pos),
     var(--color-border) 100%
   );
