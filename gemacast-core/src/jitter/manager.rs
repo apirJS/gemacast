@@ -1415,13 +1415,11 @@ mod tests {
         // Dump a large burst at once (TCP/ADB batching): instantaneous occupancy
         // jumps far past the fast threshold, but the IIR filter (α≈0.98-0.99) only
         // nudges the filtered level a little per callback.
-        let mut seq = MIN_DEPTH as u64 + 1;
-        for _ in 0..40 {
+        for seq in (MIN_DEPTH as u64 + 1..).take(40) {
             assert!(
                 prod.try_push(make_packet(&mut encoder, seq, base_time))
                     .is_ok()
             );
-            seq += 1;
         }
         manager.ingest_packets(&mut cons);
 
