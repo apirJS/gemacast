@@ -164,6 +164,177 @@ impl Default for JitterConfig {
     }
 }
 
+/// The detected network link type for one side of the connection.
+///
+/// Used at connection time to determine how aggressive the jitter buffer
+/// can be. The [`LinkPair`] combines both sides and picks the weaker link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NetworkLink {
+    /// ADB reverse port forwarding (localhost TCP).
+    Adb,
+    /// USB tethering (direct cable, RNDIS/ETHERNET transport).
+    UsbTether,
+    /// WiFi on 5 GHz or 6 GHz band (clean, low jitter).
+    Wifi5Ghz,
+    /// WiFi on 2.4 GHz band (congested, higher jitter).
+    #[serde(rename = "wifi2_4Ghz")]
+    Wifi2_4Ghz,
+    /// Wired Ethernet.
+    Ethernet,
+    /// WiFi but band could not be determined.
+    WifiUnknown,
+    /// Could not determine the link type.
+    Unknown,
+}
+
+impl NetworkLink {
+    /// Quality ranking: lower is better. Used by [`LinkPair::effective_link`]
+    /// to pick the weaker side.
+    pub fn quality_rank(self) -> u8 {
+        match self {
+            Self::Adb | Self::UsbTether => 0, // Best: direct cable / localhost
+            Self::Ethernet => 1,              // Excellent: wired LAN
+            Self::Wifi5Ghz => 2,              // Great: clean RF band
+            Self::WifiUnknown => 3,           // Unknown WiFi: assume mediocre
+            Self::Wifi2_4Ghz => 4,            // Poor: congested 2.4 GHz
+            Self::Unknown => 5,               // Worst: no information
+        }
+    }
+}
+
+/// Network link information from both sides of the connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPair {
+    pub phone: NetworkLink,
+    pub pc: NetworkLink,
+}
+
+impl LinkPair {
+    /// Returns the effective link quality, determining the bottleneck.
+    ///
+    /// Resolves asymmetrical knowledge (e.g. if the Phone knows it's on 5GHz,
+    /// but the PC lacks permissions and reports `WifiUnknown`, we trust the Phone's 5GHz).
+    pub fn effective_link(&self) -> NetworkLink {
+        let has = |link: NetworkLink| self.phone == link || self.pc == link;
+
+        // 1. Direct cables bypass everything. If either side knows it's a wire,
+        // we trust the wire. (ADB is port forwarding, USB is direct).
+        if has(NetworkLink::Adb) {
+            return NetworkLink::Adb;
+        }
+        if has(NetworkLink::UsbTether) {
+            return NetworkLink::UsbTether;
+        }
+
+        // 2. The worst known physical bottleneck dominates.
+        if has(NetworkLink::Wifi2_4Ghz) {
+            return NetworkLink::Wifi2_4Ghz;
+        }
+
+        // 3. Resolve 5GHz vs Unknowns.
+        if has(NetworkLink::Wifi5Ghz) {
+            // If the other side is Ethernet, or Unknown (lacks metadata), the bottleneck is 5GHz.
+            return NetworkLink::Wifi5Ghz;
+        }
+
+        // 4. Resolve Ethernet vs Unknowns.
+        if has(NetworkLink::Ethernet) {
+            if has(NetworkLink::WifiUnknown) || has(NetworkLink::Unknown) {
+                // E.g., PC is Ethernet, but Phone is Unknown. Phones don't use Ethernet,
+                // so the phone is almost certainly on Wi-Fi. We must assume a generic Wi-Fi link.
+                return NetworkLink::WifiUnknown;
+            }
+            return NetworkLink::Ethernet;
+        }
+
+        // 5. Fallbacks
+        if has(NetworkLink::WifiUnknown) {
+            return NetworkLink::WifiUnknown;
+        }
+
+        NetworkLink::Unknown
+    }
+}
+
+impl JitterConfig {
+    /// Create a `JitterConfig` optimised for the detected [`LinkPair`].
+    ///
+    /// This is the "Option A: full override" approach — when the user has
+    /// the preset set to "Auto", the network-aware profile **replaces** the
+    /// generic Auto config entirely.
+    pub fn for_link_pair(pair: LinkPair) -> Self {
+        match pair.effective_link() {
+            // Direct cable / localhost (ADB, USB tether).
+            //
+            // These links have near-zero *scheduling* jitter but deliver in
+            // USB-transit BATCHES, so the honest steady-state occupancy is ~40ms
+            // (see latency logs), not the ~2ms the transport's raw latency suggests.
+            // The former `min 2ms / cap 20ms` profile collapsed the target to the
+            // 1-frame floor (`comfort_cap ≤ 8 frames` selects the finest quantum=1
+            // regime in `TargetController`), so the buffer sat permanently above the
+            // drain band and got shredded by continuous WSOLA splices — the constant
+            // ADB "buzz". `cap 100ms` (10 frames) lifts it into the quantum=2 regime
+            // and gives a target of ~3-4 frames, so `filtered` sits *below* the drain
+            // `high` limit in steady state and normal time-stretching essentially
+            // stops firing. This is not added latency — it matches the buffer's real
+            // operating point instead of chasing an unachievable 2ms.
+            NetworkLink::Adb | NetworkLink::UsbTether => Self {
+                min_depth_ms: 30,
+                comfort_cap_ms: 100,
+                peak_decay_halflife_ms: 500,
+                resume_threshold_pct: 0.2,
+                static_target_ms: None,
+            },
+            // Aggressive — clean 5 GHz or wired Ethernet
+            NetworkLink::Ethernet | NetworkLink::Wifi5Ghz => Self {
+                min_depth_ms: 5,
+                comfort_cap_ms: 60,
+                peak_decay_halflife_ms: 800,
+                resume_threshold_pct: 0.25,
+                static_target_ms: None,
+            },
+            // Conservative — congested 2.4 GHz band.
+            //
+            // `peak_decay_halflife_ms: 0` selects the *adaptive* (stability-aware)
+            // peak-decay path in `JitterStats` rather than a fixed half-life. On
+            // 2.4 GHz this matters: a fixed 15s half-life pinned `ema_peak` — and
+            // therefore the target depth — near its spike level for many seconds
+            // after congestion cleared, so the observed latency ballooned to ~180ms
+            // and stuck. The adaptive path sheds the peak within seconds once the
+            // link goes quiet, while still clamping to a slow 15s decay during a
+            // *verified* unstable regime (two macro-spikes within 10s). The comfort
+            // cap is also tightened from 500ms to 200ms so a single spike can no
+            // longer inflate the target past ~20 frames.
+            NetworkLink::Wifi2_4Ghz => Self {
+                min_depth_ms: 25,
+                comfort_cap_ms: 500,
+                peak_decay_halflife_ms: 0,
+                resume_threshold_pct: 0.5,
+                static_target_ms: None,
+            },
+            // Fallback — unknown WiFi or completely unknown link
+            NetworkLink::WifiUnknown | NetworkLink::Unknown => Self {
+                min_depth_ms: 25,
+                comfort_cap_ms: 1000,
+                peak_decay_halflife_ms: 0,
+                resume_threshold_pct: 0.25,
+                static_target_ms: None,
+            },
+        }
+    }
+
+    /// Returns `true` if this config looks like the "Auto" preset sentinel.
+    ///
+    /// Auto is uniquely identified by `peak_decay_halflife_ms == 0` (fully
+    /// adaptive) with no static target. This is used by the LinkPair cache
+    /// to decide whether to re-apply the network-aware override.
+    pub fn is_auto_sentinel(&self) -> bool {
+        self.peak_decay_halflife_ms == 0 && self.static_target_ms.is_none()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +465,268 @@ mod tests {
             let json = serde_json::to_string(&config).unwrap();
             let parsed: JitterConfig = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, config);
+        }
+    }
+
+    mod network_link {
+        use super::*;
+
+        #[test]
+        fn quality_rank_order_should_be_cable_best_unknown_worst() {
+            assert!(NetworkLink::Adb.quality_rank() < NetworkLink::Ethernet.quality_rank());
+            assert!(NetworkLink::UsbTether.quality_rank() < NetworkLink::Ethernet.quality_rank());
+            assert!(NetworkLink::Ethernet.quality_rank() < NetworkLink::Wifi5Ghz.quality_rank());
+            assert!(NetworkLink::Wifi5Ghz.quality_rank() < NetworkLink::WifiUnknown.quality_rank());
+            assert!(
+                NetworkLink::WifiUnknown.quality_rank() < NetworkLink::Wifi2_4Ghz.quality_rank()
+            );
+            assert!(NetworkLink::Wifi2_4Ghz.quality_rank() < NetworkLink::Unknown.quality_rank());
+        }
+
+        #[test]
+        fn adb_and_usb_tether_should_have_same_rank() {
+            assert_eq!(
+                NetworkLink::Adb.quality_rank(),
+                NetworkLink::UsbTether.quality_rank()
+            );
+        }
+
+        #[test]
+        fn serde_should_round_trip_all_variants() {
+            let variants = [
+                NetworkLink::Adb,
+                NetworkLink::UsbTether,
+                NetworkLink::Wifi5Ghz,
+                NetworkLink::Wifi2_4Ghz,
+                NetworkLink::Ethernet,
+                NetworkLink::WifiUnknown,
+                NetworkLink::Unknown,
+            ];
+            for v in variants {
+                let json = serde_json::to_string(&v).unwrap();
+                let parsed: NetworkLink = serde_json::from_str(&json).unwrap();
+                assert_eq!(parsed, v, "Round-trip failed for {v:?} (json: {json})");
+            }
+        }
+
+        #[test]
+        fn wifi_2_4ghz_should_serialize_with_underscore() {
+            let json = serde_json::to_string(&NetworkLink::Wifi2_4Ghz).unwrap();
+            assert_eq!(json, "\"wifi2_4Ghz\"");
+        }
+    }
+
+    mod link_pair {
+        use super::*;
+
+        #[test]
+        fn effective_link_should_return_weaker_side() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi5Ghz,
+                pc: NetworkLink::Wifi2_4Ghz,
+            };
+            assert_eq!(pair.effective_link(), NetworkLink::Wifi2_4Ghz);
+        }
+
+        #[test]
+        fn effective_link_should_return_phone_when_phone_is_weaker() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi2_4Ghz,
+                pc: NetworkLink::Ethernet,
+            };
+            assert_eq!(pair.effective_link(), NetworkLink::Wifi2_4Ghz);
+        }
+
+        #[test]
+        fn effective_link_should_return_phone_when_equal() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi5Ghz,
+                pc: NetworkLink::Wifi5Ghz,
+            };
+            // Equal ranks → phone is returned (>= comparison)
+            assert_eq!(pair.effective_link(), NetworkLink::Wifi5Ghz);
+        }
+
+        #[test]
+        fn effective_link_both_adb_should_return_adb() {
+            let pair = LinkPair {
+                phone: NetworkLink::Adb,
+                pc: NetworkLink::Ethernet,
+            };
+            // Direct cables bypass the quality ranking: if either side reports a
+            // wire (ADB port-forward here), `effective_link` trusts the wire.
+            assert_eq!(pair.effective_link(), NetworkLink::Adb);
+        }
+
+        #[test]
+        fn effective_link_ethernet_pc_with_unknown_phone() {
+            let pair = LinkPair {
+                phone: NetworkLink::Unknown,
+                pc: NetworkLink::Ethernet,
+            };
+            // PC is on Ethernet but the phone can't be (phones don't use Ethernet),
+            // so it's almost certainly on Wi-Fi of an unknown band → assume a
+            // generic Wi-Fi link rather than trusting the PC's wire.
+            assert_eq!(pair.effective_link(), NetworkLink::WifiUnknown);
+        }
+
+        #[test]
+        fn serde_should_round_trip() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi5Ghz,
+                pc: NetworkLink::Ethernet,
+            };
+            let json = serde_json::to_string(&pair).unwrap();
+            let parsed: LinkPair = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, pair);
+        }
+    }
+
+    mod for_link_pair {
+        use super::*;
+
+        #[test]
+        fn adb_pair_should_produce_cable_profile() {
+            let pair = LinkPair {
+                phone: NetworkLink::Adb,
+                pc: NetworkLink::Ethernet,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            // Direct cables bypass the ranking: ADB wins → cable profile. The cap
+            // is 100ms (10 frames) so the target lands in the quantum=2 regime and
+            // matches ADB's real ~40ms batch-delivery operating point rather than
+            // collapsing to the 1-frame floor (the constant-buzz cause).
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 100);
+        }
+
+        #[test]
+        fn both_adb_should_produce_cable_profile() {
+            let pair = LinkPair {
+                phone: NetworkLink::Adb,
+                pc: NetworkLink::UsbTether,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 100);
+            assert_eq!(config.peak_decay_halflife_ms, 500);
+        }
+
+        #[test]
+        fn both_5ghz_should_produce_aggressive() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi5Ghz,
+                pc: NetworkLink::Wifi5Ghz,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 5);
+            assert_eq!(config.comfort_cap_ms, 60);
+            assert_eq!(config.peak_decay_halflife_ms, 800);
+        }
+
+        #[test]
+        fn mixed_wifi_should_use_2_4ghz_profile() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi5Ghz,
+                pc: NetworkLink::Wifi2_4Ghz,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 25);
+            assert_eq!(config.comfort_cap_ms, 500);
+            assert_eq!(config.peak_decay_halflife_ms, 0);
+        }
+
+        #[test]
+        fn ethernet_pc_with_2_4ghz_phone_should_use_conservative() {
+            let pair = LinkPair {
+                phone: NetworkLink::Wifi2_4Ghz,
+                pc: NetworkLink::Ethernet,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 25);
+            assert_eq!(config.comfort_cap_ms, 500);
+            assert_eq!(config.resume_threshold_pct, 0.5);
+        }
+
+        #[test]
+        fn unknown_link_should_produce_fallback_auto() {
+            let pair = LinkPair {
+                phone: NetworkLink::Unknown,
+                pc: NetworkLink::Ethernet,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 25);
+            assert_eq!(config.comfort_cap_ms, 1000);
+            assert_eq!(config.peak_decay_halflife_ms, 0);
+        }
+
+        #[test]
+        fn wifi_unknown_should_produce_fallback_auto() {
+            let pair = LinkPair {
+                phone: NetworkLink::WifiUnknown,
+                pc: NetworkLink::WifiUnknown,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.peak_decay_halflife_ms, 0);
+            assert_eq!(config.comfort_cap_ms, 1000);
+        }
+
+        #[test]
+        fn all_profiles_should_have_no_static_target() {
+            let pairs = [
+                (NetworkLink::Adb, NetworkLink::Adb),
+                (NetworkLink::Wifi5Ghz, NetworkLink::Wifi5Ghz),
+                (NetworkLink::Wifi2_4Ghz, NetworkLink::Wifi2_4Ghz),
+                (NetworkLink::Unknown, NetworkLink::Unknown),
+            ];
+            for (phone, pc) in pairs {
+                let config = JitterConfig::for_link_pair(LinkPair { phone, pc });
+                assert!(
+                    config.static_target_ms.is_none(),
+                    "for_link_pair should always produce adaptive config (no static target)"
+                );
+            }
+        }
+    }
+
+    mod is_auto_sentinel {
+        use super::*;
+
+        #[test]
+        fn auto_config_should_be_detected() {
+            let config = JitterConfig {
+                min_depth_ms: 25,
+                comfort_cap_ms: 1000,
+                peak_decay_halflife_ms: 0,
+                resume_threshold_pct: 0.25,
+                static_target_ms: None,
+            };
+            assert!(config.is_auto_sentinel());
+        }
+
+        #[test]
+        fn non_auto_config_should_not_be_detected() {
+            let config = JitterConfig {
+                min_depth_ms: 10,
+                comfort_cap_ms: 200,
+                peak_decay_halflife_ms: 3500,
+                resume_threshold_pct: 0.75,
+                static_target_ms: None,
+            };
+            assert!(!config.is_auto_sentinel());
+        }
+
+        #[test]
+        fn no_buffer_should_not_be_auto_sentinel() {
+            // No Buffer has staticTargetMs: Some(0), distinguishing it from Auto
+            let config = JitterConfig {
+                min_depth_ms: 0,
+                comfort_cap_ms: 0,
+                peak_decay_halflife_ms: 0,
+                resume_threshold_pct: 0.0,
+                static_target_ms: Some(0),
+            };
+            assert!(!config.is_auto_sentinel());
         }
     }
 }

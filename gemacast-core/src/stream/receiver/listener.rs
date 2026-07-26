@@ -3,7 +3,7 @@ use super::stream::build_cpal_fallback_stream;
 use crate::{
     audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE},
     domain::error::{AudioError, GemaCastError, StreamDirection},
-    domain::types::JitterConfig,
+    domain::types::{JitterConfig, NetworkLink},
     jitter::RawPacket,
     network::Ports,
 };
@@ -35,6 +35,7 @@ impl AudioStreamReceiver {
     pub fn new(
         config_ref: Arc<std::sync::RwLock<JitterConfig>>,
         is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
         is_playing: Arc<AtomicBool>,
         volume: Arc<AtomicU32>,
         _exclusive_mode: bool,
@@ -50,6 +51,7 @@ impl AudioStreamReceiver {
             packet_consumer,
             config_ref,
             is_tcp_mode,
+            network_link,
             is_playing,
             volume,
             latency_metric.clone(),
@@ -64,6 +66,7 @@ impl AudioStreamReceiver {
                 packet_consumer,
                 config_ref.clone(),
                 is_tcp_mode.clone(),
+                network_link,
                 is_playing.clone(),
                 volume.clone(),
                 latency_metric.clone(),
@@ -78,6 +81,7 @@ impl AudioStreamReceiver {
                         fb_consumer,
                         config_ref,
                         is_tcp_mode,
+                        network_link,
                         is_playing,
                         volume,
                         latency_metric.clone(),
@@ -246,6 +250,9 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             let result = transport.receive_audio_packet(&mut recv_buff);
             let (len, sender_addr) = match result {
                 Ok(r) => {
+                    if !first_packet_received {
+                        tracing::info!("[Receiver] First audio packet received from {}", r.1,);
+                    }
                     last_packet_time = std::time::Instant::now();
                     first_packet_received = true;
                     r
@@ -257,8 +264,14 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }
-                    let timeout = if first_packet_received { 3 } else { 10 };
-                    if last_packet_time.elapsed().as_secs() >= timeout {
+                    let timeout = 10;
+                    let elapsed = last_packet_time.elapsed().as_secs();
+                    if elapsed >= timeout {
+                        tracing::warn!(
+                            "[Receiver] Network timeout: no packets for {}s (threshold={}s), disconnecting",
+                            elapsed,
+                            timeout,
+                        );
                         let _ = network_dropped_tx.try_send(());
                         break;
                     }

@@ -83,7 +83,7 @@ jobs:
           # Build PipeWire 1.2.7 from source for pipewire-rs 0.10 headers
           # (Ubuntu 22.04 apt only ships PipeWire 0.3.48 headers)
           PW_VERSION=1.2.7
-          curl -sSL "https://gitlab.freedesktop.org/pipewire/pipewire/-/archive/${PW_VERSION}/pipewire-${PW_VERSION}.tar.gz" | tar xz
+          curl -fsSL --retry 3 --retry-delay 5 "https://github.com/PipeWire/pipewire/archive/refs/tags/${PW_VERSION}.tar.gz" | tar xz
           cd "pipewire-${PW_VERSION}"
           meson setup builddir --prefix=/usr \
             -Dpipewire-v4l2=disabled -Dpipewire-jack=disabled \
@@ -101,7 +101,7 @@ jobs:
           # causing infinite "impl_ext_end_proxy called from wrong context" spam when
           # paired with our source-built PipeWire 1.2.7 daemon.
           WP_VERSION=0.5.15
-          curl -sSL "https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/${WP_VERSION}/wireplumber-${WP_VERSION}.tar.gz" | tar xz
+          curl -fsSL --retry 3 --retry-delay 5 "https://github.com/PipeWire/wireplumber/archive/refs/tags/${WP_VERSION}.tar.gz" | tar xz
           cd "wireplumber-${WP_VERSION}"
           meson setup builddir --prefix=/usr \
             -Dtests=false -Ddoc=disabled -Dintrospection=disabled -Dsystem-lua=true

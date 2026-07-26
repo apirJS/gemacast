@@ -10,8 +10,8 @@ use std::sync::Arc;
 /// **Tests**: [`crate::testing::mocks::MockSenderControlClient`]
 #[async_trait]
 pub trait SenderControlClient: Send + Sync {
-    /// Send a connect request to the sender.
-    async fn connect(&self, req: ConnectReq) -> Result<(), String>;
+    /// Send a connect request to the sender, returning the PC's presence response.
+    async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String>;
 
     /// Send a disconnect request to the sender.
     async fn disconnect(&self, device_id: DeviceId) -> Result<(), String>;

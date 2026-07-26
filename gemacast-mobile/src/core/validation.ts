@@ -26,40 +26,14 @@ function isValidNumber(value: unknown): value is number {
 export function validateJitterConfig(config: JitterConfig): ValidationResult {
   const errors: FieldError[] = [];
 
+  // Custom presets are always static — validate the buffer depth.
   if (config.staticTargetMs != null) {
-    // Static mode
-    if (!isValidNumber(config.staticTargetMs) || config.staticTargetMs <= 0) {
-      errors.push({ field: 'staticTargetMs', message: 'Must be a positive integer' });
+    if (!isValidNumber(config.staticTargetMs) || config.staticTargetMs < 0) {
+      errors.push({ field: 'staticTargetMs', message: 'Must be ≥ 0' });
     }
   } else {
-    // Adaptive mode
-    if (!isValidNumber(config.minDepthMs) || config.minDepthMs < 0) {
-      errors.push({ field: 'minDepthMs', message: 'Must be ≥ 0' });
-    }
-
-    if (!isValidNumber(config.comfortCapMs) || config.comfortCapMs < 0) {
-      errors.push({ field: 'comfortCapMs', message: 'Must be ≥ 0' });
-    }
-
-    if (
-      isValidNumber(config.minDepthMs) &&
-      isValidNumber(config.comfortCapMs) &&
-      config.comfortCapMs < config.minDepthMs
-    ) {
-      errors.push({ field: 'comfortCapMs', message: 'Must be ≥ Min Depth' });
-    }
-
-    if (!isValidNumber(config.peakDecayHalflifeMs) || config.peakDecayHalflifeMs < 0) {
-      errors.push({ field: 'peakDecayHalflifeMs', message: 'Must be ≥ 0' });
-    }
-
-    if (
-      !isValidNumber(config.resumeThresholdPct) ||
-      config.resumeThresholdPct < 0 ||
-      config.resumeThresholdPct > 1
-    ) {
-      errors.push({ field: 'resumeThresholdPct', message: 'Must be between 0 and 1' });
-    }
+    // staticTargetMs is required for custom presets
+    errors.push({ field: 'staticTargetMs', message: 'Buffer depth is required' });
   }
 
   return { valid: errors.length === 0, errors };

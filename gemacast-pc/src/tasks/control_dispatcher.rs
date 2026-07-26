@@ -75,6 +75,7 @@ impl ControlDispatcher {
                     device_id: self.sender_id.clone(),
                     sender_name: self.sender_name.clone(),
                     is_offline: false,
+                    pc_network_link: None,
                 });
             }
             ControlCommand::Disconnect {
@@ -127,6 +128,7 @@ impl ControlDispatcher {
                     device_id: self.sender_id.clone(),
                     sender_name: self.sender_name.clone(),
                     is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
+                    pc_network_link: None,
                 });
             }
         }

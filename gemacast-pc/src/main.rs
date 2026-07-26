@@ -23,6 +23,7 @@ mod background;
 mod config;
 mod crash_log;
 mod events;
+mod logging;
 mod state;
 pub mod tasks;
 pub mod traits;
@@ -37,7 +38,9 @@ fn main() {
     // initialization panics are captured to disk.
     crash_log::install_panic_hook();
 
-    let _ = tracing_subscriber::fmt::try_init();
+    // Attach to a parent console (Windows GUI-subsystem) + install an
+    // EnvFilter-backed subscriber that honors RUST_LOG (default: info).
+    logging::init();
 
     // Purge old crash logs (best-effort, never fails).
     crash_log::cleanup_old_crash_logs();

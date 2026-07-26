@@ -67,6 +67,7 @@ impl<P: ProcessLister + 'static> ControlServerState<P> {
             device_id: self.sender_id.clone(),
             sender_name: self.sender_name.clone(),
             is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
+            pc_network_link: None,
         }
     }
 }
@@ -139,6 +140,12 @@ async fn handle_connect<P: ProcessLister + 'static>(
     Json(req): Json<ConnectReq>,
 ) -> (StatusCode, Json<PresenceResponse>) {
     tracing::info!("HTTP POST /connect from {:?}", req.device_id);
+
+    let pc_link = Some(crate::network::interface::detect_pc_link(
+        req.mode,
+        addr.ip(),
+    ));
+
     if !state.is_broadcasting.load(Ordering::Relaxed) {
         return (
             StatusCode::FORBIDDEN,
@@ -146,6 +153,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
                 device_id: state.sender_id.clone(),
                 sender_name: state.sender_name.clone(),
                 is_offline: true,
+                pc_network_link: pc_link,
             }),
         );
     }
@@ -163,10 +171,13 @@ async fn handle_connect<P: ProcessLister + 'static>(
         })
         .await;
 
-    let presence = match response_rx.await {
+    let mut presence = match response_rx.await {
         Ok(p) => p,
         Err(_) => state.build_presence(),
     };
+
+    // Inject the PC's detected network link into the response
+    presence.pc_network_link = pc_link;
 
     (StatusCode::OK, Json(presence))
 }
@@ -341,6 +352,7 @@ mod tests {
             bitrate: None,
             jitter_config: crate::domain::types::JitterConfig::default(),
             mode: crate::domain::types::ConnectionMode::Wifi,
+            network_link: None,
         };
 
         let request_task = tokio::spawn(async move {
@@ -370,6 +382,7 @@ mod tests {
                     device_id,
                     sender_name: "Test".to_string(),
                     is_offline: false,
+                    pc_network_link: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -449,6 +462,7 @@ mod tests {
             bitrate: None,
             jitter_config: crate::domain::types::JitterConfig::default(),
             mode: crate::domain::types::ConnectionMode::Wifi,
+            network_link: None,
         };
 
         let res = client
@@ -491,6 +505,7 @@ mod tests {
                     device_id: DeviceId("test-sender".to_string()),
                     sender_name: "Test Sender".to_string(),
                     is_offline: false,
+                    pc_network_link: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Probe"),

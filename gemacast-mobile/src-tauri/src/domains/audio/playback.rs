@@ -28,6 +28,7 @@ pub fn setup_event_forwarding(
             if last_emit.elapsed() >= std::time::Duration::from_millis(200) {
                 last_emit = std::time::Instant::now();
                 notifier.emit_audio_telemetry(latency, rms > 0.0001);
+                // println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
             }
         }
     });
@@ -47,6 +48,7 @@ pub type SessionReceiverResult = Result<
     String,
 >;
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_session_receiver(
     jitter_config: JitterConfig,
     is_tcp: bool,
@@ -55,6 +57,7 @@ pub fn spawn_session_receiver(
     target_ip: Option<std::net::IpAddr>,
     mode: gemacast_core::domain::types::ConnectionMode,
     device_id: String,
+    network_link: gemacast_core::domain::types::NetworkLink,
 ) -> SessionReceiverResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
@@ -65,6 +68,7 @@ pub fn spawn_session_receiver(
     let mut receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
         config_ref.clone(),
         is_tcp_mode.clone(),
+        network_link,
         is_playing.clone(),
         volume.clone(),
         exclusive_mode,

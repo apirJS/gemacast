@@ -50,6 +50,7 @@ impl SessionManager for TokioSessionManager {
                 params.target_ip,
                 params.mode,
                 params.device_id,
+                params.network_link,
             )?;
 
         *self.session.lock().await = Some(ActiveSession {

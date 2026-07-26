@@ -4,6 +4,7 @@ import type {
   BitratePreset,
   ConnectionMode,
   JitterConfig,
+  NetworkLinkPairInfo,
   ProcessInfo,
   SenderCapabilities,
 } from './types';
@@ -112,4 +113,6 @@ export const tauriBridge = {
     invoke('establish_websocket', args),
 
   setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),
+
+  getNetworkLinkPair: () => invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),
 };

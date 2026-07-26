@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { useCustomPresetEditor } from '../../hooks/use-custom-preset-editor';
-import { SegmentedControl } from '../shared/SegmentedControl';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 function NumberInput({
@@ -64,10 +63,6 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
 
   const FIELD_LABELS: Record<string, string> = {
     staticTargetMs: 'Buffer Depth',
-    minDepthMs: 'Min Depth',
-    comfortCapMs: 'Comfort Cap',
-    peakDecayHalflifeMs: 'Peak Decay Half-life',
-    resumeThresholdPct: 'Resume Threshold',
   };
 
   return (
@@ -86,109 +81,27 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
               : 'My Preset'
           }
           maxLength={30}
-          className="w-[140px] rounded-[4px] border border-border bg-background px-2 py-1 text-left text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+          className="w-35 rounded-sm border border-border bg-background px-2 py-1 text-left text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
         />
       </div>
 
       <div className="flex items-center justify-between">
         <span className="flex items-center text-[0.9rem] text-foreground">
-          Buffer Mode
-          {renderHelpButton('buffer-mode')}
+          Buffer Depth
+          {renderHelpButton('static-depth')}
         </span>
-        <SegmentedControl
-          name="buffer-mode"
-          size="mini"
-          value={editor.bufferMode}
-          onChange={editor.setBufferMode}
-          options={[
-            { value: 'static', label: 'Static' },
-            { value: 'adaptive', label: 'Adaptive' },
-          ]}
-        />
+        <div className="flex items-center justify-end">
+          <NumberInput
+            value={config.staticTargetMs}
+            onChange={(val) => editor.updateField({ staticTargetMs: val ?? null })}
+            className="mr-1.5 w-15 rounded-sm border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+          />
+          <span className="text-foreground w-4 text-right">ms</span>
+        </div>
       </div>
 
-      {editor.bufferMode === 'static' && (
-        <div className="flex items-center justify-between">
-          <span className="flex items-center text-[0.9rem] text-foreground">
-            Buffer Depth
-            {renderHelpButton('static-depth')}
-          </span>
-          <div className="flex items-center justify-end">
-            <NumberInput
-              value={config.staticTargetMs}
-              onChange={(val) => editor.updateField({ staticTargetMs: val ?? null })}
-              className="mr-1.5 w-[60px] rounded-[4px] border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-            <span className="text-foreground w-4 text-right">ms</span>
-          </div>
-        </div>
-      )}
-
-      {editor.bufferMode === 'adaptive' && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <span className="flex items-center text-[0.9rem] text-foreground">
-              Min Depth
-              {renderHelpButton('min-depth')}
-            </span>
-            <div className="flex items-center justify-end">
-              <NumberInput
-                value={config.minDepthMs}
-                onChange={(val) => editor.updateField({ minDepthMs: val ?? NaN })}
-                className="mr-1.5 w-[60px] rounded-[4px] border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-              />
-              <span className="text-foreground w-4 text-right">ms</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="flex items-center text-[0.9rem] text-foreground">
-              Comfort Cap
-              {renderHelpButton('comfort-cap')}
-            </span>
-            <div className="flex items-center justify-end">
-              <NumberInput
-                value={config.comfortCapMs}
-                onChange={(val) => editor.updateField({ comfortCapMs: val ?? NaN })}
-                className="mr-1.5 w-[60px] rounded-[4px] border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-              />
-              <span className="text-foreground w-4 text-right">ms</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="flex items-center text-[0.9rem] text-foreground">
-              Peak Decay Half-life
-              {renderHelpButton('bounce')}
-            </span>
-            <div className="flex items-center justify-end">
-              <NumberInput
-                step="0.1"
-                value={config.peakDecayHalflifeMs}
-                onChange={(val) => editor.updateField({ peakDecayHalflifeMs: val ?? NaN })}
-                className="mr-1.5 w-[60px] rounded-[4px] border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-              />
-              <span className="text-foreground w-4 text-right">ms</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="flex items-center text-[0.9rem] text-foreground">
-              Resume Threshold
-              {renderHelpButton('resume')}
-            </span>
-            <div className="flex items-center justify-end">
-              <NumberInput
-                step="0.01"
-                value={config.resumeThresholdPct}
-                onChange={(val) => editor.updateField({ resumeThresholdPct: val ?? NaN })}
-                className="mr-1.5 w-[60px] rounded-[4px] border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-              />
-              <span className="text-foreground w-4 text-right">%</span>
-            </div>
-          </div>
-        </div>
-      )}
-
       {!editor.isValid && editor.validationErrors.length > 0 && (
-        <div className="mt-1 rounded-[6px] border border-destructive/20 bg-destructive/10 p-2 text-[0.8rem] text-destructive">
+        <div className="mt-1 rounded-md border border-destructive/20 bg-destructive/10 p-2 text-[0.8rem] text-destructive">
           <ul className="list-inside list-disc">
             {editor.validationErrors.map((err, i) => (
               <li key={i}>
@@ -199,17 +112,10 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
         </div>
       )}
 
-      <div className="mt-1 flex gap-2">
+      <div className="mt-1">
         <button
           type="button"
-          className="flex-1 rounded-[6px] border border-border bg-muted p-[0.6rem] text-[0.9rem] font-semibold text-foreground transition-opacity hover:opacity-90 active:opacity-80"
-          onClick={editor.handleReset}
-        >
-          Reset
-        </button>
-        <button
-          type="button"
-          className="flex-[2] rounded-[6px] bg-primary p-[0.6rem] text-[0.9rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full rounded-md bg-primary p-[0.6rem] text-[0.9rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           onClick={editor.handleSave}
           disabled={!editor.canSave}
         >
@@ -220,7 +126,7 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
       {editor.isEditingSaved && (
         <button
           type="button"
-          className="mt-1 w-full rounded-[6px] border border-destructive bg-destructive/10 p-[0.6rem] text-[0.9rem] font-semibold text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground active:opacity-80"
+          className="mt-1 w-full rounded-md border border-destructive bg-destructive/10 p-[0.6rem] text-[0.9rem] font-semibold text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground active:opacity-80"
           onClick={editor.requestDelete}
         >
           Delete Preset

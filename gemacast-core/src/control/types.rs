@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig};
+use crate::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, NetworkLink};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +15,12 @@ pub struct ConnectReq {
 
     #[serde(default)]
     pub source: Option<AudioSource>,
+
+    /// The phone's detected network link type (e.g., WiFi 5 GHz, USB tether).
+    /// Used by the PC to include in its response, and by the phone to compute
+    /// the effective link pair for Auto preset selection.
+    #[serde(default)]
+    pub network_link: Option<NetworkLink>,
 }
 
 fn default_bitrate() -> Option<i32> {
@@ -61,6 +67,11 @@ pub struct PresenceResponse {
     pub device_id: DeviceId,
     pub sender_name: String,
     pub is_offline: bool,
+
+    /// The PC's detected network link type.
+    /// Sent back to the phone so it can compute the effective link pair.
+    #[serde(default)]
+    pub pc_network_link: Option<NetworkLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +136,7 @@ mod tests {
                     pid: 42,
                     name: "spotify.exe".to_string(),
                 }),
+                network_link: None,
             };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: ConnectReq = serde_json::from_str(&json).unwrap();
