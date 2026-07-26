@@ -191,12 +191,7 @@ impl JitterStats {
     /// `effective_target` is the controller's current locked-in depth, read by the
     /// NetEQ 2-peak state machine. Returns `true` if the caller should insert the
     /// packet into the reorder buffer, or `false` to drop it (clock ran backwards).
-    pub fn observe(
-        &mut self,
-        seq_num: u64,
-        arrival_time: Instant,
-        config: &JitterConfig,
-    ) -> bool {
+    pub fn observe(&mut self, seq_num: u64, arrival_time: Instant, config: &JitterConfig) -> bool {
         if let Some(last_time) = self.last_network_arrival
             && let Some(last_seq) = self.last_ingest_seq
             // Only compute for forward progress. Ignore reordered packets for jitter math.

@@ -28,7 +28,7 @@ pub fn setup_event_forwarding(
             if last_emit.elapsed() >= std::time::Duration::from_millis(200) {
                 last_emit = std::time::Instant::now();
                 notifier.emit_audio_telemetry(latency, rms > 0.0001);
-                println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
+                // println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
             }
         }
     });
@@ -48,6 +48,7 @@ pub type SessionReceiverResult = Result<
     String,
 >;
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_session_receiver(
     jitter_config: JitterConfig,
     is_tcp: bool,

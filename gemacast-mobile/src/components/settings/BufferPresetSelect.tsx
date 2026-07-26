@@ -38,9 +38,10 @@ export function BufferPresetSelect() {
     const saved = settings.savedPresets.map((sp, i) => ({
       value: `saved-${i}`,
       label: sp.name,
-      description: sp.config.staticTargetMs != null
-        ? `Fixed ${sp.config.staticTargetMs}ms buffer`
-        : 'User-saved preset',
+      description:
+        sp.config.staticTargetMs != null
+          ? `Fixed ${sp.config.staticTargetMs}ms buffer`
+          : 'User-saved preset',
     }));
 
     return [...builtIn, ...saved];
@@ -73,9 +74,10 @@ export function BufferPresetSelect() {
       const savedPreset = settings.savedPresets[idx];
       if (savedPreset) {
         // Migrate legacy adaptive presets: ensure staticTargetMs is set
-        const migratedConfig = savedPreset.config.staticTargetMs == null
-          ? { ...savedPreset.config, staticTargetMs: 0 }
-          : savedPreset.config;
+        const migratedConfig =
+          savedPreset.config.staticTargetMs == null
+            ? { ...savedPreset.config, staticTargetMs: 0 }
+            : savedPreset.config;
         update({
           bufferPreset: value,
           customJitterConfig: migratedConfig,

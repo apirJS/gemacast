@@ -155,7 +155,6 @@ impl TargetController {
             .clamp(Self::min_depth_frames(config) as f32, safe_cap) as u32
     }
 
-
     /// NetEQ `DelayManager::BufferLimits` — the drain decision band around the
     /// effective target, in whole frames. The orchestrator compares the filtered
     /// buffer level against these:
@@ -310,11 +309,7 @@ impl TargetController {
     /// Apply post-starvation probe floor update. Called by the orchestrator when
     /// the buffer recovers after a starvation event. Sets `probe_floor` so future
     /// probing won't descend back to the level that just caused starvation.
-    pub fn apply_starvation_floor(
-        &mut self,
-        config: &JitterConfig,
-        stats: &JitterStats,
-    ) {
+    pub fn apply_starvation_floor(&mut self, config: &JitterConfig, stats: &JitterStats) {
         let quantum = Self::adaptive_quantum(config);
         let dynamic_floor = self.compute_target_depth(config, stats, None);
         self.probe_floor = self

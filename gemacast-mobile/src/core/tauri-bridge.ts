@@ -114,6 +114,5 @@ export const tauriBridge = {
 
   setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),
 
-  getNetworkLinkPair: () =>
-    invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),
+  getNetworkLinkPair: () => invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),
 };

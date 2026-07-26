@@ -12,7 +12,12 @@ export const JITTER_PRESETS: PresetDefinition[] = [
     id: 'auto',
     name: 'Auto',
     description: 'Automatically discovers the lowest stable latency for your connection.',
-    config: { minDepthMs: 25, comfortCapMs: 1000, peakDecayHalflifeMs: 0, resumeThresholdPct: 0.25 },
+    config: {
+      minDepthMs: 25,
+      comfortCapMs: 1000,
+      peakDecayHalflifeMs: 0,
+      resumeThresholdPct: 0.25,
+    },
   },
   {
     id: 'wired',

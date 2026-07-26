@@ -160,9 +160,8 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       // Reset to the saved preset's original config
       const savedConfig = settings.savedPresets[savedMatchIndex].config;
       // Ensure the saved config has staticTargetMs set (migrate legacy adaptive presets)
-      const migratedConfig = savedConfig.staticTargetMs == null
-        ? { ...savedConfig, staticTargetMs: 0 }
-        : savedConfig;
+      const migratedConfig =
+        savedConfig.staticTargetMs == null ? { ...savedConfig, staticTargetMs: 0 } : savedConfig;
       update({ customJitterConfig: migratedConfig });
       setPresetName(settings.savedPresets[savedMatchIndex].name);
     } else {

@@ -149,11 +149,10 @@ impl JitterBufferManager {
         while let Some(pkt) = consumer.try_pop() {
             // Update jitter statistics from this arrival. Returns false to drop the
             // packet entirely (clock ran backwards vs. the last forward arrival).
-            if !self.stats.observe(
-                pkt.seq_num,
-                pkt.arrival_time,
-                &self.config,
-            ) {
+            if !self
+                .stats
+                .observe(pkt.seq_num, pkt.arrival_time, &self.config)
+            {
                 continue;
             }
 
@@ -331,7 +330,7 @@ impl JitterBufferManager {
         // mask the skip. The WSOLA decision band below becomes naturally redundant
         // (occupied never climbs to high_limit), while expansion still defends
         // against underrun.
-        let is_static_nonzero = self.config.static_target_ms.map_or(false, |ms| ms > 0);
+        let is_static_nonzero = self.config.static_target_ms.is_some_and(|ms| ms > 0);
         if is_static_nonzero && self.buffer.occupied_count() > target + 1 {
             self.flush_with_crossfade(target);
         }
@@ -379,10 +378,8 @@ impl JitterBufferManager {
                     // NetEQ guard: after starvation, suppress acceleration for
                     // 50 callbacks (~500ms) to let the buffer refill safely.
                     self.flow.starvation_recovery = 50;
-                    self.control.apply_starvation_floor(
-                        &self.config,
-                        &self.stats,
-                    );
+                    self.control
+                        .apply_starvation_floor(&self.config, &self.stats);
                 }
                 // Always reset — prevents permanent fade-in loop in TCP/ADB mode.
                 self.flow.starvation_count = 0;
