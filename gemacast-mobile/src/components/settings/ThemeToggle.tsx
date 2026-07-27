@@ -26,7 +26,7 @@ export function ThemeToggle() {
       {/* Sun icon */}
       <Sun
         className={`
-          absolute h-[18px] w-[18px] text-amber-400
+          absolute h-4.5 w-4.5 text-accent-yellow
           transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
           ${isDark ? 'rotate-90 scale-0 opacity-0' : 'rotate-0 scale-100 opacity-100'}
         `}
@@ -35,7 +35,7 @@ export function ThemeToggle() {
       {/* Moon icon */}
       <Moon
         className={`
-          absolute h-[18px] w-[18px] text-blue-300
+          absolute h-4.5 w-4.5 text-accent-blue
           transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
           ${isDark ? 'rotate-0 scale-100 opacity-100' : '-rotate-90 scale-0 opacity-0'}
         `}

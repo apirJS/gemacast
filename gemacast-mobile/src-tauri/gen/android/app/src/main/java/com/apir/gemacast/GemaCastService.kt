@@ -72,11 +72,8 @@ class GemaCastService : Service() {
                     sendUdpCommand("DISCONNECT")
                 }
             })
-            isActive = true
         }
-        updatePlaybackState(true)
         createNotificationChannel()
-        acquireWakeLock()
     }
 
     private fun updatePlaybackState(playing: Boolean) {
@@ -99,7 +96,7 @@ class GemaCastService : Service() {
         mediaSession.setMetadata(
             MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Streaming audio from PC…")
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "GemaCast Live")
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Gemacast Live")
                 .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, -1L)
                 .build()
         )
@@ -181,7 +178,7 @@ class GemaCastService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "GemaCast Background Audio",
+                "Gemacast Background Audio",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps audio streaming active in the background"
@@ -237,7 +234,7 @@ class GemaCastService : Service() {
         val pendingPlayPauseIntent = PendingIntent.getService(this, 4, playPauseIntent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("GemaCast")
+            .setContentTitle("Gemacast")
             .setContentText(if (isPlayingState) "Streaming audio from PC…" else "Paused")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingOpenIntent)
@@ -303,6 +300,8 @@ class GemaCastService : Service() {
             else -> { // "START" or null
                 val isExclusive = intent?.getBooleanExtra("EXCLUSIVE_MODE", false) ?: false
                 isRunning = true
+                mediaSession.isActive = true
+                acquireWakeLock()
                 if (isExclusive) {
                     requestAudioFocus()
                 } else {
@@ -324,6 +323,12 @@ class GemaCastService : Service() {
 
     private fun stopStreaming() {
         isRunning = false
+        mediaSession.isActive = false
+        mediaSession.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
+                .build()
+        )
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         highPerfWifiLock?.let { if (it.isHeld) it.release() }

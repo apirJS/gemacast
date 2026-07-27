@@ -112,7 +112,9 @@ export function BufferPresetSelect() {
         onChange={handleChange}
         renderOption={(option) => (
           <>
-            <span className={`font-medium ${option.value === 'nobuffer' ? 'text-red-500' : ''}`}>
+            <span
+              className={`font-medium ${option.value === 'nobuffer' ? 'text-destructive' : ''}`}
+            >
               {option.label}
             </span>
             {option.description && (

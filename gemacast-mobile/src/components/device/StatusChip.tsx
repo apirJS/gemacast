@@ -8,32 +8,32 @@ const STATUS_CONFIG: Record<
 > = {
   [Status.Idle]: { dot: 'bg-muted-foreground/40', label: 'Idle' },
   [Status.Listening]: {
-    dot: 'bg-blue-400',
-    glow: 'shadow-[0_0_6px_2px_rgba(96,165,250,0.5)]',
+    dot: 'bg-status-connecting',
+    glow: 'shadow-[0_0_6px_2px_var(--color-status-connecting)]',
     label: 'Scanning…',
   },
   [Status.Connecting]: {
-    dot: 'bg-blue-400',
-    glow: 'shadow-[0_0_6px_2px_rgba(96,165,250,0.5)]',
+    dot: 'bg-status-connecting',
+    glow: 'shadow-[0_0_6px_2px_var(--color-status-connecting)]',
     label: 'Connecting…',
   },
   [Status.Connected]: {
-    dot: 'bg-emerald-400',
-    glow: 'shadow-[0_0_6px_2px_rgba(52,211,153,0.45)]',
+    dot: 'bg-status-ok',
+    glow: 'shadow-[0_0_6px_2px_var(--color-status-ok)]',
     label: 'Connected',
   },
   [Status.Playing]: {
-    dot: 'bg-emerald-400',
-    glow: 'shadow-[0_0_6px_2px_rgba(52,211,153,0.45)]',
+    dot: 'bg-status-ok',
+    glow: 'shadow-[0_0_6px_2px_var(--color-status-ok)]',
     label: 'Playing',
   },
   [Status.Paused]: {
-    dot: 'bg-amber-400',
+    dot: 'bg-status-warn',
     label: 'Paused',
   },
   [Status.Reconnecting]: (attempts) => ({
-    dot: 'bg-amber-400',
-    glow: 'shadow-[0_0_6px_2px_rgba(251,191,36,0.45)]',
+    dot: 'bg-status-warn',
+    glow: 'shadow-[0_0_6px_2px_var(--color-status-warn)]',
     label: attempts > 0 ? `Reconnecting (${attempts}/5)…` : 'Reconnecting…',
   }),
 };

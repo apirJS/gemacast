@@ -35,7 +35,7 @@ export function SegmentedControl<T extends string = string>({
                 ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:bg-accent/50'
             }
-            ${option.disabled ? 'pointer-events-none !bg-muted !text-muted-foreground opacity-40 grayscale' : ''}
+            ${option.disabled ? 'pointer-events-none bg-muted! text-muted-foreground! opacity-40 grayscale' : ''}
           `}
         >
           <input

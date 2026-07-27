@@ -1,16 +1,34 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
-/**
- * Hook to manage a modal drawer that integrates with browser history
- * (back button closes the drawer on mobile).
- */
+const DRAWER_ANIMATION_MS = 350;
+
 export function useDrawer(hashId: string) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(null);
+
+  const startClose = useCallback(() => {
+    if (timer.current) return;
+    setClosing(true);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setOpen(false);
+      setClosing(false);
+      dialogRef.current?.close();
+    }, DRAWER_ANIMATION_MS);
+  }, []);
 
   const handleOpen = useCallback(() => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+      setClosing(false);
+    }
+    if (!dialogRef.current?.open) {
+      dialogRef.current?.showModal();
+    }
     setOpen(true);
-    dialogRef.current?.showModal();
     window.history.pushState({ drawer: hashId }, '', `#${hashId}`);
   }, [hashId]);
 
@@ -18,21 +36,25 @@ export function useDrawer(hashId: string) {
     if (window.location.hash === `#${hashId}`) {
       window.history.back();
     } else {
-      setOpen(false);
-      dialogRef.current?.close();
+      startClose();
     }
-  }, [hashId]);
+  }, [hashId, startClose]);
 
   useEffect(() => {
     const handlePopState = () => {
       if (open && window.location.hash !== `#${hashId}`) {
-        setOpen(false);
-        dialogRef.current?.close();
+        startClose();
       }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [open, hashId]);
+  }, [open, hashId, startClose]);
 
-  return { open, dialogRef, handleOpen, handleClose };
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  return { open, closing, dialogRef, handleOpen, handleClose };
 }

@@ -21,9 +21,13 @@ pub struct SessionParams {
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub exclusive_mode: bool,
+    pub exclusive_granted: bool,
     pub mode: ConnectionMode,
     pub bitrate: Option<i32>,
     pub jitter_config: JitterConfig,
+    pub target_ip: Option<IpAddr>,
+    pub device_id: String,
+    pub network_link: NetworkLink,
 }
 
 /// Simplified network interface info, decoupled from `netdev::Interface`.

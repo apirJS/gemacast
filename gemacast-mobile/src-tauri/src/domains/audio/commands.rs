@@ -249,6 +249,20 @@ pub async fn establish_websocket(
 }
 
 #[tauri::command]
+pub fn check_exclusive_support() -> bool {
+    gemacast_core::stream::receiver::stream::probe_exclusive_support()
+}
+
+#[tauri::command]
+pub async fn restart_session(
+    exclusive_mode: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!("[Cmd] restart_session: exclusive_mode={}", exclusive_mode,);
+    state.audio.restart_session(exclusive_mode).await
+}
+
+#[tauri::command]
 pub async fn set_audio_gain(gain_db: f32, state: State<'_, AppState>) -> Result<(), String> {
     tracing::info!("[Cmd] set_audio_gain: {}dB", gain_db);
     // Convert dB to linear multiplier: 10^(dB/20)

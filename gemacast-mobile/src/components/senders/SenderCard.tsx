@@ -50,7 +50,7 @@ export function SenderCard({
   return (
     <li
       className={`
-        relative flex items-center justify-between gap-4 rounded-[var(--radius-default)] border bg-transparent
+        relative flex items-center justify-between gap-4 rounded-default border bg-transparent
         px-5 py-4 transition-all duration-200 animate-[fade-in_200ms_ease-out]
         ${hasSource ? 'flex-wrap' : ''}
         ${isConnected ? 'border-primary shadow-[0_0_0_1px_var(--color-primary)]' : 'border-border hover:border-primary'}

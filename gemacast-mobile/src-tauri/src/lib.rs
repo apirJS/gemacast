@@ -114,6 +114,8 @@ pub fn run() {
             domains::audio::commands::probe_sender,
             domains::audio::commands::set_audio_gain,
             domains::audio::commands::get_network_link_pair,
+            domains::audio::commands::restart_session,
+            domains::audio::commands::check_exclusive_support,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

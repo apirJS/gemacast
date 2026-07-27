@@ -16,7 +16,7 @@ export function HelpDialog({
   return (
     <dialog
       ref={dialogRef}
-      className="fixed inset-0 z-50 m-auto max-h-[70vh] w-[min(90vw,360px)] overflow-y-auto rounded-[var(--radius-lg)] border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
+      className="fixed inset-0 z-50 m-auto max-h-[70vh] w-[min(90vw,360px)] overflow-y-auto rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-xl backdrop:bg-black/50"
       onClose={onClose}
     >
       {content && (
@@ -58,7 +58,7 @@ export function useHelpDialog() {
     (helpKey: string) => (
       <button
         type="button"
-        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-[0.7rem] font-bold text-muted-foreground hover:border-primary hover:bg-primary hover:text-white transition-colors"
+        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-[0.7rem] font-bold text-muted-foreground hover:border-primary hover:bg-primary hover:text-primary-foreground transition-colors"
         onClick={(e) => {
           e.stopPropagation();
           openHelp(helpKey);

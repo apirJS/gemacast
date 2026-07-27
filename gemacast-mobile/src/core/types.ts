@@ -163,4 +163,6 @@ export type AppState = {
   processList: ProcessInfo[];
   /** Detected network link pair from the active connection. */
   networkLinkPair: NetworkLinkPairInfo | null;
+  /** Whether the device supports Oboe exclusive audio mode (probed at startup). */
+  exclusiveSupported: boolean;
 };

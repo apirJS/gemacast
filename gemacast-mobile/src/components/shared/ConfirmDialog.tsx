@@ -29,7 +29,7 @@ export function ConfirmDialog({
     <dialog
       ref={dialogRef}
       className={`
-        fixed inset-0 z-50 m-auto w-[min(90vw,320px)] rounded-[var(--radius-lg)]
+        fixed inset-0 z-50 m-auto w-[min(90vw,320px)] rounded-lg
         border border-border bg-popover p-5 text-popover-foreground shadow-xl
         backdrop:bg-black/50
       `}

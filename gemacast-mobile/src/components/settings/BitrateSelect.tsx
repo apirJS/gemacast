@@ -66,12 +66,12 @@ export function BitrateSelect() {
             placeholder="128"
             min={6}
             max={512}
-            className="flex-1 mr-1 rounded-[4px] border border-border bg-background px-2 py-1 text-left text-base text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            className="flex-1 mr-1 rounded-sm border border-border bg-background px-2 py-1 text-left text-base text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
           <span className="text-[0.9rem] font-medium text-muted-foreground">Kbps</span>
           <button
             type="button"
-            className="rounded-[6px] bg-primary px-[0.9rem] py-[0.45rem] text-[0.85rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md bg-primary px-[0.9rem] py-[0.45rem] text-[0.85rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
             onClick={applyCustom}
             disabled={!customKbps || parseInt(customKbps, 10) < 6 || parseInt(customKbps, 10) > 512}
           >

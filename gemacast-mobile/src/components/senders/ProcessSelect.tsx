@@ -21,9 +21,20 @@ export function ProcessSelect({
   supportsProcessCapture,
 }: ProcessSelectProps) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [search, setSearch] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const { fetchProcessList } = useConnection();
+
+  const startClosing = useCallback(() => {
+    if (closing) return;
+    setClosing(true);
+    setTimeout(() => {
+      setOpen(false);
+      setClosing(false);
+      setSearch('');
+    }, 150);
+  }, [closing]);
 
   const sortedProcesses = useMemo(() => {
     return [...processList].sort((a, b) => {
@@ -66,10 +77,9 @@ export function ProcessSelect({
   const handleSelect = useCallback(
     (source: AudioSource) => {
       onSourceChange(source);
-      setOpen(false);
-      setSearch('');
+      startClosing();
     },
-    [onSourceChange],
+    [onSourceChange, startClosing],
   );
 
   const hasDesktop = audioSources.some((s) => s.type === 'desktop');
@@ -86,18 +96,20 @@ export function ProcessSelect({
           border border-border bg-secondary px-2 py-1 text-[0.7rem] font-medium text-secondary-foreground
           transition-colors hover:border-primary focus-visible:border-primary focus-visible:shadow-[0_0_0_1px_var(--color-primary)] focus-visible:outline-none
         `}
-        onClick={() => setOpen(!open)}
+        onClick={() => (open ? startClosing() : setOpen(true))}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5">{currentLabel}</div>
         <span
-          className={`shrink-0 text-muted-foreground transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+          className={`shrink-0 text-muted-foreground transition-transform duration-200 ${open && !closing ? 'rotate-180' : ''}`}
         >
           <ChevronDown className="h-2.5 w-2.5" />
         </span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-[var(--radius-default)] border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] animate-[fade-in_150ms_ease-out]">
+      {(open || closing) && (
+        <div
+          className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}
+        >
           <div className="flex items-stretch border-b border-border">
             <input
               type="text"
@@ -148,7 +160,7 @@ export function ProcessSelect({
             </button>
           </div>
 
-          <div className="max-h-[16rem] min-h-[8rem] overflow-y-auto py-1">
+          <div className="max-h-64 min-h-32 overflow-y-auto py-1">
             {hasDesktop && (
               <button
                 type="button"

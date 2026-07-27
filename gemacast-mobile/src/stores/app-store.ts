@@ -11,7 +11,7 @@ import type {
   ProcessInfo,
   SenderCapabilities,
 } from '../core/types';
-import { Status } from '../core/types';
+import { Status, ConnectionMode } from '../core/types';
 import { GemaCastError } from '../core/error';
 import { loadLastSender, loadSettings, saveSettings } from '../core/persistence';
 import { useToastStore } from './toast-store';
@@ -40,6 +40,7 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     senderCapabilities: null,
     processList: [],
     networkLinkPair: null,
+    exclusiveSupported: true,
   };
 }
 
@@ -76,6 +77,7 @@ type AppActions = {
   setSenderCapabilities: (caps: SenderCapabilities | null) => void;
   setProcessList: (list: ProcessInfo[]) => void;
   setNetworkLinkPair: (pair: NetworkLinkPairInfo | null) => void;
+  setExclusiveSupported: (supported: boolean) => void;
 
   patch: (partial: Partial<AppState>) => void;
 };
@@ -179,7 +181,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ settings: updated });
   },
 
-  setAvailableModes: (modes) => set({ availableModes: modes }),
+  setAvailableModes: (modes) => {
+    const { settings, availableModes: prev } = get();
+    set({ availableModes: modes });
+
+    const modeAvailable = (m: ConnectionMode) =>
+      m === ConnectionMode.Wifi ? modes.wifi : m === ConnectionMode.Usb ? modes.usb : modes.adb;
+
+    if (modeAvailable(settings.mode)) return;
+
+    const prevAnyAvailable = prev.wifi || prev.usb || prev.adb;
+    const nowAnyAvailable = modes.wifi || modes.usb || modes.adb;
+
+    if (!nowAnyAvailable) return;
+
+    const priority = [ConnectionMode.Wifi, ConnectionMode.Usb, ConnectionMode.Adb];
+    const next = priority.find(modeAvailable);
+    if (next && (prevAnyAvailable || nowAnyAvailable)) {
+      const updated = { ...settings, mode: next };
+      saveSettings(updated);
+      set({ settings: updated });
+    }
+  },
 
   setDeviceInfo: (info) => {
     const current = get().deviceInfo;
@@ -191,6 +214,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSenderCapabilities: (caps) => set({ senderCapabilities: caps }),
   setProcessList: (list) => set({ processList: list }),
   setNetworkLinkPair: (pair) => set({ networkLinkPair: pair }),
+  setExclusiveSupported: (supported) => set({ exclusiveSupported: supported }),
 
   patch: (partial) => set(partial),
 }));

@@ -9,6 +9,7 @@ import { KeepScreenOnToggle } from './KeepScreenOnToggle';
 import { ModeSelector } from './ModeSelector';
 import { UpdateBanner } from './UpdateBanner';
 import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
+import { useAppStore } from '../../stores/app-store';
 import { useDrawer } from '../../hooks/use-drawer';
 import packageJson from '../../../package.json';
 
@@ -32,8 +33,9 @@ function SectionDivider() {
 }
 
 export function SettingsDrawer() {
-  const { open, dialogRef, handleOpen, handleClose } = useDrawer('settings');
+  const { open, closing, dialogRef, handleOpen, handleClose } = useDrawer('settings');
   const help = useHelpDialog();
+  const exclusiveSupported = useAppStore((s) => s.exclusiveSupported);
 
   return (
     <>
@@ -61,11 +63,12 @@ export function SettingsDrawer() {
       <dialog
         ref={dialogRef}
         className={`
-          fixed inset-y-0 left-0 z-50 m-0 h-[100vh] max-h-none w-[100vw] max-w-[100vw]
+          fixed inset-y-0 left-0 z-50 m-0 h-screen max-h-none w-screen max-w-[100vw]
           border-none border-r border-border bg-background p-0 text-foreground
           shadow-[4px_0_24px_rgba(0,0,0,0.2)]
-          backdrop:bg-black/30 backdrop:backdrop-blur-[4px]
-          ${open ? 'animate-[slide-from-left_350ms_cubic-bezier(0.32,0.72,0,1)]' : ''}
+          backdrop:bg-black/30 backdrop:backdrop-blur-xs
+          ${closing ? 'backdrop:animate-[backdrop-fade-out_150ms_ease-in_forwards]' : ''}
+          ${closing ? 'animate-[slide-out-left_350ms_cubic-bezier(0.32,0.72,0,1)_forwards]' : open ? 'animate-[slide-from-left_350ms_cubic-bezier(0.32,0.72,0,1)]' : ''}
         `}
         style={{
           paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))',
@@ -125,9 +128,16 @@ export function SettingsDrawer() {
             {/* Toggles */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <SectionLabel helpButton={help.renderHelpButton('exclusive-mode')}>
-                  Exclusive Mode
-                </SectionLabel>
+                <div>
+                  <SectionLabel helpButton={help.renderHelpButton('exclusive-mode')}>
+                    Exclusive Mode
+                  </SectionLabel>
+                  {!exclusiveSupported && (
+                    <p className="-mt-1 text-[0.7rem] text-muted-foreground/70">
+                      Not supported on this device
+                    </p>
+                  )}
+                </div>
                 <ExclusiveToggle />
               </div>
 
@@ -151,9 +161,9 @@ export function SettingsDrawer() {
 
             {/* Footer */}
             <div className="mt-4 border-t border-border pt-6 text-center">
-              <p className="text-[0.85rem] text-muted-foreground">
-                Latency depends on your Wi-Fi quality. 5 GHz band recommended for lowest latency.
-                Use <em>Buffer Presets</em> above to trade off between latency and stability.
+              <p className="text-xs text-muted-foreground">
+                USB Tethering or 5 GHZ Wi-Fi is recommended for lowest latency. Use{' '}
+                <em>Buffer Presets</em> above to trade off between latency and stability.
               </p>
               <a
                 className="mt-3 block text-[0.9rem] text-primary hover:underline"
@@ -164,7 +174,7 @@ export function SettingsDrawer() {
                 GitHub — apirJS/gemacast
               </a>
               <p className="mt-4 text-[0.8rem] text-muted-foreground">
-                v{packageJson.version} · 2026 ApirJS
+                v{packageJson.version} · 2026 Echa Apriliyanto
               </p>
             </div>
           </div>

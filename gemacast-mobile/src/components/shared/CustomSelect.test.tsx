@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { CustomSelect } from './CustomSelect';
 
 const options = [
@@ -7,6 +7,12 @@ const options = [
   { value: '2', label: 'Option 2', description: 'Desc 2' },
   { value: '3', label: 'Option 3', disabled: true },
 ];
+
+const FADE_MS = 150;
+
+function waitForClose() {
+  return act(() => new Promise((r) => setTimeout(r, FADE_MS + 50)));
+}
 
 beforeEach(() => {
   cleanup();
@@ -34,7 +40,7 @@ describe('CustomSelect', () => {
     expect(screen.getByText('Desc 2')).toBeTruthy();
   });
 
-  it('calls onChange and closes when option selected', () => {
+  it('calls onChange and closes when option selected', async () => {
     const onChange = mock();
     render(<CustomSelect id="test" options={options} value="1" onChange={onChange} />);
 
@@ -42,10 +48,11 @@ describe('CustomSelect', () => {
     fireEvent.click(screen.getByText('Option 2'));
 
     expect(onChange).toHaveBeenCalledWith('2');
+    await waitForClose();
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
-  it('closes when blurred outside', () => {
+  it('closes when blurred outside', async () => {
     render(
       <div>
         <CustomSelect id="test" options={options} value="1" onChange={mock()} />
@@ -57,9 +64,9 @@ describe('CustomSelect', () => {
     fireEvent.click(trigger);
     expect(screen.getByRole('listbox')).toBeTruthy();
 
-    // Trigger blur
     fireEvent.blur(trigger.parentElement!, { relatedTarget: screen.getByTestId('outside') });
 
+    await waitForClose();
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 });
