@@ -258,10 +258,7 @@ pub async fn restart_session(
     exclusive_mode: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    tracing::info!(
-        "[Cmd] restart_session: exclusive_mode={}",
-        exclusive_mode,
-    );
+    tracing::info!("[Cmd] restart_session: exclusive_mode={}", exclusive_mode,);
     state.audio.restart_session(exclusive_mode).await
 }
 

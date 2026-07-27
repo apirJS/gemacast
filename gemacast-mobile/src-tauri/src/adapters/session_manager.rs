@@ -45,17 +45,24 @@ impl SessionManager for TokioSessionManager {
         // Tear down any existing session first
         self.stop_session().await;
 
-        let (is_playing, _is_tcp_mode, config_ref, volume, shutdown_tx, playback_task, exclusive_granted) =
-            crate::domains::audio::playback::spawn_session_receiver(
-                params.jitter_config.clone(),
-                params.is_tcp,
-                params.exclusive_mode,
-                self.notifier.clone(),
-                params.target_ip,
-                params.mode,
-                params.device_id.clone(),
-                params.network_link,
-            )?;
+        let (
+            is_playing,
+            _is_tcp_mode,
+            config_ref,
+            volume,
+            shutdown_tx,
+            playback_task,
+            exclusive_granted,
+        ) = crate::domains::audio::playback::spawn_session_receiver(
+            params.jitter_config.clone(),
+            params.is_tcp,
+            params.exclusive_mode,
+            self.notifier.clone(),
+            params.target_ip,
+            params.mode,
+            params.device_id.clone(),
+            params.network_link,
+        )?;
 
         *self.session.lock().await = Some(ActiveSession {
             exclusive_mode: params.exclusive_mode,
