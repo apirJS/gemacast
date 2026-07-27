@@ -51,7 +51,9 @@ export function useDrawer(hashId: string) {
   }, [open, hashId, startClose]);
 
   useEffect(() => {
-    return () => { if (timer.current) clearTimeout(timer.current); };
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
   }, []);
 
   return { open, closing, dialogRef, handleOpen, handleClose };

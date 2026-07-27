@@ -96,7 +96,7 @@ export function ProcessSelect({
           border border-border bg-secondary px-2 py-1 text-[0.7rem] font-medium text-secondary-foreground
           transition-colors hover:border-primary focus-visible:border-primary focus-visible:shadow-[0_0_0_1px_var(--color-primary)] focus-visible:outline-none
         `}
-        onClick={() => open ? startClosing() : setOpen(true)}
+        onClick={() => (open ? startClosing() : setOpen(true))}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5">{currentLabel}</div>
         <span
@@ -107,7 +107,9 @@ export function ProcessSelect({
       </button>
 
       {(open || closing) && (
-        <div className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}>
+        <div
+          className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}
+        >
           <div className="flex items-stretch border-b border-border">
             <input
               type="text"

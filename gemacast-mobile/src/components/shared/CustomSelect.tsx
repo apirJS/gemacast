@@ -47,11 +47,14 @@ export function CustomSelect<T extends string = string>({
     [onChange, startClosing],
   );
 
-  const handleBlur = useCallback((e: React.FocusEvent) => {
-    if (!containerRef.current?.contains(e.relatedTarget as Node)) {
-      startClosing();
-    }
-  }, [startClosing]);
+  const handleBlur = useCallback(
+    (e: React.FocusEvent) => {
+      if (!containerRef.current?.contains(e.relatedTarget as Node)) {
+        startClosing();
+      }
+    },
+    [startClosing],
+  );
 
   return (
     <div id={id} ref={containerRef} className="relative" onBlur={handleBlur}>
@@ -62,7 +65,7 @@ export function CustomSelect<T extends string = string>({
           border border-border bg-background p-3 text-base text-foreground
           transition-colors hover:bg-accent
         `}
-        onClick={() => open ? startClosing() : setOpen(true)}
+        onClick={() => (open ? startClosing() : setOpen(true))}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
