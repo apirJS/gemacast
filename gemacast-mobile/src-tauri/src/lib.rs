@@ -46,11 +46,12 @@ pub fn run() {
             let notifier: Arc<dyn traits::FrontendNotifier> =
                 Arc::new(adapters::TauriFrontendNotifier::new(handle.clone()));
 
-            let session_mgr: Arc<dyn traits::SessionManager> =
-                Arc::new(adapters::TokioSessionManager::new(notifier.clone()));
-
             let client_factory: Arc<dyn traits::SenderControlClientFactory> =
                 Arc::new(adapters::HttpSenderControlClientFactory);
+
+            let session_mgr: Arc<dyn traits::SessionManager> = Arc::new(
+                adapters::TokioSessionManager::new(notifier.clone(), client_factory.clone()),
+            );
 
             let platform: Arc<dyn traits::PlatformService> =
                 Arc::new(adapters::NativePlatformService::new(handle.clone()));

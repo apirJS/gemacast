@@ -87,7 +87,6 @@ export async function connectToSender(
 
     fetchAudioSources(sender);
     fetchProcessList(sender);
-    startProbing(ip, state.deviceInfo.deviceId);
 
     // Fetch the detected network link pair for UI display
     tauriBridge
@@ -137,7 +136,6 @@ export async function disconnect(
   // Optimistically update status to catch echoes during async IPC calls
   store.getState().patch({ status: Status.Listening });
   store.getState().setLoading(true);
-  stopProbing();
 
   try {
     if (!sender) {
@@ -269,24 +267,6 @@ export function useConnection() {
     killPlayback,
     fetchProcessList,
   };
-}
-
-let probeTimer: ReturnType<typeof setInterval> | null = null;
-
-function startProbing(ip: string, deviceId: string) {
-  stopProbing();
-  probeTimer = setInterval(() => {
-    tauriBridge.probeSender({ ip, deviceId }).catch((e) => {
-      console.warn('Failed to probe sender via HTTP:', e);
-    });
-  }, 5000);
-}
-
-function stopProbing() {
-  if (probeTimer) {
-    clearInterval(probeTimer);
-    probeTimer = null;
-  }
 }
 
 async function fetchAudioSources(sender: DiscoveredSender) {

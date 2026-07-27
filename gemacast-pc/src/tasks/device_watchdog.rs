@@ -15,7 +15,10 @@ use crate::traits::{AudioController, DeviceRegistry, TrayNotifier};
 const CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long a device can go without a probe before being evicted.
-const STALE_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Set to 15s to allow for 2 missed consecutive 5s probes plus WiFi
+/// jitter headroom, while still detecting genuinely dead connections.
+const STALE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Evict devices whose `last_seen` exceeds `timeout` and notify the tray + audio engine.
 ///
