@@ -11,7 +11,7 @@ export function EmptyState() {
         Scanning for PCs on your network…
       </p>
       <p className="m-0 text-[0.8rem] text-muted-foreground">
-        Make sure GemaCast is running on your PC
+        Make sure Gemacast is running on your PC
       </p>
     </div>
   );

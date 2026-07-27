@@ -44,6 +44,7 @@ pub type SessionReceiverResult = Result<
         Arc<AtomicU32>,
         oneshot::Sender<()>,
         JoinHandle<()>,
+        bool, // exclusive_granted
     ),
     String,
 >;
@@ -65,7 +66,7 @@ pub fn spawn_session_receiver(
     let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let mut receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
+    let receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
         config_ref.clone(),
         is_tcp_mode.clone(),
         network_link,
@@ -76,6 +77,9 @@ pub fn spawn_session_receiver(
     )
     .map_err(|e| e.to_string())?;
 
+    let exclusive_granted = receiver.exclusive_granted;
+
+    let mut receiver = receiver;
     let (sender_ip_tx, latency_tx) = setup_event_forwarding(notifier.clone());
 
     let task = tokio::spawn(async move {
@@ -114,5 +118,6 @@ pub fn spawn_session_receiver(
         volume,
         shutdown_tx,
         task,
+        exclusive_granted,
     ))
 }

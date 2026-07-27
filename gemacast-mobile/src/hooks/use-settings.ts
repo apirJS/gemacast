@@ -3,7 +3,6 @@ import { useAppStore } from '../stores/app-store';
 import { tauriBridge, resolveBitrate } from '../core/tauri-bridge';
 import { getPresetConfig } from '../core/presets';
 import { Status, type AppSettings } from '../core/types';
-import { connectToSender, disconnect } from './use-connection';
 
 export function useSettings() {
   const settings = useAppStore((s) => s.settings);
@@ -47,7 +46,7 @@ export function useSettings() {
         }
       }
 
-      // If exclusive mode changed while connected, reconnect to apply new Oboe SharingMode
+      // If exclusive mode changed while connected, restart the audio session
       if (patch.exclusiveMode !== undefined) {
         const state = useAppStore.getState();
         if (
@@ -56,12 +55,9 @@ export function useSettings() {
             state.status === Status.Paused) &&
           state.connectedSender
         ) {
-          const sender = state.connectedSender;
-          disconnect(false)
-            .then(() => connectToSender(sender))
-            .catch((e) => {
-              console.warn('Failed to reconnect after exclusive mode change', e);
-            });
+          tauriBridge.restartSession({ exclusiveMode: patch.exclusiveMode }).catch((e) => {
+            console.warn('Failed to restart session after exclusive mode change', e);
+          });
         }
       }
 

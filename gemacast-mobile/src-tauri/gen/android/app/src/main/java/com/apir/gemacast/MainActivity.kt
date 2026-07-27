@@ -172,7 +172,7 @@ class MainActivity : TauriActivity() {
             if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
                 android.app.AlertDialog.Builder(this)
                     .setTitle("Battery Optimization")
-                    .setMessage("To prevent audio stuttering when the screen is off, GemaCast needs to be excluded from battery optimizations. Please disable battery optimization for GemaCast in the next screen.")
+                    .setMessage("To prevent audio from stuttering, Gemacast needs to be excluded from battery optimizations. Please disable battery optimization for Gemacast in the next screen.")
                     .setPositiveButton("Allow") { _, _ ->
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {

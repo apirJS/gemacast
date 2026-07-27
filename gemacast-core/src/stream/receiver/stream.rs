@@ -40,6 +40,7 @@ pub struct OboeCallback {
     packet_consumer: ringbuf::HeapCons<RawPacket>,
     volume: Arc<AtomicU32>,
     is_playing: Arc<AtomicBool>,
+    was_playing: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -65,9 +66,13 @@ impl AudioOutputCallback for OboeCallback {
             for sample in float_slice.iter_mut() {
                 *sample = 0.0;
             }
-            self.jitter_manager.reset();
+            if self.was_playing {
+                self.jitter_manager.reset();
+                self.was_playing = false;
+            }
             return DataCallbackResult::Continue;
         }
+        self.was_playing = true;
 
         self.jitter_manager
             .ingest_packets(&mut self.packet_consumer);
@@ -143,6 +148,7 @@ pub fn build_playback_stream(
         is_tcp_mode,
         network_link,
     );
+    let mut was_playing = true;
 
     device
         .build_output_stream(
@@ -155,9 +161,13 @@ pub fn build_playback_stream(
                     for sample in data.iter_mut() {
                         *sample = 0.0;
                     }
-                    jitter_manager.reset();
+                    if was_playing {
+                        jitter_manager.reset();
+                        was_playing = false;
+                    }
                     return;
                 }
+                was_playing = true;
 
                 jitter_manager.ingest_packets(&mut packet_consumer);
                 jitter_manager.fill_output(data, vol);
@@ -212,6 +222,7 @@ pub fn build_cpal_fallback_stream(
         is_tcp_mode,
         network_link,
     );
+    let mut was_playing = true;
 
     let stream = device
         .build_output_stream(
@@ -224,9 +235,13 @@ pub fn build_cpal_fallback_stream(
                     for sample in data.iter_mut() {
                         *sample = 0.0;
                     }
-                    jitter_manager.reset();
+                    if was_playing {
+                        jitter_manager.reset();
+                        was_playing = false;
+                    }
                     return;
                 }
+                was_playing = true;
 
                 jitter_manager.ingest_packets(&mut packet_consumer);
                 jitter_manager.fill_output(data, vol);
@@ -257,7 +272,7 @@ pub fn build_playback_stream(
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
     exclusive_mode: bool,
-) -> Result<PlaybackStream, GemaCastError> {
+) -> Result<(PlaybackStream, bool), GemaCastError> {
     let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
         direction: CodecDirection::Decoder,
         source: e,
@@ -274,6 +289,7 @@ pub fn build_playback_stream(
         packet_consumer,
         volume: volume.clone(),
         is_playing: is_playing.clone(),
+        was_playing: true,
     };
 
     let builder = AudioStreamBuilder::default()
@@ -287,6 +303,7 @@ pub fn build_playback_stream(
         .set_format::<f32>()
         .set_channel_count::<oboe::Stereo>()
         .set_channel_conversion_allowed(true)
+        .set_format_conversion_allowed(true)
         .set_sample_rate(OPUS_SAMPLE_RATE as i32)
         .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
         .set_callback(callback);
@@ -309,7 +326,8 @@ pub fn build_playback_stream(
                 stream.get_format(),
                 OPUS_SAMPLE_RATE,
             );
-            Ok(PlaybackStream::Oboe(stream))
+            let exclusive_granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+            Ok((PlaybackStream::Oboe(stream), exclusive_granted))
         }
         Err(oboe_err) => {
             tracing::warn!(
@@ -336,4 +354,56 @@ pub fn build_playback_stream(
             .into())
         }
     }
+}
+
+/// Probe whether the device supports Oboe exclusive audio mode by opening a
+/// throwaway stream. Returns `true` if the granted sharing mode is Exclusive.
+#[cfg(target_os = "android")]
+pub fn probe_exclusive_support() -> bool {
+    use oboe::{
+        AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBase, AudioStreamBuilder,
+        DataCallbackResult, PerformanceMode, SharingMode,
+    };
+
+    struct SilentProbe;
+    impl AudioOutputCallback for SilentProbe {
+        type FrameType = (f32, oboe::Mono);
+        fn on_audio_ready(
+            &mut self,
+            _stream: &mut dyn AudioOutputStreamSafe,
+            data: &mut [f32],
+        ) -> DataCallbackResult {
+            data.fill(0.0);
+            DataCallbackResult::Stop
+        }
+    }
+
+    let builder = AudioStreamBuilder::default()
+        .set_direction::<oboe::Output>()
+        .set_performance_mode(PerformanceMode::LowLatency)
+        .set_sharing_mode(SharingMode::Exclusive)
+        .set_format::<f32>()
+        .set_channel_count::<oboe::Mono>()
+        .set_callback(SilentProbe);
+
+    match builder.open_stream() {
+        Ok(stream) => {
+            let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+            tracing::info!(
+                "[Oboe] exclusive probe: granted={}, sharing={:?}",
+                granted,
+                stream.get_sharing_mode(),
+            );
+            granted
+        }
+        Err(e) => {
+            tracing::warn!("[Oboe] exclusive probe failed: {}", e);
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn probe_exclusive_support() -> bool {
+    false
 }

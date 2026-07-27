@@ -84,6 +84,16 @@ export function App() {
         console.warn('Failed to fetch initial connection status:', e);
       }
 
+      try {
+        const supported = await tauriBridge.checkExclusiveSupport();
+        useAppStore.getState().setExclusiveSupported(supported);
+        if (!supported && useAppStore.getState().settings.exclusiveMode) {
+          useAppStore.getState().updateSettings({ exclusiveMode: false });
+        }
+      } catch (e) {
+        console.warn('Failed to probe exclusive mode support:', e);
+      }
+
       const theme = useAppStore.getState().settings.theme;
       document.documentElement.classList.toggle('dark', theme === 'dark');
       document.documentElement.classList.toggle('light', theme === 'light');

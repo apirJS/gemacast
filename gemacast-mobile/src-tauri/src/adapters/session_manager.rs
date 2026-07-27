@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 /// Internal session state, analogous to the old `state::ActiveSession`.
 struct ActiveSession {
     exclusive_mode: bool,
+    exclusive_granted: bool,
     mode: ConnectionMode,
     bitrate: Option<i32>,
     is_playing: Arc<AtomicBool>,
@@ -16,6 +17,9 @@ struct ActiveSession {
     jitter_config: Arc<RwLock<JitterConfig>>,
     shutdown_tx: oneshot::Sender<()>,
     playback_task: JoinHandle<()>,
+    target_ip: Option<std::net::IpAddr>,
+    device_id: String,
+    network_link: gemacast_core::domain::types::NetworkLink,
 }
 
 /// Manages playback sessions and WebSocket client tasks using Tokio primitives.
@@ -41,7 +45,7 @@ impl SessionManager for TokioSessionManager {
         // Tear down any existing session first
         self.stop_session().await;
 
-        let (is_playing, _is_tcp_mode, config_ref, volume, shutdown_tx, playback_task) =
+        let (is_playing, _is_tcp_mode, config_ref, volume, shutdown_tx, playback_task, exclusive_granted) =
             crate::domains::audio::playback::spawn_session_receiver(
                 params.jitter_config.clone(),
                 params.is_tcp,
@@ -49,12 +53,13 @@ impl SessionManager for TokioSessionManager {
                 self.notifier.clone(),
                 params.target_ip,
                 params.mode,
-                params.device_id,
+                params.device_id.clone(),
                 params.network_link,
             )?;
 
         *self.session.lock().await = Some(ActiveSession {
             exclusive_mode: params.exclusive_mode,
+            exclusive_granted,
             mode: params.mode,
             bitrate: params.bitrate,
             is_playing,
@@ -62,6 +67,9 @@ impl SessionManager for TokioSessionManager {
             jitter_config: config_ref,
             shutdown_tx,
             playback_task,
+            target_ip: params.target_ip,
+            device_id: params.device_id,
+            network_link: params.network_link,
         });
 
         Ok(())
@@ -111,6 +119,7 @@ impl SessionManager for TokioSessionManager {
         let guard = self.session.lock().await;
         guard.as_ref().map(|s| SessionInfo {
             exclusive_mode: s.exclusive_mode,
+            exclusive_granted: s.exclusive_granted,
             mode: s.mode,
             bitrate: s.bitrate,
             jitter_config: s
@@ -119,6 +128,9 @@ impl SessionManager for TokioSessionManager {
                 .ok()
                 .map(|g| g.clone())
                 .unwrap_or_default(),
+            target_ip: s.target_ip,
+            device_id: s.device_id.clone(),
+            network_link: s.network_link,
         })
     }
 

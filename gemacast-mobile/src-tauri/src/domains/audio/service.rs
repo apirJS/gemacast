@@ -195,6 +195,55 @@ impl AudioService {
         self.platform.set_streaming_flag(false);
     }
 
+    /// Restart the audio session with a new exclusive mode setting.
+    ///
+    /// Tears down the old Oboe/cpal stream and spawns a new one without
+    /// sending any HTTP disconnect/connect — the PC sender doesn't care
+    /// about the phone's audio sharing mode.
+    pub async fn restart_session(&self, exclusive_mode: bool) -> Result<(), String> {
+        let info = self
+            .session
+            .session_info()
+            .await
+            .ok_or("No active session to restart")?;
+
+        let jitter_config = if info.jitter_config.is_auto_sentinel() {
+            if let Some(pair) = *self.cached_link_pair.lock().unwrap() {
+                JitterConfig::for_link_pair(pair)
+            } else {
+                info.jitter_config
+            }
+        } else {
+            info.jitter_config
+        };
+
+        let is_tcp = info.mode == ConnectionMode::Adb;
+
+        tracing::info!(
+            "[AudioService] Restart session: exclusive_mode={} (was {})",
+            exclusive_mode,
+            info.exclusive_mode,
+        );
+
+        self.session
+            .start_session(SessionParams {
+                jitter_config,
+                is_tcp,
+                exclusive_mode,
+                target_ip: info.target_ip,
+                mode: info.mode,
+                device_id: info.device_id,
+                bitrate: info.bitrate,
+                network_link: info.network_link,
+            })
+            .await?;
+
+        self.platform
+            .sync_service(PlaybackState::Playing, exclusive_mode);
+
+        Ok(())
+    }
+
     /// Update the jitter buffer configuration on the active session.
     ///
     /// If the incoming config is the Auto sentinel (`peak_decay_halflife_ms == 0`,
@@ -470,9 +519,13 @@ mod tests {
     async fn start_playback_should_not_send_http_reconnect() {
         let session = Arc::new(MockSessionManager::new().with_session_info(SessionInfo {
             exclusive_mode: false,
+            exclusive_granted: false,
             mode: ConnectionMode::Wifi,
             bitrate: Some(128000),
             jitter_config: JitterConfig::default(),
+            target_ip: Some("192.168.1.5".parse().unwrap()),
+            device_id: "phone-1".into(),
+            network_link: gemacast_core::domain::types::NetworkLink::Unknown,
         }));
         let client = Arc::new(MockSenderControlClient::new());
         let platform = Arc::new(MockPlatformService::new());

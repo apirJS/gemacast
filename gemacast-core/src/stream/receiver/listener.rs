@@ -29,6 +29,7 @@ pub struct AudioStreamReceiver {
     stream_error_rx: mpsc::Receiver<StreamError>,
     playback_shutdown_rx: oneshot::Receiver<()>,
     latency_metric: Arc<AtomicU32>,
+    pub exclusive_granted: bool,
 }
 
 impl AudioStreamReceiver {
@@ -58,8 +59,11 @@ impl AudioStreamReceiver {
             _stream_error_tx,
         )?;
 
+        #[cfg(not(target_os = "android"))]
+        let exclusive_granted = false;
+
         #[cfg(target_os = "android")]
-        let (packet_producer, playback_stream) = {
+        let (packet_producer, playback_stream, exclusive_granted) = {
             // Try Oboe first; if it fails, the consumer is consumed by the
             // failed callback so we must create a fresh ring buffer for cpal.
             match build_playback_stream(
@@ -72,7 +76,7 @@ impl AudioStreamReceiver {
                 latency_metric.clone(),
                 _exclusive_mode,
             ) {
-                Ok(stream) => (packet_producer, stream),
+                Ok((stream, granted)) => (packet_producer, stream, granted),
                 Err(oboe_err) => {
                     tracing::warn!("Oboe failed ({}), retrying with cpal fallback", oboe_err);
                     let fallback_rb = HeapRb::<RawPacket>::new(PACKET_CHANNEL_CAPACITY);
@@ -86,7 +90,7 @@ impl AudioStreamReceiver {
                         volume,
                         latency_metric.clone(),
                     )?;
-                    (fb_producer, stream)
+                    (fb_producer, stream, false)
                 }
             }
         };
@@ -97,6 +101,7 @@ impl AudioStreamReceiver {
             stream_error_rx,
             playback_shutdown_rx,
             latency_metric,
+            exclusive_granted,
         })
     }
 

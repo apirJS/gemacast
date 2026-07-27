@@ -15,6 +15,8 @@ type CustomSelectProps<T extends string = string> = {
   renderOption?: (option: SelectOption<T>, isSelected: boolean) => React.ReactNode;
 };
 
+const FADE_MS = 150;
+
 export function CustomSelect<T extends string = string>({
   id,
   options,
@@ -23,23 +25,33 @@ export function CustomSelect<T extends string = string>({
   renderOption,
 }: CustomSelectProps<T>) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((o) => o.value === value);
 
+  const startClosing = useCallback(() => {
+    if (closing) return;
+    setClosing(true);
+    setTimeout(() => {
+      setOpen(false);
+      setClosing(false);
+    }, FADE_MS);
+  }, [closing]);
+
   const handleSelect = useCallback(
     (optionValue: T) => {
       onChange(optionValue);
-      setOpen(false);
+      startClosing();
     },
-    [onChange],
+    [onChange, startClosing],
   );
 
   const handleBlur = useCallback((e: React.FocusEvent) => {
     if (!containerRef.current?.contains(e.relatedTarget as Node)) {
-      setOpen(false);
+      startClosing();
     }
-  }, []);
+  }, [startClosing]);
 
   return (
     <div id={id} ref={containerRef} className="relative" onBlur={handleBlur}>
@@ -50,27 +62,27 @@ export function CustomSelect<T extends string = string>({
           border border-border bg-background p-3 text-base text-foreground
           transition-colors hover:bg-accent
         `}
-        onClick={() => setOpen(!open)}
+        onClick={() => open ? startClosing() : setOpen(true)}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
         <span>{selectedOption?.label ?? 'Select...'}</span>
         <span
           className={`ml-2 text-xs text-muted-foreground transition-transform duration-200 ${
-            open ? 'rotate-180' : ''
+            open && !closing ? 'rotate-180' : ''
           }`}
         >
           ▼
         </span>
       </button>
 
-      {open && (
+      {(open || closing) && (
         <div
           role="listbox"
           className={`
             absolute z-50 mt-1 w-full overflow-hidden rounded-lg
             border border-border bg-background shadow-[0_4px_12px_rgba(0,0,0,0.2)]
-            animate-[fade-in_150ms_ease-out]
+            ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}
           `}
         >
           <div className="max-h-64 overflow-y-auto">

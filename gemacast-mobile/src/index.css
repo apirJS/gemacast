@@ -350,6 +350,12 @@
   }
 }
 
+@keyframes backdrop-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
 @layer utilities {
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
