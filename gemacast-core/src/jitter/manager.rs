@@ -16,8 +16,13 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
-/// 1000ms max silence before resetting stream (NetEQ kReinitAfterExpands=100 frames)
-const MAX_MISSING: u32 = 1000 / MILLIS_PER_FRAME;
+/// Default stream reset timeout: 1000ms for clean links (5GHz, Ethernet, ADB).
+const MAX_MISSING_DEFAULT: u32 = 1000 / MILLIS_PER_FRAME;
+/// Extended stream reset timeout for 2.4GHz: DTIM batching routinely produces
+/// 1000ms+ silence gaps that are NOT genuine disconnects.
+const MAX_MISSING_2_4GHZ: u32 = 3000 / MILLIS_PER_FRAME;
+/// Extended stream reset timeout for unknown Wi-Fi links (may be 2.4GHz).
+const MAX_MISSING_UNKNOWN: u32 = 2000 / MILLIS_PER_FRAME;
 /// Default reorder tolerance: ~30ms window to wait for a reordered packet
 /// before skipping a hole. Used for clean links (5GHz / Ethernet / cable).
 const REORDER_TOLERANCE: u32 = 30 / MILLIS_PER_FRAME;
@@ -46,9 +51,46 @@ fn reorder_tolerance_for(link: NetworkLink, is_no_buffer: bool) -> u32 {
 /// 6 callbacks × 10ms/frame = 60ms, slightly above NetEQ's 50ms
 /// (kMinTimescaleInterval=5 at 10ms frames). Each acceleration removes
 /// ~3-10ms, so maximum drain rate is ~50-170ms/s.
-/// The emergency (fast-accelerate) tier — filtered level ≥ 4×high_limit —
-/// bypasses this cooldown entirely, matching NetEQ's `kFastAccelerate`.
+/// The emergency (fast-accelerate) tier bypasses this cooldown entirely,
+/// matching NetEQ's `kFastAccelerate`.
 const MIN_TIMESCALE_INTERVAL: u32 = 6;
+/// Cooldown applied specifically after a preemptive expand: 20 callbacks =
+/// 200ms. Expand inserts exactly one pitch period per call, so at the shared
+/// 60ms cooldown a sustained below-target stretch produced a ~17Hz train of OLA
+/// splices — the "fast clicking on every buffer increase" from the field test.
+/// Expand is now a last-ditch underrun defence rather than a growth mechanism,
+/// and one splice per 200ms is the right rate for that job.
+const MIN_EXPAND_INTERVAL: u32 = 20;
+/// Cooldown after a free-silence growth insert: 3 callbacks. Each insert adds a
+/// whole 10ms frame of latency, so firing on *every* below-target callback is a
+/// 2× time-stretch — correct in direction but far too steep, and it accrues
+/// latency the descent then has to give back. One frame per 3 callbacks is a
+/// ~33% stretch: still faster than any real drain, gentle enough that the
+/// latency bought is proportional to the deficit.
+const MIN_SILENCE_GROW_INTERVAL: u32 = 3;
+/// Overshoot above `high_limit` (in frames) that promotes a drain to the
+/// emergency tier — force-drain regardless of signal energy. 15 frames = 150ms.
+/// The old trigger was `4 * high_limit`, i.e. ~2 seconds of audio: so far above
+/// any real overshoot that it never fired, while the normal tier's
+/// `ARTIFACT_MASK_RMS` gate blocked draining on music. The 2.4GHz log shows the
+/// result — 594ms of latency sitting on a 500ms target with no drain in sight.
+const EMERGENCY_MARGIN: u32 = 150 / MILLIS_PER_FRAME;
+/// Consecutive starved callbacks (50ms of PLC) after which playback re-enters
+/// prebuffering instead of resuming on the first frame that shows up.
+///
+/// Resuming on `has_next` — one single frame — is what turned one delivery gap
+/// into a machine-gun of stutters in the field (2.4GHz Router A: six starvation
+/// events in six seconds). The mechanism: packets arrive at real time and the DAC
+/// consumes at real time, so occupancy cannot grow while the playhead is running.
+/// On loud content both growth paths are gated off (silence-grow needs
+/// `rms < SILENCE_RMS`, expand needs a quiet-ish frame), which leaves starving
+/// again as the *only* way to bank depth. Pausing the playhead until the buffer
+/// reaches `resume_threshold_pct * target` banks it in one go: one clean gap
+/// instead of six audible ones, and the floor/stat bookkeeping runs once.
+///
+/// On DTIM-batched links the next burst refills that threshold instantly, so the
+/// pause costs no more wall-clock silence than the gap already did.
+const REBUFFER_AFTER: u32 = 5;
 
 /// Coordinates the full jitter buffer pipeline.
 ///
@@ -109,7 +151,7 @@ impl JitterBufferManager {
         network_link: NetworkLink,
     ) -> Self {
         let initial_config = config_ref.read().unwrap().clone();
-        let stats = JitterStats::new(&initial_config);
+        let stats = JitterStats::new();
 
         Self {
             decoder: FrameDecoder::new(decoder),
@@ -136,6 +178,17 @@ impl JitterBufferManager {
         ms_to_frames_ceil(self.config.min_depth_ms)
     }
 
+    /// Link-aware stream reset timeout in frames. On 2.4GHz / Unknown, DTIM
+    /// batching routinely produces 1000ms+ silence gaps that are NOT genuine
+    /// disconnects. A longer timeout prevents false resets that wipe learned state.
+    fn max_missing_for(link: NetworkLink) -> u32 {
+        match link {
+            NetworkLink::Wifi2_4Ghz => MAX_MISSING_2_4GHZ,
+            NetworkLink::WifiUnknown | NetworkLink::Unknown => MAX_MISSING_UNKNOWN,
+            _ => MAX_MISSING_DEFAULT,
+        }
+    }
+
     /// Pure computation of the target buffer depth from observed jitter statistics.
     /// Delegates to the [`TargetController`] actor.
     fn compute_target_depth(&self, tcp_cap_override: Option<f32>) -> u32 {
@@ -149,10 +202,7 @@ impl JitterBufferManager {
         while let Some(pkt) = consumer.try_pop() {
             // Update jitter statistics from this arrival. Returns false to drop the
             // packet entirely (clock ran backwards vs. the last forward arrival).
-            if !self
-                .stats
-                .observe(pkt.seq_num, pkt.arrival_time, &self.config)
-            {
+            if !self.stats.observe(pkt.seq_num, pkt.arrival_time) {
                 continue;
             }
 
@@ -232,9 +282,7 @@ impl JitterBufferManager {
                 if self.buffer.occupied_count() > flush_target {
                     pending_flush = Some(flush_target);
                 }
-                self.stats.recompute_decay_alpha(&new_config);
-                self.config = new_config;
-            }
+                self.config = new_config;            }
         }
         if let Some(flush_target) = pending_flush {
             self.flush_with_crossfade(flush_target);
@@ -298,6 +346,17 @@ impl JitterBufferManager {
                 // No startup_flush — the fast acceleration tier will
                 // gradually drain excess while maintaining phase continuity.
             } else {
+                // A total outage entered *during* prebuffering must still be able
+                // to reach the stream reset. The normal `missing_count` bookkeeping
+                // lives past this early return, so account for it here — otherwise
+                // rebuffering after a starvation (see `REBUFFER_AFTER`) would trap
+                // the manager in an unbounded silent wait.
+                if self.buffer.occupied_count() == 0 {
+                    self.flow.missing_count += 1;
+                    if self.check_reset_on_missing() {
+                        return;
+                    }
+                }
                 self.generate_plc();
                 return;
             }
@@ -312,9 +371,15 @@ impl JitterBufferManager {
         // optimal latency instead of draining slowly via WSOLA.
         if self.startup_flush_pending {
             self.startup_flush_pending = false;
-            // Jitter stats are zero at startup; don't flush below 2×min_depth or
-            // the buffer starves before the network has been observed.
-            let safe_flush_target = target.max(min_depth * 2).max(3);
+            // 8 frames (80ms) hard floor. Virgin stats cannot see the link's
+            // ordinary 50-90ms delivery gaps yet — the histogram is still on its
+            // geometric seed (p95 = 4 frames) and the gap window is empty — so
+            // every field log used to starve on the link's *first* ordinary gap
+            // and pay a starvation floor plus a 100-200ms plateau to learn what
+            // one more startup frame would have covered. 80ms of startup latency
+            // probes back down within a minute; the starvation it prevents does
+            // not descend, it ratchets.
+            let safe_flush_target = target.max(min_depth * 2).max(8);
             if self.buffer.occupied_count() > safe_flush_target + 2 {
                 tracing::info!(
                     "[JitterMgr] Startup flush: occupied={}, flushing to target={}",
@@ -375,11 +440,23 @@ impl JitterBufferManager {
             // but only if the cooldown has expired (prevents ratcheting).
             if self.flow.starvation_count > 0 {
                 if !tcp_mode {
-                    // NetEQ guard: after starvation, suppress acceleration for
-                    // 50 callbacks (~500ms) to let the buffer refill safely.
-                    self.flow.starvation_recovery = 50;
-                    self.control
-                        .apply_starvation_floor(&self.config, &self.stats);
+                    // Only bump probe_floor on the FIRST starvation event.
+                    // If starvation_recovery > 0, we're still recovering from a
+                    // recent starvation — bumping again would cascade the floor
+                    // upward (observed on 2.4GHz: 155→159→163→...→175 in 300ms).
+                    if self.flow.starvation_recovery == 0 {
+                        self.control.record_starvation();
+                        self.control
+                            .apply_starvation_floor(&self.config, &self.stats);
+                        self.control.jump_to_floor();
+                    }
+                    // Refresh the recovery guard (suppresses WSOLA acceleration
+                    // to let the buffer refill safely). Scaled to the target: a
+                    // fixed 500ms is shorter than a 2.4GHz DTIM cycle, so the
+                    // guard expired mid-cascade and the floor got re-bumped —
+                    // three "Starvation floor set" logs inside 3s in the field log.
+                    self.flow.starvation_recovery =
+                        self.control.effective_target.saturating_mul(2).clamp(50, 200);
                 }
                 // Always reset — prevents permanent fade-in loop in TCP/ADB mode.
                 self.flow.starvation_count = 0;
@@ -444,7 +521,7 @@ impl JitterBufferManager {
             let rms = Self::get_rms(&self.decoder.decode_buf[..self.decoder.decode_len]);
 
             if stretch_allowed && filtered >= high_limit as f32 {
-                let is_fast = filtered >= (4 * high_limit) as f32;
+                let is_fast = filtered >= (high_limit + EMERGENCY_MARGIN) as f32;
                 // Silence fast-forward shortcut: on a passive (near-silent) frame we
                 // can shed whole packets with zero artifact instead of WSOLA — much
                 // cheaper and perfectly clean. Kept from the old design.
@@ -491,30 +568,67 @@ impl JitterBufferManager {
                     }
                     return;
                 }
-            } else if stretch_allowed
-                && self.timescale_cooldown == 0
-                && filtered < low_limit as f32
-                && (SILENCE_RMS..ARTIFACT_MASK_RMS).contains(&rms)
-            {
-                // --- Preemptive Expand (slow down before starvation) ---
-                // Stretch to build the buffer back up toward target. Gated to quiet-
-                // but-not-silent passages (SILENCE_RMS ≤ rms < ARTIFACT_MASK_RMS) so
-                // the crude insert is masked; on louder content we tolerate the low
-                // level rather than inserting an audible pitch period, and on true
-                // silence there is nothing to correlate against. The 0.9 NCC gate
-                // inside `expand` is the second line of defense: it returns None on a
-                // weak splice, and we fall through to verbatim playback.
-                if let Some(inserted_samples) = self
-                    .timescale
-                    .expand(self.decoder.decoded(), &mut self.playback_buf)
+            } else if filtered < low_limit as f32 {
+                // --- Below target: grow the buffer ---
+                // Growth is where the click train lived. The old code sent every
+                // below-target callback straight to WSOLA `expand`, which inserts
+                // exactly ONE pitch period per call — so a target that jumped 15
+                // frames produced a splice every 60ms for several seconds. Growth
+                // now has two paths, and neither of them is a splice train:
+                // (a) Free growth on silence. The frame is already below
+                // -46dBFS, so appending a frame of true silence after it is
+                // inaudible — no correlation search, no seam, no artifact.
+                // This is the mirror of the silence fast-forward *drain*
+                // shortcut above, and it is where most growth should happen.
+                //
+                // Two guards, both load-bearing:
+                //  * REAL occupancy below target, not just the filtered level.
+                //    The IIR takes ~1.3s to converge, so right after
+                //    prebuffering `filtered` reads far below `low_limit` while
+                //    the buffer is in fact full. Growing on that would buy
+                //    latency to fix a filter lag rather than a real shortfall.
+                //  * Adaptive mode only. A static / no-buffer target is the
+                //    user pinning the depth by hand; padding silence there
+                //    would fight the static flush a few lines above, which
+                //    exists precisely to hold the buffer AT that depth.
+                if rms < SILENCE_RMS
+                    && self.timescale_cooldown == 0
+                    && self.config.static_target_ms.is_none()
+                    && self.buffer.occupied_count() < target
+                {
+                    let silence_len = self.decoder.decode_len;
+                    self.playback_buf
+                        .extend(&self.decoder.decode_buf[..silence_len]);
+                    self.playback_buf
+                        .extend(std::iter::repeat_n(0.0, silence_len));
+                    self.flow.adjust_filtered_level(1.0);
+                    self.timescale_cooldown = MIN_SILENCE_GROW_INTERVAL;
+                    return;
+                }
+
+                // (b) WSOLA expand ONLY as an imminent-underrun defence: the
+                // buffer is one frame from empty and the next callback would
+                // starve outright. Being merely below target is no longer
+                // sufficient — that is what the rate-limited ramp and path (a)
+                // are for. Still gated to quiet-but-not-silent content so the
+                // crude single-period insert stays masked, with the 0.9 NCC gate
+                // inside `expand` as the second line of defence.
+                if stretch_allowed
+                    && self.timescale_cooldown == 0
+                    && self.buffer.occupied_count() <= 1
+                    && (SILENCE_RMS..ARTIFACT_MASK_RMS).contains(&rms)
+                    && let Some(inserted_samples) = self
+                        .timescale
+                        .expand(self.decoder.decoded(), &mut self.playback_buf)
                 {
                     let inserted_frames = inserted_samples as f32 / OPUS_FRAME_SAMPLES as f32;
                     self.flow.adjust_filtered_level(inserted_frames);
-                    self.timescale_cooldown = MIN_TIMESCALE_INTERVAL;
+                    self.timescale_cooldown = MIN_EXPAND_INTERVAL;
                     tracing::trace!(
-                        "[JitterMgr] Expand: filtered={:.1}, low={}, inserted_frames={:.2}",
+                        "[JitterMgr] Expand: filtered={:.1}, low={}, occupied={}, inserted_frames={:.2}",
                         filtered,
                         low_limit,
+                        self.buffer.occupied_count(),
                         inserted_frames,
                     );
                     return;
@@ -532,23 +646,51 @@ impl JitterBufferManager {
             self.flow.gap_hold_count = 0;
             self.flow.starvation_count += 1;
             if self.flow.starvation_count == 1 {
+                // Snap the filtered level to the truth. The IIR time constant is
+                // ~1.3s at a large target, so without this the drain/expand
+                // decision spends the whole recovery acting on a pre-starvation
+                // reading of a buffer that is, right now, empty.
+                self.flow.filtered_buffer_level = 0.0;
                 tracing::warn!(
-                    "[JitterMgr] Starvation started: effective_target={}, ema_jitter={:.2}, ema_peak={:.2}",
+                    "[JitterMgr] Starvation started: effective_target={}, probe_floor={}, max_gap={:.1}, ema_jitter={:.2}, burst={}",
                     self.control.effective_target,
+                    self.control.probe_floor(),
+                    self.stats.max_gap_frames(),
                     self.stats.ema_jitter,
-                    self.stats.ema_peak,
+                    self.stats.burst_detected(),
                 );
+            }
+            if self.flow.starvation_count == REBUFFER_AFTER {
+                tracing::info!(
+                    "[JitterMgr] Rebuffering after starvation: effective_target={}, max_gap={:.1}",
+                    self.control.effective_target,
+                    self.stats.max_gap_frames(),
+                );
+                self.flow.is_prebuffering = true;
             }
         }
 
-        if self.flow.missing_count > MAX_MISSING {
-            self.trigger_reset();
-            self.playback_buf
-                .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+        if self.check_reset_on_missing() {
             return;
         }
 
         self.generate_plc();
+    }
+
+    /// Shared `missing_count` → stream-reset check. Returns `true` when a reset
+    /// was triggered and the caller must return immediately (a frame of silence
+    /// has already been queued).
+    ///
+    /// Extracted so the prebuffer early-return path can run it too: without that,
+    /// a total outage entered during rebuffering would never reach the reset.
+    fn check_reset_on_missing(&mut self) -> bool {
+        if self.flow.missing_count > Self::max_missing_for(self.network_link) {
+            self.trigger_reset();
+            self.playback_buf
+                .extend(std::iter::repeat_n(0.0, OPUS_FRAME_SAMPLES));
+            return true;
+        }
+        false
     }
 
     /// Flush buffer down to `flush_to` frames with a WSOLA crossfade across
@@ -596,7 +738,7 @@ impl JitterBufferManager {
     fn trigger_reset(&mut self) {
         tracing::warn!(
             "[JitterMgr] Stream reset: missing_count exceeded {}ms silence threshold",
-            MAX_MISSING * MILLIS_PER_FRAME,
+            Self::max_missing_for(self.network_link) * MILLIS_PER_FRAME,
         );
         self.buffer.reset();
         self.flow.reset_on_stream_restart();
@@ -643,6 +785,7 @@ mod tests {
     use opus::{Application, Channels, Decoder, Encoder};
     use ringbuf::HeapRb;
     use std::time::Instant;
+    use std::time::Duration;
 
     /// MIN_DEPTH = ceil(40ms / MILLIS_PER_FRAME)
     const MIN_DEPTH: u32 = 40 / MILLIS_PER_FRAME;
@@ -723,6 +866,215 @@ mod tests {
         pkt
     }
 
+    /// A tone packet with an explicit arrival time and amplitude. The two
+    /// convenience builders above derive arrival from `seq`, which makes them
+    /// useless for simulating a DTIM timeline (gap, then a burst that all lands
+    /// at once). `amp = 0.03` gives rms ≈ 0.021 — inside
+    /// `SILENCE_RMS..ARTIFACT_MASK_RMS`, i.e. exactly the "quiet but not silent"
+    /// band where the old code fired its expand click train.
+    fn make_tone_packet_at(encoder: &mut Encoder, seq: u64, arrival: Instant, amp: f32) -> RawPacket {
+        let ch = OPUS_CHANNELS as usize;
+        let frames = OPUS_FRAME_SAMPLES / ch;
+        let mut pcm = vec![0.0f32; OPUS_FRAME_SAMPLES];
+        let base_frame = seq * frames as u64;
+        for i in 0..frames {
+            let t = (base_frame + i as u64) as f32 / OPUS_SAMPLE_RATE as f32;
+            let s = (2.0 * std::f32::consts::PI * 200.0 * t).sin() * amp;
+            for c in 0..ch {
+                pcm[i * ch + c] = s;
+            }
+        }
+        let d = encoder.encode_vec_float(&pcm, 1500).unwrap();
+        let payload_len = d.len();
+        let mut pkt = RawPacket::zeroed();
+        pkt.seq_num = seq;
+        pkt.payload_data[..payload_len].copy_from_slice(&d);
+        pkt.payload_len = payload_len;
+        pkt.arrival_time = arrival;
+        pkt
+    }
+
+    /// Build a manager with an explicit config — `setup_env`'s `test_config` has a
+    /// 200ms comfort cap, too shallow to hold a 200ms DTIM gap.
+    fn setup_env_with(
+        config: JitterConfig,
+        link: NetworkLink,
+    ) -> (
+        JitterBufferManager,
+        Encoder,
+        ringbuf::HeapProd<RawPacket>,
+        ringbuf::HeapCons<RawPacket>,
+    ) {
+        let decoder = Decoder::new(OPUS_SAMPLE_RATE, Channels::Stereo).unwrap();
+        let encoder = Encoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
+        let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let config_ref = Arc::new(std::sync::RwLock::new(config));
+        let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode, link);
+        let rb = HeapRb::<RawPacket>::new(4000);
+        let (prod, cons) = rb.split();
+        (manager, encoder, prod, cons)
+    }
+
+    /// **Click-train regression.** The field report was "on every buffer increase
+    /// I heard fast-clicking noise artifacts". Cause: any callback with the
+    /// filtered level below `low_limit` went straight to WSOLA `expand`, which
+    /// inserts exactly one pitch period per call. At the shared 60ms cooldown a
+    /// raised target produced a ~17Hz train of OLA splices for seconds on end.
+    ///
+    /// Expand is now an imminent-underrun defence only (`occupied <= 1`). With a
+    /// deep target and a comfortably non-empty buffer the operation count must
+    /// stay exactly flat — and the tail of the test proves the defence still
+    /// fires when the buffer really is one frame from empty.
+    #[test]
+    fn below_target_with_a_healthy_buffer_must_not_fire_an_expand_train() {
+        // A 150ms floor puts `low_limit` at 11 frames — far above the occupancy we
+        // hold — without needing to fake any controller state.
+        let config = JitterConfig {
+            min_depth_ms: 150,
+            comfort_cap_ms: 400,
+            peak_decay_halflife_ms: 0,
+            resume_threshold_pct: 0.5,
+            static_target_ms: None,
+        };
+        let (mut manager, mut encoder, mut prod, mut cons) =
+            setup_env_with(config, NetworkLink::Wifi2_4Ghz);
+        let base = Instant::now();
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        let mut seq = 1u64;
+
+        // Prebuffer, then drain down to a modest occupancy. `filtered` starts at
+        // zero and climbs slowly, so it stays well under `low_limit` throughout.
+        for _ in 0..16 {
+            let arrival = base + Duration::from_millis(seq * 10);
+            assert!(
+                prod.try_push(make_tone_packet_at(&mut encoder, seq, arrival, 0.03))
+                    .is_ok()
+            );
+            seq += 1;
+        }
+        manager.ingest_packets(&mut cons);
+        for _ in 0..10 {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(!manager.flow.is_prebuffering);
+
+        // Steady state: one packet in, one frame out — permanently below target,
+        // never near empty.
+        let stretches_before = manager.timescale.op_count();
+        let mut saw_below_target = false;
+        for _ in 0..300 {
+            let arrival = base + Duration::from_millis(seq * 10);
+            assert!(
+                prod.try_push(make_tone_packet_at(&mut encoder, seq, arrival, 0.03))
+                    .is_ok()
+            );
+            seq += 1;
+            manager.ingest_packets(&mut cons);
+            manager.fill_output(&mut output, 1.0);
+            let (low, _) = TargetController::buffer_limits(manager.control.effective_target);
+            if manager.flow.filtered_buffer_level < low as f32
+                && manager.buffer.occupied_count() > 1
+            {
+                saw_below_target = true;
+            }
+        }
+        assert!(
+            saw_below_target,
+            "test never reached the below-target-but-healthy state it exists to cover",
+        );
+        assert_eq!(
+            manager.timescale.op_count(),
+            stretches_before,
+            "being below target with a healthy buffer must NOT splice — {} expands fired, \
+             this is the click train",
+            manager.timescale.op_count() - stretches_before,
+        );
+
+        // Positive control: drain to the last frame. Expand must still defend.
+        for _ in 0..40 {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(
+            manager.timescale.op_count() > stretches_before,
+            "expand must still defend an imminent underrun",
+        );
+    }
+
+    /// **The field complaint, end to end.** Router A/B on 2.4GHz with the screen
+    /// off: DTIM batching delivers a 200ms silence followed by a 20-packet burst,
+    /// forever. v3 walked the target monotonically to the comfort cap and stayed
+    /// there — "my jitter algorithm fails to find Lowest Most Stable Buffer
+    /// Range". This asserts both halves of the contract: cover the observed gap
+    /// while it is happening, and come back down once it stops.
+    #[test]
+    fn dtim_gap_raises_the_target_then_a_clean_link_brings_it_back_down() {
+        let config = JitterConfig {
+            min_depth_ms: 30,
+            comfort_cap_ms: 800,
+            peak_decay_halflife_ms: 0,
+            resume_threshold_pct: 0.5,
+            static_target_ms: None,
+        };
+        let (mut manager, mut encoder, mut prod, mut cons) =
+            setup_env_with(config, NetworkLink::Wifi2_4Ghz);
+        let base = Instant::now();
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        let mut seq = 1u64;
+        let mut now = base;
+
+        // --- Phase 1: 30 DTIM cycles. Each is a 200ms gap, then 20 packets
+        // (200ms of audio) landing together, then 20 playback callbacks.
+        for _ in 0..30 {
+            now += Duration::from_millis(200);
+            for i in 0..20u64 {
+                let arrival = now + Duration::from_micros(i * 50);
+                assert!(
+                    prod.try_push(make_tone_packet_at(&mut encoder, seq, arrival, 0.03))
+                        .is_ok()
+                );
+                seq += 1;
+            }
+            manager.ingest_packets(&mut cons);
+            for _ in 0..20 {
+                manager.fill_output(&mut output, 1.0);
+            }
+        }
+
+        let raised = manager.control.effective_target;
+        assert!(
+            raised >= 18,
+            "a repeating 200ms delivery gap must lift the target to ~20 frames, got {raised}",
+        );
+        assert!(
+            raised <= 40,
+            "the target must cover the gap, not double it — got {raised}",
+        );
+
+        // --- Phase 2: the link goes clean (screen back on). 10ms arrivals, one
+        // packet per callback, for longer than the 24s gap window.
+        for _ in 0..4000 {
+            now += Duration::from_millis(10);
+            assert!(
+                prod.try_push(make_tone_packet_at(&mut encoder, seq, now, 0.03))
+                    .is_ok()
+            );
+            seq += 1;
+            manager.ingest_packets(&mut cons);
+            manager.fill_output(&mut output, 1.0);
+            // Simulated arrivals advance an `Instant` we construct; the
+            // floor-relax timers read the real clock, which a test can't move.
+            manager.control.rewind_floor_clock_for_test();
+        }
+
+        let settled = manager.control.effective_target;
+        assert!(
+            settled <= 6,
+            "a clean link must bring the target back to the lowest stable range \
+             (≤6 frames); got {settled} — this is the v3 ratchet",
+        );
+    }
+
     #[test]
     fn should_output_silence_while_prebuffering_until_target_depth() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
@@ -755,10 +1107,13 @@ mod tests {
     fn should_trigger_plc_and_recover_on_single_packet_loss() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
-        // Fill to exactly MIN_DEPTH to exit prebuffering.
+        // Loud packets throughout: this test counts callbacks against frames, and
+        // on *silent* program material the free-silence growth path legitimately
+        // emits two frames for one packet whenever occupancy is below target,
+        // which decouples the two. Real audio keeps one callback == one frame.
         for i in 1..=MIN_DEPTH {
             assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
                     .is_ok()
             );
         }
@@ -769,7 +1124,7 @@ mod tests {
         // Push a packet with a gap (skip one seq num) to simulate packet loss.
         let gap_seq = (MIN_DEPTH + 2) as u64;
         assert!(
-            prod.try_push(make_packet(&mut encoder, gap_seq, base_time))
+            prod.try_push(make_loud_packet(&mut encoder, gap_seq, base_time))
                 .is_ok()
         );
         manager.ingest_packets(&mut cons);
@@ -790,18 +1145,26 @@ mod tests {
     }
 
     #[test]
-    fn sustained_starvation_should_play_plc_not_rebuffer() {
-        // NetEQ alignment: mid-stream starvation must NEVER re-enter prebuffering.
-        // The manager plays PLC (expand) indefinitely and only the MAX_MISSING
-        // (1s) timeout triggers a decoder reset — matching NetEQ's kExpand /
-        // kReinitAfterExpands model. This replaces the old
-        // `should_enter_prebuffering_after_sustained_starvation` test.
+    fn sustained_starvation_rebuffers_once_and_keeps_playing_plc() {
+        // v5 contract change. Up to v4 a mid-stream starvation never re-entered
+        // prebuffering: playback resumed on the very first frame that arrived
+        // (`has_next`). On loud content that is the *only* way depth can be
+        // banked — packets arrive at real time and the DAC consumes at real time,
+        // and both growth paths (silence-grow, expand) are gated off — so the
+        // buffer could only grow by starving again. The field log shows the
+        // result: six starvation events in six seconds off a single delivery gap.
+        //
+        // Now, after REBUFFER_AFTER starved callbacks, the playhead pauses and
+        // refills to `resume_threshold_pct * target` in one go. PLC keeps
+        // playing throughout — the pause is silent to the user in exactly the way
+        // the gap already was.
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
-        // Fill enough to exit prebuffering.
+        // Loud packets: one callback must equal one frame for the starvation
+        // count to be meaningful (see the note in the PLC test).
         for i in 1..=MIN_DEPTH {
             assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
                     .is_ok()
             );
         }
@@ -811,28 +1174,225 @@ mod tests {
             manager.fill_output(&mut output, 1.0);
         }
         assert!(!manager.flow.is_prebuffering);
-        // Sustained starvation well past the old rebuffer threshold (10).
-        // is_prebuffering must remain false the entire time — PLC plays instead.
-        for _ in 1..=30 {
+
+        // Starve. The pause must arm exactly at REBUFFER_AFTER, not before.
+        for n in 1..=REBUFFER_AFTER {
             manager.fill_output(&mut output, 1.0);
-            assert!(
-                !manager.flow.is_prebuffering,
-                "Mid-stream starvation must play PLC, never re-enter prebuffering \
-                 (starvation_count={})",
-                manager.flow.starvation_count,
+            assert_eq!(
+                manager.flow.is_prebuffering,
+                n == REBUFFER_AFTER,
+                "rebuffer must arm on starved callback {REBUFFER_AFTER}, not {n}",
             );
         }
-        assert_eq!(manager.flow.starvation_count, 30);
+        assert_eq!(manager.flow.starvation_count, REBUFFER_AFTER);
+
+        // Keep starving. The pause holds, and `starvation_count` stops climbing:
+        // one gap is now one event, which is what stops the floor and the stats
+        // from being re-bumped six times over.
+        for _ in 1..=25 {
+            manager.fill_output(&mut output, 1.0);
+            assert!(manager.flow.is_prebuffering);
+        }
+        assert_eq!(
+            manager.flow.starvation_count, REBUFFER_AFTER,
+            "one delivery gap must produce exactly one starvation event",
+        );
+
+        // PLC (not digital silence) is what the pause outputs.
+        assert!(
+            output.iter().any(|s| s.abs() > 0.0),
+            "the rebuffer pause must keep generating PLC, not raw silence",
+        );
+    }
+
+    /// The rebuffer pause returns early, before the normal `missing_count`
+    /// bookkeeping. Without the guard inside that branch a permanent outage
+    /// entered during rebuffering would wait forever instead of resetting the
+    /// stream.
+    ///
+    /// The assertion is on a *reset-only* observable — the cleared gap window.
+    /// `is_prebuffering` and `missing_count == 0` are both true whether or not
+    /// the reset fired (the pause sets the former and skips the latter), so
+    /// neither can tell a working guard from a missing one.
+    #[test]
+    fn rebuffering_still_reaches_stream_reset_on_a_permanent_outage() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Learned link state that only `trigger_reset` clears.
+        manager.stats.record_gap(50.0, Instant::now());
+        assert!(manager.stats.max_gap_frames() > 40.0);
+
+        let limit = JitterBufferManager::max_missing_for(NetworkLink::Unknown);
+        for _ in 0..=limit {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert_eq!(
+            manager.stats.max_gap_frames(),
+            0.0,
+            "a permanent outage must still reach trigger_reset from inside the \
+             rebuffer pause; the gap window is still holding learned state",
+        );
+        assert!(manager.flow.is_prebuffering);
+        assert_eq!(manager.flow.missing_count, 0);
+        assert_eq!(manager.flow.starvation_count, 0);
+    }
+
+    /// The Router A machine-gun as a unit test. An outage, then a *sliver* of
+    /// frames too thin to sustain playback, then more outage. Pre-v5 the sliver
+    /// resumed playback (`has_next`) and starved again three frames later, so one
+    /// delivery gap billed several starvation events, several floor bumps and
+    /// several audible stutters. The rebuffer pause must collapse the whole
+    /// cluster into one event, and must still release the moment a real burst
+    /// clears the resume threshold.
+    #[test]
+    fn rebuffer_pause_collapses_a_starvation_cluster_into_one_event() {
+        let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
+        let base_time = Instant::now();
+        for i in 1..=MIN_DEPTH {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        for _ in 1..=MIN_DEPTH {
+            manager.fill_output(&mut output, 1.0);
+        }
+
+        // Outage 1 — long enough to arm the pause.
+        for _ in 1..=REBUFFER_AFTER {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(manager.flow.is_prebuffering);
+        let floor_before = manager.control.probe_floor();
+
+        // A 3-frame sliver: one below the resume threshold, which is floored at
+        // min_depth precisely so a sliver can never restart the playhead.
+        for i in (MIN_DEPTH + 1)..=(MIN_DEPTH + 3) {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+
+        // Outage 2. Playback must not have resumed on the sliver, so this cannot
+        // become a second starvation event.
+        for _ in 1..=15 {
+            manager.fill_output(&mut output, 1.0);
+        }
+        assert!(
+            manager.flow.is_prebuffering,
+            "a sliver below the resume threshold must not restart the playhead",
+        );
+        assert_eq!(
+            manager.buffer.occupied_count(),
+            3,
+            "the paused playhead must not have consumed the sliver",
+        );
+        assert_eq!(
+            manager.flow.starvation_count, REBUFFER_AFTER,
+            "the second outage must not bill a second starvation event",
+        );
+        assert_eq!(
+            manager.control.probe_floor(),
+            floor_before,
+            "one delivery gap must cost at most one floor bump",
+        );
+
+        // A real burst clears the threshold — the pause must release, and the
+        // single event pays its single floor bump here.
+        for i in (MIN_DEPTH + 4)..=(MIN_DEPTH + 8) {
+            assert!(
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        manager.fill_output(&mut output, 1.0);
+        assert!(
+            !manager.flow.is_prebuffering,
+            "the pause must release once the buffer clears the resume threshold",
+        );
+        assert_eq!(
+            manager.flow.starvation_count, 0,
+            "recovery must clear the starvation counter",
+        );
+        assert!(
+            manager.control.probe_floor() > floor_before,
+            "the one event must still teach the floor exactly once",
+        );
+    }
+
+    /// Root cause 5. With virgin stats the histogram is still on its geometric
+    /// seed (p95 = 4 frames) and the gap window is empty, so `target` says ~4 —
+    /// but no link delivers that cleanly from cold. Every field log starved on
+    /// the link's first ordinary 50-90ms gap because the startup flush had just
+    /// thrown that depth away. The 8-frame floor is what makes the first minute
+    /// survivable.
+    ///
+    /// Uses a real profile (`min_depth_ms: 30`, as every Auto profile in
+    /// `types.rs` does) rather than `test_config`'s 40ms: at 40ms the older
+    /// `min_depth * 2` term already reached 8 by itself and would mask a
+    /// regression of the floor.
+    #[test]
+    fn startup_flush_never_leaves_fewer_than_eight_frames() {
+        let config = JitterConfig {
+            min_depth_ms: 30,
+            comfort_cap_ms: 400,
+            peak_decay_halflife_ms: 0,
+            resume_threshold_pct: 0.25,
+            static_target_ms: None,
+        };
+        let (mut manager, mut encoder, mut prod, mut cons) =
+            setup_env_with(config, NetworkLink::Wifi5Ghz);
+        let burst_arrival = Instant::now();
+        // 40 packets landing at once: the socket-buffer burst that accumulates
+        // while the DAC callback has not started consuming yet.
+        for i in 1..=40u64 {
+            assert!(
+                prod.try_push(make_tone_packet_at(&mut encoder, i, burst_arrival, 0.5))
+                    .is_ok()
+            );
+        }
+        manager.ingest_packets(&mut cons);
+        assert_eq!(manager.buffer.occupied_count(), 40);
+
+        // The first callback completes prebuffering and runs the startup flush.
+        let mut output = vec![0.0; OPUS_FRAME_SAMPLES];
+        manager.fill_output(&mut output, 1.0);
+
+        assert!(!manager.flow.is_prebuffering);
+        assert!(
+            manager.buffer.occupied_count() >= 7,
+            "the startup flush must leave >= 8 frames (7 after this callback \
+             played one); left {}",
+            manager.buffer.occupied_count(),
+        );
     }
 
     #[test]
     fn should_fast_forward_past_large_udp_sequence_gap() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
-        // Fill base tracking
+        // Loud packets: one callback must equal one frame here (see the note in
+        // the PLC test) or the reorder-tolerance countdown can't be counted.
         for i in 1..=MIN_DEPTH {
             assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
                     .is_ok()
             );
         }
@@ -845,7 +1405,7 @@ mod tests {
         // while the playhead is currently looking for sequence (MIN_DEPTH + 1).
         let future_seq = MIN_DEPTH as u64 + 10;
         assert!(
-            prod.try_push(make_packet(&mut encoder, future_seq, base_time))
+            prod.try_push(make_loud_packet(&mut encoder, future_seq, base_time))
                 .is_ok()
         );
         manager.ingest_packets(&mut cons);
@@ -877,9 +1437,10 @@ mod tests {
         for _ in 1..=MIN_DEPTH {
             manager.fill_output(&mut output, 1.0);
         }
-        // 2. The 3 second Network Drop
-        // We simulate 150 frames (3 seconds) of empty calls
-        for _ in 1..=150 {
+        // 2. Network drop exceeding the link-aware timeout.
+        // setup_env() uses NetworkLink::Unknown → max_missing = 2000ms / 10 = 200 frames.
+        // We simulate 250 frames (2.5s) to comfortably exceed the threshold.
+        for _ in 1..=250 {
             manager.fill_output(&mut output, 1.0);
         }
         // The manager must be heavily in prebuffering mode, waiting out the extreme lag
@@ -969,7 +1530,7 @@ mod tests {
 
         // Even with massive jitter, static target should not change
         manager.stats.ema_jitter = 50.0;
-        manager.stats.ema_peak = 100.0;
+        manager.stats.record_gap(100.0, Instant::now());
         let target_after_jitter = manager.compute_target_depth(None);
         assert_eq!(
             target_after_jitter, expected,
@@ -1047,10 +1608,11 @@ mod tests {
     fn should_fast_forward_without_decoder_reset_on_small_gaps() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
-        // Fill base tracking
+        // Loud packets: one callback must equal one frame here (see the note in
+        // the PLC test) or the reorder-tolerance countdown can't be counted.
         for i in 1..=MIN_DEPTH {
             assert!(
-                prod.try_push(make_packet(&mut encoder, i as u64, base_time))
+                prod.try_push(make_loud_packet(&mut encoder, i as u64, base_time))
                     .is_ok()
             );
         }
@@ -1064,7 +1626,7 @@ mod tests {
         // playhead expects (MIN_DEPTH + 1).
         let future_seq = MIN_DEPTH as u64 + 3;
         assert!(
-            prod.try_push(make_packet(&mut encoder, future_seq, base_time))
+            prod.try_push(make_loud_packet(&mut encoder, future_seq, base_time))
                 .is_ok()
         );
         manager.ingest_packets(&mut cons);
@@ -1230,13 +1792,10 @@ mod tests {
         manager.control.ramp_goal = 12;
         manager.control.target_exit_count = 0;
 
-        // Simulate a single 100ms jitter spike.
-        manager.stats.ema_jitter = 0.0;
-        manager.stats.ema_peak = 0.0;
-
-        // Inject a spike that raises ema_jitter temporarily.
-        manager.stats.ema_jitter = 10.0; // This would compute a high raw_target.
-        manager.stats.ema_peak = 15.0;
+        // Simulate a single transient delivery spike: one 300ms gap is enough to
+        // send `raw_target` far outside the hysteresis band.
+        manager.stats.ema_jitter = 10.0;
+        manager.stats.record_gap(30.0, Instant::now());
 
         // Call process_next_frame once (no packets, will generate PLC).
         let mut output = vec![0.0; OPUS_FRAME_SAMPLES];

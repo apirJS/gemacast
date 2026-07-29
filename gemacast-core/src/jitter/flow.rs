@@ -80,12 +80,18 @@ impl PlaybackFlow {
 
     /// Partial reset on stream restart (matches the legacy `trigger_reset` field set):
     /// re-enters prebuffering and zeroes the missing/starvation/gap counters.
-    /// Deliberately leaves `filtered_buffer_level` and `starvation_recovery` untouched.
+    ///
+    /// `filtered_buffer_level` is snapped to zero rather than left to coast: the IIR
+    /// time constant is ~1.3s at a large target, so a stale pre-restart reading
+    /// survives well past the recovery guard and misdirects the very first
+    /// drain/expand decision after the stream comes back. `starvation_recovery` is
+    /// deliberately left untouched — a restart is not a reason to re-enable drain.
     pub fn reset_on_stream_restart(&mut self) {
         self.is_prebuffering = true;
         self.missing_count = 0;
         self.starvation_count = 0;
         self.gap_hold_count = 0;
+        self.filtered_buffer_level = 0.0;
     }
 }
 
