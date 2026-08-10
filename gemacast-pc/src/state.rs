@@ -56,12 +56,14 @@ impl DeviceRegistry for SharedMapDeviceRegistry {
         self.inner.lock().ok()?.remove(device_id)
     }
 
-    fn update_last_seen(&self, device_id: &DeviceId) {
+    fn update_last_seen(&self, device_id: &DeviceId) -> bool {
         if let Ok(mut map) = self.inner.lock()
             && let Some(device) = map.get_mut(device_id)
         {
             device.last_seen = std::time::Instant::now();
+            return true;
         }
+        false
     }
 
     fn get_addr(&self, device_id: &DeviceId) -> Option<SocketAddr> {

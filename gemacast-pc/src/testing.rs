@@ -337,10 +337,12 @@ pub mod mocks {
             self.inner.lock().unwrap().remove(device_id)
         }
 
-        fn update_last_seen(&self, device_id: &DeviceId) {
+        fn update_last_seen(&self, device_id: &DeviceId) -> bool {
             if let Some(device) = self.inner.lock().unwrap().get_mut(device_id) {
                 device.last_seen = std::time::Instant::now();
+                return true;
             }
+            false
         }
 
         fn get_addr(&self, device_id: &DeviceId) -> Option<SocketAddr> {
