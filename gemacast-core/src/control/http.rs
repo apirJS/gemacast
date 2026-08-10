@@ -68,6 +68,10 @@ impl<P: ProcessLister + 'static> ControlServerState<P> {
             sender_name: self.sender_name.clone(),
             is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
             pc_network_link: None,
+            // This is the fallback used when the dispatcher never answered, so
+            // the registry was never consulted. `None` means "unknown", which
+            // callers resolve conservatively with a full reconnect.
+            device_registered: None,
         }
     }
 }
@@ -154,6 +158,8 @@ async fn handle_connect<P: ProcessLister + 'static>(
                 sender_name: state.sender_name.clone(),
                 is_offline: true,
                 pc_network_link: pc_link,
+                // The connect was refused, so nothing was registered.
+                device_registered: Some(false),
             }),
         );
     }
@@ -383,6 +389,7 @@ mod tests {
                     sender_name: "Test".to_string(),
                     is_offline: false,
                     pc_network_link: None,
+                    device_registered: Some(true),
                 });
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -506,6 +513,7 @@ mod tests {
                     sender_name: "Test Sender".to_string(),
                     is_offline: false,
                     pc_network_link: None,
+                    device_registered: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Probe"),
