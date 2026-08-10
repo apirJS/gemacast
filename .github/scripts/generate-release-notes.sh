@@ -9,11 +9,35 @@ REPO="${REPO:?REPO is required}"
 VERSION="${TAG#v}"
 BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-# Extract the changelog for the current version from release-plz generated CHANGELOG.md
-if [ -f "gemacast-pc/CHANGELOG.md" ]; then
-  awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" gemacast-pc/CHANGELOG.md > current_changelog.md
-else
-  echo "" > current_changelog.md
+# Extract the changelog for the current version from the release-please generated
+# CHANGELOG.md at the repo root.
+#
+# This path is load-bearing and was wrong until v0.3.0: it pointed at
+# gemacast-pc/CHANGELOG.md, a leftover from the release-plz era that stopped being
+# written at 0.1.0. release-please is configured with a single "." package
+# (release-please-config.json), so the only changelog it maintains is this one. The
+# awk found no matching heading in the stale file, the extraction came back empty,
+# and every release since shipped with an empty "### Changelog" section.
+CHANGELOG_PATH="CHANGELOG.md"
+: > current_changelog.md
+if [ -f "$CHANGELOG_PATH" ]; then
+  awk "/^## \[${VERSION}\]/ {flag=1; next} /^## \[/ {if(flag) exit} flag" "$CHANGELOG_PATH" > current_changelog.md
+fi
+
+# An empty extraction is a silent failure that still produces a publishable release,
+# which is exactly how the wrong path survived three releases. Make it loud in the
+# Actions log and visible in the notes themselves, rather than shipping a blank
+# section again.
+#
+# Test for non-whitespace content, not `-s`: the awk emits the blank lines that
+# follow the version heading even when it matches nothing useful, and a one-byte
+# newline is "non-empty" to `-s` while rendering as an empty section on GitHub.
+if ! grep -q '[^[:space:]]' current_changelog.md; then
+  echo "::error title=Empty changelog::No '## [${VERSION}]' section with content found in ${CHANGELOG_PATH}. Falling back to a link."
+  {
+    echo ""
+    echo "See [CHANGELOG.md](https://github.com/${REPO}/blob/${TAG}/CHANGELOG.md) for the full list of changes."
+  } > current_changelog.md
 fi
 
 # Preserve the existing release body (contains cargo-dist checksum table)
