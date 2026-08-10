@@ -5598,13 +5598,11 @@ mod tests {
         manager.fill_output(&mut output, 1.0);
         assert!(!manager.flow.is_prebuffering);
 
-        let mut seq = MIN_DEPTH as u64 + 1;
-        for _ in 0..40 {
+        for seq in (MIN_DEPTH as u64 + 1..).take(40) {
             assert!(
                 prod.try_push(make_loud_packet(&mut encoder, seq, base_time))
                     .is_ok()
             );
-            seq += 1;
             manager.ingest_packets(&mut cons);
             manager.fill_output(&mut output, 1.0);
         }
@@ -6016,8 +6014,7 @@ mod tests {
 
         // One loud frame, then a run of quiet ones. Amplitude 0.001 is two orders
         // below the masking threshold, so the mean must land far under the peak.
-        let mut seq = MIN_DEPTH as u64 + 1;
-        for i in 0..30 {
+        for (i, seq) in (MIN_DEPTH as u64 + 1..).take(30).enumerate() {
             let amp = if i == 0 { 0.9 } else { 0.001 };
             assert!(
                 prod.try_push(make_tone_packet_at(
@@ -6028,7 +6025,6 @@ mod tests {
                 ))
                 .is_ok()
             );
-            seq += 1;
             manager.ingest_packets(&mut cons);
             manager.fill_output(&mut output, 1.0);
         }
