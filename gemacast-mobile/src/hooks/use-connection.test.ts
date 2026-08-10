@@ -12,6 +12,8 @@ import {
   disconnect,
   handleSenderTimeout,
   handleForceDisconnect,
+  handleLinkLost,
+  handleLinkRecovered,
   changeAudioSource,
 } from './use-connection';
 import { ErrorCode } from '../core/error';
@@ -27,6 +29,8 @@ beforeEach(() => {
     probe_sender: undefined,
     establish_websocket: undefined,
     change_audio_source: undefined,
+    start_link_recovery: undefined,
+    stop_link_recovery: undefined,
   });
   useAppStore.getState().init(makeDeviceInfo());
   useAppStore.getState().setStatus(Status.Listening);
@@ -176,6 +180,98 @@ describe('handleForceDisconnect', () => {
     });
     handleForceDisconnect(false);
     expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+  });
+});
+
+describe('handleLinkLost', () => {
+  it('starts link recovery for the sender that was lost', async () => {
+    const sender = makeDiscoveredSender({ addr: '10.0.0.7:9000' });
+    useAppStore.getState().patch({ connectedSender: sender, status: Status.Playing });
+
+    await handleLinkLost();
+
+    const call = invokeCalls.find((c) => c.cmd === 'start_link_recovery');
+    expect(call).toBeTruthy();
+    expect((call?.args as Record<string, unknown>).ip).toBe('10.0.0.7');
+  });
+
+  it('never forgets the sender — recovery has to have something to reconnect to', async () => {
+    const sender = makeDiscoveredSender();
+    useAppStore.getState().patch({
+      connectedSender: sender,
+      lastConnectedSender: sender,
+      status: Status.Playing,
+    });
+
+    await handleLinkLost();
+
+    expect(useAppStore.getState().connectedSender).toBeNull();
+    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().status).toBe(Status.Listening);
+    expect(useAppStore.getState().isSuspended).toBe(true);
+  });
+
+  it('tears the session down before arming the prober', async () => {
+    useAppStore
+      .getState()
+      .patch({ connectedSender: makeDiscoveredSender(), status: Status.Playing });
+
+    await handleLinkLost();
+
+    // kill_playback cancels recovery on the Rust side, so a prober armed
+    // before it would be aborted by the very teardown it followed.
+    const killIndex = invokeCalls.findIndex((c) => c.cmd === 'kill_playback');
+    const startIndex = invokeCalls.findIndex((c) => c.cmd === 'start_link_recovery');
+    expect(killIndex).toBeGreaterThanOrEqual(0);
+    expect(startIndex).toBeGreaterThan(killIndex);
+  });
+
+  it('does nothing when there was no live session to lose', async () => {
+    useAppStore.getState().patch({ connectedSender: null, status: Status.Listening });
+
+    await handleLinkLost();
+
+    expect(invokeCalls.find((c) => c.cmd === 'start_link_recovery')).toBeUndefined();
+  });
+});
+
+describe('handleLinkRecovered', () => {
+  it('reconnects to the sender the link was lost from', async () => {
+    const sender = makeDiscoveredSender({ addr: '10.0.0.8:9000' });
+    useAppStore.getState().patch({
+      lastConnectedSender: sender,
+      status: Status.Listening,
+      isSuspended: true,
+    });
+
+    await handleLinkRecovered(true);
+
+    expect(useAppStore.getState().status).toBe(Status.Connected);
+    const call = invokeCalls.find((c) => c.cmd === 'connect_to_sender');
+    expect((call?.args as Record<string, unknown>).ip).toBe('10.0.0.8');
+  });
+
+  it('reconnects the same way whether or not the PC still had us registered', async () => {
+    const sender = makeDiscoveredSender();
+    useAppStore.getState().patch({ lastConnectedSender: sender, status: Status.Listening });
+    await handleLinkRecovered(false);
+
+    // `deviceRegistered` is observability only today: both answers take the
+    // full handshake, so neither can skip it.
+    expect(invokeCalls.filter((c) => c.cmd === 'connect_to_sender')).toHaveLength(1);
+    expect(useAppStore.getState().status).toBe(Status.Connected);
+  });
+
+  it('does not reconnect on top of a session the user already restored', async () => {
+    useAppStore.getState().patch({
+      lastConnectedSender: makeDiscoveredSender(),
+      connectedSender: makeDiscoveredSender(),
+      status: Status.Connected,
+    });
+
+    await handleLinkRecovered(true);
+
+    expect(invokeCalls.find((c) => c.cmd === 'connect_to_sender')).toBeUndefined();
   });
 });
 
