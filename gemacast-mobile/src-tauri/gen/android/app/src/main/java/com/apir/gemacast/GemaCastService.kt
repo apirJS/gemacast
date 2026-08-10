@@ -43,7 +43,15 @@ class GemaCastService : Service() {
     }
 
     private val binder = LocalBinder()
-    private lateinit var mediaSession: MediaSessionCompat
+
+    // Null between streams. `stopStreaming()` releases the session outright rather
+    // than merely deactivating it, because `MainActivity` binds with
+    // BIND_AUTO_CREATE and Android does not destroy a started+bound service on
+    // `stopSelf()` — so `onDestroy()` (the old release site) never runs while the
+    // app is in the foreground, and the panel kept rendering a dead session.
+    // A released MediaSessionCompat cannot be reactivated, so each stream gets a
+    // fresh one via `ensureMediaSession()`; null is the "no session held" guard.
+    private var mediaSession: MediaSessionCompat? = null
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -56,7 +64,14 @@ class GemaCastService : Service() {
     override fun onCreate() {
         super.onCreate()
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        mediaSession = MediaSessionCompat(this, "GemaCastSession").apply {
+        createNotificationChannel()
+    }
+
+    // Creates the media session if this service is not currently holding one.
+    // Idempotent — the START branch may arrive repeatedly for one stream.
+    private fun ensureMediaSession(): MediaSessionCompat {
+        mediaSession?.let { return it }
+        val session = MediaSessionCompat(this, "GemaCastSession").apply {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
                     sendUdpCommand("RESUME")
@@ -73,13 +88,30 @@ class GemaCastService : Service() {
                 }
             })
         }
-        createNotificationChannel()
+        mediaSession = session
+        return session
+    }
+
+    // Releases the session and drops it from the system's MediaSessionManager.
+    // Null-guarded, so the `stopStreaming()` → `onDestroy()` double-release path
+    // is a no-op on the second call.
+    private fun releaseMediaSession() {
+        val session = mediaSession ?: return
+        mediaSession = null
+        session.isActive = false
+        // Clear the text the panel draws, and disarm the transport controls so a
+        // stale panel cannot fire RESUME into a torn-down session.
+        session.setMetadata(null)
+        session.setCallback(null)
+        session.release()
     }
 
     private fun updatePlaybackState(playing: Boolean) {
+        // No session means no stream: nothing to render, nothing to update.
+        val session = mediaSession ?: return
         isPlayingState = playing
         val state = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        mediaSession.setPlaybackState(
+        session.setPlaybackState(
             PlaybackStateCompat.Builder()
                 // 0f playback speed tells the system the seekbar shouldn't progress
                 .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
@@ -91,9 +123,9 @@ class GemaCastService : Service() {
                 )
                 .build()
         )
-        // explicitly clearing duration and providing title/artist 
+        // explicitly clearing duration and providing title/artist
         // to encourage the lockscreen to treat it as a live radio broadcast
-        mediaSession.setMetadata(
+        session.setMetadata(
             MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Streaming audio from PC…")
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Gemacast Live")
@@ -217,6 +249,12 @@ class GemaCastService : Service() {
     }
 
     private fun buildAndShowNotification() {
+        // `MediaStyle().setMediaSession(token)` captures the token at build time.
+        // A fresh session per stream means a fresh token, and the START branch
+        // calls `ensureMediaSession()` BEFORE `updatePlaybackState(true)` — that
+        // order is load-bearing; inverting it would bind the notification to a
+        // session that is not the one the panel controls.
+        val sessionToken = mediaSession?.sessionToken ?: return
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -245,7 +283,7 @@ class GemaCastService : Service() {
             .setStyle(
                 MediaStyle()
                     .setShowActionsInCompactView(0, 1)
-                    .setMediaSession(mediaSession.sessionToken)
+                    .setMediaSession(sessionToken)
             )
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -300,7 +338,9 @@ class GemaCastService : Service() {
             else -> { // "START" or null
                 val isExclusive = intent?.getBooleanExtra("EXCLUSIVE_MODE", false) ?: false
                 isRunning = true
-                mediaSession.isActive = true
+                // Must precede `updatePlaybackState(true)` below — see the token
+                // note in `buildAndShowNotification()`.
+                ensureMediaSession().isActive = true
                 acquireWakeLock()
                 if (isExclusive) {
                     requestAudioFocus()
@@ -323,12 +363,19 @@ class GemaCastService : Service() {
 
     private fun stopStreaming() {
         isRunning = false
-        mediaSession.isActive = false
-        mediaSession.setPlaybackState(
-            PlaybackStateCompat.Builder()
-                .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
-                .build()
-        )
+        // Post the terminal state first so any attached controller observes
+        // STATE_STOPPED, then drop the session entirely. Deactivating alone is
+        // not enough: an unreleased session stays in MediaSessionManager and OEM
+        // panels keep rendering its last-known metadata.
+        mediaSession?.let { session ->
+            session.isActive = false
+            session.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
+                    .build()
+            )
+        }
+        releaseMediaSession()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         highPerfWifiLock?.let { if (it.isHeld) it.release() }
@@ -386,8 +433,7 @@ class GemaCastService : Service() {
         highPerfWifiLock = null
         lowLatencyWifiLock?.let { if (it.isHeld) it.release() }
         lowLatencyWifiLock = null
-        mediaSession.isActive = false
-        mediaSession.release()
+        releaseMediaSession()
         scope.cancel()
     }
 }
