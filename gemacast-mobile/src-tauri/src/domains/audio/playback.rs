@@ -104,7 +104,10 @@ pub fn spawn_session_receiver(
                     gemacast_core::domain::error::NetworkError::ConnectionLost
                 )
             ) {
-                notifier.emit_force_disconnect();
+                // The receiver watchdog gave up on its own — nobody asked for
+                // this. Distinct from `force-disconnect` so the frontend can
+                // attempt probe-driven recovery instead of just going idle.
+                notifier.emit_link_lost();
             } else {
                 notifier.emit_playback_error(e.to_string());
             }

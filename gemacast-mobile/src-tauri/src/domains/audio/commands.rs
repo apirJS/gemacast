@@ -177,6 +177,31 @@ pub async fn probe_sender(
 }
 
 #[tauri::command]
+pub async fn start_link_recovery(
+    ip: String,
+    device_id: DeviceId,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!(
+        "[Cmd] start_link_recovery: ip={}, device={:?}",
+        ip,
+        device_id
+    );
+    let ip_addr = ip
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    state.audio.start_link_recovery(ip_addr, device_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_link_recovery(state: State<'_, AppState>) -> Result<(), String> {
+    tracing::info!("[Cmd] stop_link_recovery");
+    state.audio.stop_link_recovery();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn change_audio_source(
     ip: String,
     device_id: DeviceId,

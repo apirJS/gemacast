@@ -29,6 +29,9 @@ pub mod mocks {
         SenderDiscovered(DiscoveredDevice),
         SenderTimeout(DeviceId),
         ForceDisconnect,
+        LinkLost,
+        LinkRecovered { device_registered: Option<bool> },
+        LinkRecoveryGaveUp,
         SenderConnected(String),
         AudioTelemetry { latency: f32, is_active: bool },
         PlaybackError(String),
@@ -74,6 +77,24 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(FrontendEvent::ForceDisconnect);
+        }
+
+        fn emit_link_lost(&self) {
+            self.events.lock().unwrap().push(FrontendEvent::LinkLost);
+        }
+
+        fn emit_link_recovered(&self, device_registered: Option<bool>) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(FrontendEvent::LinkRecovered { device_registered });
+        }
+
+        fn emit_link_recovery_gave_up(&self) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(FrontendEvent::LinkRecoveryGaveUp);
         }
 
         fn emit_sender_connected(&self, ip: String) {
@@ -276,6 +297,10 @@ pub mod mocks {
         pub calls: Mutex<Vec<ControlClientCall>>,
         connect_result: Mutex<Result<(), String>>,
         disconnect_result: Mutex<Result<(), String>>,
+        /// Number of probes still to be failed before one succeeds.
+        /// `u32::MAX` stands for "never succeeds".
+        probe_failures: Mutex<u32>,
+        probe_device_registered: Mutex<Option<bool>>,
     }
 
     impl MockSenderControlClient {
@@ -284,7 +309,27 @@ pub mod mocks {
                 calls: Mutex::new(Vec::new()),
                 connect_result: Mutex::new(Ok(())),
                 disconnect_result: Mutex::new(Ok(())),
+                probe_failures: Mutex::new(0),
+                probe_device_registered: Mutex::new(Some(true)),
             }
+        }
+
+        /// Fail the first `n` probes, then succeed. Models a PC that comes back.
+        pub fn with_probe_failures(self, n: u32) -> Self {
+            *self.probe_failures.lock().unwrap() = n;
+            self
+        }
+
+        /// Fail every probe. Models a PC that never comes back.
+        pub fn with_unreachable_probe(self) -> Self {
+            *self.probe_failures.lock().unwrap() = u32::MAX;
+            self
+        }
+
+        /// What a successful probe reports for `device_registered`.
+        pub fn with_probe_registration(self, registered: Option<bool>) -> Self {
+            *self.probe_device_registered.lock().unwrap() = registered;
+            self
         }
 
         #[allow(dead_code)]
@@ -313,6 +358,7 @@ pub mod mocks {
                     sender_name: "Test Sender".to_string(),
                     is_offline: false,
                     pc_network_link: None,
+                    device_registered: Some(true),
                 })
         }
 
@@ -345,11 +391,24 @@ pub mod mocks {
             self.calls.lock().unwrap().push(ControlClientCall::Probe {
                 device_id: device_id.clone(),
             });
+
+            {
+                let mut remaining = self.probe_failures.lock().unwrap();
+                if *remaining > 0 {
+                    // u32::MAX is the "never succeeds" sentinel, so don't spend it.
+                    if *remaining != u32::MAX {
+                        *remaining -= 1;
+                    }
+                    return Err("connection refused".to_string());
+                }
+            }
+
             Ok(PresenceResponse {
                 device_id: DeviceId("test-sender".to_string()),
                 sender_name: "Test Sender".to_string(),
                 is_offline: false,
                 pc_network_link: None,
+                device_registered: *self.probe_device_registered.lock().unwrap(),
             })
         }
 

@@ -46,3 +46,10 @@ futures-util = "0.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
+
+[dev-dependencies]
+# `test-util` gives `#[tokio::test(start_paused = true)]`. The link-recovery
+# tests span a 60 s budget; on the virtual clock they finish instantly and
+# deterministically, instead of either sleeping for a minute or asserting
+# against a shortened interval that isn't the shipped one.
+tokio = { version = "1.50.0", features = ["full", "test-util"] }

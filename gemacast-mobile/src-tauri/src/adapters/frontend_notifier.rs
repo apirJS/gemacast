@@ -26,6 +26,25 @@ impl FrontendNotifier for TauriFrontendNotifier {
         let _ = self.app_handle.emit("force-disconnect", ());
     }
 
+    fn emit_link_lost(&self) {
+        let _ = self.app_handle.emit("link-lost", ());
+    }
+
+    fn emit_link_recovered(&self, device_registered: Option<bool>) {
+        #[derive(serde::Serialize, Clone)]
+        #[serde(rename_all = "camelCase")]
+        struct LinkRecovered {
+            device_registered: Option<bool>,
+        }
+        let _ = self
+            .app_handle
+            .emit("link-recovered", LinkRecovered { device_registered });
+    }
+
+    fn emit_link_recovery_gave_up(&self) {
+        let _ = self.app_handle.emit("link-recovery-gave-up", ());
+    }
+
     fn emit_sender_connected(&self, ip: String) {
         let _ = self.app_handle.emit("sender-connected", ip);
     }
