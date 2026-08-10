@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/apirJS/gemacast/compare/v0.2.0...v0.3.0) (2026-08-10)
+
+
+### Features
+
+* fix stream disconnection bug & improve jitter algorithm ([#64](https://github.com/apirJS/gemacast/issues/64)) ([82ab9aa](https://github.com/apirJS/gemacast/commit/82ab9aa0c6043666f7dc1fc1d1a66c026a786945))
+
+
+### Bug Fixes
+
+* ci-cd ([#60](https://github.com/apirJS/gemacast/issues/60)) ([79a7393](https://github.com/apirJS/gemacast/commit/79a73938123621b0f9515bfbceee42fa7c582077))
+
+
+### Performance
+
+* jitter manager [skip ci] ([#62](https://github.com/apirJS/gemacast/issues/62)) ([0094df5](https://github.com/apirJS/gemacast/commit/0094df53010da2159c5aa52d4fbfe1d38e4ff23d))
+
+
+### Refactoring
+
+* UI&UX [skip ci] ([#63](https://github.com/apirJS/gemacast/issues/63)) ([05feb56](https://github.com/apirJS/gemacast/commit/05feb56aa7fe7864abba26bd7571adfcb107c0cc))
+
 ## [0.2.0](https://github.com/apirJS/gemacast/compare/v0.1.0...v0.2.0) (2026-07-10)
 
 
