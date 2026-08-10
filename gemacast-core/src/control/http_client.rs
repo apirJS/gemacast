@@ -14,9 +14,24 @@ pub struct HttpControlClient {
 }
 
 impl HttpControlClient {
+    /// Default request timeout, generous enough for `/connect` to complete a
+    /// full capture-and-encode start-up on the PC side.
+    const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
     pub fn new(target_ip: IpAddr) -> Self {
+        Self::with_timeout(target_ip, Self::DEFAULT_TIMEOUT)
+    }
+
+    /// Same client with an explicit request timeout.
+    ///
+    /// Link recovery polls `/probe` every 2 s to find out whether the PC came
+    /// back; against [`Self::DEFAULT_TIMEOUT`] a single unanswered request
+    /// would span five poll intervals, so the poll period would be a fiction
+    /// and the 60 s recovery budget would buy six attempts instead of thirty.
+    /// The caller sets a timeout no longer than its own interval.
+    pub fn with_timeout(target_ip: IpAddr, timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .build()
             .unwrap_or_default();
 

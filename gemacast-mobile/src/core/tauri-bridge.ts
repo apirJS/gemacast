@@ -109,6 +109,17 @@ export const tauriBridge = {
 
   probeSender: (args: { ip: string; deviceId: string }) => invoke('probe_sender', args),
 
+  /**
+   * Start the Rust-side recovery prober after an unrequested link loss.
+   *
+   * Deliberately not a `setInterval` here: Android throttles WebView timers
+   * with the screen off, which is exactly when the link dies.
+   */
+  startLinkRecovery: (args: { ip: string; deviceId: string }) =>
+    invoke('start_link_recovery', args),
+
+  stopLinkRecovery: () => invoke('stop_link_recovery'),
+
   establishWebsocket: (args: { senderIp: string; deviceId: string }) =>
     invoke('establish_websocket', args),
 

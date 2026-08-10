@@ -28,7 +28,7 @@ pub fn setup_event_forwarding(
             if last_emit.elapsed() >= std::time::Duration::from_millis(200) {
                 last_emit = std::time::Instant::now();
                 notifier.emit_audio_telemetry(latency, rms > 0.0001);
-                // println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
+                println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
             }
         }
     });
@@ -104,7 +104,10 @@ pub fn spawn_session_receiver(
                     gemacast_core::domain::error::NetworkError::ConnectionLost
                 )
             ) {
-                notifier.emit_force_disconnect();
+                // The receiver watchdog gave up on its own — nobody asked for
+                // this. Distinct from `force-disconnect` so the frontend can
+                // attempt probe-driven recovery instead of just going idle.
+                notifier.emit_link_lost();
             } else {
                 notifier.emit_playback_error(e.to_string());
             }

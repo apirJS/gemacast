@@ -287,10 +287,33 @@ impl JitterConfig {
                 resume_threshold_pct: 0.2,
                 static_target_ms: None,
             },
-            // Aggressive — clean 5 GHz or wired Ethernet
-            NetworkLink::Ethernet | NetworkLink::Wifi5Ghz => Self {
+            // Aggressive — wired Ethernet. No DTIM, no scan cycle, no power-save
+            // batching: the only jitter is switch queuing, so the buffer can sit
+            // genuinely low.
+            NetworkLink::Ethernet => Self {
                 min_depth_ms: 5,
-                comfort_cap_ms: 60,
+                comfort_cap_ms: 200,
+                peak_decay_halflife_ms: 800,
+                resume_threshold_pct: 0.25,
+                static_target_ms: None,
+            },
+            // Clean 5 GHz Wi-Fi. Split out from Ethernet because it is subject to
+            // Android DTIM batching, which Ethernet is not.
+            //
+            // `min_depth_ms: 5` (1 frame) was actively harmful: it let the probe
+            // walk the target down to a single frame, which is a *guaranteed*
+            // starvation on any real link, and that first starvation is what seeded
+            // the learned-floor ratchet in the field log. 30ms is the shallowest
+            // depth that is actually survivable.
+            //
+            // `comfort_cap_ms: 400` covers the observed 100-200ms DTIM
+            // inter-cluster gaps with headroom. Raising the cap is only safe
+            // because the depth signal (`max_gap_frames`) and the learned floor now
+            // both decay on their own — under the old one-way ratchet a higher cap
+            // just relocated where the target got permanently stuck.
+            NetworkLink::Wifi5Ghz => Self {
+                min_depth_ms: 30,
+                comfort_cap_ms: 400,
                 peak_decay_halflife_ms: 800,
                 resume_threshold_pct: 0.25,
                 static_target_ms: None,
@@ -301,22 +324,27 @@ impl JitterConfig {
             // peak-decay path in `JitterStats` rather than a fixed half-life. On
             // 2.4 GHz this matters: a fixed 15s half-life pinned `ema_peak` — and
             // therefore the target depth — near its spike level for many seconds
-            // after congestion cleared, so the observed latency ballooned to ~180ms
-            // and stuck. The adaptive path sheds the peak within seconds once the
-            // link goes quiet, while still clamping to a slow 15s decay during a
-            // *verified* unstable regime (two macro-spikes within 10s). The comfort
-            // cap is also tightened from 500ms to 200ms so a single spike can no
-            // longer inflate the target past ~20 frames.
+            // after congestion cleared, so the observed latency ballooned and stuck.
+            // The adaptive path sheds the peak within seconds once the link goes
+            // quiet, while still clamping to a slow 15s decay during a *verified*
+            // unstable regime (two macro-spikes within 10s).
+            //
+            // `comfort_cap_ms: 800` is a deliberate "cover the gap, pay the
+            // latency" choice. The Router A field log shows real delivery gaps up
+            // to ~600ms; at the old 500ms cap the buffer starved ~30 times in 55s
+            // because it *could not* be sized to survive them. 800ms lets the
+            // buffer actually cover the worst observed gap, and the self-decaying
+            // gap window means it only costs that latency while the gaps persist.
             NetworkLink::Wifi2_4Ghz => Self {
-                min_depth_ms: 25,
-                comfort_cap_ms: 500,
+                min_depth_ms: 30,
+                comfort_cap_ms: 800,
                 peak_decay_halflife_ms: 0,
                 resume_threshold_pct: 0.5,
                 static_target_ms: None,
             },
             // Fallback — unknown WiFi or completely unknown link
             NetworkLink::WifiUnknown | NetworkLink::Unknown => Self {
-                min_depth_ms: 25,
+                min_depth_ms: 30,
                 comfort_cap_ms: 1000,
                 peak_decay_halflife_ms: 0,
                 resume_threshold_pct: 0.25,
@@ -619,9 +647,30 @@ mod tests {
                 pc: NetworkLink::Wifi5Ghz,
             };
             let config = JitterConfig::for_link_pair(pair);
-            assert_eq!(config.min_depth_ms, 5);
-            assert_eq!(config.comfort_cap_ms, 60);
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 400);
             assert_eq!(config.peak_decay_halflife_ms, 800);
+        }
+
+        /// Ethernet is no longer folded in with 5 GHz: it has no DTIM batching,
+        /// so it keeps the shallow floor and tight cap that 5 GHz had to give up.
+        #[test]
+        fn ethernet_should_keep_the_shallowest_profile() {
+            let pair = LinkPair {
+                phone: NetworkLink::Ethernet,
+                pc: NetworkLink::Ethernet,
+            };
+            let config = JitterConfig::for_link_pair(pair);
+            assert_eq!(config.min_depth_ms, 5);
+            assert_eq!(config.comfort_cap_ms, 200);
+            assert!(
+                config.comfort_cap_ms
+                    < JitterConfig::for_link_pair(LinkPair {
+                        phone: NetworkLink::Wifi5Ghz,
+                        pc: NetworkLink::Wifi5Ghz,
+                    })
+                    .comfort_cap_ms,
+            );
         }
 
         #[test]
@@ -631,8 +680,8 @@ mod tests {
                 pc: NetworkLink::Wifi2_4Ghz,
             };
             let config = JitterConfig::for_link_pair(pair);
-            assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 500);
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 800);
             assert_eq!(config.peak_decay_halflife_ms, 0);
         }
 
@@ -643,8 +692,8 @@ mod tests {
                 pc: NetworkLink::Ethernet,
             };
             let config = JitterConfig::for_link_pair(pair);
-            assert_eq!(config.min_depth_ms, 25);
-            assert_eq!(config.comfort_cap_ms, 500);
+            assert_eq!(config.min_depth_ms, 30);
+            assert_eq!(config.comfort_cap_ms, 800);
             assert_eq!(config.resume_threshold_pct, 0.5);
         }
 
@@ -655,7 +704,7 @@ mod tests {
                 pc: NetworkLink::Ethernet,
             };
             let config = JitterConfig::for_link_pair(pair);
-            assert_eq!(config.min_depth_ms, 25);
+            assert_eq!(config.min_depth_ms, 30);
             assert_eq!(config.comfort_cap_ms, 1000);
             assert_eq!(config.peak_decay_halflife_ms, 0);
         }

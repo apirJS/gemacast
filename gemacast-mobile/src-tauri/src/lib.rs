@@ -46,11 +46,12 @@ pub fn run() {
             let notifier: Arc<dyn traits::FrontendNotifier> =
                 Arc::new(adapters::TauriFrontendNotifier::new(handle.clone()));
 
-            let session_mgr: Arc<dyn traits::SessionManager> =
-                Arc::new(adapters::TokioSessionManager::new(notifier.clone()));
-
             let client_factory: Arc<dyn traits::SenderControlClientFactory> =
                 Arc::new(adapters::HttpSenderControlClientFactory);
+
+            let session_mgr: Arc<dyn traits::SessionManager> = Arc::new(
+                adapters::TokioSessionManager::new(notifier.clone(), client_factory.clone()),
+            );
 
             let platform: Arc<dyn traits::PlatformService> =
                 Arc::new(adapters::NativePlatformService::new(handle.clone()));
@@ -66,6 +67,7 @@ pub fn run() {
                 platform: platform.clone(),
                 is_streaming: is_streaming.clone(),
                 cached_link_pair: std::sync::Mutex::new(None),
+                recovery_task: std::sync::Mutex::new(None),
             });
 
             // -- Register managed state ----------------------------------
@@ -112,6 +114,8 @@ pub fn run() {
             domains::audio::commands::get_process_list,
             domains::audio::commands::establish_websocket,
             domains::audio::commands::probe_sender,
+            domains::audio::commands::start_link_recovery,
+            domains::audio::commands::stop_link_recovery,
             domains::audio::commands::set_audio_gain,
             domains::audio::commands::get_network_link_pair,
             domains::audio::commands::restart_session,

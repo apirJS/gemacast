@@ -7,6 +7,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use gemacast_core::control::types::ConnectReq;
 use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, LinkPair};
@@ -34,6 +35,96 @@ pub struct AudioService {
     /// toggles back to Auto mid-session (Auto → Balanced → Auto).
     /// Set during [`connect_to_sender`], cleared on disconnect/kill.
     pub cached_link_pair: std::sync::Mutex<Option<LinkPair>>,
+    /// The in-flight link-recovery prober, if one is running.
+    ///
+    /// Held so any path that establishes or abandons a connection can cancel
+    /// it — a prober that outlived its reason would reconnect on top of a
+    /// session the user just started by hand.
+    pub recovery_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// How often link recovery asks the PC whether it is back.
+///
+/// 2 s against the phone receiver's 10 s watchdog: five chances to catch the
+/// PC inside the window where it still has us registered (`STALE_TIMEOUT` 15 s
+/// plus a `CHECK_INTERVAL` 2 s sweep, so eviction lands at 15-17 s).
+const RECOVERY_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Request timeout for a recovery probe.
+///
+/// Equal to the interval, never the client default of 10 s: a request that
+/// outlives its own poll period turns the period into a fiction and spends the
+/// budget on six attempts instead of thirty.
+const RECOVERY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Total time link recovery will keep asking before giving up.
+///
+/// 60 s / 2 s = 30 attempts. Past this the failure is not a transient
+/// re-association, and silent retries forever would be indistinguishable from
+/// a leak; the frontend settles into the same suspended state a link loss
+/// produces today and waits for a tap.
+const RECOVERY_BUDGET: Duration = Duration::from_secs(60);
+
+/// Ask the PC whether it is back, on `interval`, until it answers or `budget`
+/// runs out.
+///
+/// A probe carries our `device_id`, so a PC that answers also says whether it
+/// still has us registered. That answer cannot be self-fulfilling: the PC's
+/// `update_last_seen` only touches a device already in the map, so probing
+/// never resurrects one it evicted.
+///
+/// Emits exactly one terminal event — [`FrontendNotifier::emit_link_recovered`]
+/// or [`FrontendNotifier::emit_link_recovery_gave_up`] — or none at all if the
+/// task is aborted first.
+async fn run_link_recovery(
+    client: Arc<dyn crate::traits::SenderControlClient>,
+    device_id: DeviceId,
+    notifier: Arc<dyn FrontendNotifier>,
+    interval: Duration,
+    budget: Duration,
+) {
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval(interval);
+    let mut attempts: u32 = 0;
+
+    loop {
+        // The first tick resolves immediately, which is what we want: the
+        // receiver watchdog already spent 10 s establishing that the link is
+        // gone, so there is nothing left to wait for.
+        ticker.tick().await;
+
+        if started.elapsed() >= budget {
+            tracing::warn!(
+                "[AudioService] Link recovery gave up after {} attempts in {:?}",
+                attempts,
+                budget,
+            );
+            notifier.emit_link_recovery_gave_up();
+            return;
+        }
+
+        attempts += 1;
+        match client.probe(Some(device_id.clone())).await {
+            Ok(presence) => {
+                tracing::info!(
+                    "[AudioService] Link recovered after {} attempts: sender={}, offline={}, registered={:?}",
+                    attempts,
+                    presence.sender_name,
+                    presence.is_offline,
+                    presence.device_registered,
+                );
+                notifier.emit_link_recovered(presence.device_registered);
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "[AudioService] Link recovery attempt {} failed: {}",
+                    attempts,
+                    e
+                );
+            }
+        }
+    }
 }
 
 impl AudioService {
@@ -50,6 +141,11 @@ impl AudioService {
             params.jitter_config.min_depth_ms,
             params.jitter_config.comfort_cap_ms,
         );
+        // A connect is the answer to whatever recovery was looking for, whether
+        // recovery asked for it or the user tapped. Either way the prober is
+        // done, and leaving it running would let it fire on top of this session.
+        self.stop_link_recovery();
+
         let ip_addr: IpAddr = params
             .ip
             .parse()
@@ -129,6 +225,10 @@ impl AudioService {
             ip,
             device_id
         );
+        // The user asked to stop. Any prober still running is chasing a link
+        // nobody wants back.
+        self.stop_link_recovery();
+
         let client = self.client_factory.create(ip);
         let _ = client.disconnect(device_id).await;
 
@@ -176,8 +276,13 @@ impl AudioService {
     }
 
     /// Kill playback immediately: tear down session, clear streaming flag.
+    ///
+    /// Cancels link recovery as well, so a forced teardown is always a full
+    /// stop. The link-lost path therefore has to call this **before**
+    /// [`Self::start_link_recovery`], not after.
     pub async fn kill_playback(&self) -> Result<(), String> {
         tracing::warn!("[AudioService] Kill playback (forced teardown)");
+        self.stop_link_recovery();
         self.session.stop_session().await;
 
         // Clear the cached link pair
@@ -190,9 +295,77 @@ impl AudioService {
     }
 
     /// Notify that streaming has stopped (called by frontend).
+    ///
+    /// The frontend reaches this on the no-sender branch of `disconnect()`, which
+    /// is a real stop — so it must sync the foreground service like every other
+    /// stop path (`disconnect_from_sender`, `kill_playback`). Clearing only the
+    /// flag file left the notification and the Media Session fully live.
+    ///
+    /// Also cancels link recovery: this is the branch a user reaches by tapping
+    /// disconnect while suspended, which is exactly the state recovery runs in.
+    /// Like [`Self::kill_playback`], it must precede
+    /// [`Self::start_link_recovery`] on the link-lost path.
     pub fn notify_streaming_stopped(&self) {
+        self.stop_link_recovery();
         self.is_streaming.store(false, Ordering::Relaxed);
         self.platform.set_streaming_flag(false);
+        self.platform.sync_service(PlaybackState::Stopped, false);
+    }
+
+    /// Start polling the PC after an unrequested link loss.
+    ///
+    /// This loop lives in Rust on purpose. The scenario it recovers from is a
+    /// link that died with the screen off, and Android throttles WebView timers
+    /// exactly then — the same reason the probe heartbeat was moved out of the
+    /// webview in `36730b4`. A `setInterval` here would be suspended precisely
+    /// when it is needed.
+    ///
+    /// Cancels any prober already running, so repeated link losses cannot stack
+    /// two loops onto one connection.
+    pub fn start_link_recovery(&self, ip: IpAddr, device_id: DeviceId) {
+        self.start_link_recovery_paced(ip, device_id, RECOVERY_PROBE_INTERVAL, RECOVERY_BUDGET);
+    }
+
+    /// [`Self::start_link_recovery`] with the pacing spelled out, so tests can
+    /// drive the loop without waiting on the production interval.
+    pub fn start_link_recovery_paced(
+        &self,
+        ip: IpAddr,
+        device_id: DeviceId,
+        interval: Duration,
+        budget: Duration,
+    ) {
+        self.stop_link_recovery();
+
+        let client = self
+            .client_factory
+            .create_with_timeout(ip, RECOVERY_PROBE_TIMEOUT);
+        let notifier = self.notifier.clone();
+
+        tracing::warn!(
+            "[AudioService] Link lost — probing {} every {:?} for up to {:?}",
+            ip,
+            interval,
+            budget,
+        );
+
+        let handle = tokio::spawn(async move {
+            run_link_recovery(client, device_id, notifier, interval, budget).await;
+        });
+
+        *self.recovery_task.lock().unwrap() = Some(handle);
+    }
+
+    /// Cancel link recovery if it is running.
+    ///
+    /// Called from every path that establishes or abandons a connection: a
+    /// prober still ticking after the user reconnected by hand would fire
+    /// `link-recovered` on top of a live session.
+    pub fn stop_link_recovery(&self) {
+        if let Some(handle) = self.recovery_task.lock().unwrap().take() {
+            handle.abort();
+            tracing::info!("[AudioService] Link recovery cancelled");
+        }
     }
 
     /// Restart the audio session with a new exclusive mode setting.
@@ -397,7 +570,22 @@ mod tests {
         client: Arc<MockSenderControlClient>,
         platform: Arc<MockPlatformService>,
     ) -> AudioService {
-        let notifier = Arc::new(MockFrontendNotifier::new());
+        make_service_with_notifier(
+            session,
+            client,
+            platform,
+            Arc::new(MockFrontendNotifier::new()),
+        )
+    }
+
+    /// [`make_service`] with the notifier supplied, for tests that assert on
+    /// the events the service emitted rather than on the calls it made.
+    fn make_service_with_notifier(
+        session: Arc<MockSessionManager>,
+        client: Arc<MockSenderControlClient>,
+        platform: Arc<MockPlatformService>,
+        notifier: Arc<MockFrontendNotifier>,
+    ) -> AudioService {
         let factory = Arc::new(MockSenderControlClientFactory::new(client));
         AudioService {
             session,
@@ -406,6 +594,7 @@ mod tests {
             platform,
             is_streaming: Arc::new(AtomicBool::new(false)),
             cached_link_pair: std::sync::Mutex::new(None),
+            recovery_task: std::sync::Mutex::new(None),
         }
     }
 
@@ -620,6 +809,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notify_streaming_stopped_should_sync_the_service_to_stopped() {
+        let session = Arc::new(MockSessionManager::new());
+        let client = Arc::new(MockSenderControlClient::new());
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(session.clone(), client.clone(), platform.clone());
+
+        service.notify_streaming_stopped();
+
+        let platform_calls = platform.take_calls();
+        assert!(
+            platform_calls
+                .iter()
+                .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false })),
+            "the streaming flag must still be cleared"
+        );
+        // Without this the foreground notification and the Media Session stay
+        // live after a disconnect that had no connected sender.
+        assert!(
+            platform_calls.iter().any(|c| matches!(
+                c,
+                PlatformCall::SyncService {
+                    is_playing: false,
+                    ..
+                }
+            )),
+            "notify_streaming_stopped must sync the service, got {platform_calls:?}"
+        );
+        assert!(!service.is_streaming.load(Ordering::Relaxed));
+    }
+
+    /// Every path that ends a stream has to leave the platform service in the
+    /// same state, or the notification survives on whichever path forgot.
+    /// `MockPlatformService` collapses `Paused` and `Stopped` into
+    /// `is_playing: false`, so this asserts the sync happened, not which state
+    /// it carried.
+    #[tokio::test]
+    async fn every_stop_path_should_sync_the_service() {
+        fn synced_stopped(calls: &[PlatformCall]) -> bool {
+            calls.iter().any(|c| {
+                matches!(
+                    c,
+                    PlatformCall::SyncService {
+                        is_playing: false,
+                        ..
+                    }
+                )
+            })
+        }
+
+        // Path 1: disconnect with a known sender.
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(
+            Arc::new(MockSessionManager::new()),
+            Arc::new(MockSenderControlClient::new()),
+            platform.clone(),
+        );
+        service
+            .disconnect_from_sender("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
+            .await
+            .unwrap();
+        assert!(
+            synced_stopped(&platform.take_calls()),
+            "disconnect_from_sender must sync the service"
+        );
+
+        // Path 2: forced teardown by the receiver watchdog.
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(
+            Arc::new(MockSessionManager::new()),
+            Arc::new(MockSenderControlClient::new()),
+            platform.clone(),
+        );
+        service.kill_playback().await.unwrap();
+        assert!(
+            synced_stopped(&platform.take_calls()),
+            "kill_playback must sync the service"
+        );
+
+        // Path 3: the frontend's no-sender branch.
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(
+            Arc::new(MockSessionManager::new()),
+            Arc::new(MockSenderControlClient::new()),
+            platform.clone(),
+        );
+        service.notify_streaming_stopped();
+        assert!(
+            synced_stopped(&platform.take_calls()),
+            "notify_streaming_stopped must sync the service"
+        );
+    }
+
+    #[tokio::test]
     async fn change_bitrate_should_update_session_and_send_http() {
         let session = Arc::new(MockSessionManager::new());
         let client = Arc::new(MockSenderControlClient::new());
@@ -804,5 +1086,173 @@ mod tests {
         service.kill_playback().await.unwrap();
 
         assert!(service.cached_link_pair.lock().unwrap().is_none());
+    }
+
+    mod link_recovery {
+        use super::*;
+
+        const IP: &str = "192.168.1.5";
+        const INTERVAL: Duration = Duration::from_secs(2);
+        const BUDGET: Duration = Duration::from_secs(60);
+
+        fn probe_count(calls: &[ControlClientCall]) -> usize {
+            calls
+                .iter()
+                .filter(|c| matches!(c, ControlClientCall::Probe { .. }))
+                .count()
+        }
+
+        /// Let the recovery task run to its terminal event on tokio's paused
+        /// clock, which auto-advances whenever every task is parked on a timer.
+        async fn drain(service: &AudioService) {
+            let handle = service.recovery_task.lock().unwrap().take();
+            if let Some(handle) = handle {
+                let _ = handle.await;
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn link_recovery_should_report_the_pc_registration_once_it_answers() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(
+                MockSenderControlClient::new()
+                    .with_probe_failures(3)
+                    .with_probe_registration(Some(true)),
+            );
+            let platform = Arc::new(MockPlatformService::new());
+            let notifier = Arc::new(MockFrontendNotifier::new());
+            let service =
+                make_service_with_notifier(session, client.clone(), platform, notifier.clone());
+
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+            drain(&service).await;
+
+            // Precondition: the loop really did have to retry, so the success
+            // below is the retry working and not the first probe getting lucky.
+            assert_eq!(probe_count(&client.take_calls()), 4);
+            assert!(matches!(
+                notifier.take_events().as_slice(),
+                [FrontendEvent::LinkRecovered {
+                    device_registered: Some(true)
+                }]
+            ));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_recovery_probe_should_carry_our_device_id() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockSenderControlClient::new());
+            let platform = Arc::new(MockPlatformService::new());
+            let service = make_service(session, client.clone(), platform);
+
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+            drain(&service).await;
+
+            // Without the device id the PC can only say whether *it* is up,
+            // never whether it still holds a registration for us.
+            let calls = client.take_calls();
+            assert!(matches!(
+                calls.as_slice(),
+                [ControlClientCall::Probe { device_id: Some(id) }] if id.0 == "phone-1"
+            ));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn link_recovery_should_give_up_once_its_budget_is_spent() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let platform = Arc::new(MockPlatformService::new());
+            let notifier = Arc::new(MockFrontendNotifier::new());
+            let service =
+                make_service_with_notifier(session, client.clone(), platform, notifier.clone());
+
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+            drain(&service).await;
+
+            // Ticks land at 0, 2, .., 58 s and the check at 60 s ends it:
+            // 30 attempts, not a loop that runs forever.
+            assert_eq!(probe_count(&client.take_calls()), 30);
+            assert!(matches!(
+                notifier.take_events().as_slice(),
+                [FrontendEvent::LinkRecoveryGaveUp]
+            ));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_forced_teardown_should_cancel_link_recovery() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let platform = Arc::new(MockPlatformService::new());
+            let notifier = Arc::new(MockFrontendNotifier::new());
+            let service =
+                make_service_with_notifier(session, client.clone(), platform, notifier.clone());
+
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+
+            // Precondition: the prober is actually running and probing, so the
+            // silence after the kill is cancellation and not a task that never
+            // started.
+            tokio::time::sleep(INTERVAL * 3).await;
+            let probes_before = probe_count(&client.take_calls());
+            assert!(probes_before > 0);
+
+            service.kill_playback().await.unwrap();
+
+            tokio::time::sleep(BUDGET * 2).await;
+            assert_eq!(probe_count(&client.take_calls()), 0);
+            assert!(
+                !notifier
+                    .take_events()
+                    .iter()
+                    .any(|e| matches!(e, FrontendEvent::LinkRecoveryGaveUp)),
+            );
+            assert!(service.recovery_task.lock().unwrap().is_none());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_second_link_loss_should_not_stack_a_second_prober() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let platform = Arc::new(MockPlatformService::new());
+            let service = make_service(session, client.clone(), platform);
+
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+            service.start_link_recovery_paced(
+                IP.parse().unwrap(),
+                DeviceId("phone-1".into()),
+                INTERVAL,
+                BUDGET,
+            );
+            drain(&service).await;
+
+            // Two stacked loops would double this; the second start must have
+            // aborted the first.
+            assert_eq!(probe_count(&client.take_calls()), 30);
+        }
     }
 }

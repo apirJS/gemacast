@@ -44,6 +44,8 @@ pub fn create_udp_audio_transport(
             source,
         })?;
 
+    let _ = socket.set_recv_buffer_size(512 * 1024);
+
     let std_socket: std::net::UdpSocket = socket.into();
 
     let cloned_for_tos = std_socket

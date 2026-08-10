@@ -72,6 +72,20 @@ pub struct PresenceResponse {
     /// Sent back to the phone so it can compute the effective link pair.
     #[serde(default)]
     pub pc_network_link: Option<NetworkLink>,
+
+    /// Whether the probing `device_id` is still in the sender's device registry.
+    ///
+    /// `is_offline` is a *global* sender flag, so a successful probe proves only
+    /// that the PC process is up — not that this device's subscription survived.
+    /// The two watchdogs make that distinction matter: the phone tears down at
+    /// 10 s while the PC evicts at 15-17 s, so there is a window where the PC is
+    /// still sending to a device that has already given up, and a resume is
+    /// cheaper than a full `/connect`.
+    ///
+    /// `None` from a sender predating this field — callers must treat unknown
+    /// conservatively and do a full reconnect.
+    #[serde(default)]
+    pub device_registered: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

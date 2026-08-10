@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
 use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
@@ -16,6 +17,12 @@ impl HttpSenderControlClient {
     pub fn new(ip: IpAddr) -> Self {
         Self {
             client: gemacast_core::control::HttpControlClient::new(ip),
+        }
+    }
+
+    pub fn with_timeout(ip: IpAddr, timeout: Duration) -> Self {
+        Self {
+            client: gemacast_core::control::HttpControlClient::with_timeout(ip, timeout),
         }
     }
 }
@@ -83,5 +90,9 @@ pub struct HttpSenderControlClientFactory;
 impl SenderControlClientFactory for HttpSenderControlClientFactory {
     fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient> {
         Arc::new(HttpSenderControlClient::new(ip))
+    }
+
+    fn create_with_timeout(&self, ip: IpAddr, timeout: Duration) -> Arc<dyn SenderControlClient> {
+        Arc::new(HttpSenderControlClient::with_timeout(ip, timeout))
     }
 }

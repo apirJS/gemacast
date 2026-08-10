@@ -3,6 +3,7 @@ use gemacast_core::control::types::{ConnectReq, PresenceResponse};
 use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Sends control commands to a PC sender over HTTP.
 ///
@@ -39,4 +40,14 @@ pub trait SenderControlClient: Send + Sync {
 /// **Tests**: [`crate::testing::mocks::MockSenderControlClientFactory`]
 pub trait SenderControlClientFactory: Send + Sync {
     fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient>;
+
+    /// A client whose requests give up after `timeout`.
+    ///
+    /// Link recovery polls on a short interval and needs a request that fails
+    /// inside that interval; the default client waits 10 s, which would make
+    /// the poll period meaningless. Defaults to [`Self::create`] so mocks —
+    /// which do no I/O and cannot time out — need not implement it.
+    fn create_with_timeout(&self, ip: IpAddr, _timeout: Duration) -> Arc<dyn SenderControlClient> {
+        self.create(ip)
+    }
 }

@@ -6,6 +6,9 @@ import {
   connectToSender,
   handleSenderTimeout,
   handleForceDisconnect,
+  handleLinkLost,
+  handleLinkRecovered,
+  handleLinkRecoveryGaveUp,
   disconnect,
 } from './use-connection';
 import { updateAudioActive, startPlayback, stopPlayback } from './use-audio';
@@ -58,6 +61,26 @@ export function useTauriEvents() {
       listen('force-disconnect', () => {
         const isSuspended = useAppStore.getState().isSuspended;
         handleForceDisconnect(!isSuspended);
+      }),
+    );
+
+    // The receiver watchdog gave up on its own. Unlike `force-disconnect`,
+    // nobody asked for this, so it keeps the sender and probes for its return.
+    unlisteners.push(
+      listen('link-lost', () => {
+        handleLinkLost();
+      }),
+    );
+
+    unlisteners.push(
+      listen<{ deviceRegistered: boolean | null }>('link-recovered', (event) => {
+        handleLinkRecovered(event.payload.deviceRegistered);
+      }),
+    );
+
+    unlisteners.push(
+      listen('link-recovery-gave-up', () => {
+        handleLinkRecoveryGaveUp();
       }),
     );
 

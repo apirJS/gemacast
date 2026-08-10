@@ -87,7 +87,6 @@ export async function connectToSender(
 
     fetchAudioSources(sender);
     fetchProcessList(sender);
-    startProbing(ip, state.deviceInfo.deviceId);
 
     // Fetch the detected network link pair for UI display
     tauriBridge
@@ -137,7 +136,6 @@ export async function disconnect(
   // Optimistically update status to catch echoes during async IPC calls
   store.getState().patch({ status: Status.Listening });
   store.getState().setLoading(true);
-  stopProbing();
 
   try {
     if (!sender) {
@@ -234,6 +232,75 @@ export function handleForceDisconnect(forgetSender: boolean = true) {
   tauriBridge.killPlayback().catch(console.warn);
 }
 
+/**
+ * The receiver watchdog tore the session down on its own — nobody asked for it.
+ *
+ * Distinct from {@link handleForceDisconnect}, which also serves the *user*
+ * teardown path: this one never forgets the sender, because the whole point is
+ * to reconnect to it. It leaves the UI in the same suspended state a link loss
+ * produces today and hands off to the Rust-side prober.
+ */
+export async function handleLinkLost() {
+  const state = store.getState();
+  if (
+    state.status === Status.Listening ||
+    state.status === Status.Idle ||
+    state.status === Status.Connecting
+  ) {
+    return;
+  }
+
+  const sender = state.connectedSender ?? state.lastConnectedSender;
+
+  store.getState().patch({
+    connectedSender: null,
+    lastConnectedSender: sender,
+    status: Status.Listening,
+    connectionHealth: 'lost',
+    reconnectAttempts: 0,
+    isSuspended: true,
+  });
+  store.getState().resetLatency();
+
+  // Both of these cancel link recovery on the Rust side, so the prober has to
+  // start strictly *after* them — firing all three concurrently would let a
+  // teardown abort the prober it was supposed to precede.
+  await tauriBridge.notifyStreamingStopped().catch(console.warn);
+  await tauriBridge.killPlayback().catch(console.warn);
+
+  if (!sender) return;
+
+  const ip = sender.addr.split(':')[0];
+  await tauriBridge
+    .startLinkRecovery({ ip, deviceId: state.deviceInfo.deviceId })
+    .catch((e) => console.warn('Failed to start link recovery:', e));
+}
+
+/**
+ * A recovery probe reached the PC again.
+ *
+ * `deviceRegistered` is the PC's answer to whether it still holds our
+ * registration. Every answer takes the same full reconnect today; it is logged
+ * so a field capture can say whether a cheaper resume path is worth building.
+ */
+export async function handleLinkRecovered(deviceRegistered: boolean | null) {
+  const state = store.getState();
+  if (state.status === Status.Connected || state.status === Status.Connecting) return;
+
+  const sender = state.lastConnectedSender;
+  if (!sender) return;
+
+  console.info(`Link recovered (PC still had us registered: ${deviceRegistered})`);
+  toast.getState().show('info', 'Connection restored — reconnecting');
+  await connectToSender(sender);
+}
+
+/** Link recovery spent its budget without reaching the PC. */
+export function handleLinkRecoveryGaveUp() {
+  store.getState().patch({ connectionHealth: 'lost' });
+  toast.getState().show('warning', 'Could not reach the PC — tap to reconnect');
+}
+
 export async function changeAudioSource(source: AudioSource): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
   const sender = state.connectedSender;
@@ -265,28 +332,12 @@ export function useConnection() {
     disconnect,
     handleSenderTimeout,
     handleForceDisconnect,
+    handleLinkLost,
+    handleLinkRecovered,
     changeAudioSource,
     killPlayback,
     fetchProcessList,
   };
-}
-
-let probeTimer: ReturnType<typeof setInterval> | null = null;
-
-function startProbing(ip: string, deviceId: string) {
-  stopProbing();
-  probeTimer = setInterval(() => {
-    tauriBridge.probeSender({ ip, deviceId }).catch((e) => {
-      console.warn('Failed to probe sender via HTTP:', e);
-    });
-  }, 5000);
-}
-
-function stopProbing() {
-  if (probeTimer) {
-    clearInterval(probeTimer);
-    probeTimer = null;
-  }
 }
 
 async function fetchAudioSources(sender: DiscoveredSender) {

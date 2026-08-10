@@ -1,6 +1,8 @@
-use crate::traits::{FrontendNotifier, SessionInfo, SessionManager, SessionParams};
+use crate::traits::{
+    FrontendNotifier, SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
+};
 use async_trait::async_trait;
-use gemacast_core::domain::types::{ConnectionMode, JitterConfig};
+use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
@@ -17,6 +19,7 @@ struct ActiveSession {
     jitter_config: Arc<RwLock<JitterConfig>>,
     shutdown_tx: oneshot::Sender<()>,
     playback_task: JoinHandle<()>,
+    probe_task: Option<JoinHandle<()>>,
     target_ip: Option<std::net::IpAddr>,
     device_id: String,
     network_link: gemacast_core::domain::types::NetworkLink,
@@ -25,14 +28,19 @@ struct ActiveSession {
 /// Manages playback sessions and WebSocket client tasks using Tokio primitives.
 pub struct TokioSessionManager {
     notifier: Arc<dyn FrontendNotifier>,
+    client_factory: Arc<dyn SenderControlClientFactory>,
     session: tokio::sync::Mutex<Option<ActiveSession>>,
     ws_client_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl TokioSessionManager {
-    pub fn new(notifier: Arc<dyn FrontendNotifier>) -> Self {
+    pub fn new(
+        notifier: Arc<dyn FrontendNotifier>,
+        client_factory: Arc<dyn SenderControlClientFactory>,
+    ) -> Self {
         Self {
             notifier,
+            client_factory,
             session: tokio::sync::Mutex::new(None),
             ws_client_task: tokio::sync::Mutex::new(None),
         }
@@ -64,6 +72,15 @@ impl SessionManager for TokioSessionManager {
             params.network_link,
         )?;
 
+        let probe_task = match params.target_ip {
+            Some(ip) if !ip.is_loopback() => {
+                let client = self.client_factory.create(ip);
+                let device_id = DeviceId(params.device_id.clone());
+                Some(tokio::spawn(run_probe_loop(client, device_id)))
+            }
+            _ => None,
+        };
+
         *self.session.lock().await = Some(ActiveSession {
             exclusive_mode: params.exclusive_mode,
             exclusive_granted,
@@ -74,6 +91,7 @@ impl SessionManager for TokioSessionManager {
             jitter_config: config_ref,
             shutdown_tx,
             playback_task,
+            probe_task,
             target_ip: params.target_ip,
             device_id: params.device_id,
             network_link: params.network_link,
@@ -84,6 +102,9 @@ impl SessionManager for TokioSessionManager {
 
     async fn stop_session(&self) {
         if let Some(session) = self.session.lock().await.take() {
+            if let Some(probe_task) = session.probe_task {
+                probe_task.abort();
+            }
             let _ = session.shutdown_tx.send(());
             let _ = tokio::time::timeout(
                 std::time::Duration::from_millis(1500),
@@ -166,6 +187,24 @@ impl SessionManager for TokioSessionManager {
     async fn stop_ws_client(&self) {
         if let Some(task) = self.ws_client_task.lock().await.take() {
             task.abort();
+        }
+    }
+}
+
+/// Run the HTTP probe heartbeat loop until cancelled.
+///
+/// Sends an HTTP probe to the PC sender every 5 seconds so the PC's
+/// device watchdog keeps the connection alive. This replaces the old
+/// WebView `setInterval` timer which Android would throttle when the
+/// app was backgrounded or the screen was off.
+///
+/// Errors are logged but never terminate the loop — probes are best-effort.
+async fn run_probe_loop(client: Arc<dyn crate::traits::SenderControlClient>, device_id: DeviceId) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+        if let Err(e) = client.probe(Some(device_id.clone())).await {
+            tracing::warn!("[Probe] Failed to probe sender: {}", e);
         }
     }
 }

@@ -76,6 +76,8 @@ impl ControlDispatcher {
                     sender_name: self.sender_name.clone(),
                     is_offline: false,
                     pc_network_link: None,
+                    // We have just registered this device.
+                    device_registered: Some(true),
                 });
             }
             ControlCommand::Disconnect {
@@ -120,15 +122,18 @@ impl ControlDispatcher {
                 device_id,
                 response_tx,
             } => {
-                if let Some(id) = device_id {
-                    self.registry.update_last_seen(&id);
-                }
+                // `update_last_seen` refreshes only an existing entry, so its
+                // answer is the registration status *before* this probe — a
+                // probe cannot resurrect a device the watchdog already evicted.
+                // A probe with no device_id carries no per-device claim.
+                let device_registered = device_id.map(|id| self.registry.update_last_seen(&id));
 
                 let _ = response_tx.send(PresenceResponse {
                     device_id: self.sender_id.clone(),
                     sender_name: self.sender_name.clone(),
                     is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
                     pc_network_link: None,
+                    device_registered,
                 });
             }
         }
@@ -150,7 +155,9 @@ pub fn spawn_control_dispatcher(
                 device_id: Some(id),
             } = message
             {
-                registry_for_probes.update_last_seen(&id);
+                // UDP heartbeats are fire-and-forget: there is no response
+                // channel to carry the registration status back.
+                let _ = registry_for_probes.update_last_seen(&id);
             }
         }
     });
@@ -474,5 +481,95 @@ mod tests {
 
         assert!(tray.take_calls().is_empty());
         assert!(audio.take_calls().is_empty());
+    }
+
+    mod probe_registration_status {
+        use super::*;
+        use tokio::sync::oneshot;
+
+        fn make_dispatcher(registry: Arc<dyn DeviceRegistry>) -> ControlDispatcher {
+            ControlDispatcher {
+                registry,
+                tray: Arc::new(MockTrayNotifier::new()),
+                audio: Arc::new(MockAudioController::new()),
+                notifier: Arc::new(MockDeviceNotifier::new()),
+                sender_id: DeviceId("test-sender".into()),
+                sender_name: "Test Sender".into(),
+                is_broadcasting: Arc::new(AtomicBool::new(true)),
+            }
+        }
+
+        async fn probe(
+            dispatcher: &ControlDispatcher,
+            device_id: Option<DeviceId>,
+        ) -> PresenceResponse {
+            let (response_tx, response_rx) = oneshot::channel();
+            dispatcher
+                .handle_http_command(ControlCommand::Probe {
+                    device_id,
+                    response_tx,
+                })
+                .await;
+            response_rx.await.expect("probe must answer")
+        }
+
+        #[tokio::test]
+        async fn the_probe_response_should_report_a_registered_device_as_registered() {
+            let registry = Arc::new(MockDeviceRegistry::with_device(
+                "phone-1",
+                "192.168.1.5:9000",
+            ));
+            let dispatcher = make_dispatcher(registry);
+
+            let presence = probe(&dispatcher, Some(DeviceId("phone-1".into()))).await;
+
+            assert_eq!(presence.device_registered, Some(true));
+            // `is_offline` is a *global* flag and stays independent of this.
+            assert!(!presence.is_offline);
+        }
+
+        #[tokio::test]
+        async fn the_probe_response_should_report_an_evicted_device_as_unregistered() {
+            // Empty registry = the watchdog has already evicted us.
+            let registry = Arc::new(MockDeviceRegistry::new());
+            let dispatcher = make_dispatcher(registry);
+
+            let presence = probe(&dispatcher, Some(DeviceId("phone-1".into()))).await;
+
+            assert_eq!(presence.device_registered, Some(false));
+            // The PC process is up; only *our* subscription is gone. If the two
+            // were conflated the phone could not tell "resume" from "reconnect".
+            assert!(!presence.is_offline);
+        }
+
+        #[tokio::test]
+        async fn a_probe_without_a_device_id_should_make_no_registration_claim() {
+            let registry = Arc::new(MockDeviceRegistry::with_device(
+                "phone-1",
+                "192.168.1.5:9000",
+            ));
+            let dispatcher = make_dispatcher(registry);
+
+            let presence = probe(&dispatcher, None).await;
+
+            assert_eq!(presence.device_registered, None);
+        }
+
+        #[tokio::test]
+        async fn updating_last_seen_on_an_evicted_device_should_not_reregister_it() {
+            let registry = MockDeviceRegistry::new();
+
+            // The probe must not resurrect an evicted device — that is what
+            // makes the returned status a truthful liveness signal rather than
+            // a self-fulfilling one.
+            assert!(!registry.update_last_seen(&DeviceId("phone-1".into())));
+            assert!(!registry.contains("phone-1"));
+            assert!(registry.all_devices().is_empty());
+
+            // …and it must report `true` for one that is still there.
+            let live = MockDeviceRegistry::with_device("phone-1", "192.168.1.5:9000");
+            assert!(live.update_last_seen(&DeviceId("phone-1".into())));
+            assert!(live.contains("phone-1"));
+        }
     }
 }

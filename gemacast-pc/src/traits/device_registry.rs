@@ -27,7 +27,13 @@ pub trait DeviceRegistry: Send + Sync {
     fn unregister(&self, device_id: &DeviceId) -> Option<DiscoveredDevice>;
 
     /// Refresh the `last_seen` timestamp for a device (used by probe heartbeats).
-    fn update_last_seen(&self, device_id: &DeviceId);
+    ///
+    /// Returns whether the device was found — i.e. whether it is still
+    /// registered. A probe must never *resurrect* an evicted device, so this
+    /// only refreshes an existing entry, and the boolean is therefore a truthful
+    /// liveness answer rather than a self-fulfilling one. The probe response
+    /// carries it back to the phone as `device_registered`.
+    fn update_last_seen(&self, device_id: &DeviceId) -> bool;
 
     /// Get the address of a device, if registered.
     fn get_addr(&self, device_id: &DeviceId) -> Option<SocketAddr>;
