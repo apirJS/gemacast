@@ -1,0 +1,8 @@
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
+
+# Android targets are deliberately NOT listed. They are added by a conditional
+# step in the Android CI job only; listing them here would make every macOS,
+# Windows and Linux-PC job download four extra std libraries it never links.
