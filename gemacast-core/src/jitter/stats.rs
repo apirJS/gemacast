@@ -61,14 +61,14 @@ const GAP_WINDOW_BUCKETS: usize = 24;
 ///
 /// **This value has been 8 → 3 → 8, and the round trip is the evidence.**
 ///
-/// v13 shortened it to 3s on the argument that a *recurring* gap is protected by
-/// refresh (see [`JitterStats::max_gap_frames`]), so the flat-top could only ever
-/// extend the cost of the non-recurring ones. The argument is sound; the premise
-/// was not. It assumed gap recurrence is either sub-second (2.4GHz DTIM) or a
-/// one-off, and nothing in between.
+/// The 3s shortening argued that a *recurring* gap is protected by refresh (see
+/// [`JitterStats::max_gap_frames`]), so a long flat-top could only ever extend
+/// the cost of the non-recurring ones. The argument is sound; the premise was
+/// not. It assumed gap recurrence is either sub-second (2.4GHz DTIM) or a
+/// one-off, with nothing in between.
 ///
-/// [`JitterStats::max_gap_age_secs`] was added in the same round to settle that
-/// question, and the v13 capture answers it — recurrence is neither:
+/// [`JitterStats::max_gap_age_secs`] was added to settle that, and the capture
+/// says recurrence is neither:
 ///
 /// | link | age resets | mean recurrence | landing in (3,8] s | cover ceded |
 /// | --- | --- | --- | --- | --- |
@@ -77,21 +77,18 @@ const GAP_WINDOW_BUCKETS: usize = 24;
 /// | 2.4GHz | 43 | **4.86s** | 24 (**56%**) | 2.99 fr (**30ms**) |
 ///
 /// Over half of every link's recurrences land in the exact band 3s stopped
-/// covering, so `max_gap` decayed between recurrences and the target sawtoothed
-/// under the link's real need. The age histogram drops sharply at age 4 on all
-/// three links — the fingerprint of the 3s flat-top cutting recurrences in half.
-/// 5GHz paid for it directly: target 12.74 → 8.75 frames while concealment
-/// windows rose 8 → 27.
+/// covering, so `max_gap` decayed between them and the target sawtoothed under
+/// the link's real need. The age histogram drops sharply at age 4 on all three
+/// links — the fingerprint of the 3s flat-top cutting recurrences in half. 5GHz
+/// paid for it directly: target 12.74 → 8.75 frames while concealment windows
+/// rose 8 → 27.
 ///
-/// Under 8s a 2-5s recurrence is never discounted at all, which is the behaviour
-/// the mechanism's own doc describes. It also means v12's 73s 5GHz plateau —
-/// which v13 read as a one-off riding an over-long flat-top — was correct
-/// behaviour for a genuinely recurring gap.
-///
-/// This *raises* the target by ~30ms on the two wireless links and ~8ms on ADB.
-/// Paid deliberately: cover the gap, pay the latency. It is only affordable
-/// because the drain and the underrun defence were repaired first — under v13's
-/// inert actuator the same 30ms would have been a pure tax with no way back down.
+/// At 8s a 2-5s recurrence is never discounted, which is the behaviour the
+/// mechanism's own doc describes. It costs ~30ms of target on the two wireless
+/// links and ~8ms on ADB, paid deliberately: cover the gap, pay the latency. It
+/// is only affordable because the drain and the underrun defence were repaired
+/// first — with an inert actuator the same 30ms would be a pure tax with no way
+/// back down.
 ///
 /// The decay past the flat-top and the 24s window are unchanged, so a true
 /// one-off still glides off in ~20s rather than sitting for the window's life.
@@ -265,25 +262,23 @@ impl JitterStats {
         // top bin — `delay_manager.cc:241-247` does the same, and this module's
         // no-self-latching invariant requires it.
         //
-        // Clamping was the v12 2.4GHz silence. `relative_packet_arrival_delay` is
-        // a running sum floored at zero, so sustained lateness carries it well
-        // past this histogram's 65-frame span; every such sample then refreshed
-        // the ceiling bin, and a bin that is refreshed on every out-of-range
-        // observation is a bin the reverse-CDF walk can never fall off. The field
-        // log shows the result exactly: `histogram` stepped 26.0 → 63.0 while
-        // `max_gap` held flat at 30.3 and `gap_floor` *fell* 38.9 → 31.3, then
-        // read 63.0 — the walk's maximum, not a measurement — for 22 consecutive
-        // windows (~70s) with occupancy repeatedly at zero. Modelled against this
-        // exact Q30 arithmetic the latch takes 0.5s of out-of-range delay to form
-        // and 12.7s of a perfectly clean link to shed: a 25:1 asymmetry no real
-        // 2.4GHz clean stretch was long enough to pay off.
+        // Clamping caused a 2.4GHz silence. `relative_packet_arrival_delay` is a
+        // running sum floored at zero, so sustained lateness carries it well past
+        // this histogram's 65-frame span; every such sample then refreshed the
+        // ceiling bin, and a bin refreshed on every out-of-range observation is
+        // one the reverse-CDF walk can never fall off. The capture shows it
+        // exactly: `histogram` stepped 26.0 → 63.0 while `max_gap` held flat at
+        // 30.3 and `gap_floor` *fell* 38.9 → 31.3, then read 63.0 — the walk's
+        // maximum, not a measurement — for 22 consecutive windows (~70s) with
+        // occupancy repeatedly at zero. Modelled against this exact Q30
+        // arithmetic the latch forms in 0.5s of out-of-range delay and needs
+        // 12.7s of a clean link to shed: a 25:1 asymmetry no real 2.4GHz clean
+        // stretch was long enough to pay off.
         //
-        // Discarding is not a loss of coverage, because the histogram was never
-        // the term that owns these events. The doc above says so in as many
-        // words: [`JitterStats::max_gap_frames`] owns rare events, with its own
-        // 8s-fresh / 24s-maximum horizon, and `gap_floor` is what turns them into
-        // depth. What the histogram owns is the *body* of the delay distribution,
-        // and a sample it cannot represent tells it nothing about that body.
+        // Discarding cedes no coverage: [`JitterStats::max_gap_frames`] owns rare
+        // events on its own 8s-fresh / 24s-maximum horizon, and `gap_floor` turns
+        // them into depth. The histogram owns the *body* of the distribution, and
+        // a sample it cannot represent says nothing about that body.
         //
         // Widening the range instead was modelled and rejected: NetEQ's geometry
         // (100 buckets × 20ms) brings a 700ms delay back *in* range and tracks it
@@ -325,8 +320,8 @@ impl JitterStats {
         // Reverse-CDF walk: accumulate from the tail until we cross the 5% limit.
         // Bounded by the array, not by a literal — `histogram.cc:99` walks to
         // `buckets_.size() - 1` for the same reason. Unreachable now that the top
-        // bin takes no samples, but 63.0 is the number that cost the last field
-        // round and a hand-written bound is how it became plausible.
+        // bin takes no samples, but 63.0 is the reading that cost a whole field
+        // session, and a hand-written bound is how it became plausible.
         let last_bin = self.iat_histogram.len() - 1;
         let mut sum: i64 = (1 << 30) - self.iat_histogram[0];
         let mut index = 0usize;
@@ -387,10 +382,11 @@ impl JitterStats {
     /// period: 100ms gap → 10 frames, 200ms → 20 frames. Only meaningful
     /// when `burst_detected()` is true.
     ///
-    /// **Not a depth authority.** v11 measured this at 5783.5 frames (57.8s) on a
-    /// USB cable while the honest `max_gap_frames()` on the same capture peaked at
-    /// 24 — see the invariant comment in [`super::target`]. It is reported in the
-    /// depth log and it gates `gap_floor`'s headroom; it does not set depth.
+    /// **Not a depth authority.** One capture measured this at 5783.5 frames
+    /// (57.8s) on a USB cable while the honest `max_gap_frames()` on the same run
+    /// peaked at 24 — see the invariant comment in [`super::target`]. It is
+    /// reported in the depth log and it gates `gap_floor`'s headroom; it does not
+    /// set depth.
     pub fn inter_burst_gap_frames(&self) -> f32 {
         self.inter_burst_gap_frames
     }
@@ -414,9 +410,10 @@ impl JitterStats {
     /// silence cannot rotate the window away *while* the gap is happening — the
     /// gap is recorded by the packet that ends it, into a bucket that is still
     /// current at that moment.
-    /// Record one observed delivery gap into the sliding window. `pub(super)` so
-    /// [`super::target`] tests can populate the window in isolation — the whole
-    /// point of this signal is that it works when every other statistic is silent.
+    ///
+    /// `pub(super)` so [`super::target`] tests can populate the window in
+    /// isolation — the whole point of this signal is that it works when every
+    /// other statistic is silent.
     pub(super) fn record_gap(&mut self, gap_frames: f32, arrival_time: Instant) {
         let gap = gap_frames.clamp(0.0, GAP_CLAMP_FRAMES);
         match self.gap_bucket_start {
@@ -469,8 +466,8 @@ impl JitterStats {
     /// Age in seconds of the bucket currently producing [`Self::max_gap_frames`]
     /// — i.e. how long ago the gap that is setting the depth target happened.
     ///
-    /// Reported on the 1Hz depth line only. It exists because the v12 captures
-    /// cannot distinguish the two ways `max_gap` holds a level, and those two
+    /// Reported on the 1Hz depth line only. It exists because the level alone
+    /// cannot distinguish the two ways `max_gap` holds a value, and those two
     /// have opposite meanings:
     ///
     /// - **Flat-top**: one gap, aged under [`GAP_FRESH_SECS`], honoured at full
@@ -479,12 +476,12 @@ impl JitterStats {
     ///   young bucket. Age resets toward 0 every period.
     ///
     /// A 1Hz log of the *level* alone reads identically in both cases, which is
-    /// why the 5GHz plateau at L713→L959 (73s flat at ~21 frames, `arrivals`
-    /// 99-104/s) could not be attributed. Age makes the recurrence period
-    /// directly readable — and reading it is what settled [`GAP_FRESH_SECS`]:
-    /// 87 / 69 / 43 age resets across the three links, mean period 4.77 / 3.57 /
-    /// 4.86s, which is neither the sub-second refresh nor the one-off that a 3s
-    /// flat-top assumed. That plateau was refresh-sustained after all.
+    /// why a 5GHz plateau (73s flat at ~21 frames, `arrivals` 99-104/s) could not
+    /// be attributed. Age makes the recurrence period directly readable — and
+    /// reading it is what settled [`GAP_FRESH_SECS`]: 87 / 69 / 43 age resets
+    /// across the three links, mean period 4.77 / 3.57 / 4.86s, which is neither
+    /// the sub-second refresh nor the one-off a 3s flat-top assumed. That plateau
+    /// was refresh-sustained after all.
     pub fn max_gap_age_secs(&self) -> usize {
         self.weighted_gap_peak().1
     }
@@ -586,7 +583,8 @@ impl JitterStats {
                 // to fire on the packet that needs it most: a packet resuming after
                 // a long silence closes a cluster, writes `last_burst_time = now`,
                 // and the expiry check then sees a fresh timestamp and stands down.
-                // That is how v11 measured a 57.8s "inter-burst gap" on a USB cable.
+                // That is how one capture measured a 57.8s "inter-burst gap" on a
+                // USB cable.
                 if self.burst_detected
                     && let Some(last_burst) = self.last_burst_time
                     && arrival_time.duration_since(last_burst).as_secs() >= BURST_EXPIRY_SECS
@@ -816,8 +814,8 @@ mod tests {
             stats.max_gap_frames(),
         );
 
-        // v5: the read is age-weighted, so the descent must already be well
-        // underway at 16s — not a cliff at the 24s rotation boundary.
+        // The read is age-weighted, so the descent must already be well underway
+        // at 16s — not a cliff at the 24s rotation boundary.
         let mut seq = 3u64;
         let mut t = gap_end;
         feed_clean(&mut stats, &mut seq, &mut t, 16);
@@ -837,11 +835,10 @@ mod tests {
         );
     }
 
-    /// v5 root cause 3: a single huge gap used to hold the target at full value
-    /// for the window's entire 24s life (the field log shows one 1.07s gap
-    /// pinning latency at ~730ms for ~50s). Age-weighting turns that cliff into
-    /// a glide — while leaving a *recurring* gap fully covered, because it keeps
-    /// refreshing young buckets.
+    /// A single huge gap used to hold the target at full value for the window's
+    /// entire 24s life (one capture shows a 1.07s gap pinning latency at ~730ms
+    /// for ~50s). Age-weighting turns that cliff into a glide — while leaving a
+    /// *recurring* gap fully covered, because it keeps refreshing young buckets.
     #[test]
     fn age_decay_glides_a_one_off_gap_but_holds_a_recurring_one() {
         // --- One-off: a 100-frame gap must fade as it ages. ---
@@ -906,14 +903,14 @@ mod tests {
     /// come through this test and say so.
     ///
     /// The cost it is traded against is a one-off gap held longer than it
-    /// deserves — the v12 5GHz capture shows a single 306ms spike at L579 holding
-    /// `effective_target` at 32 frames for 8 consecutive log windows (L590→L611)
-    /// while `arrivals` read 100/s and the histogram decayed 15 → 0. v13 answered
-    /// that by shortening the flat-top and made the recurring case worse instead
-    /// (see [`GAP_FRESH_SECS`]). The actual guarantee is weaker and is what this
+    /// deserves — one 5GHz capture shows a single 306ms spike holding
+    /// `effective_target` at 32 frames for 8 consecutive log windows while
+    /// `arrivals` read 100/s and the histogram decayed 15 → 0. Shortening the
+    /// flat-top to answer that made the recurring case worse instead (see
+    /// [`GAP_FRESH_SECS`]). The actual guarantee is weaker and is what this
     /// asserts: a one-off is honoured while fresh, takes its first decay step the
     /// second the flat-top ends, and is substantially gone well inside the 24s
-    /// window — it is never pinned for the window's life, which was the v5 defect
+    /// window — it is never pinned for the window's life, which is the defect
     /// age-weighting exists to fix.
     #[test]
     fn a_one_off_gap_should_still_decay_within_the_window() {
@@ -956,9 +953,9 @@ mod tests {
     /// **The measurement that set [`GAP_FRESH_SECS`], asserted directly.**
     ///
     /// The flat-top only has to be long enough to reach the link's real gap
-    /// recurrence period; past that, refresh does the work. v13 assumed that
-    /// period was either sub-second or nonexistent and shortened the flat-top to
-    /// 3s. [`JitterStats::max_gap_age_secs`] then measured it: **4.77s on 5GHz,
+    /// recurrence period; past that, refresh does the work. The original 3s
+    /// assumption was that the period was either sub-second or nonexistent.
+    /// [`JitterStats::max_gap_age_secs`] then measured it: **4.77s on 5GHz,
     /// 3.57s on ADB, 4.86s on 2.4GHz**, with 54-56% of all recurrences landing in
     /// the (3, 8] band the shortened flat-top had stopped covering.
     ///
@@ -1022,8 +1019,8 @@ mod tests {
 
     /// The two ways `max_gap` holds a level read identically at 1Hz and mean
     /// opposite things, so the age that separates them is asserted directly.
-    /// This is the signal the v12 5GHz capture lacked: 73s flat at ~21 frames
-    /// (L713→L959) with `arrivals` at 99-104/s, unattributable either way.
+    /// This is the signal one 5GHz capture lacked: 73s flat at ~21 frames with
+    /// `arrivals` at 99-104/s, unattributable either way.
     #[test]
     fn the_gap_age_should_separate_a_flat_top_from_a_refreshed_gap() {
         // --- One-off: age climbs, because nothing rewrites the bucket. ---
@@ -1063,12 +1060,12 @@ mod tests {
         }
     }
 
-    /// v5 root cause 6: with the old per-packet `iat_adjusted` feeding, a DTIM
-    /// gap was ONE sample among the ~20 burst packets that followed it, so it
-    /// sat at the 98th percentile and was invisible at p95 — the histogram could
-    /// only ever learn a gap by starving on it. NetEQ's relative-arrival-delay
-    /// feeding makes every packet of the burst carry the gap's lateness, so one
-    /// gap becomes a whole spread of large samples.
+    /// A DTIM gap was once ONE sample among the ~20 burst packets that followed
+    /// it, so it sat at the 98th percentile and was invisible at p95 — the
+    /// histogram could only ever learn a gap by starving on it.
+    /// NetEQ's relative-arrival-delay feeding makes every packet of the burst
+    /// carry the gap's lateness, so one gap becomes a whole spread of large
+    /// samples.
     #[test]
     fn relative_delay_histogram_sees_dtim_bursts() {
         let mut stats = JitterStats::new();
@@ -1096,7 +1093,7 @@ mod tests {
         );
     }
 
-    /// The v12 2.4GHz silence, at its root. `relative_packet_arrival_delay` is a
+    /// A 2.4GHz silence, at its root. `relative_packet_arrival_delay` is a
     /// running sum floored at zero, so sustained lateness carries it past the
     /// histogram's 65-frame span; the old code clamped those samples into the top
     /// bin, which then refreshed on every out-of-range observation.
@@ -1137,7 +1134,7 @@ mod tests {
 
     /// The reverse-CDF walk is bounded by the bin count, so its maximum output is
     /// `IAT_HISTOGRAM_BINS - 1` — 63.0 at the 65 bins we ship. That number is not
-    /// a measurement, it is the walk running out of histogram, and the v12 2.4GHz
+    /// a measurement, it is the walk running out of histogram, and one 2.4GHz
     /// capture read exactly 63.0 for 22 consecutive windows while `max_gap` held
     /// flat at 30.3 and `gap_floor` *fell*. Under a load the histogram cannot
     /// represent, the body of the distribution must keep governing.
@@ -1183,8 +1180,8 @@ mod tests {
     /// be the one that pins the target.
     ///
     /// Field distributions are spread across bins rather than concentrated, so
-    /// they descend gradually — the v12 5GHz capture shows `histogram` gliding
-    /// 15 → 0. The concentrated prime here is the worst case on purpose.
+    /// they descend gradually — a 5GHz capture shows `histogram` gliding 15 → 0.
+    /// The concentrated prime here is the worst case on purpose.
     #[test]
     fn a_learned_delay_should_age_out_of_the_histogram_on_its_own() {
         let mut stats = JitterStats::new();
@@ -1252,12 +1249,11 @@ mod tests {
         assert!(stats.delay_history.is_empty());
     }
 
-    /// v12: `inter_burst_gap` read 1485 frames on average and peaked at 5783.5
-    /// (57.8s) on a *USB cable* in the v11 field logs, while `max_gap` on the same
-    /// capture averaged 7.8 and peaked at 24. The cause was not the EWMA — it was
-    /// the cluster anchor surviving events that invalidated it, so the statistic
-    /// reported wall-clock time since the last coalescing event rather than a
-    /// batching period.
+    /// `inter_burst_gap` once read 1485 frames on average and peaked at 5783.5
+    /// (57.8s) on a *USB cable*, while `max_gap` on the same capture averaged 7.8
+    /// and peaked at 24. The cause was not the EWMA — it was the cluster anchor
+    /// surviving events that invalidated it, so the statistic reported wall-clock
+    /// time since the last coalescing event rather than a batching period.
     mod inter_burst_gap_must_measure_a_batching_period {
         use super::*;
 
@@ -1273,7 +1269,7 @@ mod tests {
             }
         }
 
-        /// The exact v11 shape, minimised: a burst, a long quiet stretch that
+        /// The failure shape, minimised: a burst, a long quiet stretch that
         /// expires it, then a second burst. The second burst must measure its gap
         /// against *nothing* — the first burst is no longer a valid reference —
         /// rather than against a 30-second-old anchor.
@@ -1308,8 +1304,8 @@ mod tests {
                 "expiry must clear the gap EWMA",
             );
 
-            // A new burst, 30s after the old one. Pre-v12 the first cluster of
-            // this pair measured against the *expired* anchor and reported ~3000
+            // A new burst, 30s after the old one. The first cluster of this pair
+            // used to measure against the *expired* anchor and report ~3000
             // frames; now there is no anchor to measure against.
             tight_cluster(&mut stats, &mut seq, &mut t, 4);
             t += Duration::from_millis(200);
@@ -1418,8 +1414,8 @@ mod tests {
 
             // Alternate: a short burst, then a long quiet stretch. Repeat. This is
             // the ADB pattern — scheduler coalescing during activity, silence
-            // between. Pre-v12 each new burst measured against the previous one's
-            // anchor and the EWMA walked into the thousands.
+            // between. Each new burst used to measure against the previous one's
+            // anchor, and the EWMA walked into the thousands.
             for _ in 0..6 {
                 tight_cluster(&mut stats, &mut seq, &mut t, 4);
                 t += Duration::from_millis(200);

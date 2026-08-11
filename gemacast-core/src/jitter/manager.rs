@@ -64,7 +64,7 @@ const MIN_TIMESCALE_INTERVAL: u32 = 2;
 ///
 /// **Shortens as the target grows** — the opposite of what "rate limit" first
 /// suggests, and the direction is the whole point of the change. A splice moves
-/// the buffer by ~1 frame (measured 1.05-1.08 across all three links, v14), so
+/// the buffer by ~1 frame (measured 1.05-1.08 across all three links), so
 /// the number of splices needed to cross the drain band is the *band width*,
 /// and the band is `target/4` ([`super::target::buffer_limits`]). A flat
 /// interval therefore makes band traversal time proportional to the target:
@@ -75,7 +75,7 @@ const MIN_TIMESCALE_INTERVAL: u32 = 2;
 /// | 5 GHz | 13 | 3 | 180ms |
 /// | 2.4 GHz | 36 | 9 | **540ms** |
 ///
-/// That last row is the v14 measurement: `declined_cooldown` 320 against 118
+/// That last row is the field measurement: `declined_cooldown` 320 against 118
 /// splices on 2.4 GHz — **73% of that link's drain refusals were the rate
 /// limiter, not quality**. The same constant that is correct at a 6-frame
 /// target is the dominant veto at 36.
@@ -85,8 +85,7 @@ const MIN_TIMESCALE_INTERVAL: u32 = 2;
 /// identical, which is what keeps the change attributable), 2 at both 5 GHz and
 /// 2.4 GHz.
 ///
-/// This is the same absolute-constant-across-scales defect as `MIN_BAND` in v13,
-/// and `EMERGENCY_MARGIN` still carries it — see *Deferred*.
+/// This is the same absolute-constant-across-scales defect `MIN_BAND` once had.
 ///
 /// The emergency (fast-accelerate) tier bypasses the cooldown entirely
 /// regardless, matching NetEQ's `kFastAccelerate`.
@@ -122,13 +121,12 @@ const EMERGENCY_MIN_MARGIN: u32 = 50 / MILLIS_PER_FRAME;
 /// constant applied across targets that span 5 to 50 frames.
 ///
 ///  * `4 * high_limit` (~2 seconds of audio) never fired. Removed for that.
-///  * `high_limit + 15` (a flat 150ms) replaced it and is what v13 shipped. The
-///    v13 census says it did not fire either: the threshold landed at 22.7
-///    frames on ADB, 24.3 on 5GHz and 49.8 on 2.4GHz, against filtered levels
-///    that parked at 9.12 / 9.86 / 18.79. Measured firing rate **0.0% / 0.2% /
-///    0.0% of windows**. Peak occupancy 310 / 280 / 400ms — the "buffer jumps to
-///    250ms++" report is this threshold being the buffer's effective ceiling
-///    rather than a tier it can reach.
+///  * `high_limit + 15` (a flat 150ms) replaced it and did not fire either: the
+///    threshold landed at 22.7 frames on ADB, 24.3 on 5GHz and 49.8 on 2.4GHz,
+///    against filtered levels that parked at 9.12 / 9.86 / 18.79. Measured firing
+///    rate **0.0% / 0.2% / 0.0% of windows**. Peak occupancy 310 / 280 / 400ms —
+///    the "buffer jumps to 250ms++" report is this threshold being the buffer's
+///    effective ceiling rather than a tier it can reach.
 ///
 /// A flat margin is a *smaller* fraction of a large target than of a small one,
 /// which is backwards: a 150ms overshoot on ADB's 50ms target is catastrophic and
@@ -138,7 +136,7 @@ const EMERGENCY_MIN_MARGIN: u32 = 50 / MILLIS_PER_FRAME;
 /// Upstream's is proportional too, `filtered >= high_limit << 2`
 /// (`decision_logic.cc:283-296`), but that is exactly the `4 * high_limit` this
 /// module already removed for never firing; NetEQ can afford it because its
-/// normal tier actually drains, and until v14 ours did not. Half is the value
+/// normal tier actually drains, and ours once did not. Half is the value
 /// that puts the tier inside the measured occupancy range on every link:
 /// ADB ~11 frames, 5GHz ~14, 2.4GHz ~52.
 ///
@@ -176,7 +174,7 @@ const LOG_INTERVAL_FRAMES: u32 = 1000 / MILLIS_PER_FRAME;
 /// under-delivery. See [`JitterBufferManager::log_depth_authority`] for why the
 /// comparison is against wall-clock rather than against `frames_played`.
 ///
-/// Sited on the v12 captures, where `arrivals / expected` is cleanly bimodal.
+/// Sited on field captures, where `arrivals / expected` is cleanly bimodal.
 /// ADB (205 windows) and 5GHz (257) never read below **0.90**. 2.4GHz splits
 /// into a collapse population of **24 windows at 0.33-0.57** and a healthy
 /// remainder whose lowest reading is **0.74**. The bucket `[0.60, 0.70)` is
@@ -188,9 +186,9 @@ const UNDER_DELIVERY_RATIO: f32 = 0.7;
 /// 1Hz depth line and cleared with it.
 ///
 /// The splices themselves are logged at `trace!`, which the mobile crate's
-/// `LevelFilter::Info` discards — three v12 field captures across ADB, 2.4GHz
-/// and 5GHz contain **zero** accelerate/expand/drain lines between them, so the
-/// subsystem that performs every edit to the audio has never been observed in
+/// `LevelFilter::Info` discards — three field captures across ADB, 2.4GHz and
+/// 5GHz contained **zero** accelerate/expand/drain lines between them, so the
+/// subsystem that performs every edit to the audio had never been observed in
 /// the field. Counting is an increment on the hot path and costs one `info!`
 /// field per second; a per-splice log at `info!` would be a logging burst in the
 /// audio callback, which is the thing this module is not allowed to do.
@@ -198,12 +196,12 @@ const UNDER_DELIVERY_RATIO: f32 = 0.7;
 /// `declined_*` are the two ways [`JitterBufferManager::process_next_frame`]
 /// reaches the drain branch and returns without draining. Distinguishing them
 /// is the whole point: `cooldown` means the rate limiter is the binding
-/// constraint, `rms_mask` means program material is, and CLAUDE.md records
-/// removing that mask as the worst regression in this module's history — so the
-/// question "is the mask blocking the drain you want?" has to be answerable
-/// from a log rather than from argument.
+/// constraint, `rms_mask` means program material is, and removing that mask was
+/// the worst regression in this module's history — so the question "is the mask
+/// blocking the drain you want?" has to be answerable from a log rather than
+/// from argument.
 ///
-/// The v13 captures answered it: `declined_rms_mask` took **93-96% of every
+/// The field answered it: `declined_rms_mask` took **93-96% of every
 /// drain attempt on all three links** (36 455 attempts, 243 splices, over 881s),
 /// while `declined_recovery` was zero everywhere and `declined_cooldown` under
 /// 4%. `rms_sum` / `rms_count` / `rms_max` were added next so the *threshold*
@@ -227,11 +225,11 @@ struct TimescaleTally {
     /// WSOLA accelerate splices that fired on the fast (emergency) tier.
     /// The fast tier bypasses the cooldown and drops the correlation threshold
     /// 0.9 → 0.5, so it is the most artifact-prone edit path in the module.
-    /// v14 commit 3 introduced it and gave it **no counter at all** — three
-    /// field captures show zero fast-tier lines because the splice log is
-    /// `trace!` and logcat discards it. This count closes that gap.
+    /// It shipped with **no counter at all** — three field captures show zero
+    /// fast-tier lines because the splice log is `trace!` and logcat discards
+    /// it. This count closes that gap.
     fast_accelerated: u32,
-    /// Preemptive expand splices (commit 2's new growth path).
+    /// Preemptive expand splices — the `filtered < low_limit` growth path.
     preemptive: u32,
     /// Preemptive expand was attempted (`filtered < low_limit`) but declined
     /// by its own NCC gate inside `expand()`.
@@ -239,7 +237,7 @@ struct TimescaleTally {
     /// The *imminent-underrun* tier of expand was attempted (`occupied <= 1`) and
     /// declined by the same NCC gate.
     ///
-    /// Split out in v19 because [`TimescaleTally::declined_preemptive_ncc`] is
+    /// Split out because [`TimescaleTally::declined_preemptive_ncc`] is
     /// incremented only `if !imminent_underrun` — so the declines at the very edge
     /// of starvation, the ones with the least margin left to recover from, were
     /// the single population the census could not see. A run where expand is armed
@@ -252,10 +250,10 @@ struct TimescaleTally {
     /// splice to be masked (`rms >= ARTIFACT_MASK_RMS`).
     ///
     /// **Must now read 0 on every link.** The masking gate stopped being a
-    /// precondition for the drain in v14, so nothing increments this any more —
-    /// it is kept, and kept printing, as the tripwire that would say the gate
-    /// came back by some path nobody intended. It read 93-96% of every attempt
-    /// in the v13 captures, which is why it is worth a permanent zero.
+    /// precondition for the drain, so nothing increments this any more — it is
+    /// kept, and kept printing, as the tripwire that would say the gate came
+    /// back by some path nobody intended. It read 93-96% of every attempt in the
+    /// field, which is why it is worth a permanent zero.
     declined_rms_mask: u32,
     /// Over `high_limit`, but inside the post-starvation recovery guard.
     declined_recovery: u32,
@@ -264,7 +262,7 @@ struct TimescaleTally {
     /// Splices that landed on content the old masking gate would have refused
     /// (`rms >= ARTIFACT_MASK_RMS`).
     ///
-    /// The count that makes v14's central risk falsifiable in the field: it is
+    /// The count that makes the demotion's central risk falsifiable in the field: it is
     /// exactly the population of edits that did not exist before, so a reported
     /// warble on sustained tones can be weighed against how many loud splices
     /// produced it — and silence can be weighed against the same number.
@@ -275,7 +273,7 @@ struct TimescaleTally {
     /// this is one add and one compare — but its *value* has never been logged.
     /// Every claim about where program material sits relative to
     /// [`ARTIFACT_MASK_RMS`] has therefore been inference from the decline
-    /// counts, the same position `max_gap_age` was in before v13 made it a
+    /// counts, the same position `max_gap_age` was in before it became a logged
     /// field. Summed rather than latched so it reports a window average and
     /// falls on its own the moment the content does — a max-only reading would
     /// latch its own history, which this module does not permit.
@@ -297,7 +295,7 @@ struct TimescaleTally {
     /// produce an artifact. The two together say whether the splices are landing
     /// on the loud part of the window or the quiet part — the printed line used to
     /// answer that with `mask_rms=`, which was the *constant* `ARTIFACT_MASK_RMS`
-    /// and has read 0.08 on every window of every capture since v14 demoted it.
+    /// and has read 0.08 on every window of every capture since it was demoted.
     /// Summed and window-scoped, so it falls the moment the content does.
     splice_rms_sum: f32,
     /// Splices contributing to [`TimescaleTally::splice_rms_sum`].
@@ -306,15 +304,15 @@ struct TimescaleTally {
     /// incoming signal's own steepest step across the crossfade region — see
     /// [`super::timescale::TimeScaler::take_splice_step`].
     ///
-    /// The v18 fade fix — a full Hann *bell* (0 → 1 → 0) replaced by a monotonic
+    /// The fade fix — a full Hann *bell* (0 → 1 → 0) replaced by a monotonic
     /// ramp — is the only change in this module's history that shipped
     /// **unconfirmed by ear**, and it cannot be confirmed by a unit test either: at
     /// an exact pitch multiple the two shapes produce byte-identical output, which
     /// is how the bell survived four rounds of green tests. This is the field
     /// discriminator. The monotonic ramp bounds it at **1.00 by construction**; the
     /// bell measured **0.37-6.6** on the same material. A capture that reads ≤1.00
-    /// answers "did v18 help?" with no listening at all, and a reading above 1.00
-    /// says a non-monotonic fade came back.
+    /// answers "did the ramp help?" with no listening at all, and a reading above
+    /// 1.00 says a non-monotonic fade came back.
     ///
     /// Window-bounded exactly as [`TimescaleTally::rms_max`] is: it is a max over
     /// the window's splices and resets with the window, so it cannot latch its own
@@ -326,9 +324,8 @@ struct TimescaleTally {
     /// Upstream bounds concealment quality by `consecutive_expands_`
     /// (`expand.cc:150-312`): a mute schedule steps at 3 and 7 and hands over to
     /// background noise at 0. Ours is bounded only by `MIN_EXPAND_INTERVAL` and
-    /// `REBUFFER_AFTER`, and until now **nothing counted the run at all**, so that
-    /// bound was inferred rather than measured — CLAUDE.md records it as v20's one
-    /// unclosed risk and names this counter as the first thing to add.
+    /// `REBUFFER_AFTER`, and for a long time **nothing counted the run at all**,
+    /// so that bound was inferred rather than measured.
     ///
     /// A max over the window, cleared with the rest of the tally by
     /// `std::mem::take`, so it cannot carry a peak past the window that produced
@@ -341,8 +338,7 @@ struct TimescaleTally {
     /// Reads 0 on an Opus stream by construction — `plc_is_valid` is true there, so
     /// the codec path is taken. On an uncompressed or silence-heavy stream it should
     /// account for **all** of `conceal_run`'s frames; a run without conceals beside
-    /// it means the history was missing and the concealment was the digital silence
-    /// v21 measured.
+    /// it means the history was missing and the concealment was digital silence.
     pitch_conceals: u32,
     /// Worst entry seam produced by a pitch concealment this window, in the same
     /// units as [`TimescaleTally::splice_step_max`] — see
@@ -361,7 +357,7 @@ struct TimescaleTally {
     /// Concealed frames emitted at exactly [`super::consts::CONCEAL_FADE_FLOOR`] —
     /// the tail of a run long enough to have decayed all the way down.
     ///
-    /// v22's fade floor accepts one risk, and this is the counter that prices it.
+    /// The fade floor accepts one risk, and this is the counter that prices it.
     /// A long run repeats a single pitch period at the floor gain for its whole
     /// tail, where upstream rotates three lags (`expand.cc:844-853`) so consecutive
     /// expansions are never identical; ours re-stages history from its own output,
@@ -380,11 +376,10 @@ struct TimescaleTally {
     ///
     /// `stats.observe` counts the arrival *before* `buffer.insert` runs, so a
     /// rejected packet is already inside `arrivals` and can never appear in
-    /// `played`. Until v17 nothing counted it, which is why 6.2% of every
+    /// `played`. For a long time nothing counted it, which is why 6.2% of every
     /// arrival was unattributable: measured `arrivals - played` = 1764 frames
-    /// (7.6%, 17.6s of audio) across the v16 uncompressed capture, of which only
+    /// (7.6%, 17.6s of audio) across one uncompressed capture, of which only
     /// 340 were explained by the logged flush/shed paths.
-    /// See `LOGS/log-2.4GHZ-routerB-uncompressed-changesv16.txt`.
     stale_rejects: u32,
     /// Summed `next_play_seq - seq_num` over this window's stale rejects.
     ///
@@ -405,9 +400,9 @@ struct TimescaleTally {
     /// `fast_forward` contributes its full `diff`.
     ///
     /// Armed by [`REORDER_TOLERANCE_2_4GHZ`] — 6 frames, 60ms — against a link
-    /// whose *median* delivery gap measured 21.6 frames (216ms) in the v16
-    /// capture. Whether that tolerance is too tight to be honest is v18's
-    /// question, and this counter is what decides it.
+    /// whose *median* delivery gap measured 21.6 frames (216ms) in the field.
+    /// Whether that tolerance is too tight to be honest is open, and this counter
+    /// is what decides it.
     skipped_frames: u32,
     /// Frames discarded by [`JitterBufferManager::flush_with_crossfade`], from
     /// all three callers (startup flush, rebuffer clamp, no-buffer drain).
@@ -420,15 +415,16 @@ struct TimescaleTally {
     flush_discards: u32,
     /// Packets popped by the accelerate path to *extend* its staging window.
     ///
-    /// The last term of the ledger above, and the reason it did not close before
-    /// v19. This pop takes a second packet out of the buffer in the same callback
-    /// that already played one, and `frames_played` counts callbacks rather than
-    /// packets — so the frame was emitted (spliced, or verbatim via `emit_window`)
-    /// while `arrivals - played` still counted it as lost. Measured: `unplayed`
-    /// read as 6.8% packet loss on the 24-unc capture where true loss was 0%, and
-    /// the ledger's own doc had to end with "plus the fractional accelerate pops"
-    /// because nothing counted them. `unplayed` on the depth line now subtracts
-    /// this, and prints it beside the result so the correction stays visible.
+    /// The last term of the ledger above, and the reason it did not close
+    /// before. This pop takes a second packet out of the buffer in the same
+    /// callback that already played one, and `frames_played` counts callbacks
+    /// rather than packets — so the frame was emitted (spliced, or verbatim via
+    /// `emit_window`) while `arrivals - played` still counted it as lost.
+    /// Measured: `unplayed` read as 6.8% packet loss on a 2.4GHz uncompressed
+    /// capture where true loss was 0%, and the ledger's own doc had to end with
+    /// "plus the fractional accelerate pops" because nothing counted them.
+    /// `unplayed` on the depth line now subtracts this, and prints it beside the
+    /// result so the correction stays visible.
     staged_pops: u32,
 }
 
@@ -492,7 +488,7 @@ pub struct JitterBufferManager {
     /// Wall-clock instant the current depth-authority window opened. `None`
     /// until the first line is emitted. Lets the log report what the window
     /// actually spanned instead of assuming `LOG_INTERVAL_FRAMES * 10ms` — on
-    /// 2.4GHz the callback interval stretched to 3161ms during the v12
+    /// 2.4GHz the callback interval stretched to 3161ms during a measured
     /// collapse, which silently rescaled every per-window rate printed.
     log_window_started_at: Option<Instant>,
     /// Frames actually emitted from real packets since the last log line. Paired
@@ -793,15 +789,15 @@ impl JitterBufferManager {
         }
 
         if self.flow.is_prebuffering {
-            // The resume threshold is a pure function of the target. v7 round 1
-            // added a `max_gap`-derived floor here and it failed in the field:
-            // the gap that *caused* the rebuffer is folded into the window by the
-            // packet that ends it, so the floor read at prebuffer exit is always
-            // ≥ that gap — 5GHz jumped 3 → 21 frames on a control link. See
-            // `LOGS/log-5GHZ-routerB-changesv7.txt:62,66`. `max_gap` is logged
-            // below as an observation only; do not wire it back into the depth.
+            // The resume threshold is a pure function of the target. A
+            // `max_gap`-derived floor was once added here and it failed in the
+            // field: the gap that *caused* the rebuffer is folded into the window
+            // by the packet that ends it, so the floor read at prebuffer exit is
+            // always ≥ that gap — 5GHz jumped 3 → 21 frames on a control link.
+            // `max_gap` is logged below as an observation only; do not wire it
+            // back into the depth.
             //
-            // **v17 removed an absolute 150ms ceiling that used to sit here**
+            // **An absolute 150ms ceiling used to sit here and was removed**
             // (`REBUFFER_HOLD_CAP_MS`). It was written to bound the hole width
             // independently of the depth, on the reasoning that a deeper
             // threshold means a longer hold. On a DTIM-batched link that premise
@@ -820,11 +816,10 @@ impl JitterBufferManager {
             // guaranteed to re-starve before the growth actuator (measured
             // 0.68 fr/s) could climb. The two populations in one capture:
             // cap-bound resumes re-starved at a median of **0.33s**, unbound ones
-            // at **5.07s**. See `LOGS/log-2.4GHZ-routerB-uncompressed-changesv16.txt`
-            // and `TEMP/v17-plan.md`.
+            // at **5.07s**.
             //
             // This is now NetEQ's rule exactly: `kPostponeDecodingLevel = 50`
-            // ([decision_logic.cc:29,176-187](TEMP/webrtc-neteq/decision_logic.cc))
+            // ([decision_logic.cc:29,176-187](decision_logic.cc))
             // holds concealment until the buffer reaches 50% of the target, and
             // that is the whole rule — upstream bounds the *target*
             // (`maximum_delay_ms_`, our `comfort_cap_ms`) and never the resume
@@ -854,13 +849,13 @@ impl JitterBufferManager {
                 // `ingest_packets` drains the whole ring before this test runs,
                 // and it runs once per callback — so the occupancy the test sees
                 // is post-burst, not the moment the threshold was crossed. The
-                // v14 captures measured the consequence: **79% of prebuffers
+                // field measured the consequence: **79% of prebuffers
                 // overshot, mean +7.6 frames (76ms), max +20 (200ms)**. Some
                 // clamp is therefore right: a DTIM burst is not free latency
                 // budget.
                 //
-                // **What it clamps *to* was wrong, and v18 measured the cost.**
-                // Through v18 the line was `unpause_threshold` — one number
+                // **What it clamps *to* was wrong, and the field measured the
+                // cost.** The line was once `unpause_threshold` — one number
                 // deciding two unrelated things, *when* to release the playhead
                 // and *what depth to keep*. `resume_threshold_pct` is 0.25 (5GHz)
                 // / 0.5 (2.4GHz) while the drain floor is
@@ -891,23 +886,19 @@ impl JitterBufferManager {
                 // nothing is discarded and nothing can be). It costs the audio it
                 // stops throwing away: 82ms per resume on 2.4GHz uncompressed,
                 // 97ms on 2.4GHz 128kbps, 90ms / 10ms on the two 5GHz captures,
-                // shed afterwards through the normal drain. See `TEMP/v19-plan.md`.
+                // shed afterwards through the normal drain.
                 //
                 // `high_limit >= target >= min_depth >= unpause_threshold`
                 // whenever `resume_threshold_pct <= 1`, so this can only ever
                 // retain *more* than the release threshold; the `.max` states that
                 // rather than relying on it.
                 //
-                // Two justifications the old comment carried are struck. It read
-                // "that 200ms then feeds `max_gap` → `gap_floor`" — **impossible by
-                // construction**: `record_gap` is driven purely by `arrival_time`
-                // stamped on the receive thread and cannot observe a playback
-                // flush. And it called the threshold "already the considered
-                // decision"; it is the considered decision about *release*, and
-                // was never sited on a measurement about *depth*. NetEQ has no
-                // resume-time flush at all — `kPostponeDecodingLevel = 50`
-                // ([decision_logic.cc:29](TEMP/webrtc-neteq/decision_logic.cc#L29))
-                // waits for the level and then plays, and that is the whole rule.
+                // A flush cannot feed `max_gap` → `gap_floor`: `record_gap` is
+                // driven purely by `arrival_time` stamped on the receive thread
+                // and cannot observe a playback flush. NetEQ has no resume-time
+                // flush at all — `kPostponeDecodingLevel = 50`
+                // ([decision_logic.cc:29](decision_logic.cc#L29)) waits for the
+                // level and then plays, and that is the whole rule.
                 //
                 // Uses the same `flush_with_crossfade` the startup flush uses, so
                 // the discard is spliced, not cut.
@@ -927,7 +918,7 @@ impl JitterBufferManager {
                 // `startup_flush_never_leaves_fewer_than_eight_frames` caught it.
                 // The startup flush is the authority on the first exit; this is the
                 // authority on every later one.
-                // **v20: the band is read at `raw_target`, not at `target`.**
+                // **The band is read at `raw_target`, not at `target`.**
                 // `target` is the *ramped* value — `advance` walks it toward the
                 // measurement at a bounded rate, so on the callback that ends a
                 // rebuffer it is still carrying the depth from before the outage.
@@ -937,10 +928,10 @@ impl JitterBufferManager {
                 // computed from the stale number discards audio the buffer is
                 // about to need.
                 //
-                // Measured on the same 41 v19 resumes the comment above was
-                // written from (`TEMP/v20/`, 33 uncompressed + 8 128kbps):
+                // Measured on the same 41 resumes the comment above was written
+                // from (33 uncompressed + 8 128kbps):
                 //
-                // | | v19 `high(target)` | v20 `high(max(target, raw))` |
+                // | | `high(target)` | `high(max(target, raw))` |
                 // | --- | --- | --- |
                 // | landed below `max_gap`, unc | 31/33 (93.9%) | 26/33 (78.8%) |
                 // | landed below `max_gap`, 128k | **8/8 (100%)** | **4/8 (50%)** |
@@ -956,28 +947,29 @@ impl JitterBufferManager {
                 // falls *below* the ramped target on 11 of 33 uncompressed
                 // resumes (the descent phases, where `advance` is walking down
                 // behind a gap that has already aged out). `buffer_limits(raw)`
-                // alone would clamp lower than v19 there. Since
-                // `buffer_limits(t).1` is monotone non-decreasing in `t`, taking
-                // the max makes this change provably one-directional: it can only
-                // ever retain more than v19, never less — verified on all 41
+                // alone would clamp lower there. Since `buffer_limits(t).1` is
+                // monotone non-decreasing in `t`, taking the max makes this
+                // provably one-directional: it can only ever retain more than
+                // clamping on `target` alone, never less — verified on all 41
                 // events.
                 //
-                // **What it costs.** v19 landed exactly on `high_limit`, the one
-                // depth where neither actuator is armed. v20 can land above it,
-                // so the *drain* is armed on resume: 12/33 and 8/8 events, by a
-                // mean of 4.58 / 10.38 frames and a worst case of 21. That is
-                // shed by the normal drain, whose cooldown here is
-                // `timescale_interval` = 2-3 callbacks, so the worst case clears
-                // in ~630ms — bought against 118ms of per-resume gap shortfall
-                // and the re-starvation it feeds. No event exceeds the comfort
-                // cap (max landing 45 against 80); `raw` is capped there already,
-                // so that is a property of the formula, not of this sample.
+                // **What it costs.** Clamping on `target` landed exactly on
+                // `high_limit`, the one depth where neither actuator is armed;
+                // this can land above it, so the *drain* is armed on resume:
+                // 12/33 and 8/8 events, by a mean of 4.58 / 10.38 frames and a
+                // worst case of 21. That is shed by the normal drain, whose
+                // cooldown here is `timescale_interval` = 2-3 callbacks, so the
+                // worst case clears in ~630ms — bought against 118ms of
+                // per-resume gap shortfall and the re-starvation it feeds. No
+                // event exceeds the comfort cap (max landing 45 against 80);
+                // `raw` is capped there already, so that is a property of the
+                // formula, not of this sample.
                 //
-                // This is **not** the v7 change. `unpause_threshold` above stays
-                // a pure function of `target` — `max_gap` is not wired into *when*
-                // the playhead is released, only into *how much of an already
-                // released burst is kept*. See the v7 warning at the top of this
-                // branch.
+                // This is **not** the `max_gap`-in-the-release-threshold change.
+                // `unpause_threshold` above stays a pure function of `target` —
+                // `max_gap` is not wired into *when* the playhead is released,
+                // only into *how much of an already released burst is kept*. See
+                // the warning at the top of this branch.
                 let resume_depth = TargetController::buffer_limits(target.max(raw_target))
                     .1
                     .max(unpause_threshold);
@@ -1196,7 +1188,7 @@ impl JitterBufferManager {
             // on silence) — but it is no longer a *precondition* for attempting a
             // WSOLA accelerate.
             //
-            // It was, for four rounds, and the v13 field census is what retired it:
+            // It was, for four rounds, and a field census is what retired it:
             // `declined_rms_mask` took 93-96% of every drain attempt on all three
             // links — 36 455 attempts, 243 splices, over 881 seconds — while
             // `declined_recovery` was zero everywhere and `declined_cooldown` under
@@ -1227,7 +1219,7 @@ impl JitterBufferManager {
             // (`fast_mode ? 0.5 : 0.9`, `timescale.rs`) and `declined_ncc` measured
             // 0.8-2.6% of attempts, so it is a live veto and not a rubber stamp.
             //
-            // This is not the removal CLAUDE.md warns about. That warning is about
+            // This is not the removal that once regressed this module. That was
             // deleting the masking gate and leaving *nothing* in its place; the
             // splice remains gated on correlation, and the RMS is still measured and
             // now reported per window (`avg_rms`/`max_rms`) so it can come back as a
@@ -1333,7 +1325,7 @@ impl JitterBufferManager {
                             self.timescale_cooldown = timescale_interval(target);
                         }
                         // The splice the old masking gate would have refused. This
-                        // is the count that makes commit 2's risk falsifiable: if
+                        // is the count that makes the demotion's risk falsifiable: if
                         // the field reports a warble on sustained tones, this says
                         // how many loud splices produced it, and if it reports
                         // nothing, this says how many were transparent. Reported
@@ -1401,7 +1393,7 @@ impl JitterBufferManager {
                 // It is no longer gated on content energy either, and the reason
                 // is that the alternative here is not silence, it is PLC.
                 //
-                // The v13 census measured what the energy gate cost: `expand`
+                // The field census measured what the energy gate cost: `expand`
                 // fired **7 times in 881 seconds** across all three links (5GHz 2,
                 // ADB 1, 2.4GHz 4), because it needed `occupied <= 1` *and* an RMS
                 // inside `[SILENCE_RMS, ARTIFACT_MASK_RMS)` — a window that
@@ -1426,16 +1418,16 @@ impl JitterBufferManager {
                 // the content the more true that is — loud material masks a seam
                 // and does nothing to mask PLC's spectral drift.
                 //
-                // --- v15: the buffer had no way to reach its own target ---
+                // --- the buffer had no way to reach its own target ---
                 //
-                // v14 left `occupied <= 1` as the *only* trigger, which made expand
-                // a last-ditch underrun defence and nothing else. The v14 captures
+                // `occupied <= 1` was once the *only* trigger, which made expand
+                // a last-ditch underrun defence and nothing else. Field captures
                 // say that is not enough: on 2.4GHz the occupancy sat **15.7 frames
                 // below target in 85% of screen-off windows** while arrivals matched
                 // playback exactly (99.6/s both ways), so nothing accumulated and
                 // nothing grew the buffer. The only mechanism that could raise the
                 // depth was starving — the stutter itself — and starvation went
-                // 16 (v11) → 57 (v14) on that link.
+                // 16 → 57 on that link.
                 //
                 // The missing branch is upstream's growth half of the decision band
                 // (`decision_logic.cc:294-295`):
@@ -1443,21 +1435,20 @@ impl JitterBufferManager {
                 //     if (buffer_level_filter_->filtered_current_level() < low_limit)
                 //       return kPreemptiveExpand;
                 //
-                // We ported the drain half in v13 and the band that frames it, but
-                // never this. Measured against the v14 logs it would arm on **50.3%**
+                // We ported the drain half and the band that frames it, but never
+                // this. Measured against those logs it would arm on **50.3%**
                 // of 2.4GHz windows against our 3.4%, and on 8-9% of ADB and 5GHz
                 // windows — small where the buffer already tracks its target, large
                 // exactly where it does not.
                 //
                 // Two triggers, both rate-limited by `MIN_EXPAND_INTERVAL`:
                 //
-                //  * `occupied <= 1` — imminent underrun, the last-ditch defence
-                //    v14 already had.
+                //  * `occupied <= 1` — imminent underrun, the last-ditch defence.
                 //  * `filtered < low_limit` — preemptive growth, upstream's band
-                //    condition, new in v15.
+                //    condition.
                 //
-                // **Neither is cooldown-exempt, and the first draft of this commit
-                // got that wrong.** Exempting the imminent-underrun tier looks
+                // **Neither is cooldown-exempt, and the obvious reading gets that
+                // wrong.** Exempting the imminent-underrun tier looks
                 // right — "a rate limiter that suppresses the defence at the moment
                 // it is needed is worse than no limiter" — but a buffer held at one
                 // frame by a rate-matched trickle satisfies `occupied <= 1` on
@@ -1474,7 +1465,7 @@ impl JitterBufferManager {
                 // `kExpand`, which is our `generate_plc` on genuine starvation
                 // (`occupied == 0`), not this.
                 //
-                // What actually fixes the starvation v14 measured is the preemptive
+                // What actually fixes the measured starvation is the preemptive
                 // trigger, which grows the buffer while it is still in the band and
                 // therefore keeps it from reaching one frame at all. The
                 // imminent-underrun tier stays as a floor under that, at one splice
@@ -1484,7 +1475,7 @@ impl JitterBufferManager {
                 // becoming a growth path, and the comment above says so. The
                 // difference is the gate: `filtered < low_limit` is a *band*
                 // condition that closes the moment the buffer reaches the band,
-                // whereas the pre-v14 version had no band and grew unconditionally
+                // whereas the earlier version had no band and grew unconditionally
                 // on every below-target callback. Bounded at one pitch period per
                 // 200ms and NCC-gated, growth is now slower than the drain it is
                 // balancing against.
@@ -1530,8 +1521,8 @@ impl JitterBufferManager {
                     // because the alternative at `occupied <= 1` is a hole, not a
                     // worse seam. Below that it is `PreemptiveExpand`, which keeps
                     // its 0.9 NCC gate because a packet is still in hand and the
-                    // splice can afford to wait for a good seam. v19 ran both
-                    // through the gated path and the underrun tier refused 83 of
+                    // splice can afford to wait for a good seam. Running both
+                    // through the gated path made the underrun tier refuse 83 of
                     // 90 attempts on 2.4GHz uncompressed. See `expand_conceal`.
                     let spliced = if imminent_underrun {
                         self.timescale.expand_conceal(
@@ -1572,11 +1563,11 @@ impl JitterBufferManager {
                         // counted.
                         self.tally.declined_preemptive_ncc += 1;
                     } else {
-                        // Same refusal, one frame from empty. Left uncounted until
-                        // v19, which made the tier that matters most the only one
-                        // the census could not see.
+                        // Same refusal, one frame from empty. Long uncounted, which
+                        // made the tier that matters most the only one the census
+                        // could not see.
                         //
-                        // **v20 made this unreachable on quality grounds.** The
+                        // **This is now unreachable on quality grounds.** The
                         // concealment tier no longer applies an NCC gate at all
                         // (`expand_conceal`), so the only remaining `None` returns
                         // are geometric — a window too short to hold a reference
@@ -1611,7 +1602,7 @@ impl JitterBufferManager {
                 // reading of a buffer that is, right now, empty.
                 self.flow.filtered_buffer_level = 0.0;
                 // One line per *episode*, not per onset: under a trickle the
-                // onsets recur every ~3 callbacks and v10 printed 299 identical
+                // onsets recur every ~3 callbacks, which once printed 299 identical
                 // warnings in 9.4s. The closing census (see `observe_delivery`)
                 // carries the count and duration those repeats stood for.
                 if self.flow.note_starvation_onset(now) {
@@ -1649,7 +1640,7 @@ impl JitterBufferManager {
     /// The failure this exists for: `REBUFFER_AFTER` counts *consecutive* empty
     /// callbacks, and `starvation_count` is zeroed by every pop. Under sustained
     /// under-delivery — a packet every ~3rd callback — it therefore never fires.
-    /// The 5GHz v10 storm ran 9.4s that way: 299 starvation onsets, **one**
+    /// A measured 5GHz storm ran 9.4s that way: 299 starvation onsets, **one**
     /// rebuffer, zero resets, and one real frame between every 2-3 PLC frames for
     /// the rest of the stream. The rebuffer is the right actuator (its own doc
     /// comment argues the case: one clean gap beats six audible ones); it was
@@ -1735,7 +1726,7 @@ impl JitterBufferManager {
     /// the histogram in. One line per second is ~0.1% of the callback rate.
     ///
     /// `frames_played` counts *callbacks that consumed a frame*, not packets, so
-    /// it cannot stand in for the packet rate: during the v12 2.4GHz collapse
+    /// it cannot stand in for the packet rate: during a measured 2.4GHz collapse
     /// both fell together (arrivals 48, played 50) and `arrivals < played` never
     /// tripped in two consecutive field rounds. Under-delivery is therefore
     /// measured against **wall clock** — the nominal packet rate over the window
@@ -1750,20 +1741,21 @@ impl JitterBufferManager {
     ///
     /// `accel`/`expand`/`shed`/`grown` and the `declined_*` census exist because
     /// the timescale layer logs its splices at `trace!` and the mobile crate
-    /// installs `LevelFilter::Info` — across three v12 captures the layer that
+    /// installs `LevelFilter::Info` — across three field captures the layer that
     /// performs every edit to the audio emitted **not one line**. See
     /// [`TimescaleTally`].
     ///
     /// `burst_floor` and `inter_burst_gap` are still printed but are **no longer a
-    /// depth authority** since v12 — `winning_term` can never name them. They stay
+    /// depth authority** — `winning_term` can never name them. They stay
     /// in the line because the divergence between them and `max_gap` is what
-    /// diagnosed this round (ADB: 5783.5 vs 24), and a term removed from the
-    /// arithmetic but dropped from the log is a term that can quietly return.
+    /// diagnosed the cluster-anchor defect (ADB: 5783.5 vs 24), and a term removed
+    /// from the arithmetic but dropped from the log is a term that can quietly
+    /// return.
     ///
     /// `max_gap_age` is printed next to `max_gap` because the level alone is
     /// ambiguous: a flat `max_gap` means either one gap riding its flat-top or a
-    /// gap recurring inside it, and those call for opposite responses. The v12
-    /// 5GHz capture held `max_gap` at ~21 frames for 73s (L713→L959) with
+    /// gap recurring inside it, and those call for opposite responses. A 5GHz
+    /// capture held `max_gap` at ~21 frames for 73s with
     /// `arrivals` at 99-104/s, and nothing in the log could say which it was. See
     /// [`super::stats::JitterStats::max_gap_age_secs`].
     fn log_depth_authority(&mut self, breakdown: &TargetBreakdown, target: u32, now: Instant) {
@@ -1970,7 +1962,7 @@ impl JitterBufferManager {
         // extrapolate from. On the uncompressed and silence paths `capture` never
         // feeds the decoder, so `decode_plc` there runs on a decoder this stream
         // has never advanced and returns **exact zeros** — every one of the 267
-        // concealed frames (2674ms) of the v20 uncompressed capture was digital
+        // concealed frames (2674ms) of an uncompressed field capture was digital
         // silence, which is a hole with a fade on it, not concealment.
         //
         // `conceal_frame` writes a full frame and returns `false` having written
@@ -2002,11 +1994,11 @@ impl JitterBufferManager {
         // The previous schedule (`/4.0`, floored at 0.0) hit **exact digital
         // silence at frame 7**, 60ms in. That was right for the output it was
         // written against — it faded `decode_plc()`, and a codec extrapolated 60ms
-        // past its last real frame does sound robotic. v21 changed what is being
-        // faded: on every uncompressed link this is now `conceal_frame` output, a
+        // past its last real frame does sound robotic. What is being faded then
+        // changed: on every uncompressed link this is now `conceal_frame` output, a
         // verbatim repetition of the last played pitch period. Muting real audio to
         // zero for the sins of a codec is what the field heard as a dropout — 382
-        // frames / 3820ms across the 64 rebuffer holds of the v21 round, 57.9% of
+        // frames / 3820ms across 64 rebuffer holds, 57.9% of
         // every 2.4GHz hold, with 39/64 holds running past frame 7. See
         // `CONCEAL_FADE_FLOOR` for the pricing and for why upstream does not fade to
         // silence either.
@@ -2094,7 +2086,7 @@ mod tests {
         pkt
     }
 
-    /// The 5GHz v10 storm, reproduced: sustained under-delivery at roughly ⅓ rate.
+    /// The 5GHz storm, reproduced: sustained under-delivery at roughly ⅓ rate.
     ///
     /// `REBUFFER_AFTER` counts *consecutive* empty callbacks and every pop zeroes
     /// `starvation_count`, so a packet arriving every 3rd callback keeps the run
@@ -2263,11 +2255,11 @@ mod tests {
         let _ = seq;
     }
 
-    /// v17: the resume depth must follow the target, not a flat ceiling.
+    /// The resume depth must follow the target, not a flat ceiling.
     ///
     /// This test's inverse (`rebuffer_hold_should_not_exceed_the_absolute_cap…`)
     /// asserted that 15 frames released the playhead however deep the target was.
-    /// The v16 capture measured what that bought: a resume at 150ms on a link
+    /// The field measured what that bought: a resume at 150ms on a link
     /// whose median delivery gap was 216ms, re-starving at a median of **0.33s**
     /// where unbound resumes in the same capture lasted **5.07s**. A buffer of
     /// depth D survives a gap of width G only if D ≥ G, so the cap made re-
@@ -2374,7 +2366,8 @@ mod tests {
 
     /// `min_depth` is the outer floor: a link whose configured floor exceeds the
     /// target-scaled threshold resumes at the floor rather than into an immediate
-    /// re-starve. Unchanged by v17 — the `.max(min_depth)` outlived the `.min()`.
+    /// re-starve. Outlived the removal of the flat ceiling — the `.max(min_depth)`
+    /// outlived the `.min()`.
     #[test]
     fn a_rebuffer_resume_should_not_drop_below_the_configured_minimum_depth() {
         let deep_floor_ms = 300;
@@ -2431,7 +2424,7 @@ mod tests {
         );
     }
 
-    /// The v17 removal is a no-op on every low-latency link, and that is provable
+    /// The removal is a no-op on every low-latency link, and that is provable
     /// from the profiles rather than something to be taken on trust.
     ///
     /// The resume depth is `max(target * pct, min_depth)` and `target` can never
@@ -2441,7 +2434,7 @@ mod tests {
     /// bit-identical before and after. Measured on the profiles: ADB/USB
     /// 100 × 0.2 = 20ms, Ethernet 200 × 0.25 = 50ms, 5GHz 400 × 0.25 = 100ms.
     ///
-    /// Same shape as the v13 `MIN_BAND` finding — a constant that only ever bound
+    /// Same shape as the `MIN_BAND` finding — a constant that only ever bound
     /// on links it was not aimed at. Only 2.4GHz (800 × 0.5 = 400ms) and Unknown
     /// (1000 × 0.25 = 250ms) could reach it, and 2.4GHz is the link it cost.
     #[test]
@@ -2472,7 +2465,7 @@ mod tests {
 
         // The converse, so the assertion above cannot pass by the profiles all
         // having drifted shallow: 2.4GHz must still be able to exceed the old cap,
-        // or v17 changed nothing anywhere and the round is a no-op.
+        // or the removal changed nothing anywhere.
         let noisy = JitterConfig::for_link_pair(LinkPair {
             phone: NetworkLink::Wifi2_4Ghz,
             pc: NetworkLink::Wifi2_4Ghz,
@@ -2484,14 +2477,14 @@ mod tests {
         );
     }
 
-    /// **The arithmetic that made the v18 clamp wrong, stated as config algebra.**
+    /// **The arithmetic that made the old clamp wrong, stated as config algebra.**
     ///
-    /// Through v18 the rebuffer exit flushed down to `unpause_threshold`, while
+    /// The rebuffer exit once flushed down to `unpause_threshold`, while
     /// the preemptive-expand trigger is `filtered < low_limit` with
     /// `low_limit = 0.75 * target`. Every Auto profile sets
     /// `resume_threshold_pct <= 0.5`, so the flush target is below the growth
     /// trigger *for every reachable target* — the resume was arming the actuator
-    /// it had just made necessary. The v18 captures measured the consequence
+    /// it had just made necessary. Field captures measured the consequence
     /// directly: **45 of 49 resumes landed below `low_limit`**, and 55.6% / 53.2%
     /// of all below-`low_limit` windows on the two 2.4GHz captures fall within 3s
     /// of one.
@@ -2545,14 +2538,14 @@ mod tests {
                 ((cap as f32 * config.resume_threshold_pct) as u32).max(min_depth);
             assert!(
                 deepest_unpause < TargetController::buffer_limits(cap).0,
-                "{link:?}: at the comfort cap the v18 resume depth {deepest_unpause} \
+                "{link:?}: at the comfort cap the old resume depth {deepest_unpause} \
                  must be below low_limit {} — if it is not, this profile never had \
                  the defect and the sweep above proves nothing for it",
                 TargetController::buffer_limits(cap).0,
             );
             assert!(
                 below > 0,
-                "{link:?}: no reachable target put the v18 resume depth below \
+                "{link:?}: no reachable target put the old resume depth below \
                  low_limit",
             );
         }
@@ -2591,19 +2584,19 @@ mod tests {
     /// The outage [`rebuffering_at_target`] resumes from: 300ms of stamp, 100ms of
     /// observed gap, 10 frames into the gap window.
     ///
-    /// **Chosen so `raw_target` stays below any target a caller pins.** Through v19
-    /// this was 2s, which was incidental — the burst only had to be *forward* of the
-    /// setup arrivals. v20 reads the resume band at `max(target, raw_target)`, so the
-    /// outage length now decides which band is under test, and 2s decides it
+    /// **Chosen so `raw_target` stays below any target a caller pins.** This was
+    /// once 2s, which was incidental — the burst only had to be *forward* of the
+    /// setup arrivals. The resume band is now read at `max(target, raw_target)`, so
+    /// the outage length decides which band is under test, and 2s decides it
     /// degenerately: an 1800ms gap is 180 frames, `GAP_CLAMP_FRAMES` saturates it to
     /// 120, and `gap_floor` then pins `raw_target` at the 2.4GHz profile's 80-frame
     /// comfort cap — above every burst these tests can push, so no clamp fires and
     /// `the_rebuffer_exit_*` tests assert against a mechanism that never ran.
     ///
     /// 100ms is also the honest figure for the link these tests model: the 2.4GHz
-    /// captures measured a *median* delivery gap of 21.6 frames and p90 34.5
-    /// (`TEMP/v17-plan.md`), so a 2s outage was never a DTIM gap — it was an outage
-    /// long enough to look like a disconnect.
+    /// captures measured a *median* delivery gap of 21.6 frames and p90 34.5, so a
+    /// 2s outage was never a DTIM gap — it was an outage long enough to look like a
+    /// disconnect.
     const DEFAULT_OUTAGE: Duration = Duration::from_millis(300);
 
     /// [`rebuffering_at_target`] with the outage length under the caller's control.
@@ -2686,11 +2679,11 @@ mod tests {
         (manager, encoder, prod, cons, burst_at, burst_seq)
     }
 
-    /// **v19 commit 1.** The rebuffer exit must land the buffer inside the
+    /// The rebuffer exit must land the buffer inside the
     /// controller's own operating band — the one depth where neither the drain nor
     /// the preemptive expand is armed — rather than at the release threshold.
     ///
-    /// v18 measured 6380ms of audio spliced away across 49 resumes on four
+    /// The field measured 6380ms of audio spliced away across 49 resumes on four
     /// captures, 45 of them landing below `low_limit`. Clamping to `high_limit`
     /// recomputes to 2240ms and 11/49 on the same events.
     #[test]
@@ -2703,7 +2696,7 @@ mod tests {
             .max(manager.min_depth_frames());
         assert!(
             unpause < low_limit,
-            "precondition: the v18 resume depth ({unpause}) must be below \
+            "precondition: the old resume depth ({unpause}) must be below \
              low_limit ({low_limit}) at this target, or the two behaviours are \
              indistinguishable here",
         );
@@ -2757,12 +2750,13 @@ mod tests {
         );
     }
 
-    /// **v19 commit 1, the regression side.** An overshoot that is still inside
+    /// The regression side of the band clamp: an overshoot that is still inside
     /// the band is not an overshoot — nothing may be discarded.
     ///
-    /// This is the case v18 got wrong on every single 2.4GHz resume: occupancy
-    /// between `unpause_threshold` and `high_limit` was flushed down to the former,
-    /// which is below `low_limit` by construction. Fails against v18.
+    /// This is the case the old clamp got wrong on every single 2.4GHz resume:
+    /// occupancy between `unpause_threshold` and `high_limit` was flushed down to
+    /// the former, which is below `low_limit` by construction. Fails against the
+    /// threshold clamp.
     #[test]
     fn the_rebuffer_exit_should_not_discard_audio_that_sits_below_the_high_limit() {
         const TARGET: u32 = 40;
@@ -2774,9 +2768,9 @@ mod tests {
             .max(manager.min_depth_frames());
         assert!(
             unpause < BURST as u32 && (BURST as u32) <= high_limit,
-            "precondition: the burst ({BURST}) must sit strictly between the v18 \
+            "precondition: the burst ({BURST}) must sit strictly between the old \
              resume depth ({unpause}) and band_hi ({high_limit}) — that is the \
-             band v18 threw away",
+             band the threshold clamp threw away",
         );
         // Chosen above `low_limit` too, so the closing assertion measures the
         // clamp rather than the size of the burst: at exactly `low_limit` the one
@@ -2813,8 +2807,8 @@ mod tests {
         assert_eq!(
             manager.tally.flush_discards,
             0,
-            "nothing above band_hi arrived, so nothing may be discarded; v18 \
-             discarded {} frames here",
+            "nothing above band_hi arrived, so nothing may be discarded; the \
+             threshold clamp discarded {} frames here",
             BURST as u32 - unpause,
         );
         assert_eq!(
@@ -2829,14 +2823,14 @@ mod tests {
         );
     }
 
-    /// **v20 commit 3.** The resume clamp must read the band at `raw_target`, not
+    /// The resume clamp must read the band at `raw_target`, not
     /// at the ramped `target`, so it never cuts the burst below the depth the
     /// stats say the link is currently demanding.
     ///
     /// `target` is rate-limited by `advance`, so on the callback that ends a
     /// rebuffer it still carries the pre-outage depth while `raw_target` has
-    /// already absorbed the gap that caused the outage. v19 clamped to the stale
-    /// number, and the v19 captures measured the consequence directly: the landing
+    /// already absorbed the gap that caused the outage. Clamping to the stale
+    /// number, the field measured the consequence directly: the landing
     /// depth was below the live `max_gap` on **93.9% (31/33)** of uncompressed
     /// resumes and **100% (8/8)** on 128kbps, short by 10.17 and 11.75 frames.
     /// Recomputed on those same 41 events, this change takes 128kbps to 4/8 at a
@@ -2845,9 +2839,9 @@ mod tests {
     /// Spearman r=+0.570, p=0.0005, n=33.
     ///
     /// The target here is pinned *below* what the outage justifies, which is the
-    /// whole point: at `TARGET` = 12 the v19 band tops out at 12, while the 30-frame
-    /// gap the burst reports puts `gap_floor` — and so `raw_target` — at 31 or above.
-    /// Fails against v19, which lands this buffer at 12.
+    /// whole point: at `TARGET` = 12 the ramped band tops out at 12, while the
+    /// 30-frame gap the burst reports puts `gap_floor` — and so `raw_target` — at 31
+    /// or above. Fails against the ramped clamp, which lands this buffer at 12.
     #[test]
     fn a_rebuffer_resume_should_not_clamp_below_the_measured_gap() {
         const TARGET: u32 = 12;
@@ -2887,7 +2881,7 @@ mod tests {
         );
         assert!(
             stale_high < GAP_FRAMES,
-            "precondition: the v19 band ({stale_high}) must sit below the live gap \
+            "precondition: the ramped band ({stale_high}) must sit below the live gap \
              ({GAP_FRAMES}), or this test cannot tell the two clamps apart",
         );
         assert!(
@@ -2933,13 +2927,13 @@ mod tests {
         );
     }
 
-    /// **v20 commit 3, the regression side.** The clamp may only ever retain
-    /// *more* than v19 did, never less.
+    /// The regression side: the clamp may only ever retain *more* than the ramped
+    /// band did, never less.
     ///
     /// `raw_target` falls *below* the ramped target whenever `advance` is walking
-    /// down behind a gap that has already aged out — 11 of the 33 uncompressed
-    /// resumes in the v19 capture. `buffer_limits(raw_target)` alone would clamp
-    /// lower than v19 there, turning a fix for one half of the sample into a
+    /// down behind a gap that has already aged out — 11 of 33 uncompressed
+    /// resumes in a field capture. `buffer_limits(raw_target)` alone would clamp
+    /// lower there, turning a fix for one half of the sample into a
     /// regression on the other. `buffer_limits(t).1` is monotone non-decreasing in
     /// `t`, so `max(target, raw_target)` makes the change provably one-directional.
     /// This pins the descent case that the `.max` exists for.
@@ -2985,8 +2979,8 @@ mod tests {
         manager.control.ramp_goal = TARGET;
         manager.fill_output(&mut output, 1.0);
 
-        // What the plan's literal wording would have done here, spelled out so the
-        // failure names the regression rather than just the mismatch. The release
+        // What clamping on `raw_target` alone would have done here, spelled out so
+        // the failure names the regression rather than just the mismatch. The release
         // threshold catches part of the cut, which is why the counterfactual landing
         // is not simply `buffer_limits(raw_target).1 - 1`.
         let unpause = ((TARGET as f32 * manager.config.resume_threshold_pct) as u32)
@@ -3125,22 +3119,22 @@ mod tests {
     /// shared 60ms cooldown a raised target produced a ~17Hz train of OLA splices
     /// for seconds on end.
     ///
-    /// v14 answered that by making expand an imminent-underrun defence only, so
-    /// this test asserted the op count stayed *exactly flat* below target. v15
-    /// ports upstream's growth trigger (`filtered < low_limit`,
-    /// `decision_logic.cc:294-295`) precisely because that was too strict — the
-    /// v14 captures measured 2.4GHz sitting 15.7 frames below target in 85% of
+    /// That was first answered by making expand an imminent-underrun defence only,
+    /// so this test asserted the op count stayed *exactly flat* below target.
+    /// Upstream's growth trigger (`filtered < low_limit`,
+    /// `decision_logic.cc:294-295`) was then ported precisely because that was too
+    /// strict — the field measured 2.4GHz sitting 15.7 frames below target in 85% of
     /// screen-off windows with arrivals matching playback, so the buffer had no
     /// way to reach its own target except by starving first (16 → 57 episodes).
     ///
     /// So the zero-splice assertion is gone, but the contract it protected is not:
     /// what makes a splice train audible is **density**, not existence. This now
-    /// asserts the band, from both sides — growth happens (the mechanism v15 adds)
-    /// and it stays under `MIN_EXPAND_INTERVAL` (the click train it must not
+    /// asserts the band, from both sides — growth happens (the mechanism the trigger
+    /// adds) and it stays under `MIN_EXPAND_INTERVAL` (the click train it must not
     /// become). 300 callbacks at one splice per 20 gives a ceiling of 15.
     ///
-    /// A ceiling alone would pass vacuously if expand never fired at all, which is
-    /// the failure mode CLAUDE.md warns about, hence the lower bound.
+    /// A ceiling alone would pass vacuously if expand never fired at all, hence the
+    /// lower bound.
     #[test]
     fn below_target_growth_should_stay_rate_limited_on_a_healthy_buffer() {
         // A 150ms floor puts `low_limit` at 11 frames — far above the occupancy we
@@ -3203,7 +3197,7 @@ mod tests {
             splices > 0,
             "preemptive growth never fired across 300 below-target callbacks — the \
              buffer has no way to reach its target except by starving, which is the \
-             v14 defect (2.4GHz: 15.7 frames below target, 85% of windows)",
+             measured defect (2.4GHz: 15.7 frames below target, 85% of windows)",
         );
         assert!(
             splices <= 300 / MIN_EXPAND_INTERVAL as usize,
@@ -3212,16 +3206,16 @@ mod tests {
         );
     }
 
-    /// **The convergence claim, and the reason v16 exists.**
+    /// **The convergence claim, and the reason the growth geometry changed.**
     ///
-    /// v15's captures measured target step-ups that *never* closed: 2.4GHz sat
+    /// The field measured target step-ups that *never* closed: 2.4GHz sat
     /// 8.13-11.84 frames below target in 70-83% of windows with arrivals matching
     /// playback, because the growth actuator moved 0.059-0.434 fr/s against the
     /// 2.6-5.6 fr/s the climbs needed. The buffer had no route to its own target
     /// except starving first.
     ///
     /// Arrivals are rate-matched to playback here — one packet in, one frame out —
-    /// so the *only* thing that can raise the buffer is the actuator. Under v15's
+    /// so the *only* thing that can raise the buffer is the actuator. Under the old
     /// geometry the level stays flat and this fails.
     ///
     /// Asserted on `filtered_buffer_level` rather than on `occupied_count`,
@@ -3262,7 +3256,7 @@ mod tests {
         // Rate-match during convergence so the buffer never drains here: a single
         // starvation would arm the recovery window, and with wall-clock frozen in
         // tests it never expires — disarming both actuators for the rest of the
-        // run (CLAUDE.md: never drain past `occ=1`).
+        // run. Never drain past `occ=1` in a test.
         manager.config_check_countdown = 100;
         for _ in 0..12 {
             let arrival = base + Duration::from_millis(seq * 10);
@@ -3322,7 +3316,7 @@ mod tests {
             manager.ingest_packets(&mut cons);
             let before = manager.tally.inserted_frames;
             manager.fill_output(&mut output, 1.0);
-            // `TimescaleTally` is 1Hz-windowed and resets mid-run (CLAUDE.md), so a
+            // `TimescaleTally` is 1Hz-windowed and resets mid-run, so a
             // plain delta silently discards every insertion across a reset
             // boundary. A negative delta means the window rolled: the current
             // value is itself the post-reset accumulation.
@@ -3337,7 +3331,7 @@ mod tests {
         assert!(
             inserted > 0.0,
             "the actuator never inserted anything across 200 rate-matched \
-             below-band callbacks — this is the v15 defect verbatim",
+             below-band callbacks — this is the inert-actuator defect verbatim",
         );
         assert!(
             manager.flow.filtered_buffer_level > start_level,
@@ -3348,8 +3342,8 @@ mod tests {
         );
         assert_eq!(
             manager.flow.starvation_count, 0,
-            "convergence must not be bought by starving first — that was v15's \
-             only route to target",
+            "convergence must not be bought by starving first — that was the old \
+             geometry's only route to target",
         );
     }
 
@@ -3375,8 +3369,8 @@ mod tests {
     /// works.
     ///
     /// Measured per callback rather than at the end, because `playback_buf` is
-    /// drained by the next `fill_output`. `tally.expanded` is 1Hz-windowed
-    /// (CLAUDE.md), so the trigger precondition is read as a delta.
+    /// drained by the next `fill_output`. `tally.expanded` is 1Hz-windowed, so the
+    /// trigger precondition is read as a delta.
     #[test]
     fn preemptive_expand_should_leave_at_most_one_pitch_period_of_surplus() {
         let config = JitterConfig {
@@ -3467,7 +3461,7 @@ mod tests {
     /// This is the tier future-staging would have designed out of existence: with
     /// `occupied <= 1` there is no next packet to stage, so a `has_next()`-guarded
     /// expand degrades to a single frame precisely when growth matters most. The
-    /// v15 captures put 95-98% of 2.4GHz's growth deficit in this tier.
+    /// field captures put 95-98% of 2.4GHz's growth deficit in this tier.
     ///
     /// History is always available, so the widened geometry applies here too.
     ///
@@ -3573,7 +3567,7 @@ mod tests {
         assert!(
             manager.tally.expanded > before,
             "expand refused at `occupied <= 1` — this is the tier that prevents \
-             starvation, and 95-98% of the v15 growth deficit sits in it",
+             starvation, and 95-98% of the measured growth deficit sits in it",
         );
     }
 
@@ -3637,10 +3631,10 @@ mod tests {
 
     /// **The field complaint, end to end.** Router A/B on 2.4GHz with the screen
     /// off: DTIM batching delivers a 200ms silence followed by a 20-packet burst,
-    /// forever. v3 walked the target monotonically to the comfort cap and stayed
-    /// there — "my jitter algorithm fails to find Lowest Most Stable Buffer
-    /// Range". This asserts both halves of the contract: cover the observed gap
-    /// while it is happening, and come back down once it stops.
+    /// forever. An earlier controller walked the target monotonically to the comfort
+    /// cap and stayed there — "my jitter algorithm fails to find Lowest Most Stable
+    /// Buffer Range". This asserts both halves of the contract: cover the observed
+    /// gap while it is happening, and come back down once it stops.
     #[test]
     fn dtim_gap_raises_the_target_then_a_clean_link_brings_it_back_down() {
         let config = JitterConfig {
@@ -3706,7 +3700,7 @@ mod tests {
         assert!(
             settled <= 6,
             "a clean link must bring the target back to the lowest stable range \
-             (≤6 frames); got {settled} — this is the v3 ratchet",
+             (≤6 frames); got {settled} — this is the monotonic ratchet",
         );
     }
 
@@ -3781,7 +3775,7 @@ mod tests {
 
     #[test]
     fn sustained_starvation_rebuffers_once_and_keeps_playing_plc() {
-        // v5 contract change. Up to v4 a mid-stream starvation never re-entered
+        // A contract change. Originally a mid-stream starvation never re-entered
         // prebuffering: playback resumed on the very first frame that arrived
         // (`has_next`). On loud content that is the *only* way depth can be
         // banked — packets arrive at real time and the DAC consumes at real time,
@@ -3823,7 +3817,7 @@ mod tests {
 
         // PLC (not digital silence) is what the pause *opens* with.
         //
-        // v21 keys the concealment fade to `conceal_run` rather than
+        // The concealment fade is keyed to `conceal_run` rather than
         // `starvation_count`, so the gain no longer freezes at
         // `1.0 - (5-3)/4 = 0.5` for the length of the hold — it continues to zero
         // over the next two concealed callbacks. This assertion therefore reads
@@ -3845,13 +3839,13 @@ mod tests {
             manager.flow.starvation_count, REBUFFER_AFTER,
             "one delivery gap must produce exactly one starvation event",
         );
-        // v22 changes what a sustained hold decays *to*, so what this assertion
-        // can demand at the end of one changes with it. Through v21 it demanded
-        // exact digital silence, which was the right terminus while the fade was
-        // applied to `decode_plc()` output and is the wrong one now that the
-        // schedule stops at `CONCEAL_FADE_FLOOR`: 39 of the 64 holds in the v21
-        // field round ran past the frame where the old schedule reached zero,
-        // muting 382 frames / 3820ms of audio that had really played.
+        // What a sustained hold decays *to* has changed, so what this assertion can
+        // demand at the end of one changes with it. It once demanded exact digital
+        // silence, which was the right terminus while the fade was applied to
+        // `decode_plc()` output and is the wrong one now that the schedule stops at
+        // `CONCEAL_FADE_FLOOR`: 39 of 64 field holds ran past the frame where the
+        // old schedule reached zero, muting 382 frames / 3820ms of audio that had
+        // really played.
         //
         // The discriminator this assertion has always carried is *anti-latch* — a
         // hold must not freeze at one gain for its whole length — and it still
@@ -3925,11 +3919,11 @@ mod tests {
     }
 
     /// The Router A machine-gun as a unit test. An outage, then a *sliver* of
-    /// frames too thin to sustain playback, then more outage. Pre-v5 the sliver
-    /// resumed playback (`has_next`) and starved again three frames later, so one
-    /// delivery gap billed several starvation events, several floor bumps and
-    /// several audible stutters. The rebuffer pause must collapse the whole
-    /// cluster into one event, and must still release the moment a real burst
+    /// frames too thin to sustain playback, then more outage. Before the rebuffer
+    /// pause the sliver resumed playback (`has_next`) and starved again three frames
+    /// later, so one delivery gap billed several starvation events, several floor
+    /// bumps and several audible stutters. The rebuffer pause must collapse the
+    /// whole cluster into one event, and must still release the moment a real burst
     /// clears the resume threshold.
     #[test]
     fn rebuffer_pause_collapses_a_starvation_cluster_into_one_event() {
@@ -4064,7 +4058,7 @@ mod tests {
     /// Both run in the same callback and both flush, so which one wins decides the
     /// startup depth. The clamp is gated on `!startup_flush_pending`, which makes
     /// the startup flush win by construction — and the depth the clamp flushes *to*
-    /// has moved twice since (v17 raised it, v19 moved it to `band_hi`), so the
+    /// has moved twice since (raised, then moved to `band_hi`), so the
     /// ordering carries more weight than it did: at a virgin `effective_target` the
     /// clamp's depth is still only ~5 frames, and a clamp running first would hand
     /// the startup flush a buffer already below its 8-frame floor, re-creating
@@ -4106,7 +4100,7 @@ mod tests {
             !manager.startup_flush_pending,
             "the startup flush must have consumed its one chance on this callback",
         );
-        // The clamp would have flushed to its own depth — v19's `band_hi`, floored
+        // The clamp would have flushed to its own depth — `band_hi`, floored
         // at the release threshold. The startup flush's floor is 8. Landing at or
         // above 7 (one frame played by this callback) is only reachable via the
         // startup flush path. Computed the way the call site computes it, so this
@@ -4863,7 +4857,7 @@ mod tests {
     /// The threshold it must cross is `emergency_threshold(high_limit)`, not the
     /// `4 × high` this test used to assert. Moderate overrun between `high` and
     /// that threshold is a *different* contract — see
-    /// `moderate_loud_overrun_should_be_drained_not_tolerated`, which since v14
+    /// `moderate_loud_overrun_should_be_drained_not_tolerated`, which now
     /// requires the normal tier to drain it rather than tolerate it.
     #[test]
     fn loud_severe_overrun_should_emergency_drain() {
@@ -4946,7 +4940,7 @@ mod tests {
     /// `4×high`) of LOUD audio must **not** time-stretch — loud overrun was
     /// tolerated and deferred to the next quiet moment. Three field rounds priced
     /// that contract: `ARTIFACT_MASK_RMS` is -22dBFS, program material sits above
-    /// it essentially always, and the v13 census measured the consequence —
+    /// it essentially always, and the field census measured the consequence —
     /// `declined_rms_mask` on 93-96% of 36 455 drain attempts across three links,
     /// 243 splices in 881 seconds. "Deferred until a quiet moment" was in practice
     /// "never", so the buffer parked at 99ms against a 76ms target on ADB and
@@ -5032,7 +5026,7 @@ mod tests {
             peak_overrun = peak_overrun.max(filtered);
             // Hold the overrun inside the NORMAL tier. The emergency tier was
             // always exempt from the masking gate, so a drain up there would prove
-            // nothing about the gate this commit removed.
+            // nothing about the gate that was removed.
             assert!(
                 filtered < emergency_threshold(live_high) as f32,
                 "test precondition: the overrun must stay in the NORMAL tier \
@@ -5050,7 +5044,7 @@ mod tests {
         assert!(
             accelerations > 0,
             "loud audio held above the high limit must be drained — a silent \
-             actuator here is the v13 defect, not the v13 guard (peak \
+             actuator here is the defect, not the guard (peak \
              filtered={peak_overrun:.1})",
         );
         assert!(
@@ -5168,17 +5162,16 @@ mod tests {
         );
     }
 
-    /// **The resume threshold is a pure function of the target.** v7 round 1 added
-    /// a `max_gap`-derived floor here and the field test failed on both control
-    /// links (ADB 62 → 110-189ms, 5GHz 51-65 → 200-244ms). Two arithmetic errors
-    /// made that unavoidable, and this test encodes both:
+    /// **The resume threshold is a pure function of the target.** A
+    /// `max_gap`-derived floor was once added here and the field test failed on both
+    /// control links (ADB 62 → 110-189ms, 5GHz 51-65 → 200-244ms). Two arithmetic
+    /// errors made that unavoidable, and this test encodes both:
     ///
     /// 1. The floor was read at *prebuffer exit*, not at starvation onset. The gap
     ///    window is arrival-driven — "the gap is recorded by the packet that ends
     ///    it" (`stats::record_gap`) — so by the time this code runs, the gap that
     ///    caused the rebuffer is already in the window. The floor was therefore
-    ///    structurally ≥ that gap: 5GHz read 21 frames where 4 was predicted
-    ///    (`LOGS/log-5GHZ-routerB-changesv7.txt:62,66`).
+    ///    structurally ≥ that gap: 5GHz read 21 frames where 4 was predicted.
     /// 2. The clamp at the emergency-drain threshold bounded nothing, because
     ///    `target` is itself driven by the same `max_gap`. Router A ran away
     ///    4 → 18 → 72 frames (720ms) in ten seconds.
@@ -5187,15 +5180,15 @@ mod tests {
     /// halves below prime one. Configs come from [`JitterConfig::for_link_pair`] so
     /// this tracks the shipped Auto profiles rather than a hand-copied snapshot.
     ///
-    /// **v20 makes this test the boundary marker it was already implicitly acting
-    /// as.** That round moved the *resume clamp* onto `max(target, raw_target)`,
-    /// which is a measurement-derived depth — the very shape v7 failed with. The
-    /// distinction that makes v20 legal and v7 illegal is exactly what this test
-    /// pins: `unpause_threshold` decides *when* the playhead is released and must
-    /// stay `max((target * pct) as u32, min_depth)`; the clamp decides only *how
-    /// much of an already-released burst is kept*. A primed gap window below must
-    /// therefore continue to leave the threshold untouched. If a future round wires
-    /// a measurement into the release side, this test fails first.
+    /// **This test is the boundary marker it was already implicitly acting as.**
+    /// The *resume clamp* now reads `max(target, raw_target)`, which is a
+    /// measurement-derived depth — the very shape the failed floor had. The
+    /// distinction that makes the clamp legal and the floor illegal is exactly what
+    /// this test pins: `unpause_threshold` decides *when* the playhead is released
+    /// and must stay `max((target * pct) as u32, min_depth)`; the clamp decides only
+    /// *how much of an already-released burst is kept*. A primed gap window below
+    /// must therefore continue to leave the threshold untouched. If a future change
+    /// wires a measurement into the release side, this test fails first.
     #[test]
     fn should_resume_prebuffer_at_the_target_fraction_regardless_of_the_measured_gap() {
         use crate::domain::types::LinkPair;
@@ -5262,7 +5255,7 @@ mod tests {
         }
     }
 
-    /// Three v12 field captures across ADB, 2.4GHz and 5GHz contain zero
+    /// Three early field captures across ADB, 2.4GHz and 5GHz contain zero
     /// accelerate/expand/drain lines, because the timescale layer logs at
     /// `trace!` and the mobile crate installs `LevelFilter::Info`. The buffer
     /// was measurably parked above its high limit on ADB and the log could not
@@ -5326,7 +5319,7 @@ mod tests {
             manager.tally.declined_cooldown > 0,
             "a drain blocked by the rate limiter must be counted as such — with \
              the masking gate retired, this is the only remaining decline reason \
-             and an unattributed one would restart the v12 guessing",
+             and an unattributed one would restart the guessing",
         );
         assert!(
             manager.tally.accelerated > 0,
@@ -5346,8 +5339,8 @@ mod tests {
     /// a precondition. The concern the gate was defending against (an audible edit
     /// on loud material) is real; the claim under test is that the correlation
     /// threshold, not the loudness, is what separates a transparent splice from an
-    /// artifact. If loud unpitched content could splice freely, commit 2 really
-    /// would be the removal CLAUDE.md warns about.
+    /// artifact. If loud unpitched content could splice freely, the demotion really
+    /// would be the wholesale removal of psychoacoustic masking.
     ///
     /// Every declined attempt must still emit its staged window verbatim. A window
     /// staged and then dropped is a *deletion* — an audible gap, and worse than the
@@ -5484,7 +5477,7 @@ mod tests {
     ///
     /// Both prior forms failed the same way. `4 * high_limit` was ~2 seconds of
     /// audio and was removed for never firing; `high_limit + 15` replaced it and
-    /// the v13 census says it did not fire either — 0.0% / 0.2% / 0.0% of windows
+    /// the field census says it did not fire either — 0.0% / 0.2% / 0.0% of windows
     /// on ADB / 5GHz / 2.4GHz, against thresholds of 22.7 / 24.3 / 49.8 frames and
     /// filtered levels parked at 9.12 / 9.86 / 18.79.
     ///
@@ -5572,16 +5565,16 @@ mod tests {
         );
     }
 
-    /// The v13 captures proved `declined_rms_mask` takes 93-96% of every drain
+    /// The field captures proved `declined_rms_mask` takes 93-96% of every drain
     /// attempt, but not by how much the content overshoots the threshold — the
     /// counter is a boolean verdict on a continuous quantity. A gate declining at
     /// rms 0.09 and one declining at rms 0.4 read identically, and they call for
     /// different answers (retune the constant vs. abandon the approach).
     ///
     /// The RMS is already computed on the hot path for the gate check itself, so
-    /// reporting it costs one add. This is the same position `max_gap_age` was in
-    /// before v13: the value existed, the decision turned on it, and the log
-    /// could not see it.
+    /// reporting it costs one add. This is the same position `max_gap_age` was once
+    /// in: the value existed, the decision turned on it, and the log could not see
+    /// it.
     #[test]
     fn the_depth_line_should_report_the_content_rms_it_gated_on() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
@@ -5624,10 +5617,10 @@ mod tests {
         );
     }
 
-    /// The v14 inversion of expand's energy gate, and the reason it turned over.
+    /// The inversion of expand's energy gate, and the reason it turned over.
     ///
     /// Expand used to require `(SILENCE_RMS..ARTIFACT_MASK_RMS).contains(&rms)` on
-    /// top of `occupied <= 1`. The v13 census measured the cost: **7 expands in
+    /// top of `occupied <= 1`. The field census measured the cost: **7 expands in
     /// 881 seconds** across all three links, because program material does not sit
     /// in that band. The underrun defence was therefore unavailable at exactly the
     /// moments it exists for, and the buffer starved instead — ADB 0 → 14 episodes
@@ -5735,12 +5728,12 @@ mod tests {
     }
 
     /// The loud-content half of the same contract, and the one that can regress by
-    /// a route the quiet test cannot see. Commit 4 gives `expand` a VAD escape past
+    /// a route the quiet test cannot see. `expand` has a VAD escape past
     /// its NCC gate on near-silent windows; loud material stays fully gated, so
     /// this pins the density bound on the population where the *correlation* check
     /// is the only quality control standing.
     ///
-    /// Same rewrite as its sibling — v14 asserted zero splices, v15 asserts the
+    /// Same rewrite as its sibling — it asserted zero splices and now asserts the
     /// rate limit — for the reasons documented on
     /// [`below_target_growth_should_stay_rate_limited_on_a_healthy_buffer`].
     #[test]
@@ -5801,8 +5794,8 @@ mod tests {
         assert!(
             splices > 0,
             "preemptive growth never fired on loud content — the NCC gate is \
-             refusing every splice, so the growth path v15 adds is inert on exactly \
-             the material it will meet in the field",
+             refusing every splice, so the growth path is inert on exactly the \
+             material it will meet in the field",
         );
         assert!(
             splices <= 300 / MIN_EXPAND_INTERVAL as usize,
@@ -5919,8 +5912,8 @@ mod tests {
     /// Shortening the interval as the band widens makes traversal time constant
     /// instead of proportional to the target. The three field-measured targets
     /// are the cases that matter: ADB must come out bit-identical (that is what
-    /// keeps a field regression attributable to this commit rather than to a
-    /// link), and the two links whose `declined_cooldown` this commit exists to
+    /// keeps a field regression attributable to the scaling rather than to a
+    /// link), and the two links whose `declined_cooldown` the scaling exists to
     /// reduce must actually shorten.
     #[test]
     fn the_cooldown_should_scale_with_the_distance_to_target() {
@@ -5948,7 +5941,7 @@ mod tests {
                 interval <= prev,
                 "interval rose from {prev} to {interval} at target {target} — the \
                  scaling is inverted, which makes `declined_cooldown` worse on \
-                 exactly the link this commit is for",
+                 exactly the link it is for",
             );
             prev = interval;
         }
@@ -6043,8 +6036,8 @@ mod tests {
         assert_eq!(manager.tally.rms_count, 0);
     }
 
-    /// The reshaped under-delivery detector, against the worst window of the v12
-    /// 2.4GHz capture (L1308): 105 arrivals over a **3161ms** callback window.
+    /// The reshaped under-delivery detector, against the worst window of a field
+    /// 2.4GHz capture: 105 arrivals over a **3161ms** callback window.
     ///
     /// Both receiver-side counters read healthy there — 105 arrivals against 86
     /// frames played is a ratio of 1.22, and the old `arrivals * 2 < played` test
@@ -6102,8 +6095,8 @@ mod tests {
     }
 
     /// The unplayed-frame ledger. `arrivals - played` is an exact count of audio
-    /// that entered the pipeline and never reached the DAC, and until v17 nothing
-    /// accounted for it: the v16 uncompressed capture measured 1764 unplayed
+    /// that entered the pipeline and never reached the DAC, and for a long time
+    /// nothing accounted for it: an uncompressed capture measured 1764 unplayed
     /// frames (7.6% of arrivals, 17.6s of audio) with only 340 explained by the
     /// logged flush and shed paths. These tests pin each sink to its counter so
     /// the residual becomes arithmetic rather than inference.
@@ -6160,8 +6153,8 @@ mod tests {
 
         /// `fast_forward` jumps the playhead over a whole hole. Counting the
         /// events without the distance would report a 30-frame jump and a 1-frame
-        /// nudge identically, and the whole question for v18 is which one the
-        /// 60ms reorder tolerance is actually producing.
+        /// nudge identically, and the whole question is which one the 60ms reorder
+        /// tolerance is actually producing.
         #[test]
         fn a_playhead_skip_should_report_how_many_frames_it_jumped() {
             let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
@@ -6285,7 +6278,7 @@ mod tests {
         /// search ([`TimeScaler::window_extend`]) — that frame is emitted, either
         /// inside the splice or verbatim when the splice declines, and it never
         /// passes through `frames_played`. So `arrivals - played` charged it as
-        /// loss: the v18 uncompressed capture read **6.8% packet loss on a link
+        /// loss: an uncompressed capture read **6.8% packet loss on a link
         /// whose true loss was zero**, and every subsequent reading of that line
         /// was measured against a baseline that did not exist.
         ///
@@ -6370,9 +6363,9 @@ mod tests {
             assert_eq!(
                 arrivals - played,
                 occupied + staged,
-                "the pre-v19 line reported {staged} frames of loss that were in \
-                 fact emitted — this is the 6.8% the v18 capture read on a link \
-                 with none",
+                "the old line reported {staged} frames of loss that were in fact \
+                 emitted — this is the 6.8% a field capture read on a link with \
+                 none",
             );
         }
 
@@ -6380,10 +6373,10 @@ mod tests {
         /// them is allowed to refuse.
         ///
         /// `expand` has two triggers — `occupied <= 1` (imminent underrun) and
-        /// `filtered < low_limit` (preemptive growth). v19 counted the first tier's
-        /// refusals for the first time and the census came back damning: **83 of 90
+        /// `filtered < low_limit` (preemptive growth). Counting the first tier's
+        /// refusals for the first time produced a damning census: **83 of 90
         /// attempts declined** on 2.4GHz uncompressed, emitted as raw silence.
-        /// v20 traced that to a port error rather than a tuning one — the underrun
+        /// That was a port error rather than a tuning one — the underrun
         /// tier is NetEQ's `Expand` (`expand.cc:438-455`), which carries *no*
         /// correlation gate and always emits, while we were running it through
         /// `PreemptiveExpand`'s 0.9 NCC gate.
@@ -6498,8 +6491,9 @@ mod tests {
             assert_eq!(
                 manager.tally.declined_underrun_ncc, 0,
                 "the concealment tier must never refuse — upstream's `Expand` has \
-                 no correlation gate. v19 declined {CALLBACKS} of these and emitted \
-                 silence instead; a non-zero reading here says the gate came back",
+                 no correlation gate. The old gate declined {CALLBACKS} of these \
+                 and emitted silence instead; a non-zero reading here says it came \
+                 back",
             );
             assert!(
                 manager.tally.expanded > 0,
@@ -6594,7 +6588,7 @@ mod tests {
         }
     }
 
-    /// **v21 commit 1.** How long the current concealment run is.
+    /// How long the current concealment run is.
     ///
     /// `starvation_count` cannot answer that question, and the reason is
     /// structural rather than incidental: it is incremented only on the starvation
@@ -6669,7 +6663,7 @@ mod tests {
                 manager.flow.starvation_count, manager.flow.conceal_run,
                 "on the starvation path the two counters must agree — the fade \
                  keyed to either one behaves identically here, which is what makes \
-                 commit 2 bit-identical outside the hold",
+                 the re-keying bit-identical outside the hold",
             );
         }
 
@@ -6749,8 +6743,8 @@ mod tests {
         }
 
         /// The run belongs to the stream that produced it. Carrying it across a
-        /// restart would open the new stream's first concealment already faded once
-        /// commit 2 keys the gain to it.
+        /// restart would open the new stream's first concealment already faded,
+        /// since the fade gain is keyed to this counter.
         #[test]
         fn a_stream_restart_should_clear_the_consecutive_conceal_run() {
             let (mut manager, _encoder, _prod, _cons, _base, mut output) = playing_then_empty();
@@ -6806,14 +6800,13 @@ mod tests {
         }
     }
 
-    /// **v21 commit 3.** What a concealed frame on the uncompressed path actually
-    /// contained.
+    /// What a concealed frame on the uncompressed path actually contained.
     ///
     /// `FrameDecoder::capture` never feeds the codec on that path — deliberately,
     /// since PLC state built from a non-Opus stream only poisons the next Opus
     /// transition — so `decode_plc()` there ran on a decoder this stream had never
     /// advanced and returned **exact zeros**. All 267 concealed frames (2674ms,
-    /// 0.583%) of the v20 uncompressed capture were digital silence with a fade on
+    /// 0.583%) of an uncompressed field capture were digital silence with a fade on
     /// it. `expand_conceal` could not cover the hole either: it is structurally
     /// unreachable at `occupied == 0`, because `expand_inner` stages
     /// `[history | pcm]` and refuses when `anchor < hist_frames` — with history
@@ -6891,7 +6884,7 @@ mod tests {
         /// during the setup callbacks leaves a partial frame behind — measured 480
         /// samples, exactly half a frame. A whole-frame peak therefore reads **0.5 of
         /// real audio** even when every concealed sample is a zero, which is what the
-        /// falsification run against the pre-v21 branch actually showed.
+        /// falsification run against the previous branch actually showed.
         pub(super) fn new_frame_peak(output: &[f32], residue: usize) -> f32 {
             let from = residue.min(output.len());
             assert!(
@@ -6901,8 +6894,8 @@ mod tests {
             output[from..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
         }
 
-        /// **The v21 defect, end to end.** This is the assertion that fails on the
-        /// code it replaces: on HEAD the branch below does not exist, the callback
+        /// **The defect, end to end.** This is the assertion that fails on the
+        /// code it replaces: without the branch below, the callback
         /// lands in `decode_plc()` on a virgin decoder, and every emitted sample is
         /// exactly `0.0`.
         #[test]
@@ -6936,7 +6929,7 @@ mod tests {
 
         /// The first three concealed callbacks run un-faded, so the run stays
         /// audible rather than collapsing to the silence it replaced. Every frame
-        /// of the run must carry signal until commit 2's fade starts at 4 — a
+        /// of the run must carry signal until the fade starts at 4 — a
         /// single-frame assertion above would pass even if the mechanism only
         /// worked once.
         #[test]
@@ -7015,16 +7008,15 @@ mod tests {
         }
     }
 
-    /// **v22 commit 1.** The concealment fade must decay toward, and never to,
-    /// silence.
+    /// The concealment fade must decay toward, and never to, silence.
     ///
-    /// v21 fixed *what* concealment emits — pitch repetition instead of a virgin
-    /// decoder's zeros — and left the gain schedule that was written for the output
-    /// it replaced. That schedule reached exact digital silence at
-    /// `conceal_run == 7` (60ms), and across the 64 rebuffer holds of the five-link
-    /// v21 round it muted **382 frames / 3820ms** to zero: 57.9% of every 2.4GHz
-    /// hold, 77.5% of ADB's, with **39/64 holds running past frame 7**. That is the
-    /// "dropout" the field reported. See [`super::super::consts::CONCEAL_FADE_FLOOR`].
+    /// An earlier round fixed *what* concealment emits — pitch repetition instead of
+    /// a virgin decoder's zeros — and left the gain schedule that was written for the
+    /// output it replaced. That schedule reached exact digital silence at
+    /// `conceal_run == 7` (60ms), and across 64 rebuffer holds on five links it muted
+    /// **382 frames / 3820ms** to zero: 57.9% of every 2.4GHz hold, 77.5% of ADB's,
+    /// with **39/64 holds running past frame 7**. That is the "dropout" the field
+    /// reported. See [`super::super::consts::CONCEAL_FADE_FLOOR`].
     ///
     /// The uncompressed setup is used throughout rather than the Opus one, and that
     /// is not a stylistic choice. `make_uncompressed_packet` reproduces at a peak of
@@ -7061,9 +7053,9 @@ mod tests {
             assert!(manager.playback_buf.is_empty());
         }
 
-        /// **The v22 defect, stated as the assertion that fails on the code it
-        /// replaces.** On HEAD the schedule is `1.0 - (run - 3)/4` floored at 0.0,
-        /// so callback 7 emits an exact zero and every callback after it does too.
+        /// **The defect, stated as the assertion that fails on the code it
+        /// replaces.** Under the old schedule, `1.0 - (run - 3)/4` floored at 0.0,
+        /// callback 7 emits an exact zero and every callback after it does too.
         ///
         /// Deliberately reads *past* the old terminus rather than at it: a single
         /// reading at 7 would also pass on a schedule that merely delayed the zero,
@@ -7085,7 +7077,7 @@ mod tests {
                     g >= CONCEAL_FADE_FLOOR - 1e-6,
                     "concealed callback {expected} emitted gain {g}, below the floor \
                      {CONCEAL_FADE_FLOOR} — the run has been muted to silence, which \
-                     is the artifact this commit exists to remove",
+                     is the artifact the floor exists to remove",
                 );
             }
             assert!(
@@ -7130,7 +7122,7 @@ mod tests {
                 assert!(
                     (g - 1.0).abs() < 1e-6,
                     "callback {} must play un-faded ({g}) — the `> 3` threshold is \
-                     unchanged by this commit",
+                     unchanged",
                     i + 1,
                 );
             }
@@ -7153,9 +7145,9 @@ mod tests {
         ///
         /// This is the one assertion that pins the *slope* rather than the floor.
         /// Falsify against a floor-only change (`/4.0` kept, `.max(0.15)`): that
-        /// reaches 0.15 at callback 7 and fails here, which is exactly the variant
-        /// the plan priced and rejected (mean gain 0.414 against 0.576 over the
-        /// measured holds).
+        /// reaches 0.15 at callback 7 and fails here, which is exactly why that
+        /// variant was rejected (mean gain 0.414 against 0.576 over the measured
+        /// holds).
         #[test]
         fn the_concealment_fade_should_still_be_audible_where_it_used_to_be_silent() {
             let (mut manager, _prod, _cons, _base, mut output) = uncompressed_then_empty();
@@ -7179,8 +7171,8 @@ mod tests {
         }
 
         /// **The Opus path takes the same schedule**, and must, or the change would
-        /// fix the uncompressed dropout and leave the 128kbps one standing. v21's
-        /// field round measured 477 concealed frames on 128kbps, every one through
+        /// fix the uncompressed dropout and leave the 128kbps one standing. A field
+        /// round measured 477 concealed frames on 128kbps, every one through
         /// the codec (`pitch_conceals` 0/456 windows) — and every one muted to zero
         /// by the old schedule just the same.
         ///
@@ -7218,10 +7210,9 @@ mod tests {
         }
     }
 
-    /// **v22 commit 2.** The 1 Hz line must report how much audio was emitted at
-    /// the fade floor.
+    /// The 1 Hz line must report how much audio was emitted at the fade floor.
     ///
-    /// Commit 1 accepts one risk: a long run repeats a single pitch period at the
+    /// The floor accepts one risk: a long run repeats a single pitch period at the
     /// floor gain for its whole tail, where upstream rotates three lags
     /// (`expand.cc:844-853`) so consecutive expansions are never identical. The risk
     /// is a *long* run, not a frequent one — and `conceal_run_max` cannot separate

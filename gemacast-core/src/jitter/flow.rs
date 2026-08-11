@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 ///
 /// The `starvation_recovery` countdown is refreshed on *every* recovery, so a
 /// starvation cluster arriving closer together than the countdown is long holds
-/// the guard open indefinitely: the 5GHz v10 field log ran 9.4s with ~248
+/// the guard open indefinitely: one 5GHz field capture ran 9.4s with ~248
 /// starvation events and never re-enabled either accelerate or WSOLA expand.
 /// WebRTC suppresses time-stretching for exactly one frame after an expand
 /// (`prev_mode != kModeExpand`, `decision_logic.cc:285`), so 500ms is still 50x
@@ -25,8 +25,8 @@ const CONCEAL_WINDOW_CALLBACKS: u32 = 500 / crate::jitter::consts::MILLIS_PER_FR
 
 /// Share of a window that must be concealed for the playhead to be held.
 ///
-/// Measured, not guessed. In the 5GHz v10 storm one packet landed roughly every
-/// 3rd callback, so ~⅔ of output was PLC — 299 starvation onsets in 9.4s. A
+/// Measured, not guessed. In a 5GHz starvation storm one packet landed roughly
+/// every 3rd callback, so ~⅔ of output was PLC — 299 onsets in 9.4s. A
 /// healthy link conceals ~0%, and a single DTIM gap large enough to reach 50%
 /// of a 500ms window has already tripped `REBUFFER_AFTER` five callbacks in, so
 /// this threshold only decides cases that mechanism cannot see.
@@ -62,10 +62,9 @@ pub(super) struct PlaybackFlow {
     /// actually emitted on both hold and starvation paths and falls to zero the
     /// moment a real frame is played.
     ///
-    /// This is upstream's `consecutive_expands_` (`expand.cc:150-312`), the
-    /// counter CLAUDE.md names as the first thing to add for v20's one unclosed
-    /// risk: nothing here counted how long a concealment run had been going, so
-    /// the bound on it was inferred rather than measured.
+    /// This is upstream's `consecutive_expands_` (`expand.cc:150-312`). Without
+    /// it nothing counted how long a concealment run had been going, so the
+    /// bound on it was inferred rather than measured.
     pub conceal_run: u32,
     /// How many consecutive callbacks we've been waiting for the current gap slot.
     /// Prevents spurious PLC for late-arriving reordered packets on 2.4GHz.
@@ -95,8 +94,8 @@ pub(super) struct PlaybackFlow {
     /// Callbacks elapsed in the current window.
     window_callbacks: u32,
     /// Starvation onsets in the current episode. Drives one log line per episode
-    /// with a census, instead of one line per onset — the 5GHz v10 storm emitted
-    /// 299 identical `Starvation started` warnings.
+    /// with a census, instead of one line per onset — a 5GHz storm emitted 299
+    /// identical `Starvation started` warnings.
     pub starvation_events: u32,
     /// When the current starvation episode began, or `None` between episodes.
     pub episode_started_at: Option<Instant>,
@@ -160,10 +159,10 @@ impl PlaybackFlow {
     /// Record one callback's delivery outcome and, at a window boundary, return
     /// the window's verdict.
     ///
-    /// This is the counter the 5GHz v10 storm needed and none of the existing
+    /// This is the counter a starvation storm needed and none of the existing
     /// ones could provide. `starvation_count` counts *consecutive* empty
     /// callbacks and is zeroed by any pop, so under a ⅓-rate trickle — a packet
-    /// every ~3rd callback — it never reaches `REBUFFER_AFTER`: the field log
+    /// every ~3rd callback — it never reaches `REBUFFER_AFTER`: one capture
     /// shows 299 starvation onsets producing exactly **one** rebuffer and zero
     /// stream resets across 9.4s. A run-length counter cannot see a deficit that
     /// is interrupted by the very arrivals that constitute it; a ratio can.
@@ -204,8 +203,8 @@ impl PlaybackFlow {
     ///
     /// An episode spans a *cluster*: it stays open across the pops that separate
     /// onsets, and is closed only by [`Self::close_starvation_episode`] once
-    /// delivery has actually recovered. This is what collapses the 299 identical
-    /// `Starvation started` warnings in the 5GHz v10 log into one line — a volume
+    /// delivery has actually recovered. This is what collapses a storm's many
+    /// identical `Starvation started` warnings into one line — a volume
     /// change only, no loss of coverage, since the census carries the count and
     /// duration that the repeated lines conveyed by their sheer number.
     pub fn note_starvation_onset(&mut self, now: Instant) -> bool {
@@ -314,7 +313,7 @@ mod tests {
         );
     }
 
-    /// The 5GHz v10 failure as a unit test: starvations recurring faster than the
+    /// A starvation storm as a unit test: starvations recurring faster than the
     /// old `starvation_recovery` countdown (50-200 callbacks) refreshed it forever,
     /// so `stretch_allowed` never returned true and neither accelerate nor expand
     /// could run again for the rest of the stream — 9.4s and ~248 events in the

@@ -175,7 +175,7 @@ impl JitterBuffer {
             if let Some(pkt) = &self.slots[index]
                 && pkt.seq_num >= self.next_play_seq
             {
-                count += 1; // Pure occupancy count
+                count += 1;
             }
         }
         count
@@ -239,11 +239,10 @@ impl JitterBuffer {
 
     /// Fast-forward the playhead to `next_seq`, clearing any skipped slots.
     ///
-    /// Delegates to `skip_to`, which correctly clears stale slot data and
-    /// decrements the `occupied` counter for every skipped position.
-    /// Calling this without clearing would leave stale packets in the circular
-    /// buffer, causing `occupied_count()` to overcount and `lowest_available_seq()`
-    /// to return stale (already-skipped) sequence numbers.
+    /// Delegates to `skip_to`, which clears stale slot data and decrements
+    /// `occupied` for every skipped position. Skipping without clearing would
+    /// leave stale packets behind, overcounting `occupied_count()` and making
+    /// `lowest_available_seq()` return already-skipped sequence numbers.
     pub fn fast_forward(&mut self, next_seq: u64) {
         self.skip_to(next_seq);
     }

@@ -45,7 +45,7 @@ const PROBE_DOWN_INTERVAL: u32 = 200;
 /// by `Δ = 1.25 * max_gap * 0.15 = 0.1875 * max_gap`, against a dead-zone of
 /// `adaptive_hysteresis = (cap/8).clamp(1,3)` — **3 frames on every Auto link**.
 /// Break-even is therefore `max_gap = 3 / 0.1875 = 16 frames = 160ms`, and the
-/// v18 captures land on either side of it:
+/// four-link capture set lands on either side of it:
 ///
 /// | capture | mean `max_gap` | Δ per decay step | Δ/hysteresis | windows where one step clears the band |
 /// | --- | --- | --- | --- | --- |
@@ -73,8 +73,8 @@ const PROBE_DOWN_INTERVAL: u32 = 200;
 /// descent commits in ~78% of periods, against ~70% today.
 ///
 /// Modelled by replaying the logged `raw_target` and `probe_floor` through
-/// `advance()` (`TEMP/v19/dwell.py`; only the 2.4GHz rows are quotable — the 1Hz
-/// replay reproduces 24-unc within 3% but 5G-unc only within 40%):
+/// `advance()` (only the 2.4GHz rows are quotable — the 1Hz replay reproduces
+/// 24-unc within 3% but 5G-unc only within 40%):
 ///
 /// | capture | down transitions | frames shed | accelerates vs today | mean latency |
 /// | --- | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ const PROBE_DOWN_INTERVAL: u32 = 200;
 /// are real. 5GHz's large descents are genuine and still complete, 2s later.
 ///
 /// **NetEQ has no dwell at all** — its target is one exponential with
-/// `forget_factor = 32745/32768` ([delay_manager.cc:74](TEMP/webrtc-neteq/delay_manager.cc#L74)),
+/// `forget_factor = 32745/32768` ([delay_manager.cc:74](delay_manager.cc#L74)),
 /// τ = 1/(1−f) = 1425 packets = **14.25s**, symmetric and slow in both directions.
 /// Our asymmetry exists precisely because we also carry an explicit `max_gap` term
 /// that must be free to rise within a single packet.
@@ -119,9 +119,9 @@ const FLOOR_DECAY_SECS: u64 = 2;
 ///
 /// Exists because three consecutive rounds of field diagnosis had to *infer* the
 /// winning term by hand-arithmetic from `max_gap` and the link profile, and got it
-/// wrong more than once — the 5GHz v10 storm was blamed on a `probe_floor` ratchet
-/// that the same log recorded as 3. The term is a fact the code already knows and
-/// was throwing away.
+/// wrong more than once — a 5GHz starvation storm was blamed on a `probe_floor`
+/// ratchet that the same log recorded as 3. The term is a fact the code already
+/// knows and was throwing away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TargetTerm {
     /// The config floor — nothing observed justified any depth.
@@ -156,8 +156,9 @@ pub(super) struct TargetBreakdown {
     pub histogram_base: f32,
     /// **Reported, not authoritative.** `inter_burst_gap + 2` — what the removed
     /// burst term *would* have demanded. Kept in the log so the next capture can
-    /// confirm it stays dead, and so the divergence from `gap_floor` (v11 ADB:
-    /// 5783.5 vs a `max_gap` of 24) stays visible instead of silently returning.
+    /// confirm it stays dead, and so the divergence from `gap_floor` (one ADB
+    /// capture: 5783.5 vs a `max_gap` of 24) stays visible instead of silently
+    /// returning.
     pub burst_floor: f32,
     pub gap_floor: f32,
     pub min_depth: f32,
@@ -314,9 +315,9 @@ impl TargetController {
             };
         }
         // NetEQ's base target: the 95th percentile of the relative arrival delay
-        // histogram. Since v5 this is fed NetEQ-style (running sum of per-packet
-        // IAT excess over a 100-packet history), so a DTIM gap shows up in every
-        // packet of the burst that follows it rather than as a single outlier.
+        // histogram, fed NetEQ-style (running sum of per-packet IAT excess over a
+        // 100-packet history), so a DTIM gap shows up in every packet of the burst
+        // that follows it rather than as a single outlier.
         let histogram_base = stats.iat_percentile_target;
         // Reported only — deliberately NOT in the `.max()` chain below. See the
         // invariant comment there for the field measurement that removed it.
@@ -347,16 +348,16 @@ impl TargetController {
             0.0
         };
         // Every term here either ages out (gap window) or is recomputed from a
-        // bounded history (histogram). Nothing latches its own peak — v4 had two
-        // terms that did (`peak_mode_height`, `cumsum_target`) and they held the
-        // target at the comfort cap while this gap signal read 10 frames. Do not
-        // add a term that cannot fall on its own.
+        // bounded history (histogram). Nothing latches its own peak — two removed
+        // terms did (`peak_mode_height`, `cumsum_target`) and they held the target
+        // at the comfort cap while this gap signal read 10 frames. Do not add a
+        // term that cannot fall on its own.
         //
-        // `burst_floor` (`inter_burst_gap + 2`) was the third such term and was
-        // removed in v12. It did not latch a *peak*, so it passed the letter of the
-        // rule above, but it was the only **boolean-gated** term in the chain: it
-        // could not rise or fall, only step, by whatever the un-aged EWMA happened
-        // to hold. The v11 field logs measured it directly:
+        // `burst_floor` (`inter_burst_gap + 2`) was the third such term. It did not
+        // latch a *peak*, so it passed the letter of the rule above, but it was the
+        // only **boolean-gated** term in the chain: it could not rise or fall, only
+        // step, by whatever the un-aged EWMA happened to hold. Measured in the
+        // field directly:
         //   - ADB (a *cable*): `inter_burst_gap` averaged 1485 frames, peaked at
         //     5783.5 (57.8s), while the honest `max_gap` on the same log averaged
         //     7.8 and peaked at 24. It won 168 of 472 depth decisions there.
@@ -422,11 +423,11 @@ impl TargetController {
         /// (`delay_manager.cc:417-426`).
         ///
         /// Was 40ms, widened from NetEQ's 20ms on the theory that 2.4GHz
-        /// micro-oscillation would otherwise fire a splice per swing. The v12
-        /// captures show the widening never reached that link: **2.4GHz runs a
-        /// 32-frame target**, where `MIN_BAND` does not bind at all and the band
-        /// is `target/4 = 8` frames either way. It bound on 100% of ADB windows
-        /// and 60% of 5GHz ones — the two links where the cost is pure latency.
+        /// micro-oscillation would otherwise fire a splice per swing. The field
+        /// shows the widening never reached that link: **2.4GHz runs a 32-frame
+        /// target**, where `MIN_BAND` does not bind at all and the band is
+        /// `target/4 = 8` frames either way. It bound on 100% of ADB windows and
+        /// 60% of 5GHz ones — the two links where the cost is pure latency.
         ///
         /// On ADB the cost was the whole complaint. Target measured 5.3 frames,
         /// so `low = 3` and `high = max(5, 3+4) = 7`; measured `avg_filtered` was
@@ -437,7 +438,7 @@ impl TargetController {
         /// At 20ms the same target gives `high = max(5, 3+2) = 5`, so the drain
         /// arms at the target itself; 2.4GHz is bit-identical.
         ///
-        /// The 2.4GHz risk is not gone, only relocated: if a later round pulls
+        /// The 2.4GHz risk is not gone, only relocated: if a later change pulls
         /// that target under 8 frames, this constant starts binding there too and
         /// the per-oscillation stutter becomes possible again. The splice counters
         /// on the depth line make that visible directly.
@@ -463,10 +464,9 @@ impl TargetController {
     }
 
     /// Full reset on stream restart.
-    /// Preserves `probe_floor` and `starvation_timestamps` — the network
-    /// hasn't changed, only the stream died. Starting at the learned
-    /// floor avoids the cold-start cascade (2→12→32→44→52 in <1s)
-    /// visible in the 2.4GHz v2 field test.
+    /// Preserves `probe_floor` and `starvation_timestamps` — the network hasn't
+    /// changed, only the stream died. Starting at the learned floor avoids the
+    /// cold-start cascade (2→12→32→44→52 in <1s) measured on 2.4GHz.
     pub fn reset(&mut self) {
         self.effective_target = self.probe_floor.max(2);
         self.ramp_goal = self.effective_target;
@@ -645,10 +645,10 @@ impl TargetController {
     /// ceilinged at `cap/2` so the floor ALONE can never pin the target at the
     /// comfort cap.
     ///
-    /// **The gate below is that sentence made executable.** Until v19 this raised
-    /// the floor unconditionally, including for the starvations the arrival gap
+    /// **The gate below is that sentence made executable.** This once raised the
+    /// floor unconditionally, including for the starvations the arrival gap
     /// explains perfectly well. Measured at the logged "Starvation floor set"
-    /// events across the four v18 captures, `max_gap >= effective_target` held in
+    /// events across four captures, `max_gap >= effective_target` held in
     /// **53 / 65 / 43 / 58%** of them — the majority of ratchets were cases the
     /// honest signal had already priced.
     ///
@@ -663,7 +663,7 @@ impl TargetController {
     /// at `effective_target <= 1` while nothing at all replaced it.
     ///
     /// Worth ~6ms of mean latency, which is not why it is here. An unconditional
-    /// ratchet is one bad interaction away from becoming the fifth statistic that
+    /// ratchet is one bad interaction away from becoming another statistic that
     /// latches its own history, against a module whose central invariant is that
     /// none may. It is *not* one today — floor falls outnumber rises 136:34 on
     /// 24-unc and 90:24 on 24-128k — and the point of the gate is to keep that
@@ -793,10 +793,10 @@ mod tests {
         }
     }
 
-    /// Regression for the dominant v3 field bug: `probe_floor` was a one-way
-    /// ratchet that walked to the comfort cap and pinned `effective_target`
-    /// there forever. Two independent guarantees now prevent that — a hard
-    /// `cap/2` ceiling and a starvation-free decay timer — and this asserts both.
+    /// Regression for a dominant field bug: `probe_floor` was a one-way ratchet
+    /// that walked to the comfort cap and pinned `effective_target` there forever.
+    /// Two independent guarantees now prevent that — a hard `cap/2` ceiling and a
+    /// starvation-free decay timer — and this asserts both.
     #[test]
     fn probe_floor_is_ceilinged_at_half_cap_and_decays_to_min_depth() {
         let config = cfg();
@@ -870,13 +870,13 @@ mod tests {
     }
 
     /// The floor's own doc calls it "a pure safety net for starvations no arrival
-    /// gap explains"; v19 made that sentence executable. Both halves are pinned
-    /// here, because a gate that never declines and a gate that always declines
-    /// are equally easy to ship and equally invisible in a green suite.
+    /// gap explains", and the gate makes that sentence executable. Both halves are
+    /// pinned here, because a gate that never declines and a gate that always
+    /// declines are equally easy to ship and equally invisible in a green suite.
     mod the_starvation_floor_is_a_net_only_for_starvations_no_gap_explains {
         use super::*;
 
-        /// The 53-65% case in the v18 captures: the buffer starved at a depth the
+        /// The 53-65% case in the field captures: the buffer starved at a depth the
         /// delivery-gap window had already measured past. Ratcheting there buys
         /// nothing the honest signal was not about to deliver on its own — so this
         /// asserts *both* halves. Without the second assertion the test would pass
@@ -1057,12 +1057,13 @@ mod tests {
         );
     }
 
-    /// v12: `inter_burst_gap` was the fourth term of the `.max()` chain and the only
-    /// boolean-gated one, so it could not rise or fall — only step. v11 measured it
-    /// at 5783.5 frames (57.8s) on a USB cable while `max_gap` on the same capture
-    /// peaked at 24, and it won 168 of 472 ADB depth decisions. These tests fix the
-    /// division of labour it was removed for: burst detection may buy *headroom* on
-    /// a gap the link actually delivered, and may not invent depth on its own.
+    /// `inter_burst_gap` was once the fourth term of the `.max()` chain and the
+    /// only boolean-gated one, so it could not rise or fall — only step. The field
+    /// measured it at 5783.5 frames (57.8s) on a USB cable while `max_gap` on the
+    /// same capture peaked at 24, and it won 168 of 472 ADB depth decisions. These
+    /// tests fix the division of labour it was removed for: burst detection may
+    /// buy *headroom* on a gap the link actually delivered, and may not invent
+    /// depth on its own.
     ///
     /// The disagreement is injected with `force_burst_state` rather than grown from
     /// arrivals on purpose. Driving the real detector makes the two signals *agree* —
@@ -1083,7 +1084,7 @@ mod tests {
             let config = cfg();
             let control = TargetController::new();
             let mut stats = JitterStats::new();
-            // The measured v11 ADB peak, verbatim.
+            // The measured ADB peak, verbatim.
             stats.force_burst_state(true, 5783.5);
 
             let b = control.target_breakdown(&config, &stats, None);
@@ -1182,8 +1183,8 @@ mod tests {
 
         /// The real detector, end to end: a genuine DTIM-shaped batching pattern
         /// must still produce a depth that covers it. Removing the term must not
-        /// leave batched links uncovered — the property the v11 plan wrongly
-        /// believed only `burst_floor` could provide.
+        /// leave batched links uncovered — the property `burst_floor` was once
+        /// wrongly believed to be the only source of.
         #[test]
         fn a_real_batching_pattern_must_still_be_covered_without_the_burst_term() {
             let config = cfg();
@@ -1233,8 +1234,8 @@ mod tests {
         }
     }
 
-    /// The gap window in **isolation**, which is what makes it the load-bearing
-    /// v4 signal. In the field a DTIM gap affects one arrival in 20-60, so it sits
+    /// The gap window in **isolation**, which is what makes it load-bearing.
+    /// In the field a DTIM gap affects one arrival in 20-60, so it sits
     /// above the 95th percentile *of packets* — `iat_percentile_target` cannot see
     /// it, and `burst_detected` needs a full cluster pattern to fire. Populating
     /// only the gap window reproduces that blind spot exactly: every other term in
@@ -1344,7 +1345,7 @@ mod tests {
 
     /// A saturated statistic and a genuinely bad link produce the same `raw` once
     /// the comfort cap clamps, and only `pre_clamp` tells them apart. This is the
-    /// distinction the 5GHz v10 storm needed and the log could not make: a histogram
+    /// distinction a 5GHz starvation storm needed and the log could not make: a histogram
     /// pinned at its 63-bin ceiling reads far above the cap, while an honest
     /// mid-range demand lands inside it.
     #[test]
@@ -1366,7 +1367,7 @@ mod tests {
         );
     }
 
-    /// The v4 field bug as a unit test. On 2.4GHz Router A the log recorded
+    /// A field bug as a unit test. On 2.4GHz Router A the field recorded
     /// `effective_target=80` (the comfort cap) while `max_gap=9.7` — the only
     /// terms that could produce that were `max_iat_cumulative_sum` (a peak-latch
     /// of the running late-excess sum) and `peak_mode_height` (up to 8 latched
@@ -1474,8 +1475,8 @@ mod tests {
 
         /// The ADB complaint in one assertion. `high` is the level the filtered
         /// buffer drains *down to*, so a `high` above `target` is latency the
-        /// controller asked for and the drain then refuses to give back — v12
-        /// measured `avg_filtered` 7.4 against `avg_high_limit` 7.4, the buffer
+        /// controller asked for and the drain then refuses to give back. The field
+        /// measured `avg_filtered` 7.4 against `avg_high_limit` 7.4 — the buffer
         /// parked exactly on its own trigger point.
         #[test]
         fn a_small_target_should_not_park_the_buffer_above_its_high_limit() {
@@ -1492,10 +1493,11 @@ mod tests {
             }
         }
 
-        /// **v20 commit 3 rests on this.** The rebuffer resume clamp reads the band
-        /// at `max(target, raw_target)` rather than at `target`, and the argument
-        /// that this can only ever *retain* more audio than v19 did — never less —
-        /// is exactly the claim that `high` never falls as the target rises.
+        /// The rebuffer resume clamp rests on this. It reads the band at
+        /// `max(target, raw_target)` rather than at `target`, and the argument that
+        /// this can only ever *retain* more audio than clamping on `target` alone —
+        /// never less — is exactly the claim that `high` never falls as the target
+        /// rises.
         ///
         /// True by construction: `high = max(t, floor(3t/4) + MIN_BAND)`, a max of
         /// two non-decreasing functions of `t`. Swept anyway, across every target
@@ -1512,8 +1514,8 @@ mod tests {
                 assert!(
                     high >= prev,
                     "high fell from {prev} to {high} between target {} and \
-                     {target} — the v20 resume clamp would discard below the v19 \
-                     depth here",
+                     {target} — the resume clamp would discard below the depth \
+                     the buffer was measured to need here",
                     target - 1,
                 );
                 assert!(
@@ -1525,10 +1527,10 @@ mod tests {
         }
     }
 
-    /// **v19 commit 2.** The dwell is asymmetric: a target may rise on 150-200ms of
-    /// evidence but may only fall on ~2s of it.
+    /// The dwell is asymmetric: a target may rise on 150-200ms of evidence but may
+    /// only fall on ~2s of it.
     ///
-    /// The v18 captures measured the reason. On 2.4GHz one `GAP_STALE_DECAY` step
+    /// The field captures measured the reason. On 2.4GHz one `GAP_STALE_DECAY` step
     /// moves the raw target by `0.1875 * max_gap` = 4.2/4.6 frames against a
     /// 3-frame dead-zone, so **81%/84%** of windows clear it on ageing alone — the
     /// target committed downward on no new evidence at all, and 60%/75% of those
@@ -1589,7 +1591,7 @@ mod tests {
             assert_eq!(
                 control.ramp_goal, 40,
                 "a rising target must commit on exactly {up} callbacks, as it did \
-                 before v19",
+                 before the dwell became asymmetric",
             );
 
             // After a long run of falling evidence. Without the direction reset
@@ -1618,7 +1620,7 @@ mod tests {
         }
 
         /// The defect itself. One decay step clears the dead-zone on 2.4GHz, and
-        /// under v18's symmetric dwell that alone committed a descent 150ms later.
+        /// under the old symmetric dwell that alone committed a descent 150ms later.
         #[test]
         fn a_falling_target_should_not_commit_on_a_single_decay_step() {
             let (config, up, down, min_depth) = constants();
@@ -1636,13 +1638,13 @@ mod tests {
             }
             assert!(
                 down - 1 > up,
-                "precondition: v18's symmetric dwell ({up}) must be satisfied many \
+                "precondition: the symmetric dwell ({up}) must be satisfied many \
                  times over inside this window, or the test proves nothing",
             );
             assert_eq!(
                 (control.ramp_goal, control.effective_target),
                 (40, 40),
-                "the target moved on {} callbacks of evidence; v19 requires {down}",
+                "the target moved on {} callbacks of evidence; a descent requires {down}",
                 down - 1,
             );
 
@@ -1688,8 +1690,8 @@ mod tests {
         /// The whole point of 2s. The measured age-reset period between gaps is
         /// p50 = 5.4-6.6s against a flat-top of 8s, so on 2.4GHz the next gap
         /// re-arms the target before a descent that began at the flat-top edge can
-        /// commit. Under v18 the descent committed 150ms in and then reversed —
-        /// 400/310 frames shed against a net drift of 2.4/3.8 frames.
+        /// commit. Under the symmetric dwell the descent committed 150ms in and then
+        /// reversed — 400/310 frames shed against a net drift of 2.4/3.8 frames.
         #[test]
         fn a_gap_recurring_inside_the_down_dwell_should_leave_the_target_untouched() {
             let (config, _, down, min_depth) = constants();

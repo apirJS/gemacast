@@ -9,12 +9,11 @@ use opus::Decoder;
 
 /// Wire format of the most recently captured packet.
 ///
-/// Reported on the 1 Hz depth line as `fmt=`. The v21 round had to establish
-/// which format a capture ran by reading the *saturation behaviour* of the
-/// separate `RustStdoutStderr: Latency: … RMS:` heartbeat — a packet-size proxy
-/// on the Opus path pins at 1.0 while a real PCM RMS does not — because nothing
-/// in the depth line recorded it. The two distributions happened not to overlap;
-/// that is not a property to rely on twice.
+/// Reported on the 1 Hz depth line as `fmt=`. Recorded explicitly because
+/// nothing else in the log states it: inferring the format from the separate
+/// `Latency: … RMS:` heartbeat only works because a packet-size proxy pins at
+/// 1.0 on the Opus path while a real PCM RMS does not, and that is a
+/// coincidence of two distributions, not a property to rely on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(super) enum PacketFormat {
     /// No packet has been captured yet (startup, or a whole window of outage).
@@ -55,14 +54,13 @@ pub(super) struct FrameDecoder {
     ///
     /// This is an exact fact about what the decoder has been fed, not a
     /// heuristic. On the uncompressed and silence paths `capture` never calls
-    /// into the codec at all, so a PLC request there runs on a state that was
-    /// either never initialised — which returns **exact zeros**, measured as
-    /// `rms=0.00000000` for every concealed frame of the v20 uncompressed
-    /// capture — or is stale by however many frames have played since the last
-    /// Opus packet.
+    /// into the codec, so a PLC request there runs on a state that was either
+    /// never initialised — which returns exact zeros, measured as `rms=0` for
+    /// every concealed frame of an uncompressed capture — or is stale by however
+    /// many frames have played since the last Opus packet.
     ///
-    /// It has to be "does the state match the last frame", not "has the decoder
-    /// ever seen Opus": a mid-session `/change-bitrate` switch from Opus to
+    /// It has to mean "does the state match the last frame", not "has the
+    /// decoder ever seen Opus": a mid-session `/change-bitrate` from Opus to
     /// uncompressed leaves a decoder that has been fed, but whose state drifts
     /// further from what is playing with every frame. Extrapolating from that is
     /// worse than repeating audio that actually played.
@@ -149,8 +147,8 @@ impl FrameDecoder {
             }
             // Set after the branch so it also covers the empty-payload fallback
             // above: that `decode_plc` call runs on a codec this stream has never
-            // fed, so the frame it "predicts" is the digital silence v21 measured,
-            // and claiming a valid state from it would hide exactly this case.
+            // fed, so the frame it "predicts" is digital silence, and claiming a
+            // valid state from it would hide exactly this case.
             self.plc_is_valid = false;
         } else if !self.decode_opus(&pkt.payload_data[..pkt.payload_len]) {
             self.decode_plc();
@@ -268,11 +266,11 @@ mod tests {
     }
 
     /// A fresh decoder has been fed nothing, so it cannot extrapolate anything —
-    /// and this is the exact state every uncompressed stream's concealment ran on
-    /// before v21, which is why all 267 concealed frames of the v20 capture were
-    /// digital silence. Pinned separately from the transitions below because
-    /// `Default`-ing this flag to `true` would reintroduce the whole defect while
-    /// leaving both transition tests green.
+    /// and this is the exact state every uncompressed stream's concealment used
+    /// to run on, which is why concealed frames measured as digital silence.
+    /// Pinned separately from the transitions below because `Default`-ing this
+    /// flag to `true` would reintroduce the whole defect while leaving both
+    /// transition tests green.
     #[test]
     fn a_decoder_that_has_never_been_fed_should_not_claim_a_usable_plc_state() {
         let dec = decoder();
@@ -285,9 +283,9 @@ mod tests {
         let peak = dec.decoded().iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert_eq!(
             peak, 0.0,
-            "the premise of commit 3 is that this frame is digital silence; if \
-             libopus ever starts extrapolating from a virgin state, the gate is \
-             solving a problem that no longer exists",
+            "the premise of the pitch-repetition path is that this frame is \
+             digital silence; if libopus ever starts extrapolating from a virgin \
+             state, the gate is solving a problem that no longer exists",
         );
     }
 
@@ -322,10 +320,9 @@ mod tests {
         assert!(dec.plc_is_valid);
     }
 
-    /// Same fact on the silence path, which is a separate branch and was a
-    /// separate share of the v20 capture: a silence frame deliberately bypasses
-    /// the codec to avoid poisoning it, and that bypass is exactly what makes the
-    /// state stale.
+    /// Same fact on the silence path, which is a separate branch: a silence frame
+    /// deliberately bypasses the codec to avoid poisoning it, and that bypass is
+    /// exactly what makes the state stale.
     #[test]
     fn a_silence_frame_should_invalidate_the_opus_decoders_plc_state() {
         let mut enc = Encoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
@@ -341,9 +338,9 @@ mod tests {
 
     /// `reset_state` discards the prediction history, so a PLC frame taken before
     /// the next successful decode is extrapolated from nothing — the same defect
-    /// as the uncompressed path, reached through the resync door instead. Beyond
-    /// the letter of the v21 plan, and deliberately: the flag is defined by what
-    /// the codec knows, and `resync` is a place where it stops knowing it.
+    /// as the uncompressed path, reached through the resync door instead. The flag
+    /// is defined by what the codec knows, and `resync` is a place where it stops
+    /// knowing it.
     #[test]
     fn a_resync_should_invalidate_the_opus_decoders_plc_state() {
         let mut enc = Encoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
@@ -365,8 +362,8 @@ mod tests {
 
     /// The empty-uncompressed sub-branch calls `decode_plc`, which sets the flag
     /// on its way out. The assignment therefore has to sit *after* the branch, or
-    /// a zero-length PCM payload would claim a valid state built from the digital
-    /// silence this whole commit exists to remove.
+    /// a zero-length PCM payload would claim a valid state built from digital
+    /// silence.
     #[test]
     fn an_empty_uncompressed_payload_should_not_claim_a_valid_plc_state() {
         let mut dec = decoder();
