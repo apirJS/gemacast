@@ -18,6 +18,27 @@ use std::collections::VecDeque;
 /// Total interleaved capacity of the accelerate staging window.
 const ACCEL_WINDOW_SAMPLES: usize = ACCEL_WINDOW_FRAMES * OPUS_FRAME_SAMPLES;
 
+/// Where [`TimeScaler::find_pitch_period`] is allowed to look, in sample-frames.
+///
+/// Named rather than three positional `usize` parameters because all three are
+/// the same type and any permutation of them compiles. The canonical values are
+/// `n = 480`, `anchor = 352`, `search_limit = 224`; transposing `anchor` and
+/// `search_limit` would move the correlation reference off the window tail and
+/// still run, so the mistake would be a wrong pitch period rather than a build
+/// failure. Constructed with field-init shorthand at every call site, so a
+/// transposition shows up as a field/local name mismatch.
+#[derive(Clone, Copy)]
+struct SearchGeometry {
+    /// Sample-frames staged in the window.
+    n: usize,
+    /// Start of the `OLA_LEN`-tap correlation reference, `n - OLA_LEN`. The
+    /// reference is glued to the window tail; the pitch period is
+    /// `anchor - best_d`.
+    anchor: usize,
+    /// Largest lag the search may consider, `SEARCH_RANGE.min(anchor - OLA_LEN)`.
+    search_limit: usize,
+}
+
 /// WSOLA time-scaler: crossfade ramp + scratch buffer for allocation-free splicing.
 pub(super) struct TimeScaler {
     /// Pre-computed crossfade ramp for OLA splicing (OLA_LEN entries).
@@ -278,15 +299,19 @@ impl TimeScaler {
     /// splice deletes samples, and samples already handed to `fill_output` are
     /// gone. So the window is rebuilt per drain decision from the freshly decoded
     /// frame, then optionally extended with the next contiguous frame.
-    pub fn window_begin(&mut self, pcm: &[f32]) {
+    ///
+    /// Returns the [`StagedWindow`] handle the rest of the protocol hangs off;
+    /// the steps below are private so that handle is the only way in.
+    pub fn window_begin(&mut self, pcm: &[f32]) -> StagedWindow<'_> {
         let len = pcm.len().min(ACCEL_WINDOW_SAMPLES);
         self.accel_window[..len].copy_from_slice(&pcm[..len]);
         self.accel_len = len;
+        StagedWindow { ts: self }
     }
 
     /// Append one more decoded frame to the accelerate window.
     /// Returns `false` (and stages nothing) if the frame would not fit.
-    pub fn window_extend(&mut self, pcm: &[f32]) -> bool {
+    fn window_extend(&mut self, pcm: &[f32]) -> bool {
         if self.accel_len + pcm.len() > ACCEL_WINDOW_SAMPLES {
             return false;
         }
@@ -296,18 +321,18 @@ impl TimeScaler {
     }
 
     /// How many more interleaved samples the accelerate window can still take.
-    pub fn window_headroom(&self) -> usize {
+    fn window_headroom(&self) -> usize {
         ACCEL_WINDOW_SAMPLES - self.accel_len
     }
 
     /// The staged accelerate window.
-    pub fn window(&self) -> &[f32] {
+    fn window(&self) -> &[f32] {
         &self.accel_window[..self.accel_len]
     }
 
     /// Emit the staged window verbatim — the no-splice path. Every staged frame
     /// must reach the playback buffer exactly once, whether or not the splice fired.
-    pub fn emit_window(&self, playback_buf: &mut VecDeque<f32>) {
+    fn emit_window(&self, playback_buf: &mut VecDeque<f32>) {
         playback_buf.extend(&self.accel_window[..self.accel_len]);
     }
 
@@ -445,7 +470,7 @@ impl TimeScaler {
 
     /// Conceal one frame by repeating the last played frame's pitch period, for
     /// the case the codec cannot: no decoder state to extrapolate from
-    /// (`FrameDecoder::plc_is_valid`).
+    /// (`FrameDecoder::plc_ready`).
     ///
     /// This is NetEQ's `Expand` reaching a place ours could not. `expand_conceal`
     /// needs a *current* frame to splice into, so it is structurally unreachable at
@@ -468,7 +493,7 @@ impl TimeScaler {
     /// n        = 480 sample-frames                       the last played frame
     /// anchor   = n - OLA_LEN                    = 352
     /// limit    = min(SEARCH_RANGE 720, anchor - OLA_LEN 224) = 224
-    /// search   find_pitch_period(480, 352, 224) -> best_d in [0, 224)
+    /// search   find_pitch_period { n: 480, anchor: 352, search_limit: 224 }
     /// P        = anchor - best_d in [129, 352]           = 136-375 Hz
     /// ```
     ///
@@ -510,7 +535,11 @@ impl TimeScaler {
         // either (`expand.cc:438-455` scores candidates and always emits one),
         // because what a concealed frame displaces is raw underrun. A badly
         // correlated period beats the hole it replaces.
-        let (best_d, _) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, _) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
         let period = anchor - best_d;
         // Guaranteed by the search bound (`best_d <= 223` at `n = 480`); kept so
         // the invariant is local to the splice rather than inferred from a caller.
@@ -684,7 +713,11 @@ impl TimeScaler {
 
         // Find the pitch period via the same coarse-then-refine search `accelerate`
         // uses. Sharing the search guarantees identical geometry and identical cost.
-        let (best_d, best_corr) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, best_corr) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
 
         // Upstream's disjunction, not a bare threshold (`accelerate.cc:58`):
         //
@@ -787,10 +820,12 @@ impl TimeScaler {
     /// (so the orchestrator can immediately correct the filtered buffer level, as
     /// NetEQ's `BufferLevelFilter` does), or `None` if no stretch was performed.
     ///
-    /// The window must have been staged with `window_begin` (+ `window_extend`),
-    /// and on every outcome the caller must emit the window exactly once — via
-    /// `window()` for the returned splice, or `emit_window` when `None`.
-    pub fn accelerate(
+    /// The window must have been staged: the caller holds a [`StagedWindow`], and
+    /// outside this file that handle is the only way to reach this method. The
+    /// other half of the contract is not expressible in the type — on every
+    /// outcome the window must be emitted exactly once, by the splice this
+    /// returns, or by `emit_window` when it returns `None`.
+    fn accelerate(
         &mut self,
         fast_mode: bool,
         rms: f32,
@@ -820,7 +855,11 @@ impl TimeScaler {
         }
 
         // --- Step 1: Autocorrelation to find the pitch period ---
-        let (best_d, best_corr) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, best_corr) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
 
         // NetEQ thresholds: 0.9 for normal, 0.5 for fast mode (kFastAccelerate).
         // Fast mode activates when buffer is extremely overfull — trades
@@ -900,7 +939,12 @@ impl TimeScaler {
     /// again: `expand` once ran a 16-sample-frame lag floor over a single frame
     /// against `accelerate`'s `OLA_LEN` floor over two, and the field measured a
     /// 50% degenerate-splice rate on one and 0% on the other.
-    fn find_pitch_period(&mut self, n: usize, anchor: usize, search_limit: usize) -> (usize, f32) {
+    fn find_pitch_period(&mut self, geom: SearchGeometry) -> (usize, f32) {
+        let SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        } = geom;
         let ch = OPUS_CHANNELS as usize;
         {
             let (mono, win) = (&mut self.mono_buf, &self.accel_window);
@@ -1011,6 +1055,58 @@ impl TimeScaler {
     }
 }
 
+/// A staged accelerate window, borrowed from the [`TimeScaler`] that owns it.
+///
+/// `window_headroom`, `window`, `emit_window` and `accelerate` all read
+/// `accel_len`, and `accel_window` is shared scratch — `expand_inner` and the
+/// concealment path stage into it too. So calling one of those four before a
+/// window is staged does not fail; it reads whatever the last operation left
+/// there, which nothing in the types said. They are module-private now and
+/// reachable from outside this file only through the value
+/// [`TimeScaler::window_begin`] returns, which turns the ordering into a
+/// compile-time fact at every call site.
+///
+/// Borrowed rather than consuming: the manager owns its `TimeScaler` for the
+/// process lifetime and calls in from the audio callback, so a handle that moved
+/// the value could not be threaded through `fill_output(&mut self, …)`. A `&mut`
+/// reborrow costs nothing at runtime — no move, no allocation, no dispatch.
+pub(super) struct StagedWindow<'a> {
+    ts: &'a mut TimeScaler,
+}
+
+impl StagedWindow<'_> {
+    /// Append one more decoded frame to the window.
+    /// Returns `false` (and stages nothing) if the frame would not fit.
+    pub fn extend(&mut self, pcm: &[f32]) -> bool {
+        self.ts.window_extend(pcm)
+    }
+
+    /// How many more interleaved samples the window can still take.
+    pub fn headroom(&self) -> usize {
+        self.ts.window_headroom()
+    }
+
+    /// The staged samples.
+    pub fn staged(&self) -> &[f32] {
+        self.ts.window()
+    }
+
+    /// Emit the staged window verbatim — the no-splice path.
+    pub fn emit(&self, playback_buf: &mut VecDeque<f32>) {
+        self.ts.emit_window(playback_buf)
+    }
+
+    /// Attempt the drain splice; see `TimeScaler::accelerate` for the contract.
+    pub fn accelerate(
+        &mut self,
+        fast_mode: bool,
+        rms: f32,
+        playback_buf: &mut VecDeque<f32>,
+    ) -> Option<usize> {
+        self.ts.accelerate(fast_mode, rms, playback_buf)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1055,18 +1151,18 @@ mod tests {
 
             // One frame only: the old geometry. 480 samples cannot hold a 480-sample
             // period plus an OLA_LEN crossfade, so this must decline.
-            ts.window_begin(&tone_frame(100.0, 0.05, 0));
+            let mut w = ts.window_begin(&tone_frame(100.0, 0.05, 0));
             assert!(
-                ts.accelerate(false, 0.05, &mut out).is_none(),
+                w.accelerate(false, 0.05, &mut out).is_none(),
                 "a single 480-frame window cannot splice a 480-sample period — \
                  if this passes, the test no longer proves the widening did anything",
             );
 
             // Two frames: the period is now splicesable.
             out.clear();
-            ts.window_begin(&tone_frame(100.0, 0.05, 0));
-            assert!(ts.window_extend(&tone_frame(100.0, 0.05, 1)));
-            let removed = ts
+            let mut w = ts.window_begin(&tone_frame(100.0, 0.05, 0));
+            assert!(w.extend(&tone_frame(100.0, 0.05, 1)));
+            let removed = w
                 .accelerate(false, 0.05, &mut out)
                 .expect("100 Hz must be reachable in a two-frame window");
 
@@ -1091,8 +1187,8 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             // 200 Hz = 240 sample-frames, splicesable inside one frame (as before).
-            ts.window_begin(&tone_frame(200.0, 0.05, 0));
-            let removed = ts
+            let mut w = ts.window_begin(&tone_frame(200.0, 0.05, 0));
+            let removed = w
                 .accelerate(false, 0.05, &mut out)
                 .expect("200 Hz was reachable before this change and must stay so");
             assert_eq!(out.len(), OPUS_FRAME_SAMPLES - removed);
@@ -1107,12 +1203,12 @@ mod tests {
             // escape is standing and the correlation gate is fully bypassed.
             // These windows must therefore be refused on geometry alone — which
             // is the bounds check this test exists to guard.
-            ts.window_begin(&[]);
-            assert!(ts.accelerate(false, 0.0, &mut out).is_none());
+            let mut w = ts.window_begin(&[]);
+            assert!(w.accelerate(false, 0.0, &mut out).is_none());
             assert!(out.is_empty());
 
-            ts.window_begin(&vec![0.0f32; 64]);
-            assert!(ts.accelerate(true, 0.0, &mut out).is_none());
+            let mut w = ts.window_begin(&vec![0.0f32; 64]);
+            assert!(w.accelerate(true, 0.0, &mut out).is_none());
         }
 
         /// No `expand` splice may ever have a period shorter than the crossfade
@@ -1208,9 +1304,9 @@ mod tests {
 
                 let mut ts_acc = TimeScaler::new();
                 let mut out_acc = VecDeque::new();
-                ts_acc.window_begin(&a);
-                assert!(ts_acc.window_extend(&b));
-                let removed = ts_acc
+                let mut w = ts_acc.window_begin(&a);
+                assert!(w.extend(&b));
+                let removed = w
                     .accelerate(false, 0.05, &mut out_acc)
                     .unwrap_or_else(|| panic!("{hz} Hz must be reachable by accelerate"));
 
@@ -1234,9 +1330,9 @@ mod tests {
             let mut out = VecDeque::new();
             let f0 = tone_frame(440.0, 0.2, 0);
             let f1 = tone_frame(440.0, 0.2, 1);
-            ts.window_begin(&f0);
-            assert!(ts.window_extend(&f1));
-            ts.emit_window(&mut out);
+            let mut w = ts.window_begin(&f0);
+            assert!(w.extend(&f1));
+            w.emit(&mut out);
 
             let expected: Vec<f32> = f0.iter().chain(f1.iter()).copied().collect();
             assert_eq!(out.len(), expected.len());
@@ -1247,11 +1343,11 @@ mod tests {
         #[test]
         fn window_extend_should_refuse_a_frame_that_does_not_fit() {
             let mut ts = TimeScaler::new();
-            ts.window_begin(&tone_frame(440.0, 0.2, 0));
-            assert!(ts.window_extend(&tone_frame(440.0, 0.2, 1)));
-            assert_eq!(ts.window_headroom(), 0);
-            assert!(!ts.window_extend(&tone_frame(440.0, 0.2, 2)));
-            assert_eq!(ts.window().len(), ACCEL_WINDOW_SAMPLES);
+            let mut w = ts.window_begin(&tone_frame(440.0, 0.2, 0));
+            assert!(w.extend(&tone_frame(440.0, 0.2, 1)));
+            assert_eq!(w.headroom(), 0);
+            assert!(!w.extend(&tone_frame(440.0, 0.2, 2)));
+            assert_eq!(w.staged().len(), ACCEL_WINDOW_SAMPLES);
         }
     }
 
@@ -1379,9 +1475,9 @@ mod tests {
             let win = tapered_tone_window();
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
-            ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
-            assert!(ts.window_extend(&win[OPUS_FRAME_SAMPLES..]));
-            let removed = ts
+            let mut w = ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
+            assert!(w.extend(&win[OPUS_FRAME_SAMPLES..]));
+            let removed = w
                 .accelerate(false, 0.09, &mut out)
                 .expect("a gain-tapered 200 Hz tone must still clear the NCC gate");
             assert_eq!(out.len(), ACCEL_WINDOW_SAMPLES - removed);
@@ -1485,10 +1581,10 @@ mod tests {
                 // the fade's last sample *is* the window's last output sample.
                 let mut ts = TimeScaler::new();
                 let mut out = VecDeque::new();
-                ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
-                assert!(ts.window_extend(&win[OPUS_FRAME_SAMPLES..]));
+                let mut w = ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
+                assert!(w.extend(&win[OPUS_FRAME_SAMPLES..]));
                 assert!(
-                    ts.accelerate(false, 0.09, &mut out).is_some(),
+                    w.accelerate(false, 0.09, &mut out).is_some(),
                     "{label}: a gain-tapered 200 Hz tone must clear the NCC gate — \
                      a declined splice reports nothing and proves nothing",
                 );
@@ -1563,15 +1659,15 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
             // RMS 0.3 is 35x `SILENCE_RMS`, so `active_speech` is true and the
             // NCC gate is live. Passing a quiet RMS here would satisfy the
             // assertion's *letter* via the VAD escape while proving nothing
             // about the veto — see `an_active_speech_window_should_still_require_correlation`
             // for the escape's own coverage.
             assert!(
-                ts.accelerate(false, 0.3, &mut out).is_none(),
+                w.accelerate(false, 0.3, &mut out).is_none(),
                 "white noise cleared the 0.9 NCC gate — the artifact veto is broken",
             );
             assert_eq!(ts.op_count(), 0);
@@ -1594,10 +1690,10 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
 
-            let removed = ts.accelerate(false, SILENCE_RMS * 0.5, &mut out).expect(
+            let removed = w.accelerate(false, SILENCE_RMS * 0.5, &mut out).expect(
                 "a below-SILENCE_RMS window must bypass the NCC gate — this is \
                      the 78-79% of ADB/5GHz drain attempts the gate refused",
             );
@@ -1622,11 +1718,11 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
 
             assert!(
-                ts.accelerate(false, SILENCE_RMS, &mut out).is_none(),
+                w.accelerate(false, SILENCE_RMS, &mut out).is_none(),
                 "RMS exactly at SILENCE_RMS is active speech — the NCC gate must \
                  still veto unsplicable content",
             );
@@ -1643,10 +1739,10 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0xfeed_beefu32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
             assert!(
-                ts.accelerate(true, SILENCE_RMS * 0.5, &mut out).is_some(),
+                w.accelerate(true, SILENCE_RMS * 0.5, &mut out).is_some(),
                 "the VAD escape must be tier-independent",
             );
         }
@@ -1779,7 +1875,11 @@ mod tests {
             let n = ts.accel_len / OPUS_CHANNELS as usize;
             let anchor = n - OLA_LEN;
             let lim = SEARCH_RANGE.min(anchor.saturating_sub(OLA_LEN));
-            let (_, corr) = ts.find_pitch_period(n, anchor, lim);
+            let (_, corr) = ts.find_pitch_period(SearchGeometry {
+                n,
+                anchor,
+                search_limit: lim,
+            });
             assert!(
                 corr > EXPAND_NCC_THRESHOLD && corr < 0.9,
                 "test material must land strictly between the two thresholds, or \
@@ -1810,13 +1910,21 @@ mod tests {
 
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
+            // Staged through the module-private steps rather than the handle:
+            // this test reads `accel_len` and drives `find_pitch_period` between
+            // staging and the splice, which a live `StagedWindow` would hold `ts`
+            // borrowed across.
             ts.window_begin(&a);
             assert!(ts.window_extend(&b));
             let (_, corr) = {
                 let n = ts.accel_len / OPUS_CHANNELS as usize;
                 let anchor = n - OLA_LEN;
                 let lim = SEARCH_RANGE.min(anchor.saturating_sub(OLA_LEN));
-                ts.find_pitch_period(n, anchor, lim)
+                ts.find_pitch_period(SearchGeometry {
+                    n,
+                    anchor,
+                    search_limit: lim,
+                })
             };
             assert!(
                 corr > EXPAND_NCC_THRESHOLD && corr < 0.9,
@@ -1843,9 +1951,9 @@ mod tests {
             for hz in [100.0f32, 150.0, 220.0, 330.0] {
                 let mut ts = TimeScaler::new();
                 let mut out = VecDeque::new();
-                ts.window_begin(&tone_frame(hz, 0.05, 0));
-                assert!(ts.window_extend(&tone_frame(hz, 0.05, 1)));
-                let removed = ts
+                let mut w = ts.window_begin(&tone_frame(hz, 0.05, 0));
+                assert!(w.extend(&tone_frame(hz, 0.05, 1)));
+                let removed = w
                     .accelerate(false, 0.05, &mut out)
                     .unwrap_or_else(|| panic!("{hz} Hz must be reachable"));
 
@@ -1893,7 +2001,7 @@ mod tests {
     }
 
     /// Concealment from the played history, for the case the codec cannot
-    /// extrapolate (`FrameDecoder::plc_is_valid == false`).
+    /// extrapolate (`FrameDecoder::plc_ready() == false`).
     mod pitch_concealment {
         use super::*;
 
@@ -1943,7 +2051,11 @@ mod tests {
         fn period_used(ts: &mut TimeScaler) -> usize {
             let n = OPUS_FRAME_SAMPLES / OPUS_CHANNELS as usize;
             let anchor = n - OLA_LEN;
-            let (best_d, _) = ts.find_pitch_period(n, anchor, SEARCH_RANGE.min(anchor - OLA_LEN));
+            let (best_d, _) = ts.find_pitch_period(SearchGeometry {
+                n,
+                anchor,
+                search_limit: SEARCH_RANGE.min(anchor - OLA_LEN),
+            });
             anchor - best_d
         }
 

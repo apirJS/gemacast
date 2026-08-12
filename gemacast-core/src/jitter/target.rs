@@ -171,6 +171,22 @@ pub(super) struct TargetBreakdown {
     pub raw: u32,
 }
 
+/// The drain/expand decision band around the effective target, in whole frames.
+///
+/// Named rather than a `(u32, u32)` because the two ends drive opposite actuators
+/// and the resume clamp reads only `high` — a positional `.1` there is the single
+/// most consequential read in the module, and picking the wrong element is silent.
+/// Produced only by [`TargetController::buffer_limits`], whose doc states the
+/// arithmetic and the NetEQ correspondence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Band {
+    /// `filtered < low` → preemptive expand.
+    pub low: u32,
+    /// `filtered >= high` → gentle drain. Monotone non-decreasing in `target`,
+    /// pinned by `the_high_limit_must_never_fall_as_the_target_rises`.
+    pub high: u32,
+}
+
 /// Adaptive target-depth controller. Holds all hysteresis, ramp, probe, and
 /// starvation-bump state; produces the smoothed effective target each callback.
 pub(super) struct TargetController {
@@ -418,7 +434,7 @@ impl TargetController {
     /// the 40ms it used to be. Above that the band is already `target/4` and the
     /// constant is inert, which is what made the old value a mistake worth
     /// measuring rather than arguing about.
-    pub fn buffer_limits(target: u32) -> (u32, u32) {
+    pub fn buffer_limits(target: u32) -> Band {
         /// Minimum low→high spread in frames, matching NetEQ's `window_20ms`
         /// (`delay_manager.cc:417-426`).
         ///
@@ -445,7 +461,7 @@ impl TargetController {
         const MIN_BAND: u32 = 20 / super::consts::MILLIS_PER_FRAME;
         let low = target * 3 / 4;
         let high = target.max(low + MIN_BAND);
-        (low, high)
+        Band { low, high }
     }
 
     /// Reset hysteresis + ramp + probe state for a new config. Returns the new
@@ -1446,7 +1462,7 @@ mod tests {
         fn the_drain_dead_band_should_be_twenty_milliseconds_at_a_small_target() {
             // ADB's measured target. `low = 3`; the band must be 20ms, not 40ms,
             // so `high` lands on the target instead of 2 frames above it.
-            let (low, high) = TargetController::buffer_limits(5);
+            let Band { low, high } = TargetController::buffer_limits(5);
             assert_eq!((low, high), (3, 5), "40ms would have given (3, 7)");
             assert_eq!(
                 high - low,
@@ -1456,8 +1472,8 @@ mod tests {
 
             // The smallest targets, where the floor is the only thing holding the
             // band open at all.
-            assert_eq!(TargetController::buffer_limits(2), (1, 3));
-            assert_eq!(TargetController::buffer_limits(4), (3, 5));
+            assert_eq!(TargetController::buffer_limits(2), Band { low: 1, high: 3 });
+            assert_eq!(TargetController::buffer_limits(4), Band { low: 3, high: 5 });
         }
 
         #[test]
@@ -1465,12 +1481,15 @@ mod tests {
             // 2.4GHz's measured target. The band is `target/4` here and the
             // constant is inert — this change is bit-identical on that link,
             // which is what makes it safe to make globally rather than per-link.
-            let (low, high) = TargetController::buffer_limits(32);
+            let Band { low, high } = TargetController::buffer_limits(32);
             assert_eq!((low, high), (24, 32));
             assert_eq!(high - low, 8, "target/4, not the MIN_BAND floor");
 
             // 5GHz's measured target, just above where the floor lets go.
-            assert_eq!(TargetController::buffer_limits(13), (9, 13));
+            assert_eq!(
+                TargetController::buffer_limits(13),
+                Band { low: 9, high: 13 }
+            );
         }
 
         /// The ADB complaint in one assertion. `high` is the level the filtered
@@ -1481,7 +1500,7 @@ mod tests {
         #[test]
         fn a_small_target_should_not_park_the_buffer_above_its_high_limit() {
             for target in 5..=64 {
-                let (low, high) = TargetController::buffer_limits(target);
+                let Band { low, high } = TargetController::buffer_limits(target);
                 assert_eq!(
                     high,
                     target,
@@ -1508,9 +1527,9 @@ mod tests {
         fn the_high_limit_must_never_fall_as_the_target_rises() {
             // 0 is the no-buffer sentinel; 100 frames is the largest comfort cap any
             // profile carries (Unknown, 1000ms), swept well past it for margin.
-            let mut prev = TargetController::buffer_limits(0).1;
+            let mut prev = TargetController::buffer_limits(0).high;
             for target in 1..=200u32 {
-                let (low, high) = TargetController::buffer_limits(target);
+                let Band { low, high } = TargetController::buffer_limits(target);
                 assert!(
                     high >= prev,
                     "high fell from {prev} to {high} between target {} and \

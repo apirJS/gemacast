@@ -35,6 +35,37 @@ impl PacketFormat {
     }
 }
 
+/// Whether the Opus decoder's internal state corresponds to the frame we most
+/// recently played, and therefore whether [`FrameDecoder::decode_plc`] can
+/// extrapolate from it.
+///
+/// This is an exact fact about what the decoder has been fed, not a heuristic.
+/// On the uncompressed and silence paths `capture` never calls into the codec, so
+/// a PLC request there runs on a state that was either never initialised — which
+/// returns exact zeros, measured as `rms=0` for every concealed frame of an
+/// uncompressed capture — or is stale by however many frames have played since
+/// the last Opus packet.
+///
+/// It has to mean "does the state match the last frame", not "has the decoder
+/// ever seen Opus": a mid-session `/change-bitrate` from Opus to uncompressed
+/// leaves a decoder that *has* been fed, but whose state drifts further from what
+/// is playing with every frame. Extrapolating from that is worse than repeating
+/// audio that actually played.
+///
+/// An enum rather than a `bool` because both halves of that distinction have to
+/// be reachable from five separate places in `capture`, `resync` and `reset`, and
+/// a bare `false` at each of them says nothing about which fact it is asserting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CodecState {
+    /// The codec cannot extrapolate the next frame: it has never been fed, or
+    /// something has played since the last time it was advanced. Concealment must
+    /// repeat audio that really played instead of asking for a prediction.
+    Cold,
+    /// The codec was last advanced by the frame that is playing, so its
+    /// prediction continues from it.
+    Warm,
+}
+
 /// Opus decoder + reusable decode buffer for one audio callback thread.
 pub(super) struct FrameDecoder {
     decoder: Decoder,
@@ -48,23 +79,10 @@ pub(super) struct FrameDecoder {
     /// Wire format of the last packet `capture` saw. Observation only — nothing
     /// branches on it; it exists so a field capture states its own format.
     pub last_format: PacketFormat,
-    /// Whether the Opus decoder's internal state corresponds to the frame we
-    /// most recently played, and therefore whether [`Self::decode_plc`] can
-    /// extrapolate from it.
-    ///
-    /// This is an exact fact about what the decoder has been fed, not a
-    /// heuristic. On the uncompressed and silence paths `capture` never calls
-    /// into the codec, so a PLC request there runs on a state that was either
-    /// never initialised — which returns exact zeros, measured as `rms=0` for
-    /// every concealed frame of an uncompressed capture — or is stale by however
-    /// many frames have played since the last Opus packet.
-    ///
-    /// It has to mean "does the state match the last frame", not "has the
-    /// decoder ever seen Opus": a mid-session `/change-bitrate` from Opus to
-    /// uncompressed leaves a decoder that has been fed, but whose state drifts
-    /// further from what is playing with every frame. Extrapolating from that is
-    /// worse than repeating audio that actually played.
-    pub plc_is_valid: bool,
+    /// Whether the codec can extrapolate. Private: every reader outside this
+    /// module goes through [`Self::plc_ready`], so the seven places that set it
+    /// are the only places that can.
+    codec_state: CodecState,
 }
 
 impl FrameDecoder {
@@ -75,8 +93,15 @@ impl FrameDecoder {
             decode_len: 0,
             opus_next_expected_seq: None,
             last_format: PacketFormat::None,
-            plc_is_valid: false,
+            codec_state: CodecState::Cold,
         }
+    }
+
+    /// Whether [`Self::decode_plc`] can extrapolate, i.e. whether the codec
+    /// state describes the frame that is playing. The only reader of
+    /// [`CodecState`] outside this module.
+    pub fn plc_ready(&self) -> bool {
+        matches!(self.codec_state, CodecState::Warm)
     }
 
     /// The valid decoded samples from the last `capture`/`decode_plc`.
@@ -126,7 +151,7 @@ impl FrameDecoder {
             self.decode_len = OPUS_FRAME_SAMPLES;
             // The codec was not advanced, so its state no longer describes what
             // is playing. Concealment must repeat played audio, not extrapolate.
-            self.plc_is_valid = false;
+            self.codec_state = CodecState::Cold;
         } else if pkt.is_uncompressed {
             let f32_len = pkt.payload_len / std::mem::size_of::<f32>();
             if f32_len == 0 {
@@ -149,7 +174,7 @@ impl FrameDecoder {
             // above: that `decode_plc` call runs on a codec this stream has never
             // fed, so the frame it "predicts" is digital silence, and claiming a
             // valid state from it would hide exactly this case.
-            self.plc_is_valid = false;
+            self.codec_state = CodecState::Cold;
         } else if !self.decode_opus(&pkt.payload_data[..pkt.payload_len]) {
             self.decode_plc();
         }
@@ -163,7 +188,7 @@ impl FrameDecoder {
         {
             Ok(samples_per_channel) => {
                 self.decode_len = samples_per_channel * OPUS_CHANNELS as usize;
-                self.plc_is_valid = true;
+                self.codec_state = CodecState::Warm;
                 true
             }
             Err(_) => false,
@@ -180,7 +205,7 @@ impl FrameDecoder {
                 self.decode_len = samples_per_channel * OPUS_CHANNELS as usize;
                 // A PLC call is itself a state advance: the codec now describes
                 // the frame it just predicted, which is the frame being played.
-                self.plc_is_valid = true;
+                self.codec_state = CodecState::Warm;
             }
             Err(_) => {
                 self.decode_buf.fill(0.0);
@@ -197,7 +222,7 @@ impl FrameDecoder {
         // `reset_state` discards the prediction history, so a PLC frame taken
         // before the next successful decode would be extrapolated from nothing.
         // Same fact as the uncompressed branch, reached by a different door.
-        self.plc_is_valid = false;
+        self.codec_state = CodecState::Cold;
     }
 
     /// Full reset on stream teardown: zero the decode buffer and reset decoder
@@ -207,7 +232,7 @@ impl FrameDecoder {
         self.decode_buf.fill(0.0);
         self.decode_len = 0;
         self.last_format = PacketFormat::None;
-        self.plc_is_valid = false;
+        self.codec_state = CodecState::Cold;
         let _ = self.decoder.reset_state();
     }
 }
@@ -274,7 +299,7 @@ mod tests {
     #[test]
     fn a_decoder_that_has_never_been_fed_should_not_claim_a_usable_plc_state() {
         let dec = decoder();
-        assert!(!dec.plc_is_valid);
+        assert!(!dec.plc_ready());
 
         // And the reason it matters, measured rather than asserted from the doc:
         // PLC on that state returns exact zeros.
@@ -301,7 +326,7 @@ mod tests {
 
         dec.capture(&opus_packet(&mut enc, 1));
         assert!(
-            dec.plc_is_valid,
+            dec.plc_ready(),
             "precondition: a decoded Opus frame must leave the codec able to \
              extrapolate, or the test below cannot observe a transition",
         );
@@ -309,7 +334,7 @@ mod tests {
 
         dec.capture(&uncompressed_packet(2));
         assert!(
-            !dec.plc_is_valid,
+            !dec.plc_ready(),
             "the codec was not advanced by the PCM copy, so its state now \
              describes frame 1 while frame 2 is what played",
         );
@@ -317,7 +342,7 @@ mod tests {
 
         // ...and back, so the flag tracks the format rather than latching either way.
         dec.capture(&opus_packet(&mut enc, 3));
-        assert!(dec.plc_is_valid);
+        assert!(dec.plc_ready());
     }
 
     /// Same fact on the silence path, which is a separate branch: a silence frame
@@ -329,10 +354,10 @@ mod tests {
         let mut dec = decoder();
 
         dec.capture(&opus_packet(&mut enc, 1));
-        assert!(dec.plc_is_valid, "precondition");
+        assert!(dec.plc_ready(), "precondition");
 
         dec.capture(&silence_packet(2));
-        assert!(!dec.plc_is_valid);
+        assert!(!dec.plc_ready());
         assert_eq!(dec.last_format, PacketFormat::Silence);
     }
 
@@ -347,14 +372,14 @@ mod tests {
         let mut dec = decoder();
 
         dec.capture(&opus_packet(&mut enc, 1));
-        assert!(dec.plc_is_valid, "precondition");
+        assert!(dec.plc_ready(), "precondition");
 
         dec.resync();
-        assert!(!dec.plc_is_valid);
+        assert!(!dec.plc_ready());
 
         dec.capture(&opus_packet(&mut enc, 7));
         assert!(
-            dec.plc_is_valid,
+            dec.plc_ready(),
             "and it must recover on the next real decode — a gate that could not \
              re-arm would strand the Opus path on pitch repetition forever",
         );
@@ -372,7 +397,7 @@ mod tests {
 
         dec.capture(&pkt);
 
-        assert!(!dec.plc_is_valid);
+        assert!(!dec.plc_ready());
         assert_eq!(
             dec.decode_len, OPUS_FRAME_SAMPLES,
             "the frame is still filled"
