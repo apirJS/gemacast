@@ -28,8 +28,6 @@ whoami = "2.1.1"
 thread-priority = "3.0.0"
 async-trait = "0.1"
 tracing = "0.1"
-# `env-filter` (not on by default in some resolutions) makes the subscriber honor
-# RUST_LOG; without it `RUST_LOG=info` was silently ignored.
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 image = "0.25.10"
 fs2 = "0.4"

@@ -411,3 +411,24 @@
 .gain-slider::-webkit-slider-thumb:active {
   transform: scale(1.15);
 }
+
+/*
+ * Honour the OS "reduce motion" preference (Android maps its accessibility
+ * "Remove animations" toggle here, and battery-saver can force it). This stops
+ * the always-on `infinite` loops — status-breathe (StatusChip) and scan-pulse
+ * (EmptyState) — from keeping the GPU compositor awake for users who opted out,
+ * while leaving one-shot enter/exit transitions effectively instant.
+ *
+ * No visibility-pause is needed: a hidden WebView document skips the rendering
+ * step, so these compositor animations already idle when the app is backgrounded.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

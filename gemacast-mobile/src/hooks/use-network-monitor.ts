@@ -121,9 +121,37 @@ export function useNetworkMonitor() {
     };
 
     checkNetwork();
-    const interval = setInterval(checkNetwork, 3000);
+
+    // Poll only while the app is visible. Android throttles WebView timers with
+    // the screen off anyway, and a live session is kept alive independently by the
+    // Rust probe loop — so pausing here removes wasted wakeups with no loss of
+    // liveness. On becoming visible we refresh immediately rather than waiting for
+    // the next tick.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      interval ??= setInterval(checkNetwork, 3000);
+    };
+    const stopPolling = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkNetwork();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    if (document.visibilityState === 'visible') {
+      startPolling();
+    }
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const nav = navigator as any;
@@ -133,9 +161,10 @@ export function useNetworkMonitor() {
     }
 
     return () => {
-      clearInterval(interval);
+      stopPolling();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisibility);
       if (connection) {
         connection.removeEventListener('change', checkNetwork);
       }

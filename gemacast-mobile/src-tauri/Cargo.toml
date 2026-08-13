@@ -23,26 +23,23 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-
-gemacast-core = {path = "../../gemacast-core"}
-tokio = { version = "1.50.0", features = ["full"] }
 tauri-plugin-device-info = "1.0.1"
 netdev = "0.43.0"
-# `log` feature: with no `tracing` subscriber installed, every `tracing` event is
-# emitted as a `log` record instead. tauri-plugin-log installs a `log` logger
-# (→ logcat on Android), so this is the bridge that makes our `tracing::*` calls
-# across gemacast-core visible on-device. Do NOT also install a tracing subscriber
-# here or the bridge goes silent.
-tracing = { version = "0.1.44", features = ["log"] }
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 semver = "1"
 futures-util = "0.3"
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+gemacast-core = { path = "../../gemacast-core" }
+tokio = { version = "1.50.0", features = ["full"] }
+tracing = { version = "0.1.44", features = ["log", "release_max_level_info"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "stream",
+  "rustls-tls",
+] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"

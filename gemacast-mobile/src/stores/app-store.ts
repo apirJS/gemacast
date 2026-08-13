@@ -183,7 +183,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setAvailableModes: (modes) => {
     const { settings, availableModes: prev } = get();
-    set({ availableModes: modes });
+    // The network monitor calls this every 3s with a fresh object from IPC.
+    // Only publish a new reference when a value actually changed, or every
+    // `availableModes` subscriber (e.g. ModeSelector) re-renders each tick.
+    if (prev.wifi !== modes.wifi || prev.usb !== modes.usb || prev.adb !== modes.adb) {
+      set({ availableModes: modes });
+    }
 
     const modeAvailable = (m: ConnectionMode) =>
       m === ConnectionMode.Wifi ? modes.wifi : m === ConnectionMode.Usb ? modes.usb : modes.adb;

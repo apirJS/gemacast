@@ -21,7 +21,6 @@
     "react": "^19",
     "react-dom": "^19",
     "tauri-plugin-device-info-api": "^1.0.1",
-    "zod": "^4.3.6",
     "zustand": "^5"
   },
   "devDependencies": {

@@ -17,14 +17,15 @@ import { GemaCastError } from '../core/error';
 import type { DiscoveredSender } from '../core/types';
 
 export function useTauriEvents() {
-  const trackerRef = useRef(new LatencyTracker());
+  const trackerRef = useRef<LatencyTracker | null>(null);
 
   useEffect(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
     unlisteners.push(
       listen<{ latency: number; isActive: boolean }>('audio-telemetry', (event) => {
-        const stats = trackerRef.current.update(event.payload.latency);
+        const tracker = (trackerRef.current ??= new LatencyTracker());
+        const stats = tracker.update(event.payload.latency);
         useAppStore.getState().updateLatency(stats);
         updateAudioActive(event.payload.isActive);
       }),

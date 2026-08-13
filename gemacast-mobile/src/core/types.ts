@@ -1,4 +1,3 @@
-import * as z from 'zod';
 import type { GemaCastError } from './error';
 
 export type Ok<T> = {
@@ -20,13 +19,11 @@ export function err<E>(error: E): Err<E> {
   return { ok: false, error };
 }
 
-export const deviceInfoSchema = z.object({
-  deviceId: z.uuid(),
-  deviceName: z.string(),
-  ip: z.string(),
-});
-
-export type DeviceInfo = z.infer<typeof deviceInfoSchema>;
+export type DeviceInfo = {
+  deviceId: string;
+  deviceName: string;
+  ip: string;
+};
 
 export type DiscoveredSender = {
   deviceId: string;

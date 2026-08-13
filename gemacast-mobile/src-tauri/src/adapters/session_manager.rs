@@ -106,6 +106,13 @@ impl SessionManager for TokioSessionManager {
                 probe_task.abort();
             }
             let _ = session.shutdown_tx.send(());
+            // Upper bound, not a fixed per-teardown cost: the receive loop's
+            // `select!` wakes on `shutdown_tx` immediately and its `ScopeGuard`
+            // detaches (does not join) the worker threads, so this await normally
+            // returns in well under a frame. The 1.5 s only elapses if the Oboe
+            // stream's `Drop`/close hangs — and force-proceeding earlier would just
+            // re-open the device into that same stuck close (worse under exclusive
+            // mode). Left as a safety ceiling.
             let _ = tokio::time::timeout(
                 std::time::Duration::from_millis(1500),
                 session.playback_task,
