@@ -33,6 +33,7 @@ use tokio::task::JoinSet;
 use gemacast_core::adapters::capture::DefaultCaptureFactory;
 use gemacast_core::adapters::error_notifier::WsErrorNotifier;
 use gemacast_core::adapters::process_lister::DefaultProcessLister;
+use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::http::{ControlCommand, ControlServerState};
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::domain::types::DeviceId;
@@ -41,6 +42,7 @@ use gemacast_core::network::adb::{
     spawn_adb_port_forwarding_watchdog,
 };
 use gemacast_core::stream::sender::engine::AudioStreamEngine;
+use gemacast_core::stream::sender::engine::StreamSessionFailure;
 
 use crate::adapters::device::WsConnectionMap;
 use crate::adapters::{
@@ -51,6 +53,7 @@ use crate::state::SharedMapDeviceRegistry;
 use crate::tasks::{
     audio_engine, command_handler, control_dispatcher, device_watchdog, udp_listener,
 };
+use crate::traits::DeviceRegistry;
 
 // ---------------------------------------------------------------------------
 // ADB Presence Provider
@@ -132,48 +135,6 @@ fn adb_command() -> tokio::process::Command {
     tokio::process::Command::from(std_cmd)
 }
 
-/// Gracefully shut down the ADB server that we started, then force-kill
-/// any lingering `adb.exe` processes so they don't outlive GemaCast.
-async fn shutdown_adb() {
-    tracing::info!("Shutting down bundled ADB server...");
-    let _ = adb_command().args(["kill-server"]).output().await;
-    tracing::info!("ADB server shut down.");
-
-    // Force-kill any remaining adb.exe processes that survived kill-server.
-    // This covers edge cases where adb.exe lingers (e.g. stuck fork-server,
-    // concurrent adb sessions, or slow daemon teardown).
-    #[cfg(target_os = "windows")]
-    {
-        let mut kill_cmd = std::process::Command::new("taskkill");
-        kill_cmd.args(["/F", "/IM", "adb.exe"]);
-        use std::os::windows::process::CommandExt;
-        kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        let mut cmd = tokio::process::Command::from(kill_cmd);
-        match cmd.output().await {
-            Ok(output) if output.status.success() => {
-                tracing::info!("Force-killed lingering adb.exe processes");
-            }
-            _ => {
-                tracing::debug!("No lingering adb.exe processes to kill (or already exited)");
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = tokio::process::Command::new("pkill");
-        cmd.args(["-9", "adb"]);
-        match cmd.output().await {
-            Ok(output) if output.status.success() => {
-                tracing::info!("Force-killed lingering adb processes");
-            }
-            _ => {
-                tracing::debug!("No lingering adb processes to kill (or already exited)");
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Background engine entry point
 // ---------------------------------------------------------------------------
@@ -247,6 +208,7 @@ struct BackgroundEngine {
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
+    authorizer: SessionAuthorizer,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 }
 
@@ -256,6 +218,7 @@ impl BackgroundEngine {
             registry: Arc::new(SharedMapDeviceRegistry::new()),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             ws_connections: Arc::new(Mutex::new(Default::default())),
+            authorizer: SessionAuthorizer::default(),
             event_loop_proxy,
         }
     }
@@ -275,6 +238,7 @@ impl BackgroundEngine {
             registry: self.registry,
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
+            authorizer: self.authorizer,
             event_loop_proxy: self.event_loop_proxy,
             command_rx,
             presence_tx,
@@ -303,6 +267,7 @@ struct EngineWithChannels {
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
+    authorizer: SessionAuthorizer,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
     // Channels
@@ -340,6 +305,7 @@ impl EngineWithChannels {
             registry: self.registry,
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
+            authorizer: self.authorizer,
             event_loop_proxy: self.event_loop_proxy,
             command_rx: self.command_rx,
             presence_tx: self.presence_tx,
@@ -371,6 +337,7 @@ struct EngineWithAdapters {
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
+    authorizer: SessionAuthorizer,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
     // Channels
@@ -406,10 +373,6 @@ impl EngineWithAdapters {
             return None;
         }
 
-        // --- Kill any existing ADB server to get a clean state ---
-        let _ = adb_command().arg("kill-server").output().await;
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
         // --- Identity ---
         let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
         let sender_id = DeviceId::new();
@@ -434,6 +397,7 @@ impl EngineWithAdapters {
             sender_name: device_name.clone(),
             ws_connections: self.ws_connections.clone(),
             process_lister: DefaultProcessLister,
+            authorizer: self.authorizer.clone(),
         };
 
         // --- mDNS broadcaster ---
@@ -463,6 +427,7 @@ impl EngineWithAdapters {
             registry: self.registry,
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
+            authorizer: self.authorizer,
             event_loop_proxy: self.event_loop_proxy,
             command_rx: self.command_rx,
             presence_rx: self.presence_rx,
@@ -498,6 +463,7 @@ struct EngineReady {
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
+    authorizer: SessionAuthorizer,
     #[allow(dead_code)]
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
@@ -547,7 +513,7 @@ impl EngineReady {
         });
 
         // -- HTTP control server --
-        let (_control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let tray_for_control = self.tray.clone();
         let control_state = self.control_state;
         set.spawn(async move {
@@ -572,13 +538,40 @@ impl EngineReady {
 
         // -- Audio engine --
         let error_notifier = WsErrorNotifier::new(self.ws_connections.clone());
-        let engine = AudioStreamEngine::new(DefaultCaptureFactory, true, error_notifier);
+        let (session_failure_tx, mut session_failure_rx) =
+            tokio::sync::mpsc::unbounded_channel::<StreamSessionFailure>();
+        let engine = AudioStreamEngine::new(DefaultCaptureFactory, true, error_notifier)
+            .with_session_failure_sender(session_failure_tx);
         audio_engine::spawn_audio_engine(
             &mut set,
             engine,
             self.audio_command_rx,
             self.tray.clone(),
         );
+
+        // Capture/encoder/ADB transport failures have already removed the
+        // audio session. Mirror that teardown immediately into the registry,
+        // tray, notification transport, and authorization state rather than
+        // waiting for the periodic watchdog.
+        let failure_registry = self.registry.clone();
+        let failure_tray = self.tray.clone();
+        let failure_notifier = self.notifier.clone();
+        let failure_authorizer = self.authorizer.clone();
+        set.spawn(async move {
+            while let Some(failure) = session_failure_rx.recv().await {
+                let generation = gemacast_core::control::SessionGeneration(failure.generation);
+                if !failure_authorizer.is_current(&failure.device_id, generation) {
+                    continue;
+                }
+                if let Some(device) = failure_registry.unregister(&failure.device_id) {
+                    failure_tray.notify_device_lost(failure.device_id.clone(), device.addr);
+                    failure_notifier
+                        .notify_disconnect(&failure.device_id, Some(device.addr))
+                        .await;
+                }
+                failure_authorizer.revoke(&failure.device_id, Some(generation));
+            }
+        });
 
         // -- ADB tasks --
         spawn_adb_audio_tcp_server(
@@ -605,6 +598,7 @@ impl EngineReady {
             self.registry.clone(),
             self.tray.clone(),
             self.audio.clone(),
+            self.authorizer.clone(),
         );
 
         // -- Control dispatcher --
@@ -616,6 +610,7 @@ impl EngineReady {
             sender_id: self.sender_id,
             sender_name: self.device_name,
             is_broadcasting: self.is_broadcasting.clone(),
+            authorizer: self.authorizer.clone(),
         });
 
         control_dispatcher::spawn_control_dispatcher(
@@ -633,18 +628,56 @@ impl EngineReady {
             tray: self.tray.clone(),
             audio: self.audio,
             notifier: self.notifier,
+            authorizer: self.authorizer,
         });
 
-        command_handler::spawn_command_handler(&mut set, self.command_rx, handler);
+        let (engine_shutdown_tx, mut engine_shutdown_rx) = tokio::sync::oneshot::channel();
+        command_handler::spawn_command_handler(
+            &mut set,
+            self.command_rx,
+            handler,
+            engine_shutdown_tx,
+        );
 
         // -- Update checker --
         crate::tasks::updater::spawn_update_checker(&mut set, self.tray.clone());
 
-        // --- Wait for all tasks ---
-        while set.join_next().await.is_some() {}
+        // --- Wait for shutdown, then stop and join every background task ---
+        loop {
+            tokio::select! {
+                _ = &mut engine_shutdown_rx => break,
+                completed = set.join_next() => {
+                    match completed {
+                        Some(Ok(())) => {}
+                        Some(Err(error)) if error.is_cancelled() => {}
+                        Some(Err(error)) => tracing::error!("Background task failed: {error}"),
+                        None => break,
+                    }
+                }
+            }
+        }
 
-        // --- Gracefully shut down ADB server so it doesn't linger ---
-        shutdown_adb().await;
+        let _ = control_shutdown_tx.send(());
+        let _ = self.adb_shutdown_tx.send(());
+
+        let graceful_drain = async {
+            while let Some(result) = set.join_next().await {
+                if let Err(error) = result
+                    && !error.is_cancelled()
+                {
+                    tracing::error!("Background task failed during shutdown: {error}");
+                }
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(2), graceful_drain)
+            .await
+            .is_err()
+        {
+            set.abort_all();
+            while set.join_next().await.is_some() {}
+        }
+
+        self.tray.notify_shutdown_complete();
 
         tracing::info!("Background engine has fully shut down");
     }

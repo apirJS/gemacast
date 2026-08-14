@@ -93,7 +93,7 @@ impl DeviceRegistry for SharedMapDeviceRegistry {
         let now = std::time::Instant::now();
         let mut evicted = Vec::new();
         map.retain(|id, device| {
-            if now.duration_since(device.last_seen) > timeout && !device.addr.ip().is_loopback() {
+            if now.duration_since(device.last_seen) > timeout {
                 evicted.push((id.clone(), device.addr));
                 false
             } else {
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn evict_stale_should_skip_loopback_devices() {
+    fn evict_stale_should_include_loopback_devices() {
         let registry = SharedMapDeviceRegistry::new();
         let mut loopback = make_device("adb-dev", "127.0.0.1:5000");
         loopback.last_seen = Instant::now() - Duration::from_secs(60);
@@ -216,11 +216,12 @@ mod tests {
 
         let evicted = registry.evict_stale(Duration::from_secs(10));
 
-        assert!(evicted.is_empty());
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0.0, "adb-dev");
         assert!(
             registry
                 .get_addr(&DeviceId("adb-dev".to_string()))
-                .is_some()
+                .is_none()
         );
     }
 

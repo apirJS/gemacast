@@ -86,6 +86,9 @@ pub enum AudioError {
         source: opus::Error,
     },
 
+    #[error("invalid audio bitrate {value} bps (expected {min}..={max}, or null for uncompressed)")]
+    InvalidBitrate { value: i32, min: i32, max: i32 },
+
     #[error("Opus {direction} failed")]
     OpusCodecFailed {
         direction: CodecDirection,

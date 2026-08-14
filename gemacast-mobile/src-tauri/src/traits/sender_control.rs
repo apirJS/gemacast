@@ -50,4 +50,9 @@ pub trait SenderControlClientFactory: Send + Sync {
     fn create_with_timeout(&self, ip: IpAddr, _timeout: Duration) -> Arc<dyn SenderControlClient> {
         self.create(ip)
     }
+
+    /// Return the current session token for WebSocket authentication.
+    fn session_token(&self, _ip: IpAddr, _device_id: &DeviceId) -> Option<String> {
+        None
+    }
 }

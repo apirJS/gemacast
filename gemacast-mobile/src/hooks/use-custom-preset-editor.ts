@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSettings } from './use-settings';
 import type { JitterConfig } from '../core/types';
 import { validateJitterConfig, isJitterConfigEqual } from '../core/validation';
@@ -49,12 +49,11 @@ function getDefaultCustomConfig(): JitterConfig {
 
 export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetEditorActions {
   const { settings, update } = useSettings();
-  const config = settings.customJitterConfig;
+  const [config, setConfig] = useState(settings.customJitterConfig);
   const isCustom = settings.bufferPreset === 'custom' || settings.bufferPreset.startsWith('saved-');
 
   const [presetName, setPresetName] = useState('');
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const hasMigrated = useRef(false);
 
   const savedMatchIndex = settings.bufferPreset.startsWith('saved-')
     ? parseInt(settings.bufferPreset.replace('saved-', ''), 10)
@@ -71,18 +70,21 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
     } else {
       setPresetName('');
     }
-    hasMigrated.current = false; // Reset migration flag when switching presets
-  }, [settings.bufferPreset, isEditingSaved, savedMatchIndex, settings.savedPresets]);
-
-  // One-time migration: ensure custom configs have staticTargetMs set.
-  // This handles legacy saved presets that may have been adaptive.
-  // Only runs once per preset switch to avoid overwriting user input.
-  useEffect(() => {
-    if (isCustom && config.staticTargetMs == null && !hasMigrated.current) {
-      hasMigrated.current = true;
-      update({ customJitterConfig: { ...config, staticTargetMs: 0 } });
-    }
-  }, [isCustom, config, update]);
+    const selectedConfig = settings.bufferPreset.startsWith('saved-')
+      ? settings.savedPresets[savedMatchIndex]?.config
+      : settings.customJitterConfig;
+    setConfig(
+      selectedConfig?.staticTargetMs == null
+        ? { ...(selectedConfig ?? getDefaultCustomConfig()), staticTargetMs: 0 }
+        : selectedConfig,
+    );
+  }, [
+    settings.bufferPreset,
+    isEditingSaved,
+    savedMatchIndex,
+    settings.savedPresets,
+    settings.customJitterConfig,
+  ]);
 
   const validation = useMemo(() => validateJitterConfig(config), [config]);
   const isValid = validation.valid;
@@ -112,9 +114,9 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
 
   const updateField = useCallback(
     (patch: Partial<JitterConfig>) => {
-      update({ customJitterConfig: { ...config, ...patch } });
+      setConfig((current) => ({ ...current, ...patch }));
     },
-    [config, update],
+    [],
   );
 
   const handleSave = useCallback(() => {
@@ -139,7 +141,7 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       }
     }
 
-    update({
+    void update({
       savedPresets: saved,
       bufferPreset: newBufferPreset,
       customJitterConfig: config,
@@ -162,12 +164,14 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       // Ensure the saved config has staticTargetMs set (migrate legacy adaptive presets)
       const migratedConfig =
         savedConfig.staticTargetMs == null ? { ...savedConfig, staticTargetMs: 0 } : savedConfig;
-      update({ customJitterConfig: migratedConfig });
+      setConfig(migratedConfig);
+      void update({ customJitterConfig: migratedConfig });
       setPresetName(settings.savedPresets[savedMatchIndex].name);
     } else {
       // Reset to default static config for new custom presets
       const defaultConfig = getDefaultCustomConfig();
-      update({ customJitterConfig: defaultConfig });
+      setConfig(defaultConfig);
+      void update({ customJitterConfig: defaultConfig });
       setPresetName('');
     }
   }, [isEditingSaved, savedMatchIndex, settings.savedPresets, update]);
@@ -186,7 +190,7 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
 
       // After deleting, load default static config for creating new
       const defaultConfig = getDefaultCustomConfig();
-      update({
+      void update({
         savedPresets: saved,
         bufferPreset: 'custom',
         customJitterConfig: defaultConfig,

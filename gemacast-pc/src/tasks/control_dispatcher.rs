@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::http::ControlCommand;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::control::types::PresenceResponse;
@@ -33,6 +34,7 @@ pub struct ControlDispatcher {
     pub sender_id: DeviceId,
     pub sender_name: String,
     pub is_broadcasting: Arc<AtomicBool>,
+    pub authorizer: SessionAuthorizer,
 }
 
 impl ControlDispatcher {
@@ -48,20 +50,102 @@ impl ControlDispatcher {
                 remote_addr,
                 bitrate,
                 response_tx,
+                authorized,
+                pending_request_id,
             } => {
                 tracing::info!(
                     "ControlCommand::Connect from {:?} at {}",
-                    device_id,
+                    device_id.clone(),
                     remote_addr
                 );
                 let mut audio_addr = remote_addr;
                 audio_addr.set_port(gemacast_core::network::Ports::AUDIO_UDP);
 
-                register_device(
+                let approved_request_id = if authorized {
+                    None
+                } else if let Some(request_id) = pending_request_id {
+                    match self.authorizer.pending_status(&request_id, &device_id) {
+                        Some(gemacast_core::control::PendingApprovalStatus::Pending) => {
+                            let _ = response_tx.send(Ok(PresenceResponse {
+                                device_id: self.sender_id.clone(),
+                                sender_name: self.sender_name.clone(),
+                                is_offline: false,
+                                pc_network_link: None,
+                                device_registered: Some(false),
+                                session_token: None,
+                                session_generation: None,
+                                pending_request_id: Some(request_id),
+                            }));
+                            return;
+                        }
+                        Some(gemacast_core::control::PendingApprovalStatus::Approved) => {
+                            Some(request_id)
+                        }
+                        Some(gemacast_core::control::PendingApprovalStatus::Rejected) => {
+                            self.authorizer.remove_pending(&request_id);
+                            let _ = response_tx.send(Err(format!(
+                                "connection request {request_id} was rejected on the PC"
+                            )));
+                            return;
+                        }
+                        None => {
+                            let _ = response_tx.send(Err(format!(
+                                "connection request {request_id} is invalid or expired"
+                            )));
+                            return;
+                        }
+                    }
+                } else {
+                    let request_id = match self.authorizer.create_pending(device_id.clone()) {
+                        Ok(request_id) => request_id,
+                        Err(error) => {
+                            let _ = response_tx.send(Err(error));
+                            return;
+                        }
+                    };
+                    let tray = self.tray.clone();
+                    let authorizer = self.authorizer.clone();
+                    let approval_device_id = device_id.clone();
+                    let approval_device_name = device_name.clone();
+                    let approval_request_id = request_id.clone();
+                    tokio::spawn(async move {
+                        let approved = tray
+                            .request_connection_approval(
+                                approval_request_id.clone(),
+                                approval_device_id,
+                                approval_device_name,
+                                remote_addr,
+                            )
+                            .await;
+                        authorizer.resolve_pending(&approval_request_id, approved);
+                    });
+                    let _ = response_tx.send(Ok(PresenceResponse {
+                        device_id: self.sender_id.clone(),
+                        sender_name: self.sender_name.clone(),
+                        is_offline: false,
+                        pc_network_link: None,
+                        device_registered: Some(false),
+                        session_token: None,
+                        session_generation: None,
+                        pending_request_id: Some(request_id),
+                    }));
+                    return;
+                };
+
+                let pending_session = match self.authorizer.prepare(device_id.clone()) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = response_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let generation = pending_session.generation().0;
+                let result = register_device(
                     self.registry.as_ref(),
                     self.tray.as_ref(),
                     self.audio.as_ref(),
-                    device_id,
+                    device_id.clone(),
+                    generation,
                     device_name,
                     audio_addr,
                     remote_addr,
@@ -71,28 +155,50 @@ impl ControlDispatcher {
                 )
                 .await;
 
-                let _ = response_tx.send(PresenceResponse {
-                    device_id: self.sender_id.clone(),
-                    sender_name: self.sender_name.clone(),
-                    is_offline: false,
-                    pc_network_link: None,
-                    // We have just registered this device.
-                    device_registered: Some(true),
+                let result = result.and_then(|()| {
+                    let (session_token, session_generation) =
+                        self.authorizer.commit(pending_session)?;
+                    Ok(PresenceResponse {
+                        device_id: self.sender_id.clone(),
+                        sender_name: self.sender_name.clone(),
+                        is_offline: false,
+                        pc_network_link: None,
+                        device_registered: Some(true),
+                        session_token: Some(session_token),
+                        session_generation: Some(session_generation),
+                        pending_request_id: approved_request_id.clone(),
+                    })
                 });
+                if let Some(request_id) = approved_request_id {
+                    self.authorizer.remove_pending(&request_id);
+                }
+                let _ = response_tx.send(result);
             }
             ControlCommand::Disconnect {
                 device_id,
                 remote_addr: _,
+                generation,
+                response_tx,
             } => {
                 tracing::info!("ControlCommand::Disconnect from {:?}", device_id);
-                unregister_device(
+                if generation
+                    .is_some_and(|generation| !self.authorizer.is_current(&device_id, generation))
+                {
+                    let _ = response_tx.send(Ok(()));
+                    return;
+                }
+                let result = unregister_device(
                     self.registry.as_ref(),
                     self.tray.as_ref(),
                     self.audio.as_ref(),
                     self.notifier.as_ref(),
-                    device_id,
+                    device_id.clone(),
                 )
                 .await;
+                if result.is_ok() {
+                    self.authorizer.revoke(&device_id, generation);
+                }
+                let _ = response_tx.send(result);
             }
             ControlCommand::GetSources { response_tx } => {
                 let (sources, caps) = get_platform_sources();
@@ -102,21 +208,29 @@ impl ControlDispatcher {
                     capabilities: caps,
                 });
             }
-            ControlCommand::ChangeSource { device_id, source } => {
+            ControlCommand::ChangeSource {
+                device_id,
+                source,
+                response_tx,
+            } => {
                 tracing::info!(
                     "ControlCommand::ChangeSource for {:?} to {:?}",
                     device_id,
                     source
                 );
-                self.audio.change_source(device_id, source).await;
+                let _ = response_tx.send(self.audio.change_source(device_id, source).await);
             }
-            ControlCommand::ChangeBitrate { device_id, bitrate } => {
+            ControlCommand::ChangeBitrate {
+                device_id,
+                bitrate,
+                response_tx,
+            } => {
                 tracing::info!(
                     "ControlCommand::ChangeBitrate for {:?} to {:?}",
                     device_id,
                     bitrate
                 );
-                self.audio.change_bitrate(device_id, bitrate).await;
+                let _ = response_tx.send(self.audio.change_bitrate(device_id, bitrate).await);
             }
             ControlCommand::Probe {
                 device_id,
@@ -134,6 +248,9 @@ impl ControlDispatcher {
                     is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
                     pc_network_link: None,
                     device_registered,
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: None,
                 });
             }
         }
@@ -186,43 +303,20 @@ pub async fn register_device(
     tray: &dyn TrayNotifier,
     audio: &dyn AudioController,
     device_id: DeviceId,
+    generation: u64,
     device_name: String,
     audio_addr: SocketAddr,
     remote_addr: SocketAddr,
     transport: Option<gemacast_core::domain::types::TransportType>,
     source: Option<gemacast_core::domain::types::AudioSource>,
     bitrate: Option<i32>,
-) {
+) -> Result<(), String> {
     tracing::debug!(
         "Registering device: {} ({:?}) at {}",
         device_name,
         device_id,
         audio_addr
     );
-
-    let device = DiscoveredDevice::from_presence(
-        device_id.clone(),
-        device_name.clone(),
-        false,
-        audio_addr,
-        transport,
-    );
-
-    let outcome = registry.register(device);
-
-    match outcome {
-        RegistrationOutcome::AddressChanged { old_addr } => {
-            tray.notify_device_lost(device_id.clone(), old_addr);
-            audio.unsubscribe(&device_id).await;
-            tray.notify_device_discovered(device_id.clone(), device_name, audio_addr, transport);
-        }
-        RegistrationOutcome::NewDevice => {
-            tray.notify_device_discovered(device_id.clone(), device_name, audio_addr, transport);
-        }
-        RegistrationOutcome::AlreadyRegistered => {
-            // No tray notification needed — device is already shown.
-        }
-    }
 
     // ADB/TCP devices use None (audio goes through the TCP tunnel, not UDP)
     let effective_addr = if remote_addr.ip().is_loopback() {
@@ -231,9 +325,38 @@ pub async fn register_device(
         Some(audio_addr)
     };
 
-    audio
-        .subscribe(device_id, effective_addr, source, bitrate)
-        .await;
+    if let Err(error) = audio
+        .subscribe(
+            device_id.clone(),
+            generation,
+            effective_addr,
+            source,
+            bitrate,
+        )
+        .await
+    {
+        tracing::warn!("Audio subscription failed: {error}");
+        return Err(error);
+    }
+
+    let device = DiscoveredDevice::from_presence(
+        device_id.clone(),
+        device_name.clone(),
+        false,
+        audio_addr,
+        transport,
+    );
+    match registry.register(device) {
+        RegistrationOutcome::AddressChanged { old_addr } => {
+            tray.notify_device_lost(device_id.clone(), old_addr);
+            tray.notify_device_discovered(device_id, device_name, audio_addr, transport);
+        }
+        RegistrationOutcome::NewDevice => {
+            tray.notify_device_discovered(device_id, device_name, audio_addr, transport);
+        }
+        RegistrationOutcome::AlreadyRegistered => {}
+    }
+    Ok(())
 }
 
 /// Unregister a device: remove from registry, notify tray, disconnect via WS, unsubscribe audio.
@@ -243,18 +366,16 @@ pub async fn unregister_device(
     audio: &dyn AudioController,
     notifier: &dyn DeviceNotifier,
     device_id: DeviceId,
-) {
+) -> Result<(), String> {
     tracing::debug!("Unregistering device: {:?}", device_id);
 
-    let Some(removed) = registry.unregister(&device_id) else {
-        return;
-    };
-
-    tray.notify_device_lost(device_id.clone(), removed.addr);
-    notifier
-        .notify_disconnect(&device_id, Some(removed.addr))
-        .await;
-    audio.unsubscribe(&device_id).await;
+    if let Some(removed) = registry.unregister(&device_id) {
+        tray.notify_device_lost(device_id.clone(), removed.addr);
+        notifier
+            .notify_disconnect(&device_id, Some(removed.addr))
+            .await;
+    }
+    audio.unsubscribe(&device_id).await
 }
 
 /// Returns the available audio sources and sender capabilities for the current platform.
@@ -307,11 +428,12 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        register_device(
+        let _ = register_device(
             &registry,
             &tray,
             &audio,
             DeviceId("phone-1".into()),
+            1,
             "My Phone".into(),
             make_addr("192.168.1.5:9000"),
             make_addr("192.168.1.5:55559"),
@@ -340,11 +462,12 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        register_device(
+        let _ = register_device(
             &registry,
             &tray,
             &audio,
             DeviceId("phone-1".into()),
+            1,
             "My Phone".into(),
             make_addr("192.168.1.2:9000"), // new IP!
             make_addr("192.168.1.2:55559"),
@@ -355,7 +478,7 @@ mod tests {
         .await;
 
         let tray_calls = tray.take_calls();
-        // Should get: Lost (old IP) + Discovered (new IP)
+        // The registry still reports the address replacement to the tray.
         assert_eq!(tray_calls.len(), 2);
         assert!(
             matches!(&tray_calls[0], TrayCall::Lost { device_id, addr } if device_id.0 == "phone-1" && *addr == make_addr("192.168.1.1:9000"))
@@ -365,14 +488,14 @@ mod tests {
         );
 
         let audio_calls = audio.take_calls();
-        // Should get: Unsubscribe (old) + Subscribe (new)
-        assert_eq!(audio_calls.len(), 2);
-        assert!(
-            matches!(&audio_calls[0], AudioCall::Unsubscribe { device_id } if device_id.0 == "phone-1")
-        );
-        assert!(
-            matches!(&audio_calls[1], AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1")
-        );
+        // Registration is transactional: subscribe succeeds before the new
+        // registry address is published, so the existing stream is not torn
+        // down and recreated during an IP change.
+        assert_eq!(audio_calls.len(), 1);
+        assert!(matches!(
+            &audio_calls[0],
+            AudioCall::Subscribe { device_id, .. } if device_id.0 == "phone-1"
+        ));
     }
 
     #[tokio::test]
@@ -381,11 +504,12 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        register_device(
+        let _ = register_device(
             &registry,
             &tray,
             &audio,
             DeviceId("adb-dev".into()),
+            1,
             "ADB Phone".into(),
             make_addr("127.0.0.1:9000"),
             make_addr("127.0.0.1:55559"), // loopback → ADB mode
@@ -412,11 +536,12 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        register_device(
+        let _ = register_device(
             &registry,
             &tray,
             &audio,
             DeviceId("phone-1".into()),
+            1,
             "My Phone".into(),
             make_addr("192.168.1.1:9000"), // same addr
             make_addr("192.168.1.1:55559"),
@@ -439,7 +564,7 @@ mod tests {
         let audio = MockAudioController::new();
         let notifier = MockDeviceNotifier::new();
 
-        unregister_device(
+        let _ = unregister_device(
             &registry,
             &tray,
             &audio,
@@ -470,7 +595,7 @@ mod tests {
         let audio = MockAudioController::new();
         let notifier = MockDeviceNotifier::new();
 
-        unregister_device(
+        let _ = unregister_device(
             &registry,
             &tray,
             &audio,
@@ -480,7 +605,98 @@ mod tests {
         .await;
 
         assert!(tray.take_calls().is_empty());
-        assert!(audio.take_calls().is_empty());
+        // Unsubscribe is intentionally idempotent so stale cleanup can race
+        // with an already-removed registry entry without leaking a stream.
+        assert_eq!(audio.take_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn approved_lan_request_should_register_and_issue_a_bound_session() {
+        let registry = Arc::new(MockDeviceRegistry::new());
+        let tray = Arc::new(MockTrayNotifier::new());
+        let audio = Arc::new(MockAudioController::new());
+        let authorizer = SessionAuthorizer::default();
+        let dispatcher = ControlDispatcher {
+            registry: registry.clone(),
+            tray,
+            audio: audio.clone(),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer: authorizer.clone(),
+        };
+        let device_id = DeviceId("phone-1".into());
+        let remote_addr = make_addr("192.168.1.5:55559");
+
+        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr,
+                bitrate: Some(128_000),
+                response_tx: pending_tx,
+                authorized: false,
+                pending_request_id: None,
+            })
+            .await;
+        let pending = pending_rx.await.unwrap().unwrap();
+        let request_id = pending
+            .pending_request_id
+            .expect("the first LAN request must require approval");
+        assert_eq!(pending.device_registered, Some(false));
+        assert!(!registry.contains("phone-1"));
+
+        for _ in 0..100 {
+            if authorizer.pending_status(&request_id, &device_id)
+                == Some(gemacast_core::control::PendingApprovalStatus::Approved)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            authorizer.pending_status(&request_id, &device_id),
+            Some(gemacast_core::control::PendingApprovalStatus::Approved)
+        );
+
+        let (approved_tx, approved_rx) = tokio::sync::oneshot::channel();
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr,
+                bitrate: Some(128_000),
+                response_tx: approved_tx,
+                authorized: false,
+                pending_request_id: Some(request_id.clone()),
+            })
+            .await;
+        let approved = approved_rx.await.unwrap().unwrap();
+        let token = approved
+            .session_token
+            .expect("approval must issue a device session token");
+        let generation = approved
+            .session_generation
+            .expect("approval must issue a session generation");
+
+        assert_eq!(approved.device_registered, Some(true));
+        assert_eq!(
+            approved.pending_request_id.as_deref(),
+            Some(request_id.as_str())
+        );
+        assert!(registry.contains("phone-1"));
+        assert!(authorizer.authenticate(&device_id, &token).is_some());
+        assert!(authorizer.is_current(&device_id, generation));
+        assert_eq!(authorizer.pending_status(&request_id, &device_id), None);
+        assert!(matches!(
+            audio.take_calls().as_slice(),
+            [AudioCall::Subscribe { device_id: subscribed, bitrate: Some(128_000), .. }]
+                if subscribed == &device_id
+        ));
     }
 
     mod probe_registration_status {
@@ -496,6 +712,7 @@ mod tests {
                 sender_id: DeviceId("test-sender".into()),
                 sender_name: "Test Sender".into(),
                 is_broadcasting: Arc::new(AtomicBool::new(true)),
+                authorizer: SessionAuthorizer::default(),
             }
         }
 

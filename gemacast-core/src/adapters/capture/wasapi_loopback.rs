@@ -117,11 +117,12 @@ pub fn create_wasapi_process_loopback(
 
         let rb = HeapRb::<f32>::new(OPUS_FRAME_SAMPLES * 64);
         let (mut rb_producer, rb_consumer) = rb.split();
-        let (_stream_error_tx, stream_error_rx) = mpsc::channel::<cpal::StreamError>(1);
+        let (stream_error_tx, stream_error_rx) = mpsc::channel::<cpal::StreamError>(1);
         let notify = Arc::new(Notify::new());
         let notify_clone = notify.clone();
         let is_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let is_running_thread = is_running.clone();
+        let stream_error_tx_thread = stream_error_tx.clone();
 
         // Build resampler if native format differs from pipeline's 48kHz stereo
         let needs_resample = format.native_rate != 48000 || format.native_channels != 2;
@@ -149,12 +150,21 @@ pub fn create_wasapi_process_loopback(
                 let wait_res =
                     windows::Win32::System::Threading::WaitForSingleObject(event_handle, 500);
                 if wait_res != windows::Win32::Foundation::WAIT_OBJECT_0 {
+                    if wait_res == windows::Win32::Foundation::WAIT_FAILED {
+                        let _ =
+                            stream_error_tx_thread.try_send(cpal::StreamError::DeviceNotAvailable);
+                        break;
+                    }
                     continue;
                 }
 
                 let mut packet_length = match cap_client.GetNextPacketSize() {
                     Ok(len) => len,
-                    Err(_) => break,
+                    Err(_) => {
+                        let _ =
+                            stream_error_tx_thread.try_send(cpal::StreamError::DeviceNotAvailable);
+                        break;
+                    }
                 };
 
                 while packet_length > 0 {
@@ -174,6 +184,8 @@ pub fn create_wasapi_process_loopback(
                         )
                         .is_err()
                     {
+                        let _ =
+                            stream_error_tx_thread.try_send(cpal::StreamError::DeviceNotAvailable);
                         break;
                     }
 
@@ -218,7 +230,18 @@ pub fn create_wasapi_process_loopback(
                                 .process_interleaved(stereo_input)
                             {
                                 Ok(resampled) => resampled,
-                                Err(_) => stereo_input,
+                                Err(error) => {
+                                    let _ = stream_error_tx_thread.try_send(
+                                        cpal::StreamError::BackendSpecific {
+                                            err: cpal::BackendSpecificError {
+                                                description: format!(
+                                                    "audio resampling failed: {error}"
+                                                ),
+                                            },
+                                        },
+                                    );
+                                    &[]
+                                }
                             }
                         } else {
                             &decoded
@@ -233,7 +256,11 @@ pub fn create_wasapi_process_loopback(
 
                     packet_length = match cap_client.GetNextPacketSize() {
                         Ok(len) => len,
-                        Err(_) => break,
+                        Err(_) => {
+                            let _ = stream_error_tx_thread
+                                .try_send(cpal::StreamError::DeviceNotAvailable);
+                            break;
+                        }
                     };
                 }
 

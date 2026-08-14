@@ -2,18 +2,20 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::{Query, State, ws::WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::control::auth::{AuthorizedSession, SessionGeneration};
 use crate::control::types::{
-    ChangeBitrateReq, ChangeSourceReq, ConnectReq, DisconnectReq, PresenceResponse, ProbeReq,
-    ProcessListResponse, SourcesResponse, WsEvent,
+    ChangeBitrateReq, ChangeSourceReq, ConnectReq, ControlErrorResponse, DisconnectReq,
+    PresenceResponse, ProbeReq, ProcessListResponse, SourcesResponse, WsEvent,
 };
 use crate::domain::error::{ControlError, GemaCastError, NetworkError};
 use crate::domain::types::{AudioSource, DeviceId, SenderCapabilities};
@@ -28,11 +30,15 @@ pub enum ControlCommand {
         source: Option<AudioSource>,
         remote_addr: SocketAddr,
         bitrate: Option<i32>,
-        response_tx: oneshot::Sender<PresenceResponse>,
+        response_tx: oneshot::Sender<Result<PresenceResponse, String>>,
+        authorized: bool,
+        pending_request_id: Option<String>,
     },
     Disconnect {
         device_id: DeviceId,
         remote_addr: SocketAddr,
+        generation: Option<SessionGeneration>,
+        response_tx: oneshot::Sender<Result<(), String>>,
     },
     GetSources {
         response_tx: oneshot::Sender<SourcesResponse>,
@@ -40,15 +46,54 @@ pub enum ControlCommand {
     ChangeSource {
         device_id: DeviceId,
         source: AudioSource,
+        response_tx: oneshot::Sender<Result<(), String>>,
     },
     ChangeBitrate {
         device_id: DeviceId,
         bitrate: Option<i32>,
+        response_tx: oneshot::Sender<Result<(), String>>,
     },
     Probe {
         device_id: Option<DeviceId>,
         response_tx: oneshot::Sender<PresenceResponse>,
     },
+}
+
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(65);
+
+fn control_error(
+    status: StatusCode,
+    code: &str,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (
+        status,
+        Json(ControlErrorResponse {
+            code: code.to_string(),
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
+async fn await_mutation(
+    response_rx: oneshot::Receiver<Result<(), String>>,
+) -> axum::response::Response {
+    match tokio::time::timeout(COMMAND_TIMEOUT, response_rx).await {
+        Ok(Ok(Ok(()))) => StatusCode::OK.into_response(),
+        Ok(Ok(Err(message))) => control_error(StatusCode::CONFLICT, "operation_failed", message),
+        Ok(Err(_)) => control_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dispatcher_unavailable",
+            "control dispatcher dropped the acknowledgement",
+        ),
+        Err(_) => control_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "operation_timeout",
+            "control operation timed out",
+        ),
+    }
 }
 
 #[derive(Clone)]
@@ -59,6 +104,37 @@ pub struct ControlServerState<P: ProcessLister + 'static> {
     pub sender_name: String,
     pub ws_connections: Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>,
     pub process_lister: P,
+    pub authorizer: crate::control::SessionAuthorizer,
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+fn authenticate_device<P: ProcessLister + 'static>(
+    state: &ControlServerState<P>,
+    headers: &HeaderMap,
+    device_id: &DeviceId,
+) -> Option<AuthorizedSession> {
+    bearer_token(headers).and_then(|token| state.authorizer.authenticate(device_id, token))
+}
+
+fn authenticate_token<P: ProcessLister + 'static>(
+    state: &ControlServerState<P>,
+    headers: &HeaderMap,
+) -> Option<AuthorizedSession> {
+    bearer_token(headers).and_then(|token| state.authorizer.authenticate_token(token))
+}
+
+fn unauthorized() -> axum::response::Response {
+    control_error(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "a valid device session token is required",
+    )
 }
 
 impl<P: ProcessLister + 'static> ControlServerState<P> {
@@ -72,6 +148,9 @@ impl<P: ProcessLister + 'static> ControlServerState<P> {
             // the registry was never consulted. `None` means "unknown", which
             // callers resolve conservatively with a full reconnect.
             device_registered: None,
+            session_token: None,
+            session_generation: None,
+            pending_request_id: None,
         }
     }
 }
@@ -141,8 +220,9 @@ async fn handle_probe<P: ProcessLister + 'static>(
 async fn handle_connect<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ConnectReq>,
-) -> (StatusCode, Json<PresenceResponse>) {
+) -> axum::response::Response {
     tracing::info!("HTTP POST /connect from {:?}", req.device_id);
 
     let pc_link = Some(crate::network::interface::detect_pc_link(
@@ -151,21 +231,20 @@ async fn handle_connect<P: ProcessLister + 'static>(
     ));
 
     if !state.is_broadcasting.load(Ordering::Relaxed) {
-        return (
+        return control_error(
             StatusCode::FORBIDDEN,
-            Json(PresenceResponse {
-                device_id: state.sender_id.clone(),
-                sender_name: state.sender_name.clone(),
-                is_offline: true,
-                pc_network_link: pc_link,
-                // The connect was refused, so nothing was registered.
-                device_registered: Some(false),
-            }),
+            "sender_offline",
+            format!("sender {} is offline", state.sender_name),
         );
     }
 
+    let current_session = authenticate_device(&state, &headers, &req.device_id);
+    if current_session.is_none() && state.authorizer.has_session(&req.device_id) {
+        return unauthorized();
+    }
+    let authorized = addr.ip().is_loopback() || current_session.is_some();
     let (response_tx, response_rx) = oneshot::channel();
-    let _ = state
+    if state
         .command_tx
         .send(ControlCommand::Connect {
             device_id: req.device_id,
@@ -174,40 +253,92 @@ async fn handle_connect<P: ProcessLister + 'static>(
             remote_addr: addr,
             bitrate: req.bitrate,
             response_tx,
+            authorized,
+            pending_request_id: req.pending_request_id,
         })
-        .await;
+        .await
+        .is_err()
+    {
+        return control_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dispatcher_unavailable",
+            "control dispatcher is unavailable",
+        );
+    }
 
-    let mut presence = match response_rx.await {
-        Ok(p) => p,
-        Err(_) => state.build_presence(),
+    let mut presence = match tokio::time::timeout(CONNECT_TIMEOUT, response_rx).await {
+        Ok(Ok(Ok(presence))) => presence,
+        Ok(Ok(Err(message))) => {
+            return control_error(StatusCode::CONFLICT, "stream_start_failed", message);
+        }
+        Ok(Err(_)) => {
+            return control_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "dispatcher_unavailable",
+                "control dispatcher dropped the acknowledgement",
+            );
+        }
+        Err(_) => {
+            return control_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "operation_timeout",
+                "stream start timed out",
+            );
+        }
     };
 
     // Inject the PC's detected network link into the response
     presence.pc_network_link = pc_link;
 
-    (StatusCode::OK, Json(presence))
+    let status = if presence.session_token.is_none() && presence.pending_request_id.is_some() {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(presence)).into_response()
 }
 
 async fn handle_disconnect<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<DisconnectReq>,
-) -> StatusCode {
+) -> axum::response::Response {
     tracing::info!("HTTP POST /disconnect from {:?}", req.device_id);
-    let _ = state
+    let Some(session) = authenticate_device(&state, &headers, &req.device_id) else {
+        return unauthorized();
+    };
+    let (response_tx, response_rx) = oneshot::channel();
+    if state
         .command_tx
         .send(ControlCommand::Disconnect {
             device_id: req.device_id,
             remote_addr: addr,
+            generation: Some(session.generation),
+            response_tx,
         })
-        .await;
-    StatusCode::OK
+        .await
+        .is_err()
+    {
+        return control_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dispatcher_unavailable",
+            "control dispatcher is unavailable",
+        );
+    }
+    await_mutation(response_rx).await
 }
 
 async fn handle_get_sources<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-) -> Json<SourcesResponse> {
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> axum::response::Response {
     tracing::info!("HTTP GET /sources");
+    let _ = addr;
+    if authenticate_token(&state, &headers).is_none() {
+        return unauthorized();
+    }
     let (response_tx, response_rx) = oneshot::channel();
     let _ = state
         .command_tx
@@ -224,51 +355,91 @@ async fn handle_get_sources<P: ProcessLister + 'static>(
         },
     };
 
-    Json(response)
+    Json(response).into_response()
 }
 
 async fn handle_change_source<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ChangeSourceReq>,
-) -> StatusCode {
+) -> axum::response::Response {
     tracing::info!("HTTP POST /change-source from {:?}", req.device_id);
-    let _ = state
+    let _ = addr;
+    if authenticate_device(&state, &headers, &req.device_id).is_none() {
+        return unauthorized();
+    }
+    let (response_tx, response_rx) = oneshot::channel();
+    if state
         .command_tx
         .send(ControlCommand::ChangeSource {
             device_id: req.device_id,
             source: req.source,
+            response_tx,
         })
-        .await;
-    StatusCode::OK
+        .await
+        .is_err()
+    {
+        return control_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dispatcher_unavailable",
+            "control dispatcher is unavailable",
+        );
+    }
+    await_mutation(response_rx).await
 }
 
 async fn handle_change_bitrate<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ChangeBitrateReq>,
-) -> StatusCode {
+) -> axum::response::Response {
     tracing::info!("HTTP POST /change-bitrate from {:?}", req.device_id);
-    let _ = state
+    let _ = addr;
+    if authenticate_device(&state, &headers, &req.device_id).is_none() {
+        return unauthorized();
+    }
+    let (response_tx, response_rx) = oneshot::channel();
+    if state
         .command_tx
         .send(ControlCommand::ChangeBitrate {
             device_id: req.device_id,
             bitrate: req.bitrate,
+            response_tx,
         })
-        .await;
-    StatusCode::OK
+        .await
+        .is_err()
+    {
+        return control_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dispatcher_unavailable",
+            "control dispatcher is unavailable",
+        );
+    }
+    await_mutation(response_rx).await
 }
 
 async fn handle_get_processes<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-) -> Json<ProcessListResponse> {
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> axum::response::Response {
     tracing::info!("HTTP GET /processes");
+    let _ = addr;
+    if authenticate_token(&state, &headers).is_none() {
+        return unauthorized();
+    }
     let processes = state.process_lister.list_processes();
-    Json(ProcessListResponse { processes })
+    Json(ProcessListResponse { processes }).into_response()
 }
 
 async fn handle_ws_upgrade<P: ProcessLister + 'static>(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<ControlServerState<P>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     tracing::info!("HTTP GET /ws upgrade request with params: {:?}", params);
     let device_id = match params.get("device_id") {
@@ -278,7 +449,13 @@ async fn handle_ws_upgrade<P: ProcessLister + 'static>(
         }
     };
 
-    ws.on_upgrade(|socket| crate::control::ws::handle_ws(socket, device_id, state))
+    let _ = addr;
+    let Some(session) = authenticate_device(&state, &headers, &device_id) else {
+        return unauthorized();
+    };
+    let generation = session.generation;
+
+    ws.on_upgrade(move |socket| crate::control::ws::handle_ws(socket, device_id, generation, state))
 }
 
 pub async fn send_ws_event(
@@ -313,14 +490,23 @@ mod tests {
         }
     }
 
-    async fn spawn_test_server() -> (String, mpsc::Receiver<ControlCommand>) {
+    async fn spawn_test_server() -> (
+        String,
+        mpsc::Receiver<ControlCommand>,
+        crate::control::SessionAuthorizer,
+    ) {
         spawn_test_server_with_broadcasting(true).await
     }
 
     async fn spawn_test_server_with_broadcasting(
         broadcasting: bool,
-    ) -> (String, mpsc::Receiver<ControlCommand>) {
+    ) -> (
+        String,
+        mpsc::Receiver<ControlCommand>,
+        crate::control::SessionAuthorizer,
+    ) {
         let (command_tx, command_rx) = mpsc::channel(10);
+        let authorizer = crate::control::SessionAuthorizer::default();
         let state = ControlServerState {
             command_tx,
             is_broadcasting: Arc::new(AtomicBool::new(broadcasting)),
@@ -328,6 +514,7 @@ mod tests {
             sender_name: "Test Sender".to_string(),
             ws_connections: Arc::new(Mutex::new(HashMap::new())),
             process_lister: MockProcessLister,
+            authorizer: authorizer.clone(),
         };
 
         let app = build_router(state);
@@ -343,12 +530,12 @@ mod tests {
             .unwrap();
         });
 
-        (format!("http://127.0.0.1:{}", port), command_rx)
+        (format!("http://127.0.0.1:{}", port), command_rx, authorizer)
     }
 
     #[tokio::test]
     async fn connect_endpoint_should_dispatch_command_and_return_presence() {
-        let (base_url, mut command_rx) = spawn_test_server().await;
+        let (base_url, mut command_rx, _) = spawn_test_server().await;
         let client = reqwest::Client::new();
 
         let req_body = ConnectReq {
@@ -359,6 +546,7 @@ mod tests {
             jitter_config: crate::domain::types::JitterConfig::default(),
             mode: crate::domain::types::ConnectionMode::Wifi,
             network_link: None,
+            pending_request_id: None,
         };
 
         let request_task = tokio::spawn(async move {
@@ -384,13 +572,16 @@ mod tests {
                 assert_eq!(device_name, "Test Device");
                 assert!(source.is_none());
                 assert!(bitrate.is_none());
-                let _ = response_tx.send(PresenceResponse {
+                let _ = response_tx.send(Ok(PresenceResponse {
                     device_id,
                     sender_name: "Test".to_string(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(true),
-                });
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: None,
+                }));
             }
             _ => panic!("Expected ControlCommand::Connect"),
         }
@@ -400,8 +591,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_endpoint_should_return_accepted_for_pending_approval() {
+        let (base_url, mut command_rx, _) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let req_body = ConnectReq {
+            device_id: DeviceId("pending-device".to_string()),
+            device_name: "Pending Device".to_string(),
+            source: None,
+            bitrate: Some(128000),
+            jitter_config: crate::domain::types::JitterConfig::default(),
+            mode: crate::domain::types::ConnectionMode::Wifi,
+            network_link: None,
+            pending_request_id: None,
+        };
+
+        let request_task = tokio::spawn(async move {
+            client
+                .post(format!("{}/connect", base_url))
+                .json(&req_body)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        match command_rx.recv().await.unwrap() {
+            ControlCommand::Connect { response_tx, .. } => {
+                let _ = response_tx.send(Ok(PresenceResponse {
+                    device_id: DeviceId("test-sender".into()),
+                    sender_name: "Test Sender".into(),
+                    is_offline: false,
+                    pc_network_link: None,
+                    device_registered: Some(false),
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: Some("request-1".into()),
+                }));
+            }
+            _ => panic!("Expected ControlCommand::Connect"),
+        }
+
+        let response = request_task.await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let presence: PresenceResponse = response.json().await.unwrap();
+        assert_eq!(presence.pending_request_id.as_deref(), Some("request-1"));
+    }
+
+    #[tokio::test]
     async fn change_source_endpoint_should_dispatch_command() {
-        let (base_url, mut command_rx) = spawn_test_server().await;
+        let (base_url, mut command_rx, authorizer) = spawn_test_server().await;
         let client = reqwest::Client::new();
 
         let req_body = ChangeSourceReq {
@@ -409,28 +646,38 @@ mod tests {
             source: AudioSource::Desktop,
         };
 
-        let res = client
-            .post(format!("{}/change-source", base_url))
-            .json(&req_body)
-            .send()
-            .await
-            .unwrap();
-
-        assert!(res.status().is_success());
+        let (token, _) = authorizer.issue(req_body.device_id.clone()).unwrap();
+        let request_task = tokio::spawn(async move {
+            client
+                .post(format!("{}/change-source", base_url))
+                .bearer_auth(token)
+                .json(&req_body)
+                .send()
+                .await
+                .unwrap()
+        });
 
         let cmd = command_rx.recv().await.unwrap();
         match cmd {
-            ControlCommand::ChangeSource { device_id, source } => {
+            ControlCommand::ChangeSource {
+                device_id,
+                source,
+                response_tx,
+            } => {
                 assert_eq!(device_id.0, "test-device-2");
                 assert_eq!(source, AudioSource::Desktop);
+                let _ = response_tx.send(Ok(()));
             }
             _ => panic!("Expected ControlCommand::ChangeSource"),
         }
+
+        let res = request_task.await.unwrap();
+        assert!(res.status().is_success());
     }
 
     #[tokio::test]
     async fn change_bitrate_endpoint_should_dispatch_command() {
-        let (base_url, mut command_rx) = spawn_test_server().await;
+        let (base_url, mut command_rx, authorizer) = spawn_test_server().await;
         let client = reqwest::Client::new();
 
         let req_body = ChangeBitrateReq {
@@ -438,28 +685,38 @@ mod tests {
             bitrate: Some(192000),
         };
 
-        let res = client
-            .post(format!("{}/change-bitrate", base_url))
-            .json(&req_body)
-            .send()
-            .await
-            .unwrap();
-
-        assert!(res.status().is_success());
+        let (token, _) = authorizer.issue(req_body.device_id.clone()).unwrap();
+        let request_task = tokio::spawn(async move {
+            client
+                .post(format!("{}/change-bitrate", base_url))
+                .bearer_auth(token)
+                .json(&req_body)
+                .send()
+                .await
+                .unwrap()
+        });
 
         let cmd = command_rx.recv().await.unwrap();
         match cmd {
-            ControlCommand::ChangeBitrate { device_id, bitrate } => {
+            ControlCommand::ChangeBitrate {
+                device_id,
+                bitrate,
+                response_tx,
+            } => {
                 assert_eq!(device_id.0, "test-device-3");
                 assert_eq!(bitrate, Some(192000));
+                let _ = response_tx.send(Ok(()));
             }
             _ => panic!("Expected ControlCommand::ChangeBitrate"),
         }
+
+        let res = request_task.await.unwrap();
+        assert!(res.status().is_success());
     }
 
     #[tokio::test]
     async fn connect_endpoint_should_reject_when_not_broadcasting() {
-        let (base_url, _command_rx) = spawn_test_server_with_broadcasting(false).await;
+        let (base_url, _command_rx, _) = spawn_test_server_with_broadcasting(false).await;
         let client = reqwest::Client::new();
 
         let req_body = ConnectReq {
@@ -470,6 +727,7 @@ mod tests {
             jitter_config: crate::domain::types::JitterConfig::default(),
             mode: crate::domain::types::ConnectionMode::Wifi,
             network_link: None,
+            pending_request_id: None,
         };
 
         let res = client
@@ -481,13 +739,13 @@ mod tests {
 
         assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
 
-        let body: PresenceResponse = res.json().await.unwrap();
-        assert!(body.is_offline);
+        let body: ControlErrorResponse = res.json().await.unwrap();
+        assert_eq!(body.code, "sender_offline");
     }
 
     #[tokio::test]
     async fn probe_endpoint_should_return_presence() {
-        let (base_url, mut command_rx) = spawn_test_server().await;
+        let (base_url, mut command_rx, _) = spawn_test_server().await;
         let client = reqwest::Client::new();
 
         let req_body = ProbeReq { device_id: None };
@@ -514,6 +772,9 @@ mod tests {
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: None,
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Probe"),

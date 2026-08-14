@@ -11,8 +11,11 @@ import type {
 
 export function resolveBitrate(preset: BitratePreset, customKbps: number): number | null {
   if (preset === 'raw') return null;
-  if (preset === 'custom') return customKbps * 1000;
-  return parseInt(preset, 10) * 1000;
+  const kbps = preset === 'custom' ? customKbps : Number(preset);
+  if (!Number.isInteger(kbps) || kbps < 6 || kbps > 512) {
+    throw new Error('Bitrate must be a whole number from 6 to 512 Kbps');
+  }
+  return kbps * 1000;
 }
 
 export type ConnectArgs = {

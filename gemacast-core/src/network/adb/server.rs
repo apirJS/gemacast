@@ -1,7 +1,9 @@
 use crate::control::messages::ControlMessage;
 use crate::domain::types::DeviceId;
 use crate::network::Ports;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::JoinSet;
 
 use super::framer::TcpAudioFramer;
@@ -19,6 +21,11 @@ pub fn spawn_adb_audio_tcp_server(
     error_tx: tokio::sync::mpsc::Sender<String>,
 ) {
     set.spawn(async move {
+        let socket_owners = Arc::new(std::sync::Mutex::new(HashMap::<
+            DeviceId,
+            (u64, tokio::sync::oneshot::Sender<()>),
+        >::new()));
+        let next_socket_id = Arc::new(AtomicU64::new(0));
         let listener = {
             let mut attempts = 0;
             loop {
@@ -68,6 +75,8 @@ pub fn spawn_adb_audio_tcp_server(
 
             let engine_command_tx = engine_command_tx.clone();
             let mut drop_rx = tcp_drop_tx_for_audio.subscribe();
+            let socket_owners = socket_owners.clone();
+            let next_socket_id = next_socket_id.clone();
 
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
@@ -90,11 +99,22 @@ pub fn spawn_adb_audio_tcp_server(
                     Ok(id) => id,
                     Err(_) => return,
                 };
+                let typed_device_id = DeviceId(device_id.clone());
+                let socket_id = next_socket_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+                let (socket_replaced_tx, mut socket_replaced_rx) = tokio::sync::oneshot::channel();
+                if let Ok(mut owners) = socket_owners.lock()
+                    && let Some((_, old_socket_tx)) = owners.insert(
+                        typed_device_id.clone(),
+                        (socket_id, socket_replaced_tx),
+                    )
+                {
+                    let _ = old_socket_tx.send(());
+                }
 
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 if engine_command_tx
                     .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                        device_id: crate::domain::types::DeviceId(device_id.clone()),
+                        device_id: typed_device_id.clone(),
                         reply: reply_tx,
                     })
                     .await
@@ -113,7 +133,7 @@ pub fn spawn_adb_audio_tcp_server(
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         if engine_command_tx
                             .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                device_id: crate::domain::types::DeviceId(device_id.clone()),
+                                device_id: typed_device_id.clone(),
                                 reply: reply_tx,
                             })
                             .await
@@ -128,7 +148,7 @@ pub fn spawn_adb_audio_tcp_server(
                     }
                 }
 
-                let broadcaster = match broadcaster {
+                let lease = match broadcaster {
                     Some(b) => b,
                     _ => {
                         tracing::warn!("[ADB] No active source found for device={:?} after retries", device_id);
@@ -137,8 +157,9 @@ pub fn spawn_adb_audio_tcp_server(
                 };
 
                 let mut framer = TcpAudioFramer::new();
-                let mut current_rx = broadcaster.subscribe();
-                drop(broadcaster);
+                let session_generation = lease.session_generation;
+                let mut current_rx = lease.broadcaster.subscribe();
+                drop(lease);
 
                 loop {
                     tokio::select! {
@@ -169,7 +190,7 @@ pub fn spawn_adb_audio_tcp_server(
                                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                                     if engine_command_tx
                                         .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                            device_id: crate::domain::types::DeviceId(device_id.clone()),
+                                            device_id: typed_device_id.clone(),
                                             reply: reply_tx,
                                         })
                                         .await
@@ -179,8 +200,10 @@ pub fn spawn_adb_audio_tcp_server(
                                     }
 
                                     match reply_rx.await {
-                                        Ok(Some(new_broadcaster)) => {
-                                            current_rx = new_broadcaster.subscribe();
+                                        Ok(Some(new_lease))
+                                            if new_lease.session_generation == session_generation =>
+                                        {
+                                            current_rx = new_lease.broadcaster.subscribe();
                                             continue;
                                         }
                                         _ => break, // No active source found, actually shut down
@@ -191,7 +214,28 @@ pub fn spawn_adb_audio_tcp_server(
                         _ = drop_rx.recv() => {
                             break;
                         }
+                        _ = &mut socket_replaced_rx => break,
                     }
+                }
+
+                let is_current = socket_owners
+                    .lock()
+                    .ok()
+                    .and_then(|mut owners| {
+                        (owners.get(&typed_device_id).map(|(id, _)| *id) == Some(socket_id))
+                            .then(|| owners.remove(&typed_device_id))
+                            .flatten()
+                    })
+                    .is_some();
+                if is_current {
+                    let _ = engine_command_tx
+                        .send(
+                            crate::stream::sender::engine::AudioStreamCommand::TransportClosed {
+                                device_id: typed_device_id,
+                                generation: session_generation,
+                            },
+                        )
+                        .await;
                 }
             });
         }

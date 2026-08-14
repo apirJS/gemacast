@@ -47,7 +47,7 @@ pub fn run() {
                 Arc::new(adapters::TauriFrontendNotifier::new(handle.clone()));
 
             let client_factory: Arc<dyn traits::SenderControlClientFactory> =
-                Arc::new(adapters::HttpSenderControlClientFactory);
+                Arc::new(adapters::HttpSenderControlClientFactory::new());
 
             let session_mgr: Arc<dyn traits::SessionManager> = Arc::new(
                 adapters::TokioSessionManager::new(notifier.clone(), client_factory.clone()),

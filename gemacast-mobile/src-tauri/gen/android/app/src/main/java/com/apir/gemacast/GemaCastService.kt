@@ -75,12 +75,10 @@ class GemaCastService : Service() {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
                     sendUdpCommand("RESUME")
-                    updatePlaybackState(true)
                 }
 
                 override fun onPause() {
                     sendUdpCommand("STOP_STREAM")
-                    updatePlaybackState(false)
                 }
 
                 override fun onStop() {
@@ -138,24 +136,30 @@ class GemaCastService : Service() {
     }
 
     private fun acquireWakeLock() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "GemaCast::StreamingWakeLock"
-        ).also {
-            it.acquire(4 * 60 * 60 * 1000L) // 4 hours max
+        if (wakeLock?.isHeld != true) {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "GemaCast::StreamingWakeLock"
+            ).also {
+                it.acquire(4 * 60 * 60 * 1000L) // 4 hours max
+            }
         }
-        
+
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        
-        @Suppress("DEPRECATION")
-        highPerfWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GemaCast::StreamingHighPerfWifiLock").also {
-            it.acquire()
-        }
-        
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            lowLatencyWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "GemaCast::StreamingLowLatencyWifiLock").also {
-                it.acquire()
+            if (lowLatencyWifiLock?.isHeld != true) {
+                lowLatencyWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "GemaCast::StreamingLowLatencyWifiLock").also {
+                    it.acquire()
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (highPerfWifiLock?.isHeld != true) {
+                highPerfWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GemaCast::StreamingHighPerfWifiLock").also {
+                    it.acquire()
+                }
             }
         }
     }
@@ -173,7 +177,6 @@ class GemaCastService : Service() {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 // A phone call or strong interruption started, pause the stream safely.
                 sendUdpCommand("STOP_STREAM")
-                updatePlaybackState(false)
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // Notification sound. Do nothing, just mix over it.
@@ -182,7 +185,6 @@ class GemaCastService : Service() {
                 // The phone call ended or interruption finished. Resume streaming.
                 if (isRunning && !isPlayingState) {
                     sendUdpCommand("RESUME")
-                    updatePlaybackState(true)
                 }
             }
         }
@@ -263,12 +265,12 @@ class GemaCastService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val disconnectIntent = Intent(this, GemaCastService::class.java).apply { action = "DISCONNECT" }
+        val disconnectIntent = Intent(this, GemaCastService::class.java).apply { action = "USER_DISCONNECT" }
         val pendingDisconnectIntent = PendingIntent.getService(this, 1, disconnectIntent, PendingIntent.FLAG_IMMUTABLE)
 
         val playPauseActionText = if (isPlayingState) "Stop" else "Resume"
         val playPauseIcon = if (isPlayingState) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-        val playPauseIntent = Intent(this, GemaCastService::class.java).apply { action = if (isPlayingState) "STOP_STREAM" else "RESUME" }
+        val playPauseIntent = Intent(this, GemaCastService::class.java).apply { action = if (isPlayingState) "USER_PAUSE" else "USER_RESUME" }
         val pendingPlayPauseIntent = PendingIntent.getService(this, 4, playPauseIntent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -300,42 +302,28 @@ class GemaCastService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            "STOP" -> {
-                stopStreaming()
-                return START_NOT_STICKY
-            }
-            "DISCONNECT" -> {
-                sendUdpCommand("DISCONNECT")
-                // Brief delay to let the UDP command propagate, then stop the service
-                scope.launch {
-                    // Delete the streaming flag so the activity knows we're done
-                    java.io.File(cacheDir, ".streaming_active").delete()
-                    kotlinx.coroutines.delay(300)
-                    stopStreaming()
-                }
-                return START_NOT_STICKY
-            }
-            "RESUME" -> {
-                sendUdpCommand("RESUME")
-                updatePlaybackState(true)
-                return START_STICKY
-            }
-            "HIDE_NOTIFICATION" -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                }
-                return START_STICKY
-            }
-            "STOP_STREAM" -> {
-                sendUdpCommand("STOP_STREAM")
-                updatePlaybackState(false)
-                return START_STICKY
-            }
-            else -> { // "START" or null
+        val currentState = when {
+            !isRunning -> PlaybackState.STOPPED
+            isPlayingState -> PlaybackState.PLAYING
+            else -> PlaybackState.PAUSED
+        }
+        val transition = PlaybackStateReducer.reduce(currentState, intent?.action)
+
+        transition.command?.let { command ->
+            sendUdpCommand(command)
+            // Rust owns authoritative state. Keep the current MediaSession state
+            // until the frontend acknowledges the command with a SYNC action.
+            return START_NOT_STICKY
+        }
+
+        if (transition.cleanup) {
+            stopStreaming()
+            return START_NOT_STICKY
+        }
+
+        when (transition.state) {
+            PlaybackState.PAUSED -> updatePlaybackState(false)
+            PlaybackState.PLAYING -> {
                 val isExclusive = intent?.getBooleanExtra("EXCLUSIVE_MODE", false) ?: false
                 isRunning = true
                 // Must precede `updatePlaybackState(true)` below — see the token
@@ -356,9 +344,9 @@ class GemaCastService : Service() {
                 }
                 updatePlaybackState(true)
             }
+            PlaybackState.STOPPED -> stopStreaming()
         }
-
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun stopStreaming() {

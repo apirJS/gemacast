@@ -1,5 +1,6 @@
 use crate::events::TrayEvent;
 use crate::traits::TrayNotifier;
+use async_trait::async_trait;
 use gemacast_core::domain::types::{DeviceId, TransportType};
 use std::net::SocketAddr;
 use tao::event_loop::EventLoopProxy;
@@ -15,7 +16,36 @@ impl EventLoopTrayNotifier {
     }
 }
 
+#[async_trait]
 impl TrayNotifier for EventLoopTrayNotifier {
+    async fn request_connection_approval(
+        &self,
+        request_id: String,
+        _device_id: DeviceId,
+        name: String,
+        addr: SocketAddr,
+    ) -> bool {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        if self
+            .proxy
+            .send_event(TrayEvent::ConnectionApproval {
+                request_id,
+                name,
+                addr,
+                response_tx,
+            })
+            .is_err()
+        {
+            return false;
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(60), response_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
+    }
+
     fn notify_device_discovered(
         &self,
         device_id: DeviceId,

@@ -161,6 +161,7 @@ impl AudioService {
                 jitter_config: params.jitter_config.clone(),
                 bitrate: params.bitrate,
                 network_link: params.phone_network_link,
+                pending_request_id: None,
             })
             .await?;
 
@@ -193,7 +194,8 @@ impl AudioService {
 
         let is_tcp = params.mode == ConnectionMode::Adb;
 
-        self.session
+        if let Err(error) = self
+            .session
             .start_session(SessionParams {
                 jitter_config: effective_jitter_config,
                 is_tcp,
@@ -204,7 +206,16 @@ impl AudioService {
                 bitrate: params.bitrate,
                 network_link: link_pair.effective_link(),
             })
-            .await?;
+            .await
+        {
+            // The PC has already acknowledged and registered the stream. If
+            // local playback cannot start, explicitly roll that subscription
+            // back instead of leaking a silent sender-side session until the
+            // watchdog expires.
+            let _ = client.disconnect(params.device_id.clone()).await;
+            *self.cached_link_pair.lock().unwrap() = None;
+            return Err(error);
+        }
 
         self.is_streaming.store(true, Ordering::Relaxed);
         self.platform.set_streaming_flag(true);
@@ -506,9 +517,10 @@ impl AudioService {
         device_id: DeviceId,
         bitrate: Option<i32>,
     ) -> Result<(), String> {
-        self.session.update_bitrate(bitrate).await;
         let client = self.client_factory.create(ip);
-        client.change_bitrate(device_id, bitrate).await
+        client.change_bitrate(device_id, bitrate).await?;
+        self.session.update_bitrate(bitrate).await;
+        Ok(())
     }
 
     /// Request capturable process list from the sender.
@@ -529,26 +541,59 @@ impl AudioService {
         sender_ip: IpAddr,
         device_id: String,
     ) -> Result<(), String> {
-        let ws_client = gemacast_core::control::WsControlClient::new(sender_ip, &device_id)
-            .await
-            .map_err(|e| format!("Failed to establish WebSocket: {}", e))?;
-
+        let client_factory = self.client_factory.clone();
+        let session = self.session.clone();
         let notifier = self.notifier.clone();
         let task = tokio::spawn(async move {
-            #[allow(clippy::never_loop)]
-            loop {
+            const RETRY_DELAYS: [std::time::Duration; 4] = [
+                std::time::Duration::from_millis(250),
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(2),
+            ];
+
+            for retry_delay in RETRY_DELAYS
+                .into_iter()
+                .chain(std::iter::once(std::time::Duration::ZERO))
+            {
+                if session.session_info().await.is_none() {
+                    return;
+                }
+                let token = client_factory.session_token(sender_ip, &DeviceId(device_id.clone()));
+                let ws_client = match gemacast_core::control::WsControlClient::new_with_token(
+                    sender_ip,
+                    &device_id,
+                    token.as_deref(),
+                )
+                .await
+                {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!("WebSocket connection failed: {error}");
+                        if retry_delay.is_zero() {
+                            return;
+                        }
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+                };
+
                 match ws_client.recv_event().await {
                     Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
                         notifier.emit_ws_disconnect();
-                        break;
+                        return;
                     }
                     Ok(gemacast_core::control::types::WsEvent::Error { message }) => {
                         notifier.emit_ws_error(message);
                         notifier.emit_ws_disconnect();
-                        break;
+                        return;
                     }
-                    Err(_) => {
-                        break;
+                    Err(error) => {
+                        tracing::warn!("WebSocket control channel dropped: {error}");
+                        if retry_delay.is_zero() {
+                            return;
+                        }
+                        tokio::time::sleep(retry_delay).await;
                     }
                 }
             }
@@ -645,10 +690,39 @@ mod tests {
         assert!(platform_calls.iter().any(|c| matches!(
             c,
             PlatformCall::SyncService {
-                is_playing: true,
+                state: PlaybackState::Playing,
                 ..
             }
         )));
+    }
+
+    #[tokio::test]
+    async fn connect_should_disconnect_sender_when_local_playback_start_fails() {
+        let session =
+            Arc::new(MockSessionManager::new().with_start_error("audio output failed".into()));
+        let client = Arc::new(MockSenderControlClient::new());
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(session, client.clone(), platform);
+
+        let result = service
+            .connect_to_sender(ConnectParams {
+                ip: "192.168.1.5".to_string(),
+                device_id: DeviceId("phone-1".into()),
+                device_name: "My Phone".into(),
+                mode: ConnectionMode::Wifi,
+                exclusive_mode: false,
+                jitter_config: JitterConfig::default(),
+                bitrate: Some(128000),
+                phone_network_link: None,
+            })
+            .await;
+
+        assert_eq!(result.unwrap_err(), "audio output failed");
+        assert!(client.take_calls().iter().any(|call| matches!(
+            call,
+            ControlClientCall::Disconnect { device_id } if device_id.0 == "phone-1"
+        )));
+        assert!(!service.is_streaming.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -771,7 +845,7 @@ mod tests {
         assert!(platform_calls.iter().any(|c| matches!(
             c,
             PlatformCall::SyncService {
-                is_playing: false,
+                state: PlaybackState::Paused,
                 ..
             }
         )));
@@ -802,7 +876,7 @@ mod tests {
         assert!(platform_calls.iter().any(|c| matches!(
             c,
             PlatformCall::SyncService {
-                is_playing: false,
+                state: PlaybackState::Stopped,
                 ..
             }
         )));
@@ -830,7 +904,7 @@ mod tests {
             platform_calls.iter().any(|c| matches!(
                 c,
                 PlatformCall::SyncService {
-                    is_playing: false,
+                    state: PlaybackState::Stopped,
                     ..
                 }
             )),
@@ -841,9 +915,8 @@ mod tests {
 
     /// Every path that ends a stream has to leave the platform service in the
     /// same state, or the notification survives on whichever path forgot.
-    /// `MockPlatformService` collapses `Paused` and `Stopped` into
-    /// `is_playing: false`, so this asserts the sync happened, not which state
-    /// it carried.
+    /// The exact `Stopped` state matters: `Paused` intentionally keeps the
+    /// MediaSession and notification visible for a connected stream.
     #[tokio::test]
     async fn every_stop_path_should_sync_the_service() {
         fn synced_stopped(calls: &[PlatformCall]) -> bool {
@@ -851,7 +924,7 @@ mod tests {
                 matches!(
                     c,
                     PlatformCall::SyncService {
-                        is_playing: false,
+                        state: PlaybackState::Stopped,
                         ..
                     }
                 )
@@ -933,6 +1006,31 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_bitrate_change_should_preserve_session_bitrate() {
+        let session = Arc::new(MockSessionManager::new());
+        let client =
+            Arc::new(MockSenderControlClient::new().with_change_bitrate_error("rejected".into()));
+        let platform = Arc::new(MockPlatformService::new());
+        let service = make_service(session.clone(), client, platform);
+
+        let result = service
+            .change_audio_bitrate(
+                "192.168.1.5".parse().unwrap(),
+                DeviceId("phone-1".into()),
+                Some(256000),
+            )
+            .await;
+
+        assert_eq!(result.unwrap_err(), "rejected");
+        assert!(
+            !session
+                .take_calls()
+                .iter()
+                .any(|call| matches!(call, SessionCall::UpdateBitrate { .. }))
+        );
     }
 
     // ---------------------------------------------------------------

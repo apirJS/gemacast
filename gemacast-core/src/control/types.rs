@@ -21,6 +21,12 @@ pub struct ConnectReq {
     /// the effective link pair for Auto preset selection.
     #[serde(default)]
     pub network_link: Option<NetworkLink>,
+
+    /// Returned by the sender while a first LAN connection awaits PC approval.
+    /// The receiver repeats the same request with this ID until it is approved
+    /// or rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request_id: Option<String>,
 }
 
 fn default_bitrate() -> Option<i32> {
@@ -86,12 +92,32 @@ pub struct PresenceResponse {
     /// conservatively and do a full reconnect.
     #[serde(default)]
     pub device_registered: Option<bool>,
+
+    /// Rotated bearer token for authenticated control requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+
+    /// Generation assigned to this connection. Delayed cleanup from an older
+    /// generation cannot remove a newer session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<crate::control::auth::SessionGeneration>,
+
+    /// Identifier shown in the PC approval prompt for a first LAN connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessListResponse {
     pub processes: Vec<crate::domain::types::ProcessInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlErrorResponse {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +177,7 @@ mod tests {
                     name: "spotify.exe".to_string(),
                 }),
                 network_link: None,
+                pending_request_id: None,
             };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: ConnectReq = serde_json::from_str(&json).unwrap();

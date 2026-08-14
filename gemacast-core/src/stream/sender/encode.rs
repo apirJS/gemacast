@@ -1,19 +1,20 @@
 use crate::audio::{FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, OPUS_FRAME_SAMPLES};
+use crate::domain::error::{AudioError, CodecDirection, GemaCastError};
+use crate::domain::types::AudioBitrate;
 use opus::Encoder;
 
 pub enum EncodeResult {
     Encoded,
-    Skipped,
 }
 
 pub fn encode_frame(
     frame: &[f32],
-    encoder: &mut Encoder,
-    current_bitrate: Option<i32>,
+    encoder: Option<&mut Encoder>,
+    bitrate: AudioBitrate,
     seq_num: u64,
     opus_output: &mut [u8],
     packet_buf: &mut Vec<u8>,
-) -> EncodeResult {
+) -> Result<EncodeResult, GemaCastError> {
     let mut sum_sq = 0.0f32;
     for sample in frame {
         sum_sq += sample * sample;
@@ -21,7 +22,7 @@ pub fn encode_frame(
     let rms = (sum_sq / OPUS_FRAME_SAMPLES as f32).sqrt();
 
     let is_silence = rms < 0.0001;
-    let is_uncompressed = current_bitrate.is_none();
+    let is_uncompressed = bitrate == AudioBitrate::Uncompressed;
 
     let format_flag = if is_silence {
         FORMAT_SILENCE
@@ -41,10 +42,15 @@ pub fn encode_frame(
             )
         }
     } else {
-        let encoded_len = match encoder.encode_float(frame, opus_output) {
-            Ok(e) => e,
-            Err(_) => return EncodeResult::Skipped,
-        };
+        let encoder = encoder.ok_or_else(|| {
+            AudioError::CaptureInstanceFailed("compressed stream has no Opus encoder".into())
+        })?;
+        let encoded_len = encoder.encode_float(frame, opus_output).map_err(|source| {
+            AudioError::OpusCodecFailed {
+                direction: CodecDirection::Encoder,
+                source,
+            }
+        })?;
         &opus_output[..encoded_len]
     };
 
@@ -53,7 +59,7 @@ pub fn encode_frame(
     packet_buf.push(format_flag);
     packet_buf.extend_from_slice(payload_bytes);
 
-    EncodeResult::Encoded
+    Ok(EncodeResult::Encoded)
 }
 
 #[cfg(test)]
@@ -70,19 +76,19 @@ mod tests {
 
     #[test]
     fn encode_frame_should_produce_silence_flag_for_quiet_audio() {
-        let mut encoder = make_encoder();
         let frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
         let result = encode_frame(
             &frame,
-            &mut encoder,
-            Some(128_000),
+            None,
+            AudioBitrate::Opus(128_000),
             5,
             &mut opus_out,
             &mut packet,
-        );
+        )
+        .unwrap();
         assert!(matches!(result, EncodeResult::Encoded));
         assert_eq!(packet[SEQ_NUM_SIZE], FORMAT_SILENCE);
         assert_eq!(packet.len(), SEQ_NUM_SIZE + FORMAT_FLAG_SIZE); // no payload
@@ -90,14 +96,21 @@ mod tests {
 
     #[test]
     fn encode_frame_should_produce_uncompressed_flag_when_no_bitrate() {
-        let mut encoder = make_encoder();
         let mut frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         frame[0] = 0.5; // non-silent
         frame[1] = 0.5;
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(&frame, &mut encoder, None, 10, &mut opus_out, &mut packet);
+        let result = encode_frame(
+            &frame,
+            None,
+            AudioBitrate::Uncompressed,
+            10,
+            &mut opus_out,
+            &mut packet,
+        )
+        .unwrap();
         assert!(matches!(result, EncodeResult::Encoded));
         assert_eq!(packet[SEQ_NUM_SIZE], FORMAT_UNCOMPRESSED);
     }
@@ -111,12 +124,13 @@ mod tests {
 
         let result = encode_frame(
             &frame,
-            &mut encoder,
-            Some(128_000),
+            Some(&mut encoder),
+            AudioBitrate::Opus(128_000),
             7,
             &mut opus_out,
             &mut packet,
-        );
+        )
+        .unwrap();
         assert!(matches!(result, EncodeResult::Encoded));
         assert_eq!(packet[SEQ_NUM_SIZE], FORMAT_OPUS);
         assert!(packet.len() > SEQ_NUM_SIZE + FORMAT_FLAG_SIZE); // has opus payload
@@ -124,33 +138,40 @@ mod tests {
 
     #[test]
     fn encode_frame_should_prepend_sequence_number() {
-        let mut encoder = make_encoder();
         let frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
         encode_frame(
             &frame,
-            &mut encoder,
-            Some(128_000),
+            None,
+            AudioBitrate::Uncompressed,
             0xDEAD,
             &mut opus_out,
             &mut packet,
-        );
+        )
+        .unwrap();
         let seq = u64::from_be_bytes(packet[..8].try_into().unwrap());
         assert_eq!(seq, 0xDEAD);
     }
 
     #[test]
     fn encode_frame_should_include_correct_uncompressed_payload_length() {
-        let mut encoder = make_encoder();
         let mut frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         frame[0] = 0.5; // non-silent
         frame[1] = 0.5;
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        encode_frame(&frame, &mut encoder, None, 1, &mut opus_out, &mut packet);
+        encode_frame(
+            &frame,
+            None,
+            AudioBitrate::Uncompressed,
+            1,
+            &mut opus_out,
+            &mut packet,
+        )
+        .unwrap();
 
         // Uncompressed payload = OPUS_FRAME_SAMPLES * 4 bytes per f32
         let expected_payload = OPUS_FRAME_SAMPLES * std::mem::size_of::<f32>();

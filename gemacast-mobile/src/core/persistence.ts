@@ -1,4 +1,4 @@
-import type { AppSettings, DiscoveredSender } from './types';
+import type { AppSettings, DiscoveredSender, JitterConfig, SavedPreset } from './types';
 import { ConnectionMode } from './types';
 import { JITTER_PRESETS } from './presets';
 
@@ -21,6 +21,43 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gainDb: 0,
 };
 
+function sanitizeJitterConfig(value: unknown, fallback: JitterConfig): JitterConfig {
+  if (!value || typeof value !== 'object') return { ...fallback };
+  const config = value as Partial<JitterConfig>;
+  const staticTargetMs = config.staticTargetMs;
+  if (
+    staticTargetMs != null &&
+    (!Number.isInteger(staticTargetMs) || staticTargetMs < 0 || staticTargetMs > 5000)
+  ) {
+    return { ...fallback };
+  }
+  return { ...fallback, ...config };
+}
+
+function sanitizeSettings(value: unknown): AppSettings {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
+  const incoming = value as Partial<AppSettings>;
+  const customBitrateKbps = Number.isInteger(incoming.customBitrateKbps) &&
+      incoming.customBitrateKbps! >= 6 && incoming.customBitrateKbps! <= 512
+    ? incoming.customBitrateKbps!
+    : DEFAULT_SETTINGS.customBitrateKbps;
+  const savedPresets = Array.isArray(incoming.savedPresets)
+    ? incoming.savedPresets
+        .filter((preset): preset is SavedPreset => Boolean(preset?.name && preset.config))
+        .map((preset) => ({
+          ...preset,
+          config: sanitizeJitterConfig(preset.config, DEFAULT_AUTO_CONFIG),
+        }))
+    : [];
+  return {
+    ...DEFAULT_SETTINGS,
+    ...incoming,
+    customBitrateKbps,
+    customJitterConfig: sanitizeJitterConfig(incoming.customJitterConfig, DEFAULT_AUTO_CONFIG),
+    savedPresets,
+  };
+}
+
 export function loadLastSender(): DiscoveredSender | null {
   try {
     const raw = localStorage.getItem(LS_LAST_SENDER);
@@ -42,7 +79,7 @@ export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(LS_SETTINGS);
     if (raw) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      return sanitizeSettings(JSON.parse(raw));
     }
   } catch {
     // Ignore JSON parse errors

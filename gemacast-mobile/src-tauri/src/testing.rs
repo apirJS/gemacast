@@ -297,6 +297,7 @@ pub mod mocks {
         pub calls: Mutex<Vec<ControlClientCall>>,
         connect_result: Mutex<Result<(), String>>,
         disconnect_result: Mutex<Result<(), String>>,
+        change_bitrate_result: Mutex<Result<(), String>>,
         /// Number of probes still to be failed before one succeeds.
         /// `u32::MAX` stands for "never succeeds".
         probe_failures: Mutex<u32>,
@@ -309,6 +310,7 @@ pub mod mocks {
                 calls: Mutex::new(Vec::new()),
                 connect_result: Mutex::new(Ok(())),
                 disconnect_result: Mutex::new(Ok(())),
+                change_bitrate_result: Mutex::new(Ok(())),
                 probe_failures: Mutex::new(0),
                 probe_device_registered: Mutex::new(Some(true)),
             }
@@ -338,6 +340,11 @@ pub mod mocks {
             self
         }
 
+        pub fn with_change_bitrate_error(self, err: String) -> Self {
+            *self.change_bitrate_result.lock().unwrap() = Err(err);
+            self
+        }
+
         pub fn take_calls(&self) -> Vec<ControlClientCall> {
             self.calls.lock().unwrap().drain(..).collect()
         }
@@ -359,6 +366,9 @@ pub mod mocks {
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(true),
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: None,
                 })
         }
 
@@ -409,6 +419,9 @@ pub mod mocks {
                 is_offline: false,
                 pc_network_link: None,
                 device_registered: *self.probe_device_registered.lock().unwrap(),
+                session_token: None,
+                session_generation: None,
+                pending_request_id: None,
             })
         }
 
@@ -433,7 +446,7 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(ControlClientCall::ChangeBitrate { device_id, bitrate });
-            Ok(())
+            self.change_bitrate_result.lock().unwrap().clone()
         }
 
         async fn get_process_list(&self) -> Result<Vec<ProcessInfo>, String> {
@@ -468,11 +481,11 @@ pub mod mocks {
     // -------------------------------------------------------------------
 
     #[allow(dead_code)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum PlatformCall {
         GetTransportType,
         SyncService {
-            is_playing: bool,
+            state: crate::traits::PlaybackState,
             is_exclusive: bool,
         },
         SetStreamingFlag {
@@ -515,7 +528,7 @@ pub mod mocks {
 
         fn sync_service(&self, state: crate::traits::PlaybackState, is_exclusive: bool) {
             self.calls.lock().unwrap().push(PlatformCall::SyncService {
-                is_playing: matches!(state, crate::traits::PlaybackState::Playing),
+                state,
                 is_exclusive,
             });
         }

@@ -1,23 +1,46 @@
 use socket2::{Domain, Protocol, Socket, Type};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::encode::{EncodeResult, encode_frame};
-use super::engine::CaptureCommand;
+use super::encode::encode_frame;
 use crate::audio::{
     MAX_OPUS_PACKET_SIZE, OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE, create_opus_encoder_with_bitrate,
 };
 use crate::domain::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
-use crate::domain::types::{AudioSource, TargetId};
+use crate::domain::types::{AudioBitrate, AudioSource, TargetId};
 use crate::ports::capture::{CaptureBackend, CaptureHandle};
+
+#[derive(Debug)]
+pub enum StreamFailure {
+    Capture {
+        source: AudioSource,
+        generation: u64,
+        message: String,
+    },
+    UdpEncoder {
+        source: AudioSource,
+        generation: u64,
+        encoder_generation: u64,
+        target: SocketAddr,
+        message: String,
+    },
+    TcpEncoder {
+        source: AudioSource,
+        generation: u64,
+        encoder_generation: u64,
+        device_id: crate::domain::types::DeviceId,
+        message: String,
+    },
+}
 
 /// Tracks one per-target encoder task. Each connected receiver gets its own encoder
 /// at its requested bitrate, running in a dedicated tokio task.
 struct PerTargetEncoder {
-    _bitrate: Option<i32>,
+    bitrate: AudioBitrate,
+    generation: u64,
     shutdown_tx: oneshot::Sender<()>,
     join_handle: tokio::task::JoinHandle<()>,
 }
@@ -25,20 +48,24 @@ struct PerTargetEncoder {
 /// Tracks a TCP/ADB encoder that publishes to the broadcast channel
 /// instead of sending UDP packets.
 struct TcpEncoder {
-    _bitrate: Option<i32>,
+    bitrate: AudioBitrate,
+    generation: u64,
     shutdown_tx: oneshot::Sender<()>,
     join_handle: tokio::task::JoinHandle<()>,
-    _audio_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
+    audio_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
 }
 
 pub struct AudioCaptureInstance {
+    source: AudioSource,
+    generation: u64,
+    failure_tx: mpsc::UnboundedSender<StreamFailure>,
+    next_encoder_generation: u64,
     /// Per-target encoders keyed by socket address (for UDP/WiFi targets).
     per_target_encoders: HashMap<SocketAddr, PerTargetEncoder>,
     /// TCP/ADB encoders keyed by DeviceId.
     tcp_encoders: HashMap<crate::domain::types::DeviceId, TcpEncoder>,
     /// Broadcast channel for raw PCM frames from the capture thread.
     pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
-    pub capture_command_tx: mpsc::Sender<CaptureCommand>,
     pub capture_shutdown_tx: Option<oneshot::Sender<()>>,
     pub capture_join_handle: tokio::task::JoinHandle<()>,
 }
@@ -46,27 +73,36 @@ pub struct AudioCaptureInstance {
 impl AudioCaptureInstance {
     pub fn new<B: CaptureBackend + 'static>(
         capture: CaptureHandle<B>,
+        source: AudioSource,
+        generation: u64,
+        failure_tx: mpsc::UnboundedSender<StreamFailure>,
     ) -> Result<Self, GemaCastError> {
         let (pcm_broadcast_tx, _) = broadcast::channel(4000);
-        let (capture_command_tx, capture_command_rx) = mpsc::channel(32);
         let (capture_shutdown_tx, capture_shutdown_rx) = oneshot::channel();
         let pcm_tx_clone = pcm_broadcast_tx.clone();
 
+        let failure_source = source.clone();
+        let capture_failure_tx = failure_tx.clone();
         let join_handle = tokio::spawn(async move {
-            let _ = Self::run_capture_loop(
-                capture,
-                capture_command_rx,
-                capture_shutdown_rx,
-                pcm_tx_clone,
-            )
-            .await;
+            if let Err(error) =
+                Self::run_capture_loop(capture, capture_shutdown_rx, pcm_tx_clone).await
+            {
+                let _ = capture_failure_tx.send(StreamFailure::Capture {
+                    source: failure_source,
+                    generation,
+                    message: error.to_string(),
+                });
+            }
         });
 
         Ok(Self {
+            source,
+            generation,
+            failure_tx,
+            next_encoder_generation: 0,
             per_target_encoders: HashMap::new(),
             tcp_encoders: HashMap::new(),
             pcm_broadcast_tx,
-            capture_command_tx,
             capture_shutdown_tx: Some(capture_shutdown_tx),
             capture_join_handle: join_handle,
         })
@@ -79,19 +115,46 @@ impl AudioCaptureInstance {
         target_addr: SocketAddr,
         bitrate: Option<i32>,
     ) -> Result<(), GemaCastError> {
+        let bitrate = AudioBitrate::from_wire(bitrate)?;
+        if self
+            .per_target_encoders
+            .get(&target_addr)
+            .is_some_and(|encoder| encoder.bitrate == bitrate)
+        {
+            return Ok(());
+        }
+
+        let encoder = create_encoder(bitrate)?;
         self.remove_target_encoder(&target_addr).await;
 
         let pcm_rx = self.pcm_broadcast_tx.subscribe();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let failure_tx = self.failure_tx.clone();
+        let source = self.source.clone();
+        let generation = self.generation;
+        self.next_encoder_generation = self.next_encoder_generation.wrapping_add(1).max(1);
+        let encoder_generation = self.next_encoder_generation;
 
         let join_handle = tokio::spawn(async move {
-            let _ = run_per_target_encode_loop(pcm_rx, target_addr, bitrate, shutdown_rx).await;
+            if let Err(error) =
+                run_per_target_encode_loop(pcm_rx, target_addr, encoder, bitrate, shutdown_rx).await
+            {
+                tracing::error!("[PerTargetEncoder] {:?} failed: {}", target_addr, error);
+                let _ = failure_tx.send(StreamFailure::UdpEncoder {
+                    source,
+                    generation,
+                    encoder_generation,
+                    target: target_addr,
+                    message: error.to_string(),
+                });
+            }
         });
 
         self.per_target_encoders.insert(
             target_addr,
             PerTargetEncoder {
-                _bitrate: bitrate,
+                bitrate,
+                generation: encoder_generation,
                 shutdown_tx,
                 join_handle,
             },
@@ -100,31 +163,61 @@ impl AudioCaptureInstance {
         Ok(())
     }
 
-    /// Spawns a TCP encoder task that subscribes to raw PCM frames,
-    /// encodes at the given bitrate, and returns the dedicated broadcast channel.
-    async fn spawn_tcp_encoder(
+    async fn spawn_tcp_encoder_with_channel(
         &mut self,
         device_id: crate::domain::types::DeviceId,
         bitrate: Option<i32>,
+        reusable_channel: Option<broadcast::Sender<Arc<Vec<u8>>>>,
     ) -> Result<broadcast::Sender<Arc<Vec<u8>>>, GemaCastError> {
+        let bitrate = AudioBitrate::from_wire(bitrate)?;
+        if let Some(existing) = self.tcp_encoders.get(&device_id)
+            && existing.bitrate == bitrate
+        {
+            return Ok(existing.audio_broadcast_tx.clone());
+        }
+
+        let encoder = create_encoder(bitrate)?;
+        let reusable_channel = reusable_channel.or_else(|| {
+            self.tcp_encoders
+                .get(&device_id)
+                .map(|existing| existing.audio_broadcast_tx.clone())
+        });
         self.remove_tcp_encoder(&device_id).await;
 
         let pcm_rx = self.pcm_broadcast_tx.subscribe();
-        let (audio_broadcast_tx, _) = broadcast::channel(4000);
+        let audio_broadcast_tx = reusable_channel.unwrap_or_else(|| broadcast::channel(4000).0);
         let tcp_broadcast_tx = audio_broadcast_tx.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let failure_tx = self.failure_tx.clone();
+        let source = self.source.clone();
+        let generation = self.generation;
+        self.next_encoder_generation = self.next_encoder_generation.wrapping_add(1).max(1);
+        let encoder_generation = self.next_encoder_generation;
+        let failure_device_id = device_id.clone();
 
         let join_handle = tokio::spawn(async move {
-            let _ = run_tcp_encode_loop(pcm_rx, bitrate, tcp_broadcast_tx, shutdown_rx).await;
+            if let Err(error) =
+                run_tcp_encode_loop(pcm_rx, encoder, bitrate, tcp_broadcast_tx, shutdown_rx).await
+            {
+                tracing::error!("[TcpEncoder] failed: {}", error);
+                let _ = failure_tx.send(StreamFailure::TcpEncoder {
+                    source,
+                    generation,
+                    encoder_generation,
+                    device_id: failure_device_id,
+                    message: error.to_string(),
+                });
+            }
         });
 
         self.tcp_encoders.insert(
             device_id,
             TcpEncoder {
-                _bitrate: bitrate,
+                bitrate,
+                generation: encoder_generation,
                 shutdown_tx,
                 join_handle,
-                _audio_broadcast_tx: audio_broadcast_tx.clone(),
+                audio_broadcast_tx: audio_broadcast_tx.clone(),
             },
         );
 
@@ -147,15 +240,22 @@ impl AudioCaptureInstance {
         }
     }
 
+    fn tcp_broadcaster(
+        &self,
+        device_id: &crate::domain::types::DeviceId,
+    ) -> Option<broadcast::Sender<Arc<Vec<u8>>>> {
+        self.tcp_encoders
+            .get(device_id)
+            .map(|encoder| encoder.audio_broadcast_tx.clone())
+    }
+
     /// The capture loop: reads raw PCM from the audio backend and broadcasts
     /// raw frames. No encoding happens here.
     async fn run_capture_loop<B: CaptureBackend>(
         mut capture: CaptureHandle<B>,
-        mut capture_command_rx: mpsc::Receiver<CaptureCommand>,
         mut capture_shutdown_rx: oneshot::Receiver<()>,
         pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
     ) -> Result<(), GemaCastError> {
-        let mut targets: HashSet<SocketAddr> = HashSet::new();
         use ringbuf::traits::*;
         let mut sample_buf = Vec::<f32>::with_capacity(OPUS_FRAME_SAMPLES * 2);
 
@@ -168,19 +268,6 @@ impl AudioCaptureInstance {
 
         loop {
             tokio::select! {
-                Some(command) = capture_command_rx.recv() => {
-                    match command {
-                        CaptureCommand::AddTarget { addr, .. } => {
-                            targets.insert(addr);
-                        }
-                        CaptureCommand::RemoveTarget(target_addr) => {
-                            targets.remove(&target_addr);
-                            if targets.is_empty() && pcm_broadcast_tx.receiver_count() == 0 {
-                                sample_buf.clear();
-                            }
-                        }
-                    }
-                },
                 _ = capture.notify.notified() => {
                     // We received real audio, reset the silence watchdog
                     silence_interval.reset();
@@ -193,8 +280,9 @@ impl AudioCaptureInstance {
                     // Produce frames if any UDP targets exist OR any PCM subscribers
                     // (per-target or TCP encoder tasks) are listening.
                     let has_pcm_listeners = pcm_broadcast_tx.receiver_count() > 0;
-                    if targets.is_empty() && !has_pcm_listeners {
+                    if !has_pcm_listeners {
                         while capture.consumer.try_pop().is_some() {}
+                        sample_buf.clear();
                         continue;
                     }
 
@@ -216,7 +304,7 @@ impl AudioCaptureInstance {
                     // No real audio received for 22ms. Inject a silent frame if anyone is listening
                     // to prevent the mobile client from timing out and disconnecting.
                     let has_pcm_listeners = pcm_broadcast_tx.receiver_count() > 0;
-                    if !targets.is_empty() || has_pcm_listeners {
+                    if has_pcm_listeners {
                         let silent_frame = Arc::new(vec![0.0f32; OPUS_FRAME_SAMPLES]);
                         let _ = pcm_broadcast_tx.send(silent_frame);
                     }
@@ -241,7 +329,8 @@ impl AudioCaptureInstance {
 async fn run_per_target_encode_loop(
     mut pcm_rx: broadcast::Receiver<Arc<Vec<f32>>>,
     target_addr: SocketAddr,
-    current_bitrate: Option<i32>,
+    mut encoder: Option<opus::Encoder>,
+    bitrate: AudioBitrate,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), GemaCastError> {
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
@@ -275,19 +364,6 @@ async fn run_per_target_encode_loop(
             source: e,
         })?;
 
-    // Create the encoder at this target's requested bitrate (or skip if uncompressed)
-    let mut encoder = if current_bitrate.is_some() {
-        let bitrate = current_bitrate.unwrap_or(128_000);
-        Some(
-            create_opus_encoder_with_bitrate(bitrate).map_err(|e| AudioError::OpusInitFailed {
-                direction: CodecDirection::Encoder,
-                source: e,
-            })?,
-        )
-    } else {
-        None
-    };
-
     let mut seq_num: u64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -312,18 +388,14 @@ async fn run_per_target_encode_loop(
                 let mut drain_buf = [0u8; 1];
                 while audio_socket.try_recv(&mut drain_buf).is_ok() {}
 
-                let result = encode_frame(
+                encode_frame(
                     &frame,
-                    encoder.as_mut().unwrap_or(&mut create_dummy_encoder()),
-                    current_bitrate,
+                    encoder.as_mut(),
+                    bitrate,
                     seq_num,
                     &mut opus_output,
                     &mut packet_buf,
-                );
-
-                if matches!(result, EncodeResult::Skipped) {
-                    continue;
-                }
+                )?;
 
                 // Send UDP to target
                 match audio_socket.try_send_to(&packet_buf, target_addr) {
@@ -345,23 +417,11 @@ async fn run_per_target_encode_loop(
 /// bitrate, and publishes to the broadcast channel for TCP/ADB consumers.
 async fn run_tcp_encode_loop(
     mut pcm_rx: broadcast::Receiver<Arc<Vec<f32>>>,
-    current_bitrate: Option<i32>,
+    mut encoder: Option<opus::Encoder>,
+    bitrate: AudioBitrate,
     tcp_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), GemaCastError> {
-    // Create the encoder at this target's requested bitrate (or skip if uncompressed)
-    let mut encoder = if current_bitrate.is_some() {
-        let bitrate = current_bitrate.unwrap_or(128_000);
-        Some(
-            create_opus_encoder_with_bitrate(bitrate).map_err(|e| AudioError::OpusInitFailed {
-                direction: CodecDirection::Encoder,
-                source: e,
-            })?,
-        )
-    } else {
-        None
-    };
-
     let mut seq_num: u64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -382,18 +442,14 @@ async fn run_tcp_encode_loop(
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
 
-                let result = encode_frame(
+                encode_frame(
                     &frame,
-                    encoder.as_mut().unwrap_or(&mut create_dummy_encoder()),
-                    current_bitrate,
+                    encoder.as_mut(),
+                    bitrate,
                     seq_num,
                     &mut opus_output,
                     &mut packet_buf,
-                );
-
-                if matches!(result, EncodeResult::Skipped) {
-                    continue;
-                }
+                )?;
 
                 let shared = Arc::new(packet_buf.clone());
                 let _ = tcp_broadcast_tx.send(shared);
@@ -409,11 +465,21 @@ async fn run_tcp_encode_loop(
 
 /// Creates a dummy encoder that is never actually used — only exists to satisfy
 /// the borrow checker when current_bitrate is None (uncompressed mode).
-fn create_dummy_encoder() -> opus::Encoder {
-    crate::audio::create_opus_encoder().unwrap_or_else(|e| {
-        tracing::error!("Fatal error: dummy encoder creation failed: {}", e);
-        panic!("dummy encoder creation should never fail");
-    })
+fn create_encoder(bitrate: AudioBitrate) -> Result<Option<opus::Encoder>, GemaCastError> {
+    match bitrate {
+        AudioBitrate::Uncompressed => Ok(None),
+        AudioBitrate::Opus(bps) => {
+            create_opus_encoder_with_bitrate(bps)
+                .map(Some)
+                .map_err(|source| {
+                    AudioError::OpusInitFailed {
+                        direction: CodecDirection::Encoder,
+                        source,
+                    }
+                    .into()
+                })
+        }
+    }
 }
 
 use crate::ports::capture::CaptureFactory;
@@ -423,16 +489,27 @@ pub struct CapturePool<F: CaptureFactory> {
     max_instances: usize,
     pub supports_process_capture: bool,
     factory: F,
+    next_generation: u64,
+    failure_tx: mpsc::UnboundedSender<StreamFailure>,
+    failure_rx: mpsc::UnboundedReceiver<StreamFailure>,
 }
 
 impl<F: CaptureFactory> CapturePool<F> {
     pub fn new(factory: F, supports_process_capture: bool) -> Self {
+        let (failure_tx, failure_rx) = mpsc::unbounded_channel();
         Self {
             instances: HashMap::new(),
             max_instances: 8,
             supports_process_capture,
             factory,
+            next_generation: 0,
+            failure_tx,
+            failure_rx,
         }
+    }
+
+    pub async fn recv_failure(&mut self) -> Option<StreamFailure> {
+        self.failure_rx.recv().await
     }
 
     pub async fn subscribe(
@@ -440,6 +517,17 @@ impl<F: CaptureFactory> CapturePool<F> {
         source: AudioSource,
         target: TargetId,
         bitrate: Option<i32>,
+    ) -> Result<Option<broadcast::Sender<Arc<Vec<u8>>>>, GemaCastError> {
+        self.subscribe_with_channel(source, target, bitrate, None)
+            .await
+    }
+
+    async fn subscribe_with_channel(
+        &mut self,
+        source: AudioSource,
+        target: TargetId,
+        bitrate: Option<i32>,
+        reusable_tcp_channel: Option<broadcast::Sender<Arc<Vec<u8>>>>,
     ) -> Result<Option<broadcast::Sender<Arc<Vec<u8>>>>, GemaCastError> {
         if !self.instances.contains_key(&source) {
             if self.instances.len() >= self.max_instances {
@@ -459,7 +547,13 @@ impl<F: CaptureFactory> CapturePool<F> {
                 }
             };
 
-            let instance = AudioCaptureInstance::new(handle)?;
+            self.next_generation = self.next_generation.wrapping_add(1).max(1);
+            let instance = AudioCaptureInstance::new(
+                handle,
+                source.clone(),
+                self.next_generation,
+                self.failure_tx.clone(),
+            )?;
             self.instances.insert(source.clone(), instance);
         }
 
@@ -467,13 +561,13 @@ impl<F: CaptureFactory> CapturePool<F> {
         let ret = match target {
             TargetId::Udp(addr) => {
                 instance.spawn_target_encoder(addr, bitrate).await?;
-                let _ = instance
-                    .capture_command_tx
-                    .send(CaptureCommand::AddTarget { addr, bitrate })
-                    .await;
                 None
             }
-            TargetId::Tcp(device_id) => Some(instance.spawn_tcp_encoder(device_id, bitrate).await?),
+            TargetId::Tcp(device_id) => Some(
+                instance
+                    .spawn_tcp_encoder_with_channel(device_id, bitrate, reusable_tcp_channel)
+                    .await?,
+            ),
         };
 
         Ok(ret)
@@ -488,19 +582,13 @@ impl<F: CaptureFactory> CapturePool<F> {
             match target {
                 TargetId::Udp(addr) => {
                     instance.remove_target_encoder(&addr).await;
-                    let _ = instance
-                        .capture_command_tx
-                        .send(CaptureCommand::RemoveTarget(addr))
-                        .await;
                 }
                 TargetId::Tcp(device_id) => {
                     instance.remove_tcp_encoder(&device_id).await;
                 }
             }
 
-            let is_teardown_eligible = true;
-            if is_teardown_eligible
-                && instance.per_target_encoders.is_empty()
+            if instance.per_target_encoders.is_empty()
                 && instance.tcp_encoders.is_empty()
                 && let Some(mut removed) = self.instances.remove(source)
                 && let Some(stop_tx) = removed.capture_shutdown_tx.take()
@@ -523,7 +611,16 @@ impl<F: CaptureFactory> CapturePool<F> {
             return self.subscribe(new_source, target, bitrate).await;
         }
 
-        let tx = self.subscribe(new_source, target.clone(), bitrate).await?;
+        let reusable_tcp_channel = match &target {
+            TargetId::Tcp(device_id) => self
+                .instances
+                .get(old_source)
+                .and_then(|instance| instance.tcp_broadcaster(device_id)),
+            TargetId::Udp(_) => None,
+        };
+        let tx = self
+            .subscribe_with_channel(new_source, target.clone(), bitrate, reusable_tcp_channel)
+            .await?;
         let _ = self.unsubscribe(old_source, target).await;
         Ok(tx)
     }
@@ -537,21 +634,17 @@ impl<F: CaptureFactory> CapturePool<F> {
         if let Some(instance) = self.instances.get_mut(source) {
             match target {
                 TargetId::Udp(addr) => {
-                    instance.remove_target_encoder(&addr).await;
-                    let _ = instance
-                        .capture_command_tx
-                        .send(CaptureCommand::RemoveTarget(addr))
-                        .await;
                     instance.spawn_target_encoder(addr, bitrate).await?;
-                    let _ = instance
-                        .capture_command_tx
-                        .send(CaptureCommand::AddTarget { addr, bitrate })
-                        .await;
                     Ok(None)
                 }
                 TargetId::Tcp(device_id) => {
-                    instance.remove_tcp_encoder(&device_id).await;
-                    let tx = instance.spawn_tcp_encoder(device_id, bitrate).await?;
+                    // `spawn_tcp_encoder_with_channel` creates and validates the
+                    // replacement encoder before removing the old task, while
+                    // reusing its broadcast channel. A failed bitrate change
+                    // therefore leaves the old stream intact.
+                    let tx = instance
+                        .spawn_tcp_encoder_with_channel(device_id, bitrate, None)
+                        .await?;
                     Ok(Some(tx))
                 }
             }
@@ -560,16 +653,112 @@ impl<F: CaptureFactory> CapturePool<F> {
         }
     }
 
-    pub fn available_sources(&self) -> Result<Vec<AudioSource>, GemaCastError> {
-        let mut sources = vec![AudioSource::Desktop];
+    pub fn tcp_broadcaster(
+        &self,
+        source: &AudioSource,
+        device_id: &crate::domain::types::DeviceId,
+    ) -> Option<broadcast::Sender<Arc<Vec<u8>>>> {
+        self.instances
+            .get(source)
+            .and_then(|instance| instance.tcp_broadcaster(device_id))
+    }
 
-        for source in self.instances.keys() {
-            if let AudioSource::Process { .. } = source {
-                sources.push(source.clone());
+    pub async fn shutdown_all(&mut self) {
+        let sources: Vec<_> = self.instances.keys().cloned().collect();
+        for source in sources {
+            if let Some(mut instance) = self.instances.remove(&source) {
+                for (_, encoder) in instance.per_target_encoders.drain() {
+                    let _ = encoder.shutdown_tx.send(());
+                    let _ = encoder.join_handle.await;
+                }
+                for (_, encoder) in instance.tcp_encoders.drain() {
+                    let _ = encoder.shutdown_tx.send(());
+                    let _ = encoder.join_handle.await;
+                }
+                if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
+                    let _ = stop_tx.send(());
+                }
+                let _ = instance.capture_join_handle.await;
             }
         }
+    }
 
-        Ok(sources)
+    pub async fn evict_failed_source(&mut self, source: &AudioSource, generation: u64) -> bool {
+        if self
+            .instances
+            .get(source)
+            .is_none_or(|instance| instance.generation != generation)
+        {
+            return false;
+        }
+
+        if let Some(mut instance) = self.instances.remove(source) {
+            for (_, encoder) in instance.per_target_encoders.drain() {
+                let _ = encoder.shutdown_tx.send(());
+                let _ = encoder.join_handle.await;
+            }
+            for (_, encoder) in instance.tcp_encoders.drain() {
+                let _ = encoder.shutdown_tx.send(());
+                let _ = encoder.join_handle.await;
+            }
+            if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
+                let _ = stop_tx.send(());
+            }
+            let _ = instance.capture_join_handle.await;
+        }
+        true
+    }
+
+    pub async fn remove_failed_target(&mut self, failure: &StreamFailure) -> bool {
+        match failure {
+            StreamFailure::UdpEncoder {
+                source,
+                generation,
+                encoder_generation,
+                target,
+                ..
+            } => {
+                let Some(instance) = self.instances.get_mut(source) else {
+                    return false;
+                };
+                if instance.generation != *generation {
+                    return false;
+                }
+                if instance
+                    .per_target_encoders
+                    .get(target)
+                    .is_none_or(|encoder| encoder.generation != *encoder_generation)
+                {
+                    return false;
+                }
+                instance.remove_target_encoder(target).await;
+                true
+            }
+            StreamFailure::TcpEncoder {
+                source,
+                generation,
+                encoder_generation,
+                device_id,
+                ..
+            } => {
+                let Some(instance) = self.instances.get_mut(source) else {
+                    return false;
+                };
+                if instance.generation != *generation {
+                    return false;
+                }
+                if instance
+                    .tcp_encoders
+                    .get(device_id)
+                    .is_none_or(|encoder| encoder.generation != *encoder_generation)
+                {
+                    return false;
+                }
+                instance.remove_tcp_encoder(device_id).await;
+                true
+            }
+            StreamFailure::Capture { .. } => false,
+        }
     }
 }
 
@@ -581,6 +770,7 @@ mod tests {
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
     use tokio::sync::Notify;
+    use tokio::sync::mpsc;
 
     struct MockBackend;
     impl CaptureBackend for MockBackend {
@@ -608,8 +798,10 @@ mod tests {
         };
 
         // 2. Create the AudioCaptureInstance
-        let mut instance = AudioCaptureInstance::new(capture_handle)
-            .expect("Failed to create AudioCaptureInstance");
+        let (failure_tx, _failure_rx) = mpsc::unbounded_channel();
+        let mut instance =
+            AudioCaptureInstance::new(capture_handle, AudioSource::Desktop, 1, failure_tx)
+                .expect("Failed to create AudioCaptureInstance");
 
         // We can manually subscribe to the internal PCM broadcast channel to verify the capture loop
         let mut pcm_rx = instance.pcm_broadcast_tx.subscribe();
@@ -639,7 +831,7 @@ mod tests {
         // 5. Test Encoder spawning
         let device_id = DeviceId("test_dev".into());
         let audio_broadcast_tx = instance
-            .spawn_tcp_encoder(device_id.clone(), Some(128000))
+            .spawn_tcp_encoder_with_channel(device_id.clone(), Some(128000), None)
             .await
             .unwrap_or_else(|e| {
                 tracing::error!("Fatal error: Failed to spawn TCP encoder: {}", e);
@@ -693,8 +885,10 @@ mod tests {
         };
 
         // 2. Create the AudioCaptureInstance
-        let mut instance = AudioCaptureInstance::new(capture_handle)
-            .expect("Failed to create AudioCaptureInstance");
+        let (failure_tx, _failure_rx) = mpsc::unbounded_channel();
+        let mut instance =
+            AudioCaptureInstance::new(capture_handle, AudioSource::Desktop, 1, failure_tx)
+                .expect("Failed to create AudioCaptureInstance");
 
         // Bind a local UDP socket to receive the encoded packets
         let receiver_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -866,6 +1060,76 @@ mod tests {
 
         // Now it should teardown
         assert_eq!(pool.instances.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn tcp_broadcast_channel_should_survive_bitrate_changes() {
+        let mut pool = CapturePool::new(MockCaptureFactory, true);
+        let device_id = DeviceId("dev1".into());
+        let target = TargetId::Tcp(device_id.clone());
+
+        let original = pool
+            .subscribe(AudioSource::Desktop, target.clone(), Some(128000))
+            .await
+            .unwrap()
+            .unwrap();
+        let replacement = pool
+            .change_bitrate(&AudioSource::Desktop, target.clone(), Some(256000))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(original.same_channel(&replacement));
+        assert!(
+            original.same_channel(
+                &pool
+                    .tcp_broadcaster(&AudioSource::Desktop, &device_id)
+                    .unwrap()
+            )
+        );
+
+        pool.unsubscribe(&AudioSource::Desktop, target)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_capture_failure_should_not_evict_a_recreated_source() {
+        let mut pool = CapturePool::new(MockCaptureFactory, true);
+        let first_target = TargetId::Tcp(DeviceId("dev1".into()));
+        pool.subscribe(AudioSource::Desktop, first_target.clone(), Some(128000))
+            .await
+            .unwrap();
+        let first_generation = pool
+            .instances
+            .get(&AudioSource::Desktop)
+            .unwrap()
+            .generation;
+        pool.unsubscribe(&AudioSource::Desktop, first_target)
+            .await
+            .unwrap();
+
+        let second_target = TargetId::Tcp(DeviceId("dev2".into()));
+        pool.subscribe(AudioSource::Desktop, second_target.clone(), Some(128000))
+            .await
+            .unwrap();
+        let second_generation = pool
+            .instances
+            .get(&AudioSource::Desktop)
+            .unwrap()
+            .generation;
+
+        assert_ne!(first_generation, second_generation);
+        assert!(
+            !pool
+                .evict_failed_source(&AudioSource::Desktop, first_generation)
+                .await
+        );
+        assert!(pool.instances.contains_key(&AudioSource::Desktop));
+
+        pool.unsubscribe(&AudioSource::Desktop, second_target)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

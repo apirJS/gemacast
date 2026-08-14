@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
@@ -14,15 +15,30 @@ pub struct HttpSenderControlClient {
 }
 
 impl HttpSenderControlClient {
-    pub fn new(ip: IpAddr) -> Self {
+    pub fn new(
+        ip: IpAddr,
+        credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
+    ) -> Self {
         Self {
-            client: gemacast_core::control::HttpControlClient::new(ip),
+            client: gemacast_core::control::HttpControlClient::with_shared_credentials(
+                ip,
+                Duration::from_secs(10),
+                credentials,
+            ),
         }
     }
 
-    pub fn with_timeout(ip: IpAddr, timeout: Duration) -> Self {
+    pub fn with_timeout(
+        ip: IpAddr,
+        timeout: Duration,
+        credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
+    ) -> Self {
         Self {
-            client: gemacast_core::control::HttpControlClient::with_timeout(ip, timeout),
+            client: gemacast_core::control::HttpControlClient::with_shared_credentials(
+                ip,
+                timeout,
+                credentials,
+            ),
         }
     }
 }
@@ -85,14 +101,63 @@ impl SenderControlClient for HttpSenderControlClient {
 }
 
 /// Creates [`HttpSenderControlClient`] instances on demand.
-pub struct HttpSenderControlClientFactory;
+pub struct HttpSenderControlClientFactory {
+    credentials: Mutex<
+        HashMap<
+            IpAddr,
+            Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
+        >,
+    >,
+}
+
+impl HttpSenderControlClientFactory {
+    pub fn new() -> Self {
+        Self {
+            credentials: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn credentials(
+        &self,
+        ip: IpAddr,
+    ) -> Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>> {
+        self.credentials
+            .lock()
+            .map(|mut credentials| {
+                credentials
+                    .entry(ip)
+                    .or_insert_with(|| Arc::new(Mutex::new(None)))
+                    .clone()
+            })
+            .unwrap_or_else(|_| Arc::new(Mutex::new(None)))
+    }
+}
 
 impl SenderControlClientFactory for HttpSenderControlClientFactory {
     fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient> {
-        Arc::new(HttpSenderControlClient::new(ip))
+        Arc::new(HttpSenderControlClient::new(ip, self.credentials(ip)))
     }
 
     fn create_with_timeout(&self, ip: IpAddr, timeout: Duration) -> Arc<dyn SenderControlClient> {
-        Arc::new(HttpSenderControlClient::with_timeout(ip, timeout))
+        Arc::new(HttpSenderControlClient::with_timeout(
+            ip,
+            timeout,
+            self.credentials(ip),
+        ))
+    }
+
+    fn session_token(&self, ip: IpAddr, device_id: &DeviceId) -> Option<String> {
+        self.credentials
+            .lock()
+            .ok()
+            .and_then(|credentials| credentials.get(&ip).cloned())
+            .and_then(|credentials| {
+                credentials.lock().ok().and_then(|credentials| {
+                    credentials
+                        .as_ref()
+                        .filter(|credentials| &credentials.device_id == device_id)
+                        .map(|credentials| credentials.token.clone())
+                })
+            })
     }
 }

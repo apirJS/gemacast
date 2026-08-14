@@ -1,5 +1,5 @@
 use crate::control::{
-    ControlServerState,
+    ControlServerState, SessionGeneration,
     types::{WsCommand, WsEvent},
 };
 use crate::domain::types::DeviceId;
@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 pub async fn handle_ws<P: ProcessLister + 'static>(
     socket: WebSocket,
     device_id: DeviceId,
+    generation: SessionGeneration,
     state: ControlServerState<P>,
 ) {
     let (ws_sender, mut ws_receiver) = socket.split();
@@ -28,7 +29,7 @@ pub async fn handle_ws<P: ProcessLister + 'static>(
         match msg_result {
             Ok(Message::Text(text)) => {
                 tracing::info!("WS Message received from {}: {}", device_id, text);
-                if let Err(e) = handle_ws_command(&text, &device_id, &state).await {
+                if let Err(e) = handle_ws_command(&text, &device_id, generation, &state).await {
                     tracing::error!("WebSocket command error for device {}: {}", device_id, e);
                 }
             }
@@ -55,19 +56,11 @@ pub async fn handle_ws<P: ProcessLister + 'static>(
         is_match
     };
 
-    // Always send a disconnect command to ensure Engine cleans up the session
-    // even if the WebSocket dropped ungracefully (e.g. unplugged).
-    // ONLY send if this was the current active WebSocket for this device.
-    if is_current {
-        let dummy_addr = "0.0.0.0:0".parse().unwrap();
-        let _ = state
-            .command_tx
-            .send(crate::control::ControlCommand::Disconnect {
-                device_id: device_id.clone(),
-                remote_addr: dummy_addr,
-            })
-            .await;
-    }
+    // The WebSocket is optional control-plane state, not the stream's liveness
+    // authority. HTTP probes and the audio transport own teardown, so an
+    // incidental WS drop must not interrupt a healthy stream. The generation
+    // check above still prevents an old socket from removing a newer map entry.
+    let _ = (is_current, generation);
 
     send_task.abort();
 }
@@ -97,6 +90,7 @@ async fn send_events_to_client(
 async fn handle_ws_command<P: ProcessLister + 'static>(
     text: &str,
     device_id: &DeviceId,
+    generation: SessionGeneration,
     state: &ControlServerState<P>,
 ) -> Result<(), String> {
     let command: WsCommand =
@@ -109,11 +103,14 @@ async fn handle_ws_command<P: ProcessLister + 'static>(
             // Actually, for explicit Disconnect from the client, we should probably
             // just process it. But to be safe against delayed packets, let's process it.
             let dummy_addr = "0.0.0.0:0".parse().unwrap();
+            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
             let _ = state
                 .command_tx
                 .send(crate::control::ControlCommand::Disconnect {
                     device_id: device_id.clone(),
                     remote_addr: dummy_addr,
+                    generation: Some(generation),
+                    response_tx,
                 })
                 .await;
         }

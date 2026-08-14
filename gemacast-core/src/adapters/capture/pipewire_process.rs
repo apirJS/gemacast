@@ -364,7 +364,7 @@ fn run_process_capture_loop(
         .map_err(|e| AudioError::PipeWireError(format!("Listener: {e}")))?;
 
     // Build audio format params: 48kHz stereo F32LE interleaved
-    let values = pipewire_common::build_audio_params();
+    let values = pipewire_common::build_audio_params()?;
     let mut params = [pw::spa::pod::Pod::from_bytes(&values)
         .ok_or_else(|| AudioError::PipeWireError("Invalid pod bytes".to_string()))?];
 

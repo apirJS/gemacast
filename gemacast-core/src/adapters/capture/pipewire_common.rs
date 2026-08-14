@@ -13,6 +13,7 @@
 //! the same pattern used by the WASAPI capture backends on Windows.
 
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+use crate::domain::error::AudioError;
 
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ pub const PW_RING_BUFFER_SIZE: usize = OPUS_FRAME_SAMPLES * 64;
 ///
 /// This creates the pod parameter that tells PipeWire what audio format
 /// we want to receive in our capture stream's `process` callback.
-pub fn build_audio_params() -> Vec<u8> {
+pub fn build_audio_params() -> Result<Vec<u8>, AudioError> {
     let mut format_value = spa::param::audio::AudioInfoRaw::new();
     format_value.set_format(spa::param::audio::AudioFormat::F32LE);
     format_value.set_rate(OPUS_SAMPLE_RATE);
@@ -45,9 +46,11 @@ pub fn build_audio_params() -> Vec<u8> {
             properties: format_value.into(),
         }),
     )
-    .expect("Failed to serialize PipeWire audio params");
+    .map_err(|error| {
+        AudioError::PipeWireError(format!("audio parameter serialization: {error}"))
+    })?;
 
-    cursor.into_inner()
+    Ok(cursor.into_inner())
 }
 
 /// Convenience struct for the resources produced by a PipeWire capture stream setup.

@@ -64,14 +64,18 @@ export function useNetworkMonitor() {
         if (
           currentMode === ConnectionMode.Usb &&
           !modes.usb &&
-          (currentState.status === Status.Playing || currentState.status === Status.Paused)
+          (currentState.status === Status.Connected ||
+            currentState.status === Status.Playing ||
+            currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
         } else if (
           currentMode === ConnectionMode.Wifi &&
           !modes.wifi &&
-          (currentState.status === Status.Playing || currentState.status === Status.Paused)
+          (currentState.status === Status.Connected ||
+            currentState.status === Status.Playing ||
+            currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();

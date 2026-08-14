@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getDeviceInfo, type DeviceInfoResponse } from 'tauri-plugin-device-info-api';
 import { useAppStore } from './stores/app-store';
+import { useToastStore } from './stores/toast-store';
 import { tauriBridge } from './core/tauri-bridge';
 import { getOrCreateDeviceId } from './core/persistence';
 import { useTauriEvents } from './hooks/use-tauri-events';
@@ -29,10 +30,7 @@ function AppInner() {
             .catch(console.warn);
         } else {
           lastBackPressed = now;
-          // useToastStore.getState().show is required, need to import it
-          import('./stores/toast-store').then((m) =>
-            m.useToastStore.getState().show('info', 'Press back again to exit'),
-          );
+          useToastStore.getState().show('info', 'Press back again to exit');
           window.history.pushState({ root: true }, '', '#root');
         }
       }

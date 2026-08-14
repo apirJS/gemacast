@@ -1952,6 +1952,7 @@ dependencies = [
  "axum",
  "cpal",
  "futures",
+ "getrandom 0.4.3",
  "hex",
  "libc",
  "mdns-sd",

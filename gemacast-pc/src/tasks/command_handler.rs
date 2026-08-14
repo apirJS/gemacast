@@ -8,6 +8,7 @@ use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::discovery::PresenceBroadcaster;
 use gemacast_core::domain::types::DeviceId;
@@ -33,6 +34,7 @@ pub struct CommandHandler {
     pub tray: Arc<dyn TrayNotifier>,
     pub audio: Arc<dyn AudioController>,
     pub notifier: Arc<dyn DeviceNotifier>,
+    pub authorizer: SessionAuthorizer,
 }
 
 impl CommandHandler {
@@ -56,7 +58,6 @@ impl CommandHandler {
             }
             AppCommand::ExitApp => {
                 self.handle_stop_all_streams(broadcaster).await;
-                self.tray.notify_shutdown_complete();
             }
             AppCommand::CheckForUpdates => {
                 self.handle_check_for_updates();
@@ -123,9 +124,14 @@ impl CommandHandler {
             let _ = tx.send(());
         }
 
-        let all = self.registry.all_devices();
-        for (device_id, _device) in all {
-            self.audio.unsubscribe(&device_id).await;
+        let all = self.registry.drain_all();
+        self.authorizer.revoke_all();
+        for (device_id, device) in all {
+            self.notifier
+                .notify_disconnect(&device_id, Some(device.addr))
+                .await;
+            let _ = self.audio.unsubscribe(&device_id).await;
+            self.tray.notify_device_lost(device_id, device.addr);
         }
     }
 
@@ -133,7 +139,8 @@ impl CommandHandler {
         tracing::info!("Executing KickDevice command for device: {:?}", device_id);
         let addr = self.registry.get_addr(&device_id);
         self.registry.unregister(&device_id);
-        self.audio.unsubscribe(&device_id).await;
+        self.authorizer.revoke(&device_id, None);
+        let _ = self.audio.unsubscribe(&device_id).await;
         self.notifier.notify_disconnect(&device_id, addr).await;
     }
 
@@ -145,15 +152,15 @@ impl CommandHandler {
             let _ = tx.send(());
         }
 
-        self.audio.shutdown().await;
-
         let all = self.registry.drain_all();
+        self.authorizer.revoke_all();
         for (device_id, device) in all {
             self.tray.notify_device_lost(device_id.clone(), device.addr);
             self.notifier
                 .notify_disconnect(&device_id, Some(device.addr))
                 .await;
         }
+        let _ = self.audio.shutdown().await;
     }
 
     fn handle_check_for_updates(&self) {
@@ -230,11 +237,23 @@ pub fn spawn_command_handler(
     set: &mut JoinSet<()>,
     mut command_rx: mpsc::Receiver<AppCommand>,
     handler: Arc<CommandHandler>,
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
 ) {
     set.spawn(async move {
         let mut broadcaster = BroadcasterState::default();
+        let mut shutdown_tx = Some(shutdown_tx);
         while let Some(command) = command_rx.recv().await {
+            let should_exit = matches!(command, AppCommand::ExitApp);
             handler.handle(command, &mut broadcaster).await;
+            if should_exit {
+                if let Some(tx) = shutdown_tx.take() {
+                    let _ = tx.send(());
+                }
+                break;
+            }
+        }
+        if let Some(tx) = shutdown_tx.take() {
+            let _ = tx.send(());
         }
     });
 }
@@ -256,6 +275,7 @@ mod tests {
             tray,
             audio,
             notifier,
+            authorizer: SessionAuthorizer::default(),
         }
     }
 

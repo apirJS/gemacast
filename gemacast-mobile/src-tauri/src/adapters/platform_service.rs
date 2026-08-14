@@ -28,9 +28,9 @@ impl PlatformService for NativePlatformService {
         #[cfg(target_os = "android")]
         {
             let action = match state {
-                PlaybackState::Playing => "START",
-                PlaybackState::Paused => "STOP_STREAM",
-                PlaybackState::Stopped => "DISCONNECT",
+                PlaybackState::Playing => "SYNC_PLAYING",
+                PlaybackState::Paused => "SYNC_PAUSED",
+                PlaybackState::Stopped => "SYNC_STOPPED",
             };
             let _ = crate::domains::discovery::native::call_native_sync_service(
                 &self.app_handle,

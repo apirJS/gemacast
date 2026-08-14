@@ -44,7 +44,7 @@ pub trait DeviceRegistry: Send + Sync {
     /// Remove and return all devices.
     fn drain_all(&self) -> Vec<(DeviceId, DiscoveredDevice)>;
 
-    /// Remove devices whose `last_seen` exceeds `timeout`, skipping loopback (ADB) devices.
+    /// Remove devices whose `last_seen` exceeds `timeout`, including ADB devices.
     /// Returns the evicted `(device_id, addr)` pairs.
     fn evict_stale(&self, timeout: Duration) -> Vec<(DeviceId, SocketAddr)>;
 }

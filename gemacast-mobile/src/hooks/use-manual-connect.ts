@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
-import { connectToSender, disconnect } from './use-connection';
+import { connectToSender } from './use-connection';
 import { Ports } from '../core/constants';
 
 /**
@@ -27,8 +27,12 @@ export function useManualConnect() {
     const trimmed = ip.trim();
     if (!trimmed) return;
 
-    const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
-    if (!ipRegex.test(trimmed)) {
+    const octets = trimmed.split('.');
+    const validIpv4 = octets.length === 4 && octets.every((octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+    const first = Number(octets[0]);
+    const last = Number(octets[3]);
+    const forbidden = first === 0 || first === 127 || first >= 224 || (first === 255 && last === 255);
+    if (!validIpv4 || forbidden) {
       useToastStore.getState().show('warning', 'Invalid IP address');
       return;
     }
@@ -37,14 +41,17 @@ export function useManualConnect() {
     useAppStore.getState().patch({ isLoading: true });
 
     try {
-      await tauriBridge.getAudioSources({ ip: trimmed });
+      await tauriBridge.probeSender({
+        ip: trimmed,
+        deviceId: useAppStore.getState().deviceInfo.deviceId,
+      });
     } catch {
       useToastStore.getState().show('warning', 'This IP is unreachable');
       useAppStore.getState().patch({ isLoading: false });
-      setIsProbing(false);
       return;
+    } finally {
+      setIsProbing(false);
     }
-    setIsProbing(false);
 
     const manualSender = {
       deviceId: `manual-${trimmed}`,
@@ -53,11 +60,7 @@ export function useManualConnect() {
       isOffline: false,
     };
 
-    const connectedSender = useAppStore.getState().connectedSender;
-    if (connectedSender) {
-      await disconnect();
-    }
-
+    const previousSender = useAppStore.getState().connectedSender;
     const result = await connectToSender(manualSender);
     if (result.ok) {
       const state = useAppStore.getState();
@@ -69,6 +72,11 @@ export function useManualConnect() {
       newList.unshift(manualSender);
       useAppStore.getState().setDiscoveredSenders(newList);
       setIp('');
+    } else if (previousSender) {
+      const restored = await connectToSender(previousSender);
+      if (!restored.ok) {
+        useToastStore.getState().show('warning', 'Could not restore the previous stream');
+      }
     }
   }, [ip]);
 

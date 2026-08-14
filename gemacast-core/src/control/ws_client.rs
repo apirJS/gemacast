@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use url::Url;
 
 use crate::control::types::{WsCommand, WsEvent};
@@ -18,6 +19,14 @@ pub struct WsControlClient {
 
 impl WsControlClient {
     pub async fn new(target_ip: IpAddr, device_id: &str) -> Result<Self, GemaCastError> {
+        Self::new_with_token(target_ip, device_id, None).await
+    }
+
+    pub async fn new_with_token(
+        target_ip: IpAddr,
+        device_id: &str,
+        token: Option<&str>,
+    ) -> Result<Self, GemaCastError> {
         let url = Url::parse(&format!(
             "ws://{}:{}/ws?device_id={}",
             target_ip,
@@ -28,8 +37,24 @@ impl WsControlClient {
             reason: format!("failed to parse WS URL: {e}"),
         })?;
 
+        let mut request =
+            url.as_str()
+                .into_client_request()
+                .map_err(|e| ControlError::WebSocketFailed {
+                    reason: format!("failed to build WS request: {e}"),
+                })?;
+        if let Some(token) = token {
+            let value =
+                format!("Bearer {token}")
+                    .parse()
+                    .map_err(|e| ControlError::WebSocketFailed {
+                        reason: format!("failed to build WS authorization header: {e}"),
+                    })?;
+            request.headers_mut().insert("Authorization", value);
+        }
+
         let (ws_stream, _) =
-            connect_async(url.as_str())
+            connect_async(request)
                 .await
                 .map_err(|e| ControlError::WebSocketFailed {
                     reason: format!("failed to initiate WS connection: {e}"),
