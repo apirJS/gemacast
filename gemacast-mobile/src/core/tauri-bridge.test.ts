@@ -66,6 +66,12 @@ describe('tauriBridge', () => {
     expect(invokeCalls[0].cmd).toBe('get_network_state');
   });
 
+  it('forgetPcIdentity passes the selected PC id', async () => {
+    await tauriBridge.forgetPcIdentity('pc-1');
+    expect(invokeCalls[0].cmd).toBe('forget_pc_identity');
+    expect((invokeCalls[0].args as Record<string, unknown>).pcId).toBe('pc-1');
+  });
+
   it('startListeningForSenders passes correct args', async () => {
     await tauriBridge.startListeningForSenders({ deviceId: 'dev1', mode: ConnectionMode.Wifi });
     expect(invokeCalls[0].cmd).toBe('start_listening_for_senders');

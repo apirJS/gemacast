@@ -180,19 +180,43 @@ fn handle_tray_event(
             addr,
             key_fingerprint,
             pairing_code,
+            replaces_existing_identity,
             response_tx,
         } => {
-            let approved = rfd::MessageDialog::new()
-                .set_title("Gemacast Connection Request")
-                .set_description(format!(
-                    "Allow {name} ({}) to receive and control this PC's audio?\n\nConfirm that the phone shows this same code:\n\n{pairing_code}\n\nDevice key: {}\nRequest: {request_id}",
-                    addr.ip(),
-                    &key_fingerprint[..key_fingerprint.len().min(16)]
-                ))
-                .set_level(rfd::MessageLevel::Info)
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show()
-                == rfd::MessageDialogResult::Yes;
+            let title = if replaces_existing_identity {
+                "Gemacast Device Identity Changed"
+            } else {
+                "Gemacast Connection Request"
+            };
+            let identity_warning = if replaces_existing_identity {
+                "\n\nThe saved key for this device changed, usually after reinstalling or resetting the phone. Approving will replace the old key."
+            } else {
+                ""
+            };
+            let description = format!(
+                "Allow {name} ({}) to receive and control this PC's audio?{identity_warning}\n\nConfirm that the phone shows this same code:\n\n{pairing_code}\n\nDevice key: {}\nRequest: {request_id}",
+                addr.ip(),
+                &key_fingerprint[..key_fingerprint.len().min(16)]
+            );
+            let proxy = proxy.clone();
+            std::thread::spawn(move || {
+                let approved = rfd::MessageDialog::new()
+                    .set_title(title)
+                    .set_description(description)
+                    .set_level(rfd::MessageLevel::Info)
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show()
+                    == rfd::MessageDialogResult::Yes;
+                let _ = proxy.send_event(TrayEvent::ConnectionApprovalResult {
+                    response_tx,
+                    approved,
+                });
+            });
+        }
+        TrayEvent::ConnectionApprovalResult {
+            response_tx,
+            approved,
+        } => {
             let _ = response_tx.send(approved);
         }
         TrayEvent::UpdateReady {

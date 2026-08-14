@@ -490,6 +490,9 @@ pub mod mocks {
         GetTransportType,
         DevicePublicKey,
         SignDeviceAuth,
+        ForgetPcIdentity {
+            pc_id: DeviceId,
+        },
         SyncService {
             state: crate::traits::PlaybackState,
             is_exclusive: bool,
@@ -575,6 +578,16 @@ pub mod mocks {
             _pc_id: &DeviceId,
             _fingerprint: &str,
         ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn forget_pc_identity(&self, pc_id: &DeviceId) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::ForgetPcIdentity {
+                    pc_id: pc_id.clone(),
+                });
             Ok(())
         }
 

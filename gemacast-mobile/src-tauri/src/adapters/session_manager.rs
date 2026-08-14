@@ -23,6 +23,8 @@ struct ActiveSession {
     target_ip: Option<std::net::IpAddr>,
     device_id: String,
     network_link: gemacast_core::domain::types::NetworkLink,
+    session_token: Option<String>,
+    session_generation: Option<gemacast_core::control::SessionGeneration>,
 }
 
 /// Manages playback sessions and WebSocket client tasks using Tokio primitives.
@@ -70,6 +72,8 @@ impl SessionManager for TokioSessionManager {
             params.mode,
             params.device_id.clone(),
             params.network_link,
+            params.session_token.clone(),
+            params.session_generation,
         )?;
 
         let probe_task = match params.target_ip {
@@ -95,6 +99,8 @@ impl SessionManager for TokioSessionManager {
             target_ip: params.target_ip,
             device_id: params.device_id,
             network_link: params.network_link,
+            session_token: params.session_token,
+            session_generation: params.session_generation,
         });
 
         Ok(())
@@ -166,6 +172,8 @@ impl SessionManager for TokioSessionManager {
             target_ip: s.target_ip,
             device_id: s.device_id.clone(),
             network_link: s.network_link,
+            session_token: s.session_token.clone(),
+            session_generation: s.session_generation,
         })
     }
 

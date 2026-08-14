@@ -216,6 +216,9 @@ pub enum ControlError {
     #[error("sender rejected the request: {reason}")]
     Rejected { reason: String },
 
+    #[error("sender rejected the request: {reason} ({code})")]
+    RemoteRejected { code: String, reason: String },
+
     #[error("failed to start control server")]
     ServerStartFailed(#[source] std::io::Error),
 

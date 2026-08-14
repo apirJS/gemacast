@@ -362,6 +362,33 @@ class MainActivity : TauriActivity() {
     }
 
     @Keep
+    fun forgetPcIdentity(pcId: String): String {
+        return try {
+            require(pcId.isNotBlank()) { "PC ID cannot be empty" }
+            val preferences = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+            if (!preferences.edit().remove(pcId).commit()) {
+                return "ERROR: Android could not remove the PC certificate pin"
+            }
+            if (pendingPcId == pcId) {
+                pendingPcId = null
+                pendingPcFingerprint = null
+            }
+            pcIdentityConfirmationState.cancelAll()
+            runOnUiThread {
+                if (pcIdentityConfirmationDialogKey?.pcId == pcId) {
+                    pcIdentityConfirmationDialog?.dismiss()
+                    pcIdentityConfirmationDialog = null
+                    pcIdentityConfirmationDialogKey = null
+                }
+            }
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
     fun syncServiceState(action: String, isExclusive: Boolean) {
         try {
             val intent = Intent(this, GemaCastService::class.java).apply {

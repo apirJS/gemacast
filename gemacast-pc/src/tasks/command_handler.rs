@@ -15,6 +15,7 @@ use gemacast_core::domain::types::DeviceId;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::device_auth::DeviceAuthManager;
 use crate::events::AppCommand;
 use crate::traits::{AudioController, DeviceNotifier, DeviceRegistry, TrayNotifier};
 use crate::trusted_devices::TrustedDeviceStore;
@@ -48,6 +49,7 @@ pub struct CommandHandler {
     pub notifier: Arc<dyn DeviceNotifier>,
     pub authorizer: SessionAuthorizer,
     pub trusted_devices: TrustedDeviceStore,
+    pub device_auth: DeviceAuthManager,
 }
 
 impl CommandHandler {
@@ -134,6 +136,7 @@ impl CommandHandler {
 
         let all = self.registry.drain_all();
         self.authorizer.revoke_all();
+        self.device_auth.clear_pending();
         for (device_id, device) in all {
             self.notifier
                 .notify_disconnect(&device_id, Some(device.addr))
@@ -148,8 +151,14 @@ impl CommandHandler {
         let addr = self.registry.get_addr(&device_id);
         self.registry.unregister(&device_id);
         self.authorizer.revoke(&device_id, None);
+        self.authorizer.cancel_pending_for_device(&device_id);
+        self.device_auth.cancel_pending_for_device(&device_id);
         if let Err(error) = self.trusted_devices.forget(&device_id) {
             tracing::error!("Failed to remove trusted device {:?}: {}", device_id, error);
+            self.tray.notify_fatal_error(format!(
+                "Could not persist the removal of {}. It remains revoked until restart; retry the kick before restarting: {error}",
+                device_id.0
+            ));
         }
         let _ = self.audio.unsubscribe(&device_id).await;
         self.notifier.notify_disconnect(&device_id, addr).await;
@@ -165,6 +174,7 @@ impl CommandHandler {
 
         let all = self.registry.drain_all();
         self.authorizer.revoke_all();
+        self.device_auth.clear_pending();
         for (device_id, device) in all {
             self.tray.notify_device_lost(device_id.clone(), device.addr);
             self.notifier
@@ -290,6 +300,7 @@ mod tests {
             notifier,
             authorizer: SessionAuthorizer::default(),
             trusted_devices: TrustedDeviceStore::in_memory(),
+            device_auth: DeviceAuthManager::default(),
         }
     }
 
@@ -356,6 +367,22 @@ mod tests {
             .trusted_devices
             .trust(device_id.clone(), "Phone 1".into(), "key".into())
             .unwrap();
+        let approval_request = handler
+            .authorizer
+            .create_pending(device_id.clone())
+            .unwrap();
+        handler
+            .device_auth
+            .hold_pending_pairing(
+                approval_request.clone(),
+                device_id.clone(),
+                crate::device_auth::VerifiedDeviceIdentity {
+                    public_key: "key".into(),
+                    fingerprint: "fingerprint".into(),
+                    pairing_code: "123456".into(),
+                },
+            )
+            .unwrap();
 
         let mut broadcaster = BroadcasterState::default();
         handler
@@ -364,6 +391,18 @@ mod tests {
 
         assert!(!registry.contains("phone-1"));
         assert!(!handler.trusted_devices.is_trusted(&device_id, "key"));
+        assert_eq!(
+            handler
+                .authorizer
+                .pending_status(&approval_request, &device_id),
+            None
+        );
+        assert!(
+            handler
+                .device_auth
+                .pending_pairing(&approval_request, &device_id, "key")
+                .is_none()
+        );
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);

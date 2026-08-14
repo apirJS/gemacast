@@ -59,6 +59,8 @@ pub fn spawn_session_receiver(
     mode: gemacast_core::domain::types::ConnectionMode,
     device_id: String,
     network_link: gemacast_core::domain::types::NetworkLink,
+    session_token: Option<String>,
+    session_generation: Option<gemacast_core::control::SessionGeneration>,
 ) -> SessionReceiverResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
@@ -94,7 +96,11 @@ pub fn spawn_session_receiver(
                 Some(latency_tx),
                 target_ip,
                 mode,
-                device_id,
+                gemacast_core::stream::receiver::AudioSessionCredentials {
+                    device_id: gemacast_core::domain::types::DeviceId(device_id),
+                    session_token,
+                    session_generation,
+                },
             )
             .await
         {

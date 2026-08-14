@@ -4,7 +4,7 @@
 //! transport classification and network identity logic fully testable.
 
 use crate::traits::{NetworkInfoProvider, PlatformService};
-use gemacast_core::domain::types::{ConnectionModes, NetworkLink};
+use gemacast_core::domain::types::{ConnectionModes, DeviceId, NetworkLink};
 
 /// Network state returned to the frontend.
 #[derive(serde::Serialize)]
@@ -107,6 +107,11 @@ pub fn get_network_state(
         network_id,
         modes,
     })
+}
+
+/// Remove one locally stored PC certificate pin.
+pub fn forget_pc_identity(platform: &dyn PlatformService, pc_id: &DeviceId) -> Result<(), String> {
+    platform.forget_pc_identity(pc_id)
 }
 
 /// Detect the phone's network link type from platform transport info.
@@ -239,6 +244,16 @@ mod tests {
         assert!(modes.wifi);
         assert!(!modes.usb);
         assert!(modes.adb);
+    }
+
+    #[test]
+    fn forget_pc_identity_delegates_to_platform() {
+        let platform = MockPlatformService::new();
+        let pc_id = DeviceId("pc-1".into());
+        forget_pc_identity(&platform, &pc_id).unwrap();
+        assert!(platform.calls.lock().unwrap().iter().any(|call| {
+            matches!(call, PlatformCall::ForgetPcIdentity { pc_id: observed } if observed == &pc_id)
+        }));
     }
 
     #[test]

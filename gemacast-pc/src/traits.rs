@@ -20,4 +20,4 @@ pub mod tray_notifier;
 pub use audio_controller::AudioController;
 pub use device_notifier::DeviceNotifier;
 pub use device_registry::{DeviceRegistry, RegistrationOutcome};
-pub use tray_notifier::TrayNotifier;
+pub use tray_notifier::{ConnectionApprovalRequest, TrayNotifier};

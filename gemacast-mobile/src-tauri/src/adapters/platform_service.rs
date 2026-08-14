@@ -118,6 +118,24 @@ impl PlatformService for NativePlatformService {
         }
     }
 
+    fn forget_pc_identity(
+        &self,
+        pc_id: &gemacast_core::domain::types::DeviceId,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        {
+            crate::domains::discovery::native::call_native_forget_pc_identity(
+                &self.app_handle,
+                pc_id.as_ref(),
+            )
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = pc_id;
+            Ok(())
+        }
+    }
+
     #[allow(unused_variables)]
     fn sync_service(&self, state: PlaybackState, is_exclusive: bool) {
         #[cfg(target_os = "android")]

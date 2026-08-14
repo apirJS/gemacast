@@ -39,6 +39,10 @@ pub trait PlatformService: Send + Sync {
     /// Persist the staged PC certificate pin after pairing and stream startup.
     fn remember_pc_identity(&self, pc_id: &DeviceId, fingerprint: &str) -> Result<(), String>;
 
+    /// Remove one PC certificate pin so the next connection requires phone
+    /// confirmation again.
+    fn forget_pc_identity(&self, pc_id: &DeviceId) -> Result<(), String>;
+
     /// Synchronize the Android foreground service state.
     fn sync_service(&self, state: PlaybackState, is_exclusive: bool);
 

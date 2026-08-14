@@ -2,6 +2,17 @@ use async_trait::async_trait;
 use gemacast_core::domain::types::{DeviceId, TransportType};
 use std::net::SocketAddr;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionApprovalRequest {
+    pub request_id: String,
+    pub device_id: DeviceId,
+    pub name: String,
+    pub addr: SocketAddr,
+    pub key_fingerprint: String,
+    pub pairing_code: String,
+    pub replaces_existing_identity: bool,
+}
+
 /// Sends UI events to the tray event loop.
 ///
 /// **Production**: [`crate::adapters::EventLoopTrayNotifier`] wrapping `EventLoopProxy<TrayEvent>`.
@@ -9,15 +20,7 @@ use std::net::SocketAddr;
 #[async_trait]
 pub trait TrayNotifier: Send + Sync {
     /// Ask the PC user to approve a first-time LAN receiver.
-    async fn request_connection_approval(
-        &self,
-        request_id: String,
-        device_id: DeviceId,
-        name: String,
-        addr: SocketAddr,
-        key_fingerprint: String,
-        pairing_code: String,
-    ) -> bool;
+    async fn request_connection_approval(&self, request: ConnectionApprovalRequest) -> bool;
 
     /// A new device connected (or reconnected at a new address).
     fn notify_device_discovered(

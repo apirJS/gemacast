@@ -15,6 +15,7 @@ import {
   handleLinkLost,
   handleLinkRecovered,
   changeAudioSource,
+  isTerminalConnectError,
 } from './use-connection';
 import { ErrorCode } from '../core/error';
 
@@ -37,6 +38,11 @@ beforeEach(() => {
 });
 
 describe('connectToSender', () => {
+  it('classifies pairing decisions as terminal', () => {
+    expect(isTerminalConnectError('sender rejected the request (pairing_rejected)')).toBe(true);
+    expect(isTerminalConnectError(new Error('HTTP request failed'))).toBe(false);
+  });
+
   it('transitions through Connecting → Connected on success', async () => {
     const sender = makeDiscoveredSender();
     const result = await connectToSender(sender);
@@ -69,6 +75,20 @@ describe('connectToSender', () => {
     expect(result.ok).toBe(false);
     expect(useAppStore.getState().status).toBe(Status.Listening);
     expect(useAppStore.getState().error).not.toBeNull();
+  });
+
+  it('does not retry a rejected LAN pairing', async () => {
+    let attempts = 0;
+    setupInvokeMock({
+      connect_to_sender: () => {
+        attempts += 1;
+        throw new Error('sender rejected the request (pairing_rejected)');
+      },
+    });
+
+    await connectToSender(makeDiscoveredSender());
+
+    expect(attempts).toBe(1);
   });
 
   it('resets reconnectAttempts to 0 on connect', async () => {

@@ -33,6 +33,7 @@ struct TrustedDeviceFile {
 struct TrustedDeviceState {
     pc_certificate_fingerprint: Option<String>,
     devices: HashMap<DeviceId, TrustedDevice>,
+    revoked: std::collections::HashSet<DeviceId>,
 }
 
 #[derive(Clone)]
@@ -60,6 +61,7 @@ impl TrustedDeviceStore {
                     .into_iter()
                     .map(|device| (device.device_id.clone(), device))
                     .collect(),
+                revoked: std::collections::HashSet::new(),
             })),
         }
     }
@@ -71,6 +73,7 @@ impl TrustedDeviceStore {
             state: Arc::new(Mutex::new(TrustedDeviceState {
                 pc_certificate_fingerprint: Some("test-pc-certificate".into()),
                 devices: HashMap::new(),
+                revoked: std::collections::HashSet::new(),
             })),
         }
     }
@@ -91,11 +94,13 @@ impl TrustedDeviceStore {
         }
         let previous_fingerprint = state.pc_certificate_fingerprint.replace(fingerprint.into());
         let previous_devices = std::mem::take(&mut state.devices);
+        let previous_revoked = std::mem::take(&mut state.revoked);
         if let Some(path) = self.path.as_deref()
             && let Err(error) = save_state(path, &state)
         {
             state.pc_certificate_fingerprint = previous_fingerprint;
             state.devices = previous_devices;
+            state.revoked = previous_revoked;
             return Err(error);
         }
         Ok(())
@@ -105,6 +110,7 @@ impl TrustedDeviceStore {
         self.state
             .lock()
             .ok()
+            .filter(|state| !state.revoked.contains(device_id))
             .and_then(|state| state.devices.get(device_id).cloned())
             .is_some_and(|device| {
                 constant_time_eq(device.public_key.as_bytes(), public_key.as_bytes())
@@ -113,6 +119,9 @@ impl TrustedDeviceStore {
 
     pub fn public_key(&self, device_id: &DeviceId) -> Option<String> {
         self.state.lock().ok().and_then(|state| {
+            if state.revoked.contains(device_id) {
+                return None;
+            }
             state
                 .devices
                 .get(device_id)
@@ -135,6 +144,7 @@ impl TrustedDeviceStore {
                 "trusted-device store is not bound to a PC identity",
             ));
         }
+        let was_revoked = state.revoked.remove(&device_id);
         let previous = state.devices.insert(
             device_id.clone(),
             TrustedDevice {
@@ -146,6 +156,9 @@ impl TrustedDeviceStore {
         if let Some(path) = self.path.as_deref()
             && let Err(error) = save_state(path, &state)
         {
+            if was_revoked {
+                state.revoked.insert(device_id.clone());
+            }
             match previous {
                 Some(device) => {
                     state.devices.insert(device_id, device);
@@ -164,15 +177,23 @@ impl TrustedDeviceStore {
             .state
             .lock()
             .map_err(|_| io::Error::other("trusted-device store is unavailable"))?;
-        let Some(previous) = state.devices.remove(device_id) else {
+        let removed = state.devices.remove(device_id);
+        let already_revoked = !state.revoked.insert(device_id.clone());
+        if removed.is_none() && !already_revoked {
+            state.revoked.remove(device_id);
             return Ok(false);
-        };
+        }
         if let Some(path) = self.path.as_deref()
             && let Err(error) = save_state(path, &state)
         {
-            state.devices.insert(device_id.clone(), previous);
+            tracing::error!(
+                ?device_id,
+                %error,
+                "trusted-device removal was not persisted; keeping it revoked in memory"
+            );
             return Err(error);
         }
+        state.revoked.remove(device_id);
         Ok(true)
     }
 }
@@ -268,6 +289,28 @@ mod tests {
         reloaded.bind_pc_identity("new-certificate").unwrap();
 
         assert!(!reloaded.is_trusted(&device_id, "public-key"));
+        assert!(!TrustedDeviceStore::load(path.clone()).is_trusted(&device_id, "public-key"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn failed_forget_should_stay_revoked_and_allow_a_persistence_retry() {
+        let path = temp_path("failed-forget");
+        let device_id = DeviceId("phone-1".into());
+        let store = TrustedDeviceStore::load(path.clone());
+        store.bind_pc_identity("pc-certificate").unwrap();
+        store
+            .trust(device_id.clone(), "Phone".into(), "public-key".into())
+            .unwrap();
+
+        let blocked_tmp_path = path.with_extension("json.tmp");
+        std::fs::create_dir_all(&blocked_tmp_path).unwrap();
+        assert!(store.forget(&device_id).is_err());
+        assert!(!store.is_trusted(&device_id, "public-key"));
+        assert_eq!(store.public_key(&device_id), None);
+
+        std::fs::remove_dir(&blocked_tmp_path).unwrap();
+        assert!(store.forget(&device_id).unwrap());
         assert!(!TrustedDeviceStore::load(path.clone()).is_trusted(&device_id, "public-key"));
         let _ = std::fs::remove_file(path);
     }

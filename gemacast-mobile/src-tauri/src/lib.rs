@@ -104,6 +104,7 @@ pub fn run() {
             domains::discovery::commands::start_listening_for_senders,
             domains::discovery::commands::stop_listening_for_senders,
             domains::discovery::commands::get_network_state,
+            domains::discovery::commands::forget_pc_identity,
             domains::audio::commands::connect_to_sender,
             domains::audio::commands::disconnect_from_sender,
             domains::audio::commands::start_audio_playback,

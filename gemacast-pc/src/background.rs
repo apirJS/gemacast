@@ -625,6 +625,7 @@ impl EngineReady {
             self.audio_command_tx.clone(),
             self.adb_shutdown_tx.clone(),
             self.fatal_error_tx.clone(),
+            self.authorizer.clone(),
         );
 
         spawn_adb_discovery_tcp_server(
@@ -650,6 +651,7 @@ impl EngineReady {
         // -- Control dispatcher --
         let sender_id = self.sender_id;
         let sender_name = self.device_name;
+        let device_auth = crate::device_auth::DeviceAuthManager::default();
         let dispatcher = Arc::new(control_dispatcher::ControlDispatcher {
             registry: self.registry.clone(),
             tray: self.tray.clone(),
@@ -660,7 +662,7 @@ impl EngineReady {
             pc_certificate_fingerprint: self.pc_certificate_fingerprint,
             is_broadcasting: self.is_broadcasting.clone(),
             authorizer: self.authorizer.clone(),
-            device_auth: crate::device_auth::DeviceAuthManager::default(),
+            device_auth: device_auth.clone(),
             trusted_devices: self.trusted_devices.clone(),
         });
 
@@ -683,6 +685,7 @@ impl EngineReady {
             notifier: self.notifier,
             authorizer: self.authorizer,
             trusted_devices: self.trusted_devices,
+            device_auth,
         });
 
         let (engine_shutdown_tx, mut engine_shutdown_rx) = tokio::sync::oneshot::channel();

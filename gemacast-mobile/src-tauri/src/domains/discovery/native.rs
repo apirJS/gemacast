@@ -236,6 +236,16 @@ pub fn call_native_remember_pc_identity(
 }
 
 #[cfg(target_os = "android")]
+pub fn call_native_forget_pc_identity(app: &tauri::AppHandle, pc_id: &str) -> Result<(), String> {
+    let result = call_native_string_method(app, "forgetPcIdentity", Some(pc_id.to_string()))?;
+    if result == "OK" {
+        Ok(())
+    } else {
+        Err(format!("unexpected PC identity removal result: {result}"))
+    }
+}
+
+#[cfg(target_os = "android")]
 /// Calls the Android Activity's `syncServiceState()` method via JNI.
 pub fn call_native_sync_service(
     app: &tauri::AppHandle,

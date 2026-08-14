@@ -26,12 +26,32 @@ impl PcIdentity {
     fn load_or_create(cert_path: PathBuf, key_path: PathBuf) -> io::Result<Self> {
         match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
             (Ok(certificate_der), Ok(private_key_der)) => {
-                Self::from_der(certificate_der, private_key_der)
+                match Self::from_der(certificate_der, private_key_der) {
+                    Ok(identity) => Ok(identity),
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                        tracing::warn!(
+                            %error,
+                            "PC identity files are invalid; quarantining them and generating a new identity"
+                        );
+                        quarantine_identity_file(&cert_path)?;
+                        quarantine_identity_file(&key_path)?;
+                        Self::generate(cert_path, key_path)
+                    }
+                    Err(error) => Err(error),
+                }
             }
             (Err(cert_error), Err(key_error))
                 if cert_error.kind() == io::ErrorKind::NotFound
                     && key_error.kind() == io::ErrorKind::NotFound =>
             {
+                Self::generate(cert_path, key_path)
+            }
+            (Err(error), Ok(_)) if error.kind() == io::ErrorKind::NotFound => {
+                quarantine_identity_file(&key_path)?;
+                Self::generate(cert_path, key_path)
+            }
+            (Ok(_), Err(error)) if error.kind() == io::ErrorKind::NotFound => {
+                quarantine_identity_file(&cert_path)?;
                 Self::generate(cert_path, key_path)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -101,8 +121,8 @@ impl PcIdentity {
         let config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|error| io::Error::other(format!("failed to enable TLS 1.3: {error}")))?
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .map_err(|error| io::Error::other(format!("failed to enable TLS 1.2/1.3: {error}")))?
         .with_no_client_auth()
         .with_single_cert(
             vec![rustls::pki_types::CertificateDer::from(
@@ -134,6 +154,23 @@ fn save_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn quarantine_identity_file(path: &Path) -> io::Result<()> {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PC identity path has no valid file name",
+        ));
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let quarantined = path.with_file_name(format!("{file_name}.invalid-{stamp}"));
+    std::fs::rename(path, &quarantined)?;
+    tracing::warn!(original = %path.display(), quarantined = %quarantined.display(), "Quarantined PC identity file");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +193,121 @@ mod tests {
         assert_eq!(identity.fingerprint(), reloaded.fingerprint());
         assert_eq!(identity.device_id(), reloaded.device_id());
         identity.tls_config().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn partial_identity_should_be_quarantined_and_regenerated() {
+        let root = std::env::temp_dir().join(format!(
+            "gemacast-pc-identity-partial-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cert_path = root.join("cert.der");
+        let key_path = root.join("key.der");
+        let original = PcIdentity::load_or_create(cert_path.clone(), key_path.clone()).unwrap();
+        std::fs::remove_file(&key_path).unwrap();
+
+        let regenerated = PcIdentity::load_or_create(cert_path.clone(), key_path).unwrap();
+        assert_ne!(original.fingerprint(), regenerated.fingerprint());
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains("invalid-"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn key_only_identity_should_be_quarantined_and_regenerated() {
+        let root = std::env::temp_dir().join(format!(
+            "gemacast-pc-identity-key-only-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cert_path = root.join("cert.der");
+        let key_path = root.join("key.der");
+        let original = PcIdentity::load_or_create(cert_path.clone(), key_path.clone()).unwrap();
+        std::fs::remove_file(&cert_path).unwrap();
+
+        let regenerated = PcIdentity::load_or_create(cert_path, key_path.clone()).unwrap();
+        assert_ne!(original.fingerprint(), regenerated.fingerprint());
+        assert!(key_path.exists());
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("key.der.invalid-"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_identity_should_be_quarantined_and_regenerated() {
+        let root = std::env::temp_dir().join(format!(
+            "gemacast-pc-identity-corrupt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cert_path = root.join("cert.der");
+        let key_path = root.join("key.der");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&cert_path, b"not a certificate").unwrap();
+        std::fs::write(&key_path, b"not a key").unwrap();
+
+        let identity = PcIdentity::load_or_create(cert_path, key_path).unwrap();
+        identity.tls_config().unwrap();
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("invalid-"))
+                .count()
+                == 2
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mismatched_identity_should_be_quarantined_and_regenerated() {
+        let root = std::env::temp_dir().join(format!(
+            "gemacast-pc-identity-mismatch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first_root = root.join("first");
+        let second_root = root.join("second");
+        let cert_path = root.join("cert.der");
+        let key_path = root.join("key.der");
+        let first =
+            PcIdentity::load_or_create(first_root.join("cert.der"), first_root.join("key.der"))
+                .unwrap();
+        let second =
+            PcIdentity::load_or_create(second_root.join("cert.der"), second_root.join("key.der"))
+                .unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::copy(first_root.join("cert.der"), &cert_path).unwrap();
+        std::fs::copy(second_root.join("key.der"), &key_path).unwrap();
+
+        let regenerated = PcIdentity::load_or_create(cert_path, key_path).unwrap();
+        assert_ne!(regenerated.fingerprint(), first.fingerprint());
+        assert_ne!(regenerated.fingerprint(), second.fingerprint());
         let _ = std::fs::remove_dir_all(root);
     }
 }

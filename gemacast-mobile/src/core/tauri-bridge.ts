@@ -89,6 +89,8 @@ export const tauriBridge = {
       modes: { wifi: boolean; usb: boolean; adb: boolean };
     }>('get_network_state'),
 
+  forgetPcIdentity: (pcId: string) => invoke('forget_pc_identity', { pcId }),
+
   getLocalIp: () => invoke<string>('get_local_ip'),
 
   getNetworkIdentifier: () => invoke<string>('get_network_identifier'),

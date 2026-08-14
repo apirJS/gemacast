@@ -64,6 +64,7 @@ pub enum ControlCommand {
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(65);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn control_error(
     status: StatusCode,
@@ -78,6 +79,29 @@ fn control_error(
         }),
     )
         .into_response()
+}
+
+fn connect_error_code(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    if message.contains("cancelled on the phone") {
+        "pairing_cancelled"
+    } else if message.contains("rejected on the pc") {
+        "pairing_rejected"
+    } else if message.contains("invalid or expired") || message.contains("challenge expired") {
+        "pairing_expired"
+    } else if message.contains("too many pending") {
+        "pairing_capacity_exhausted"
+    } else if message.contains("challenge")
+        || message.contains("authentication")
+        || message.contains("signature")
+        || message.contains("device key")
+    {
+        "authentication_failed"
+    } else if message.contains("remember the approved") {
+        "pairing_persistence_failed"
+    } else {
+        "stream_start_failed"
+    }
 }
 
 async fn await_mutation(
@@ -233,10 +257,13 @@ impl axum::serve::Listener for TlsListener {
                     continue;
                 }
             };
-            match self.acceptor.accept(stream).await {
-                Ok(stream) => return (stream, PeerAddr(addr)),
-                Err(error) => {
-                    tracing::debug!("Rejected invalid TLS connection from {addr}: {error}");
+            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, self.acceptor.accept(stream)).await {
+                Ok(Ok(stream)) => return (stream, PeerAddr(addr)),
+                Ok(Err(error)) => {
+                    tracing::warn!("Rejected invalid TLS connection from {addr}: {error}");
+                }
+                Err(_) => {
+                    tracing::warn!("TLS handshake from {addr} timed out");
                 }
             }
         }
@@ -334,9 +361,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
     }
 
     let current_session = authenticate_device(&state, &headers, &req.device_id);
-    let adb_tunnel =
-        addr.ip().is_loopback() && matches!(req.mode, crate::domain::types::ConnectionMode::Adb);
-    let authorized = adb_tunnel || current_session.is_some();
+    let authorized = current_session.is_some();
     let (response_tx, response_rx) = oneshot::channel();
     if state
         .command_tx
@@ -364,7 +389,8 @@ async fn handle_connect<P: ProcessLister + 'static>(
     let mut presence = match tokio::time::timeout(CONNECT_TIMEOUT, response_rx).await {
         Ok(Ok(Ok(presence))) => presence,
         Ok(Ok(Err(message))) => {
-            return control_error(StatusCode::CONFLICT, "stream_start_failed", message);
+            let code = connect_error_code(&message);
+            return control_error(StatusCode::CONFLICT, code, message);
         }
         Ok(Err(_)) => {
             return control_error(
@@ -583,6 +609,39 @@ mod tests {
     impl ProcessLister for MockProcessLister {
         fn list_processes(&self) -> Vec<crate::domain::types::ProcessInfo> {
             Vec::new()
+        }
+    }
+
+    #[test]
+    fn connect_errors_should_map_to_stable_client_codes() {
+        let cases = [
+            ("pairing was cancelled on the phone", "pairing_cancelled"),
+            (
+                "connection request request-1 was rejected on the PC",
+                "pairing_rejected",
+            ),
+            (
+                "connection request request-1 is invalid or expired",
+                "pairing_expired",
+            ),
+            ("device authentication challenge expired", "pairing_expired"),
+            (
+                "too many pending device-authentication requests",
+                "pairing_capacity_exhausted",
+            ),
+            (
+                "device authentication signature is invalid",
+                "authentication_failed",
+            ),
+            (
+                "failed to remember the approved device: disk full",
+                "pairing_persistence_failed",
+            ),
+            ("failed to initialize audio capture", "stream_start_failed"),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(connect_error_code(message), expected, "message: {message}");
         }
     }
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::domain::types::DeviceId;
 
@@ -38,6 +39,8 @@ struct AuthorizationState {
     next_generation: u64,
 }
 
+const PENDING_APPROVAL_TTL: Duration = Duration::from_secs(65);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingApprovalStatus {
     Pending,
@@ -48,18 +51,36 @@ pub enum PendingApprovalStatus {
 struct PendingApproval {
     device_id: DeviceId,
     status: PendingApprovalStatus,
+    created_at: Instant,
 }
 
 /// In-memory per-device authorization state.
 ///
 /// Tokens intentionally die with the PC process. A reconnect rotates both the
 /// token and generation, invalidating delayed requests and stale WebSockets.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionAuthorizer {
     state: Arc<Mutex<AuthorizationState>>,
+    pending_ttl: Duration,
+}
+
+impl Default for SessionAuthorizer {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(AuthorizationState::default())),
+            pending_ttl: PENDING_APPROVAL_TTL,
+        }
+    }
 }
 
 impl SessionAuthorizer {
+    fn prune_pending(&self, state: &mut AuthorizationState) {
+        let ttl = self.pending_ttl;
+        state
+            .pending
+            .retain(|_, request| request.created_at.elapsed() <= ttl);
+    }
+
     pub fn pending_request_id(&self) -> Result<String, String> {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
@@ -73,11 +94,16 @@ impl SessionAuthorizer {
             .state
             .lock()
             .map_err(|_| "authorization state is unavailable".to_string())?;
+        self.prune_pending(&mut state);
+        state
+            .pending
+            .retain(|_, request| request.device_id != device_id);
         state.pending.insert(
             request_id.clone(),
             PendingApproval {
                 device_id,
                 status: PendingApprovalStatus::Pending,
+                created_at: Instant::now(),
             },
         );
         Ok(request_id)
@@ -88,7 +114,8 @@ impl SessionAuthorizer {
         request_id: &str,
         device_id: &DeviceId,
     ) -> Option<PendingApprovalStatus> {
-        self.state.lock().ok().and_then(|state| {
+        self.state.lock().ok().and_then(|mut state| {
+            self.prune_pending(&mut state);
             state
                 .pending
                 .get(request_id)
@@ -101,9 +128,13 @@ impl SessionAuthorizer {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
+        self.prune_pending(&mut state);
         let Some(request) = state.pending.get_mut(request_id) else {
             return false;
         };
+        if request.status != PendingApprovalStatus::Pending {
+            return false;
+        }
         request.status = if approved {
             PendingApprovalStatus::Approved
         } else {
@@ -116,6 +147,18 @@ impl SessionAuthorizer {
         if let Ok(mut state) = self.state.lock() {
             state.pending.remove(request_id);
         }
+    }
+
+    pub fn cancel_pending_for_device(&self, device_id: &DeviceId) -> usize {
+        let Ok(mut state) = self.state.lock() else {
+            return 0;
+        };
+        self.prune_pending(&mut state);
+        let before = state.pending.len();
+        state
+            .pending
+            .retain(|_, request| &request.device_id != device_id);
+        before - state.pending.len()
     }
 
     pub fn issue(&self, device_id: DeviceId) -> Result<(String, SessionGeneration), String> {
@@ -286,6 +329,35 @@ mod tests {
         assert_eq!(
             authorizer.pending_status(&request_id, &phone_one),
             Some(PendingApprovalStatus::Approved)
+        );
+    }
+
+    #[test]
+    fn expired_pending_approval_should_reject_late_dialog_results() {
+        let authorizer = SessionAuthorizer {
+            pending_ttl: Duration::ZERO,
+            ..SessionAuthorizer::default()
+        };
+        let device_id = DeviceId("phone-1".into());
+        let request_id = authorizer.create_pending(device_id.clone()).unwrap();
+
+        assert_eq!(authorizer.pending_status(&request_id, &device_id), None);
+        assert!(!authorizer.resolve_pending(&request_id, true));
+    }
+
+    #[test]
+    fn cancelling_a_device_should_remove_only_its_pending_approval() {
+        let authorizer = SessionAuthorizer::default();
+        let phone_one = DeviceId("phone-1".into());
+        let phone_two = DeviceId("phone-2".into());
+        let request_one = authorizer.create_pending(phone_one.clone()).unwrap();
+        let request_two = authorizer.create_pending(phone_two.clone()).unwrap();
+
+        assert_eq!(authorizer.cancel_pending_for_device(&phone_one), 1);
+        assert_eq!(authorizer.pending_status(&request_one, &phone_one), None);
+        assert_eq!(
+            authorizer.pending_status(&request_two, &phone_two),
+            Some(PendingApprovalStatus::Pending)
         );
     }
 

@@ -206,6 +206,8 @@ impl AudioService {
                 device_id: params.device_id.to_string(),
                 bitrate: params.bitrate,
                 network_link: link_pair.effective_link(),
+                session_token: response.session_token.clone(),
+                session_generation: response.session_generation,
             })
             .await
         {
@@ -420,6 +422,8 @@ impl AudioService {
                 device_id: info.device_id,
                 bitrate: info.bitrate,
                 network_link: info.network_link,
+                session_token: info.session_token,
+                session_generation: info.session_generation,
             })
             .await?;
 
@@ -796,6 +800,8 @@ mod tests {
             target_ip: Some("192.168.1.5".parse().unwrap()),
             device_id: "phone-1".into(),
             network_link: gemacast_core::domain::types::NetworkLink::Unknown,
+            session_token: None,
+            session_generation: None,
         }));
         let client = Arc::new(MockSenderControlClient::new());
         let platform = Arc::new(MockPlatformService::new());

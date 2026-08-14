@@ -1,0 +1,65 @@
+import { useMemo, useState } from 'react';
+import { Trash2 } from 'lucide-react';
+import { tauriBridge } from '../../core/tauri-bridge';
+import { useAppStore } from '../../stores/app-store';
+import { useToastStore } from '../../stores/toast-store';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+
+export function ForgetPcIdentity() {
+  const connectedSender = useAppStore((state) => state.connectedSender);
+  const lastConnectedSender = useAppStore((state) => state.lastConnectedSender);
+  const discoveredSenders = useAppStore((state) => state.discoveredSenders);
+  const [selectedPc, setSelectedPc] = useState<{ deviceId: string; deviceName: string } | null>(null);
+
+  const senders = useMemo(() => {
+    const byId = new Map<string, { deviceId: string; deviceName: string }>();
+    for (const sender of [...discoveredSenders, lastConnectedSender, connectedSender]) {
+      if (sender) byId.set(sender.deviceId, sender);
+    }
+    return [...byId.values()];
+  }, [connectedSender, discoveredSenders, lastConnectedSender]);
+
+  const forget = async () => {
+    if (!selectedPc) return;
+    const pc = selectedPc;
+    setSelectedPc(null);
+    try {
+      await tauriBridge.forgetPcIdentity(pc.deviceId);
+      useToastStore.getState().show('success', `Forgot ${pc.deviceName}`);
+    } catch (error) {
+      useToastStore.getState().show('error', `Could not forget ${pc.deviceName}`, String(error));
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      {senders.length === 0 ? (
+        <p className="text-xs text-muted-foreground/70">No discovered PCs</p>
+      ) : (
+        <div className="space-y-1">
+          {senders.map((sender) => (
+            <div key={sender.deviceId} className="flex items-center justify-between gap-3 text-sm">
+              <span className="truncate">{sender.deviceName}</span>
+              <button
+                type="button"
+                className="shrink-0 rounded-default p-2 text-muted-foreground hover:bg-muted hover:text-status-lost"
+                title={`Forget ${sender.deviceName}`}
+                aria-label={`Forget ${sender.deviceName}`}
+                onClick={() => setSelectedPc(sender)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <ConfirmDialog
+        open={selectedPc !== null}
+        message={selectedPc ? `Forget the saved identity for ${selectedPc.deviceName}?` : ''}
+        confirmLabel="Forget"
+        onConfirm={forget}
+        onCancel={() => setSelectedPc(null)}
+      />
+    </div>
+  );
+}

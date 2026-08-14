@@ -13,6 +13,8 @@ use gemacast_core::control::types::{DeviceAuthChallenge, DeviceAuthRequest};
 use gemacast_core::domain::types::DeviceId;
 
 const CHALLENGE_TTL: Duration = Duration::from_secs(90);
+const PENDING_PAIRING_TTL: Duration = Duration::from_secs(65);
+const MAX_PENDING_CHALLENGES: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct VerifiedDeviceIdentity {
@@ -31,10 +33,16 @@ struct PendingChallenge {
     created_at: Instant,
 }
 
+struct PendingPairing {
+    device_id: DeviceId,
+    identity: VerifiedDeviceIdentity,
+    created_at: Instant,
+}
+
 #[derive(Default)]
 struct DeviceAuthState {
     challenges: HashMap<String, PendingChallenge>,
-    pending_pairings: HashMap<String, (DeviceId, VerifiedDeviceIdentity)>,
+    pending_pairings: HashMap<String, PendingPairing>,
 }
 
 #[derive(Clone)]
@@ -53,6 +61,16 @@ impl Default for DeviceAuthManager {
 }
 
 impl DeviceAuthManager {
+    fn prune_expired(&self, state: &mut DeviceAuthState) {
+        let challenge_ttl = self.challenge_ttl;
+        state
+            .challenges
+            .retain(|_, pending| pending.created_at.elapsed() <= challenge_ttl);
+        state
+            .pending_pairings
+            .retain(|_, pending| pending.created_at.elapsed() <= PENDING_PAIRING_TTL);
+    }
+
     pub fn begin(
         &self,
         device_id: DeviceId,
@@ -85,10 +103,10 @@ impl DeviceAuthManager {
             .state
             .lock()
             .map_err(|_| "device authentication state is unavailable".to_string())?;
-        let ttl = self.challenge_ttl;
-        state
-            .challenges
-            .retain(|_, pending| pending.created_at.elapsed() <= ttl);
+        self.prune_expired(&mut state);
+        if state.challenges.len() >= MAX_PENDING_CHALLENGES {
+            return Err("too many pending device-authentication requests".into());
+        }
         state.challenges.insert(
             challenge_id.clone(),
             PendingChallenge {
@@ -126,15 +144,14 @@ impl DeviceAuthManager {
             .signature
             .as_deref()
             .ok_or_else(|| "device authentication signature is missing".to_string())?;
-        let pending = self
+        let mut state = self
             .state
             .lock()
-            .map_err(|_| "device authentication state is unavailable".to_string())?
-            .challenges
-            .remove(challenge_id)
-            .ok_or_else(|| {
-                "device authentication challenge is invalid or already used".to_string()
-            })?;
+            .map_err(|_| "device authentication state is unavailable".to_string())?;
+        self.prune_expired(&mut state);
+        let pending = state.challenges.remove(challenge_id).ok_or_else(|| {
+            "device authentication challenge is invalid or already used".to_string()
+        })?;
         if pending.created_at.elapsed() > self.challenge_ttl {
             return Err("device authentication challenge expired".into());
         }
@@ -169,11 +186,19 @@ impl DeviceAuthManager {
         device_id: DeviceId,
         identity: VerifiedDeviceIdentity,
     ) -> Result<(), String> {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .map_err(|_| "device authentication state is unavailable".to_string())?
-            .pending_pairings
-            .insert(request_id, (device_id, identity));
+            .map_err(|_| "device authentication state is unavailable".to_string())?;
+        self.prune_expired(&mut state);
+        state.pending_pairings.insert(
+            request_id,
+            PendingPairing {
+                device_id,
+                identity,
+                created_at: Instant::now(),
+            },
+        );
         Ok(())
     }
 
@@ -183,20 +208,43 @@ impl DeviceAuthManager {
         device_id: &DeviceId,
         public_key: &str,
     ) -> Option<VerifiedDeviceIdentity> {
-        self.state.lock().ok().and_then(|state| {
+        self.state.lock().ok().and_then(|mut state| {
+            self.prune_expired(&mut state);
             state
                 .pending_pairings
                 .get(request_id)
-                .filter(|(pending_device_id, identity)| {
-                    pending_device_id == device_id && identity.public_key == public_key
+                .filter(|pending| {
+                    &pending.device_id == device_id && pending.identity.public_key == public_key
                 })
-                .map(|(_, identity)| identity.clone())
+                .map(|pending| pending.identity.clone())
         })
     }
 
     pub fn remove_pending_pairing(&self, request_id: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.pending_pairings.remove(request_id);
+        }
+    }
+
+    pub fn cancel_pending_for_device(&self, device_id: &DeviceId) -> usize {
+        let Ok(mut state) = self.state.lock() else {
+            return 0;
+        };
+        self.prune_expired(&mut state);
+        let before = state.pending_pairings.len() + state.challenges.len();
+        state
+            .pending_pairings
+            .retain(|_, pending| &pending.device_id != device_id);
+        state
+            .challenges
+            .retain(|_, pending| &pending.device_id != device_id);
+        before - state.pending_pairings.len() - state.challenges.len()
+    }
+
+    pub fn clear_pending(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.challenges.clear();
+            state.pending_pairings.clear();
         }
     }
 }
@@ -319,6 +367,65 @@ mod tests {
                     base64::engine::general_purpose::STANDARD.encode([1_u8; 31]),
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelling_a_device_should_remove_its_challenges_and_pairings_only() {
+        let manager = DeviceAuthManager::default();
+        let phone_one = DeviceId("phone-1".into());
+        let phone_two = DeviceId("phone-2".into());
+        let pc_id = DeviceId("pc-1".into());
+        let (auth_one, _) = signed_auth(&manager, &phone_one, &pc_id);
+        let (auth_two, _) = signed_auth(&manager, &phone_two, &pc_id);
+        let identity_one = manager
+            .verify(&phone_one, &pc_id, "pc-certificate", &auth_one)
+            .unwrap();
+        let identity_two = manager
+            .verify(&phone_two, &pc_id, "pc-certificate", &auth_two)
+            .unwrap();
+        manager
+            .hold_pending_pairing("request-1".into(), phone_one.clone(), identity_one)
+            .unwrap();
+        manager
+            .hold_pending_pairing("request-2".into(), phone_two.clone(), identity_two.clone())
+            .unwrap();
+
+        assert_eq!(manager.cancel_pending_for_device(&phone_one), 1);
+        assert!(
+            manager
+                .pending_pairing("request-1", &phone_one, &auth_one.public_key)
+                .is_none()
+        );
+        assert!(
+            manager
+                .pending_pairing("request-2", &phone_two, &identity_two.public_key)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn expired_pending_pairing_should_be_pruned() {
+        let manager = DeviceAuthManager::default();
+        let device_id = DeviceId("phone-1".into());
+        let identity = VerifiedDeviceIdentity {
+            public_key: "key".into(),
+            fingerprint: "fingerprint".into(),
+            pairing_code: "123456".into(),
+        };
+        manager.state.lock().unwrap().pending_pairings.insert(
+            "expired".into(),
+            PendingPairing {
+                device_id: device_id.clone(),
+                identity,
+                created_at: Instant::now() - PENDING_PAIRING_TTL - Duration::from_secs(1),
+            },
+        );
+
+        assert!(
+            manager
+                .pending_pairing("expired", &device_id, "key")
+                .is_none()
         );
     }
 }

@@ -14,6 +14,24 @@ use crate::domain::error::{ControlError, GemaCastError};
 use crate::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
 use crate::network::Ports;
 
+fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        let detail = error.to_string();
+        if !detail.is_empty() && !message.contains(&detail) {
+            message.push_str(": ");
+            message.push_str(&detail);
+        }
+        source = error.source();
+    }
+    message
+}
+
+fn request_error(error: reqwest::Error) -> GemaCastError {
+    ControlError::HttpRequestFailed(format_error_chain(&error)).into()
+}
+
 pub struct HttpControlClient {
     bootstrap_client: reqwest::Client,
     base_url: String,
@@ -138,12 +156,18 @@ impl HttpControlClient {
         }
 
         let status = response.status();
-        let reason = response
+        let error = response
             .json::<ControlErrorResponse>()
             .await
-            .map(|error| format!("{} ({})", error.message, error.code))
-            .unwrap_or_else(|_| format!("HTTP {status}"));
-        Err(ControlError::Rejected { reason }.into())
+            .unwrap_or_else(|_| ControlErrorResponse {
+                code: "http_error".into(),
+                message: format!("HTTP {status}"),
+            });
+        Err(ControlError::RemoteRejected {
+            code: error.code,
+            reason: error.message,
+        }
+        .into())
     }
 
     fn verify_presence_certificate(
@@ -179,10 +203,9 @@ impl HttpControlClient {
         signer: Option<&dyn DeviceAuthSigner>,
     ) -> Result<PresenceResponse, GemaCastError> {
         let device_id = connect_req.device_id.clone();
-        let is_adb = matches!(connect_req.mode, crate::domain::types::ConnectionMode::Adb);
-        if !is_adb && connect_req.device_auth.is_none() {
+        if connect_req.device_auth.is_none() {
             let signer = signer.ok_or_else(|| ControlError::Rejected {
-                reason: "LAN device authentication is unavailable".into(),
+                reason: "device authentication is unavailable".into(),
             })?;
             let mut nonce = [0u8; 32];
             getrandom::fill(&mut nonce).map_err(|error| ControlError::Rejected {
@@ -200,27 +223,26 @@ impl HttpControlClient {
         }
 
         let mut approval_deadline: Option<tokio::time::Instant> = None;
-        let credential = self.credential_for(Some(&device_id));
-        let mut client = self.client_for(credential.as_ref())?;
+        // A connect always bootstraps against the certificate actually served
+        // at this address. Reusing an IP-keyed certificate pin here can strand
+        // the client when DHCP assigns the address to a different PC.
+        let mut client = self.bootstrap_client.clone();
         let mut candidate_pc_identity: Option<(DeviceId, String)> = None;
 
         loop {
-            let resp = Self::authorize(
-                client.post(format!("{}/connect", self.base_url)),
-                credential.as_ref(),
-            )
-            .timeout(Self::DEFAULT_TIMEOUT)
-            .json(&connect_req)
-            .send()
-            .await
-            .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+            let resp = Self::authorize(client.post(format!("{}/connect", self.base_url)), None)
+                .timeout(Self::CONNECT_TIMEOUT)
+                .json(&connect_req)
+                .send()
+                .await
+                .map_err(request_error)?;
             let observed_fingerprint = response_certificate_fingerprint(&resp)
                 .map_err(|reason| ControlError::Rejected { reason })?;
             let presence: PresenceResponse = Self::ensure_success(resp)
                 .await?
                 .json()
                 .await
-                .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+                .map_err(request_error)?;
             let pc_fingerprint =
                 Self::verify_presence_certificate(&presence, &observed_fingerprint)?;
 
@@ -244,7 +266,7 @@ impl HttpControlClient {
                         .device_auth
                         .as_mut()
                         .ok_or_else(|| ControlError::Rejected {
-                            reason: "sender requested device authentication for an ADB connection"
+                            reason: "sender requested device authentication, but the request identity is missing"
                                 .into(),
                         })?;
                 let transcript = build_device_auth_transcript(
@@ -360,7 +382,7 @@ impl HttpControlClient {
         .json(&DisconnectReq { device_id })
         .send()
         .await
-        .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+        .map_err(request_error)?;
         Self::ensure_success(response).await?;
         if let Ok(mut credentials) = self.credentials.lock() {
             *credentials = None;
@@ -379,12 +401,12 @@ impl HttpControlClient {
         )
         .send()
         .await
-        .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+        .map_err(request_error)?;
         let resp: SourcesResponse = Self::ensure_success(response)
             .await?
             .json()
             .await
-            .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+            .map_err(request_error)?;
         Ok((resp.sources, resp.capabilities))
     }
 
@@ -402,7 +424,7 @@ impl HttpControlClient {
         .json(&super::types::ChangeSourceReq { device_id, source })
         .send()
         .await
-        .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+        .map_err(request_error)?;
         Self::ensure_success(response).await?;
         Ok(())
     }
@@ -421,7 +443,7 @@ impl HttpControlClient {
         .json(&super::types::ChangeBitrateReq { device_id, bitrate })
         .send()
         .await
-        .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+        .map_err(request_error)?;
         Self::ensure_success(response).await?;
         Ok(())
     }
@@ -437,14 +459,14 @@ impl HttpControlClient {
             .json(&ProbeReq { device_id })
             .send()
             .await
-            .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+            .map_err(request_error)?;
         let observed_fingerprint = response_certificate_fingerprint(&resp)
             .map_err(|reason| ControlError::Rejected { reason })?;
         let presence = Self::ensure_success(resp)
             .await?
             .json::<PresenceResponse>()
             .await
-            .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+            .map_err(request_error)?;
         Self::verify_presence_certificate(&presence, &observed_fingerprint)?;
         Ok(presence)
     }
@@ -458,12 +480,12 @@ impl HttpControlClient {
         )
         .send()
         .await
-        .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+        .map_err(request_error)?;
         let resp: ProcessListResponse = Self::ensure_success(response)
             .await?
             .json()
             .await
-            .map_err(|error| ControlError::HttpRequestFailed(error.to_string()))?;
+            .map_err(request_error)?;
         Ok(resp.processes)
     }
 }
@@ -475,6 +497,11 @@ fn build_https_client(
     let tls_config = client_config(expected_fingerprint)?;
     reqwest::Client::builder()
         .timeout(timeout)
+        // The control endpoint is a direct peer on the local network. Never
+        // route it through HTTP(S)_PROXY or an Android system proxy: that can
+        // turn a reachable private IP into a silent ten-second timeout before
+        // the PC's listener sees any TCP connection.
+        .no_proxy()
         .tls_info(true)
         .https_only(true)
         .pool_max_idle_per_host(0)

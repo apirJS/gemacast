@@ -1,5 +1,5 @@
 use crate::events::TrayEvent;
-use crate::traits::TrayNotifier;
+use crate::traits::{ConnectionApprovalRequest, TrayNotifier};
 use async_trait::async_trait;
 use gemacast_core::domain::types::{DeviceId, TransportType};
 use std::net::SocketAddr;
@@ -18,15 +18,16 @@ impl EventLoopTrayNotifier {
 
 #[async_trait]
 impl TrayNotifier for EventLoopTrayNotifier {
-    async fn request_connection_approval(
-        &self,
-        request_id: String,
-        _device_id: DeviceId,
-        name: String,
-        addr: SocketAddr,
-        key_fingerprint: String,
-        pairing_code: String,
-    ) -> bool {
+    async fn request_connection_approval(&self, request: ConnectionApprovalRequest) -> bool {
+        let ConnectionApprovalRequest {
+            request_id,
+            device_id: _,
+            name,
+            addr,
+            key_fingerprint,
+            pairing_code,
+            replaces_existing_identity,
+        } = request;
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         if self
             .proxy
@@ -36,6 +37,7 @@ impl TrayNotifier for EventLoopTrayNotifier {
                 addr,
                 key_fingerprint,
                 pairing_code,
+                replaces_existing_identity,
                 response_tx,
             })
             .is_err()

@@ -75,8 +75,8 @@ pub fn client_config(expected_fingerprint: Option<&str>) -> Result<rustls::Clien
     let provider = rustls::crypto::ring::default_provider();
     let verifier = Arc::new(CertificateFingerprintVerifier::new(expected_fingerprint)?);
     rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|error| format!("failed to enable TLS 1.3: {error}"))
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .map_err(|error| format!("failed to enable TLS 1.2/1.3: {error}"))
         .map(|builder| {
             builder
                 .dangerous()

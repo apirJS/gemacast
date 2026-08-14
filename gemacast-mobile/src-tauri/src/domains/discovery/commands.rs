@@ -89,3 +89,8 @@ pub fn get_network_state(
 ) -> Result<super::service::NetworkState, String> {
     super::service::get_network_state(state.network.as_ref(), state.platform.as_ref())
 }
+
+#[tauri::command]
+pub fn forget_pc_identity(pc_id: DeviceId, state: State<'_, AppState>) -> Result<(), String> {
+    super::service::forget_pc_identity(state.platform.as_ref(), &pc_id)
+}

@@ -11,6 +11,23 @@ import { ok, err } from '../core/types';
 const store = useAppStore;
 const toast = useToastStore;
 
+const TERMINAL_CONNECT_ERROR_CODES = [
+  'pairing_cancelled',
+  'pairing_rejected',
+  'pairing_expired',
+  'authentication_failed',
+  'pairing_capacity_exhausted',
+  'pairing_persistence_failed',
+  'unauthorized',
+  'sender_offline',
+];
+
+export function isTerminalConnectError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return TERMINAL_CONNECT_ERROR_CODES.some((code) => normalized.includes(code));
+}
+
 async function connectWithRetry(
   args: Parameters<typeof tauriBridge.connectToSender>[0],
   maxRetries: number,
@@ -23,6 +40,7 @@ async function connectWithRetry(
       return;
     } catch (e) {
       lastError = e;
+      if (isTerminalConnectError(e)) throw e;
       if (attempt < maxRetries) {
         console.warn(`Connection attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`, e);
         await new Promise((r) => setTimeout(r, delayMs));
@@ -66,7 +84,11 @@ export async function connectToSender(
 
     // ADB mode uses TCP transport which takes longer to initialize
     const isAdbMode = connectionMode === 'adb';
-    await connectWithRetry(args, isAdbMode ? 4 : 2, isAdbMode ? 500 : 300);
+    // LAN pairing can legitimately wait for a PC dialog. The native request
+    // already has a 70-second budget, so repeating it here can duplicate a
+    // server-side success after a lost response. ADB keeps bounded retries for
+    // local tunnel startup, where reconnects atomically replace the session.
+    await connectWithRetry(args, isAdbMode ? 4 : 0, isAdbMode ? 500 : 300);
 
     tauriBridge
       .establishWebsocket({ senderIp: ip, deviceId: state.deviceInfo.deviceId })

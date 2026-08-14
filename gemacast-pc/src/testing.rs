@@ -12,7 +12,8 @@ pub mod mocks {
     use gemacast_core::domain::types::{AudioSource, DeviceId, DiscoveredDevice, TransportType};
 
     use crate::traits::{
-        AudioController, DeviceNotifier, DeviceRegistry, RegistrationOutcome, TrayNotifier,
+        AudioController, ConnectionApprovalRequest, DeviceNotifier, DeviceRegistry,
+        RegistrationOutcome, TrayNotifier,
     };
 
     // -----------------------------------------------------------------------
@@ -28,6 +29,7 @@ pub mod mocks {
             addr: SocketAddr,
             key_fingerprint: String,
             pairing_code: String,
+            replaces_existing_identity: bool,
         },
         Discovered {
             device_id: DeviceId,
@@ -67,15 +69,16 @@ pub mod mocks {
 
     #[async_trait]
     impl TrayNotifier for MockTrayNotifier {
-        async fn request_connection_approval(
-            &self,
-            request_id: String,
-            device_id: DeviceId,
-            name: String,
-            addr: SocketAddr,
-            key_fingerprint: String,
-            pairing_code: String,
-        ) -> bool {
+        async fn request_connection_approval(&self, request: ConnectionApprovalRequest) -> bool {
+            let ConnectionApprovalRequest {
+                request_id,
+                device_id,
+                name,
+                addr,
+                key_fingerprint,
+                pairing_code,
+                replaces_existing_identity,
+            } = request;
             self.calls
                 .lock()
                 .unwrap()
@@ -86,6 +89,7 @@ pub mod mocks {
                     addr,
                     key_fingerprint,
                     pairing_code,
+                    replaces_existing_identity,
                 });
             true
         }

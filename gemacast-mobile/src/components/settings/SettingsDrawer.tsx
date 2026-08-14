@@ -8,6 +8,7 @@ import { ExclusiveToggle } from './ExclusiveToggle';
 import { KeepScreenOnToggle } from './KeepScreenOnToggle';
 import { ModeSelector } from './ModeSelector';
 import { UpdateBanner } from './UpdateBanner';
+import { ForgetPcIdentity } from './ForgetPcIdentity';
 import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
 import { useAppStore } from '../../stores/app-store';
 import { useDrawer } from '../../hooks/use-drawer';
@@ -157,6 +158,13 @@ export function SettingsDrawer() {
                 Mode
               </SectionLabel>
               <ModeSelector />
+            </div>
+
+            <SectionDivider />
+
+            <div>
+              <SectionLabel>Paired PCs</SectionLabel>
+              <ForgetPcIdentity />
             </div>
 
             {/* Footer */}

@@ -23,6 +23,13 @@ use super::stream::{PlaybackStream, build_playback_stream};
 
 const PACKET_CHANNEL_CAPACITY: usize = 1024;
 
+#[derive(Debug, Clone)]
+pub struct AudioSessionCredentials {
+    pub device_id: crate::domain::types::DeviceId,
+    pub session_token: Option<String>,
+    pub session_generation: Option<crate::control::SessionGeneration>,
+}
+
 pub struct AudioStreamReceiver {
     packet_producer: HeapProd<RawPacket>,
     playback_stream: PlaybackStream,
@@ -111,12 +118,14 @@ impl AudioStreamReceiver {
         latency_tx: Option<mpsc::Sender<(f32, f32)>>,
         target_ip: Option<std::net::IpAddr>,
         mode: crate::domain::types::ConnectionMode,
-        device_id: String,
+        credentials: AudioSessionCredentials,
     ) -> Result<(), GemaCastError> {
         let (transport, heartbeat_socket) = super::transport::create_audio_transport(
             mode,
             target_ip,
-            &crate::domain::types::DeviceId(device_id),
+            &credentials.device_id,
+            credentials.session_token.as_deref(),
+            credentials.session_generation,
         )?;
         let heartbeat_active = Arc::new(AtomicBool::new(true));
         let sender_port = Arc::new(AtomicU16::new(Ports::AUDIO_UDP));
@@ -144,6 +153,7 @@ impl AudioStreamReceiver {
             receiver_active.clone(),
             sender_port,
             network_dropped_tx,
+            target_ip,
         );
 
         struct ScopeGuard {
@@ -238,6 +248,7 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
     active: Arc<AtomicBool>,
     sender_port: Arc<AtomicU16>,
     network_dropped_tx: mpsc::Sender<()>,
+    allowed_sender_ip: Option<std::net::IpAddr>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         #[cfg(target_os = "android")]
@@ -255,6 +266,14 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             let result = transport.receive_audio_packet(&mut recv_buff);
             let (len, sender_addr) = match result {
                 Ok(r) => {
+                    if allowed_sender_ip.is_some_and(|allowed| allowed != r.1.ip()) {
+                        tracing::debug!(
+                            allowed = %allowed_sender_ip.unwrap(),
+                            observed = %r.1.ip(),
+                            "[Receiver] Ignoring audio packet from an unexpected sender"
+                        );
+                        continue;
+                    }
                     if !first_packet_received {
                         tracing::info!("[Receiver] First audio packet received from {}", r.1,);
                     }
@@ -330,6 +349,7 @@ mod tests {
 
     struct MockTransport {
         packet_to_send: Option<Vec<u8>>,
+        sender_addr: SocketAddr,
     }
 
     impl AudioPacketTransport for MockTransport {
@@ -340,7 +360,7 @@ mod tests {
             if let Some(data) = self.packet_to_send.take() {
                 let len = data.len();
                 buffer[..len].copy_from_slice(&data);
-                Ok((len, "127.0.0.1:1234".parse().unwrap()))
+                Ok((len, self.sender_addr))
             } else {
                 // Return EOF to terminate the loop
                 Err(std::io::Error::new(
@@ -372,6 +392,7 @@ mod tests {
 
         let transport = MockTransport {
             packet_to_send: Some(dummy_packet),
+            sender_addr: "127.0.0.1:1234".parse().unwrap(),
         };
 
         let handle = spawn_packet_receive_thread(
@@ -383,6 +404,7 @@ mod tests {
             active,
             sender_port,
             network_dropped_tx,
+            Some("127.0.0.1".parse().unwrap()),
         );
 
         // Wait for thread to exit
@@ -398,5 +420,37 @@ mod tests {
         assert!(!received_packet.is_uncompressed);
         assert_eq!(received_packet.payload_len, 10);
         assert_eq!(received_packet.payload_data[0], 0x1);
+    }
+
+    #[tokio::test]
+    async fn should_ignore_udp_packets_from_a_different_sender_ip() {
+        let packet_rb = HeapRb::<RawPacket>::new(8);
+        let (producer, mut consumer) = packet_rb.split();
+        let active = Arc::new(AtomicBool::new(true));
+        let sender_port = Arc::new(AtomicU16::new(0));
+        let (network_dropped_tx, mut network_dropped_rx) = mpsc::channel(1);
+        let mut packet = vec![0u8; crate::audio::SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + 1];
+        packet[0..8].copy_from_slice(&1u64.to_be_bytes());
+        packet[8] = crate::audio::FORMAT_OPUS;
+
+        let handle = spawn_packet_receive_thread(
+            MockTransport {
+                packet_to_send: Some(packet),
+                sender_addr: "10.0.0.2:55558".parse().unwrap(),
+            },
+            producer,
+            Arc::new(AtomicU32::new(0)),
+            None,
+            None,
+            active,
+            sender_port.clone(),
+            network_dropped_tx,
+            Some("10.0.0.1".parse().unwrap()),
+        );
+
+        handle.join().unwrap();
+        assert!(network_dropped_rx.recv().await.is_some());
+        assert!(consumer.try_pop().is_none());
+        assert_eq!(sender_port.load(Ordering::Relaxed), 0);
     }
 }
