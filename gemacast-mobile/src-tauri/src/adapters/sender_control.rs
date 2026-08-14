@@ -12,12 +12,14 @@ use crate::traits::{SenderControlClient, SenderControlClientFactory};
 /// Wraps `gemacast_core::control::HttpControlClient` behind the trait.
 pub struct HttpSenderControlClient {
     client: gemacast_core::control::HttpControlClient,
+    signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
 }
 
 impl HttpSenderControlClient {
     pub fn new(
         ip: IpAddr,
         credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
+        signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
     ) -> Self {
         Self {
             client: gemacast_core::control::HttpControlClient::with_shared_credentials(
@@ -25,6 +27,7 @@ impl HttpSenderControlClient {
                 Duration::from_secs(10),
                 credentials,
             ),
+            signer,
         }
     }
 
@@ -32,6 +35,7 @@ impl HttpSenderControlClient {
         ip: IpAddr,
         timeout: Duration,
         credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
+        signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
     ) -> Self {
         Self {
             client: gemacast_core::control::HttpControlClient::with_shared_credentials(
@@ -39,6 +43,7 @@ impl HttpSenderControlClient {
                 timeout,
                 credentials,
             ),
+            signer,
         }
     }
 }
@@ -47,7 +52,7 @@ impl HttpSenderControlClient {
 impl SenderControlClient for HttpSenderControlClient {
     async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
         self.client
-            .send_connect_request(req)
+            .send_connect_request_with_signer(req, Some(self.signer.as_ref()))
             .await
             .map_err(|e| e.to_string())
     }
@@ -108,12 +113,14 @@ pub struct HttpSenderControlClientFactory {
             Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
         >,
     >,
+    signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
 }
 
 impl HttpSenderControlClientFactory {
-    pub fn new() -> Self {
+    pub fn new(signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>) -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
+            signer,
         }
     }
 
@@ -135,7 +142,11 @@ impl HttpSenderControlClientFactory {
 
 impl SenderControlClientFactory for HttpSenderControlClientFactory {
     fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient> {
-        Arc::new(HttpSenderControlClient::new(ip, self.credentials(ip)))
+        Arc::new(HttpSenderControlClient::new(
+            ip,
+            self.credentials(ip),
+            self.signer.clone(),
+        ))
     }
 
     fn create_with_timeout(&self, ip: IpAddr, timeout: Duration) -> Arc<dyn SenderControlClient> {
@@ -143,6 +154,7 @@ impl SenderControlClientFactory for HttpSenderControlClientFactory {
             ip,
             timeout,
             self.credentials(ip),
+            self.signer.clone(),
         ))
     }
 
@@ -157,6 +169,25 @@ impl SenderControlClientFactory for HttpSenderControlClientFactory {
                         .as_ref()
                         .filter(|credentials| &credentials.device_id == device_id)
                         .map(|credentials| credentials.token.clone())
+                })
+            })
+    }
+
+    fn session_credentials(
+        &self,
+        ip: IpAddr,
+        device_id: &DeviceId,
+    ) -> Option<gemacast_core::control::http_client::ControlCredentials> {
+        self.credentials
+            .lock()
+            .ok()
+            .and_then(|credentials| credentials.get(&ip).cloned())
+            .and_then(|credentials| {
+                credentials.lock().ok().and_then(|credentials| {
+                    credentials
+                        .as_ref()
+                        .filter(|credentials| &credentials.device_id == device_id)
+                        .cloned()
                 })
             })
     }

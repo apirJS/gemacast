@@ -4,7 +4,7 @@
 //! production adapters ([`crate::adapters`]), and spawns the task set:
 //!
 //! - **UDP Listener**: Receives presence/probe messages from mobile devices
-//! - **Control Dispatcher**: Routes HTTP and UDP control commands
+//! - **Control Dispatcher**: Routes HTTPS and UDP control commands
 //! - **Audio Engine**: Captures and streams desktop audio to connected devices
 //! - **Command Handler**: Processes tray UI commands (start/stop, kick, shutdown)
 //! - **Device Watchdog**: Removes stale devices that stop sending probes
@@ -17,7 +17,7 @@
 //! 1. [`BackgroundEngine::new`] — shared state (`registry`, `is_broadcasting`, `ws_connections`)
 //! 2. [`BackgroundEngine::create_channels`] → [`EngineWithChannels`] — all `mpsc`/`broadcast` channels
 //! 3. [`EngineWithChannels::create_adapters`] → [`EngineWithAdapters`] — trait object wrappers
-//! 4. [`EngineWithAdapters::init_infrastructure`] → [`EngineReady`] — ADB, UDP, mDNS, HTTP verified
+//! 4. [`EngineWithAdapters::init_infrastructure`] -> [`EngineReady`] - ADB, UDP, mDNS, HTTPS verified
 //!
 //! Finally, [`EngineReady::spawn_tasks_and_run`] spawns every background task
 //! and awaits completion.
@@ -54,6 +54,7 @@ use crate::tasks::{
     audio_engine, command_handler, control_dispatcher, device_watchdog, udp_listener,
 };
 use crate::traits::DeviceRegistry;
+use crate::trusted_devices::TrustedDeviceStore;
 
 // ---------------------------------------------------------------------------
 // ADB Presence Provider
@@ -209,6 +210,7 @@ struct BackgroundEngine {
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
     authorizer: SessionAuthorizer,
+    trusted_devices: TrustedDeviceStore,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 }
 
@@ -219,6 +221,7 @@ impl BackgroundEngine {
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             ws_connections: Arc::new(Mutex::new(Default::default())),
             authorizer: SessionAuthorizer::default(),
+            trusted_devices: TrustedDeviceStore::load_default(),
             event_loop_proxy,
         }
     }
@@ -239,6 +242,7 @@ impl BackgroundEngine {
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
             authorizer: self.authorizer,
+            trusted_devices: self.trusted_devices,
             event_loop_proxy: self.event_loop_proxy,
             command_rx,
             presence_tx,
@@ -268,6 +272,7 @@ struct EngineWithChannels {
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
     authorizer: SessionAuthorizer,
+    trusted_devices: TrustedDeviceStore,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
     // Channels
@@ -306,6 +311,7 @@ impl EngineWithChannels {
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
             authorizer: self.authorizer,
+            trusted_devices: self.trusted_devices,
             event_loop_proxy: self.event_loop_proxy,
             command_rx: self.command_rx,
             presence_tx: self.presence_tx,
@@ -338,6 +344,7 @@ struct EngineWithAdapters {
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
     authorizer: SessionAuthorizer,
+    trusted_devices: TrustedDeviceStore,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
     // Channels
@@ -362,7 +369,7 @@ struct EngineWithAdapters {
 }
 
 impl EngineWithAdapters {
-    /// Verify ADB, bind the UDP listener, create HTTP control state, start
+    /// Verify ADB, bind the UDP listener, create HTTPS control state, start
     /// mDNS, and resolve the PC identity. Returns `None` on fatal errors.
     async fn init_infrastructure(self) -> Option<EngineReady> {
         // --- Verify ADB availability ---
@@ -375,7 +382,35 @@ impl EngineWithAdapters {
 
         // --- Identity ---
         let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-        let sender_id = DeviceId::new();
+        let pc_identity = match crate::pc_identity::PcIdentity::load_default() {
+            Ok(identity) => identity,
+            Err(error) => {
+                let msg = format!("Failed to load the PC security identity: {error}");
+                tracing::error!("{msg}");
+                self.tray.notify_fatal_error(msg);
+                return None;
+            }
+        };
+        let sender_id = pc_identity.device_id();
+        let pc_certificate_fingerprint = pc_identity.fingerprint().to_string();
+        if let Err(error) = self
+            .trusted_devices
+            .bind_pc_identity(&pc_certificate_fingerprint)
+        {
+            let msg = format!("Failed to bind trusted phones to the PC identity: {error}");
+            tracing::error!("{msg}");
+            self.tray.notify_fatal_error(msg);
+            return None;
+        }
+        let tls_config = match pc_identity.tls_config() {
+            Ok(config) => config,
+            Err(error) => {
+                let msg = format!("Failed to configure encrypted control transport: {error}");
+                tracing::error!("{msg}");
+                self.tray.notify_fatal_error(msg);
+                return None;
+            }
+        };
 
         // --- Presence listener ---
         tracing::info!("Initializing UDP Presence Listener...");
@@ -389,7 +424,7 @@ impl EngineWithAdapters {
             }
         };
 
-        // --- HTTP control server state ---
+        // --- HTTPS control server state ---
         let control_state = ControlServerState {
             command_tx: self.http_command_tx,
             is_broadcasting: self.is_broadcasting.clone(),
@@ -398,6 +433,7 @@ impl EngineWithAdapters {
             ws_connections: self.ws_connections.clone(),
             process_lister: DefaultProcessLister,
             authorizer: self.authorizer.clone(),
+            pc_certificate_fingerprint: pc_certificate_fingerprint.clone(),
         };
 
         // --- mDNS broadcaster ---
@@ -428,6 +464,7 @@ impl EngineWithAdapters {
             is_broadcasting: self.is_broadcasting,
             ws_connections: self.ws_connections,
             authorizer: self.authorizer,
+            trusted_devices: self.trusted_devices,
             event_loop_proxy: self.event_loop_proxy,
             command_rx: self.command_rx,
             presence_rx: self.presence_rx,
@@ -449,6 +486,8 @@ impl EngineWithAdapters {
             presence_provider,
             sender_id,
             device_name,
+            pc_certificate_fingerprint,
+            tls_config,
         })
     }
 }
@@ -464,6 +503,7 @@ struct EngineReady {
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
     authorizer: SessionAuthorizer,
+    trusted_devices: TrustedDeviceStore,
     #[allow(dead_code)]
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
@@ -493,6 +533,8 @@ struct EngineReady {
     presence_provider: Arc<PcPresenceProvider>,
     sender_id: DeviceId,
     device_name: String,
+    pc_certificate_fingerprint: String,
+    tls_config: Arc<rustls::ServerConfig>,
 }
 
 impl EngineReady {
@@ -512,14 +554,18 @@ impl EngineReady {
             }
         });
 
-        // -- HTTP control server --
+        // -- HTTPS control server --
         let (control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let tray_for_control = self.tray.clone();
         let control_state = self.control_state;
+        let tls_config = self.tls_config.clone();
         set.spawn(async move {
-            if let Err(e) =
-                gemacast_core::control::start_control_server(control_state, control_shutdown_rx)
-                    .await
+            if let Err(e) = gemacast_core::control::start_control_server(
+                control_state,
+                tls_config,
+                control_shutdown_rx,
+            )
+            .await
             {
                 let msg = friendly_bind_error(e, "Control port (55559)");
                 tracing::error!("Fatal error: {}", msg);
@@ -602,15 +648,20 @@ impl EngineReady {
         );
 
         // -- Control dispatcher --
+        let sender_id = self.sender_id;
+        let sender_name = self.device_name;
         let dispatcher = Arc::new(control_dispatcher::ControlDispatcher {
             registry: self.registry.clone(),
             tray: self.tray.clone(),
             audio: self.audio.clone(),
             notifier: self.notifier.clone(),
-            sender_id: self.sender_id,
-            sender_name: self.device_name,
+            sender_id: sender_id.clone(),
+            sender_name: sender_name.clone(),
+            pc_certificate_fingerprint: self.pc_certificate_fingerprint,
             is_broadcasting: self.is_broadcasting.clone(),
             authorizer: self.authorizer.clone(),
+            device_auth: crate::device_auth::DeviceAuthManager::default(),
+            trusted_devices: self.trusted_devices.clone(),
         });
 
         control_dispatcher::spawn_control_dispatcher(
@@ -624,11 +675,14 @@ impl EngineReady {
         // -- Command handler --
         let handler = Arc::new(command_handler::CommandHandler {
             is_broadcasting: self.is_broadcasting,
+            sender_id,
+            sender_name,
             registry: self.registry,
             tray: self.tray.clone(),
             audio: self.audio,
             notifier: self.notifier,
             authorizer: self.authorizer,
+            trusted_devices: self.trusted_devices,
         });
 
         let (engine_shutdown_tx, mut engine_shutdown_rx) = tokio::sync::oneshot::channel();

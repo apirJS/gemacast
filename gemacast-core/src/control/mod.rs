@@ -1,7 +1,9 @@
 pub mod auth;
+pub mod device_auth;
 pub mod http;
 pub mod http_client;
 pub mod messages;
+pub mod tls;
 pub mod types;
 pub mod ws;
 pub mod ws_client;

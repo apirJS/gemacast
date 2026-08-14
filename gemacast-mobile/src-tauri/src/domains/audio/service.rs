@@ -128,7 +128,7 @@ async fn run_link_recovery(
 }
 
 impl AudioService {
-    /// Connect to a sender: HTTP handshake → spawn audio receiver → sync service.
+    /// Connect to a sender: HTTPS handshake -> spawn audio receiver -> sync service.
     ///
     /// If the user selected "Auto" buffer preset, the jitter config is overridden
     /// with a network-aware profile based on the detected [`LinkPair`].
@@ -162,6 +162,7 @@ impl AudioService {
                 bitrate: params.bitrate,
                 network_link: params.phone_network_link,
                 pending_request_id: None,
+                device_auth: None,
             })
             .await?;
 
@@ -225,7 +226,7 @@ impl AudioService {
         Ok(())
     }
 
-    /// Disconnect from a sender: HTTP disconnect → tear down session → sync service.
+    /// Disconnect from a sender: HTTPS disconnect -> tear down session -> sync service.
     pub async fn disconnect_from_sender(
         &self,
         ip: IpAddr,
@@ -257,7 +258,7 @@ impl AudioService {
     /// Resume audio playback after a pause.
     ///
     /// Re-enables the Oboe output callback via `resume_playback()` without
-    /// sending an HTTP reconnect — the network connection stays alive.
+    /// sending an HTTPS reconnect; the network connection stays alive.
     pub async fn start_audio_playback(&self, _resume: Option<ResumeParams>) -> Result<(), String> {
         tracing::info!("[AudioService] Resume playback");
         self.session.resume_playback().await?;
@@ -273,7 +274,7 @@ impl AudioService {
     ///
     /// Silences the Oboe output callback via `pause_playback()` while
     /// keeping the network receive thread, heartbeat, and WebSocket alive.
-    /// Does NOT send an HTTP disconnect to the PC.
+    /// Does not send an HTTPS disconnect to the PC.
     pub async fn stop_audio_playback(
         &self,
         _ip: Option<IpAddr>,
@@ -382,7 +383,7 @@ impl AudioService {
     /// Restart the audio session with a new exclusive mode setting.
     ///
     /// Tears down the old Oboe/cpal stream and spawns a new one without
-    /// sending any HTTP disconnect/connect — the PC sender doesn't care
+    /// sending any HTTPS disconnect/connect; the PC sender doesn't care
     /// about the phone's audio sharing mode.
     pub async fn restart_session(&self, exclusive_mode: bool) -> Result<(), String> {
         let info = self
@@ -559,11 +560,17 @@ impl AudioService {
                 if session.session_info().await.is_none() {
                     return;
                 }
-                let token = client_factory.session_token(sender_ip, &DeviceId(device_id.clone()));
-                let ws_client = match gemacast_core::control::WsControlClient::new_with_token(
+                let credentials =
+                    client_factory.session_credentials(sender_ip, &DeviceId(device_id.clone()));
+                let ws_client = match gemacast_core::control::WsControlClient::new_with_credentials(
                     sender_ip,
                     &device_id,
-                    token.as_deref(),
+                    credentials
+                        .as_ref()
+                        .map(|credentials| credentials.token.as_str()),
+                    credentials
+                        .as_ref()
+                        .map(|credentials| credentials.pc_certificate_fingerprint.as_str()),
                 )
                 .await
                 {
@@ -737,7 +744,7 @@ mod tests {
             .await
             .unwrap();
 
-        // HTTP disconnect was called
+        // HTTPS disconnect was called.
         let client_calls = client.take_calls();
         assert!(matches!(
             &client_calls[0],
@@ -803,7 +810,7 @@ mod tests {
             .await
             .unwrap();
 
-        // No HTTP reconnect should be sent — the connection stays alive
+        // No HTTPS reconnect should be sent; the connection stays alive.
         let client_calls = client.take_calls();
         assert_eq!(client_calls.len(), 0);
     }
@@ -836,7 +843,7 @@ mod tests {
                 .any(|c| matches!(c, SessionCall::StopSession))
         );
 
-        // No HTTP disconnect should be sent
+        // No HTTPS disconnect should be sent.
         let client_calls = client.take_calls();
         assert_eq!(client_calls.len(), 0);
 

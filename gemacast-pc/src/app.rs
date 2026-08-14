@@ -178,13 +178,16 @@ fn handle_tray_event(
             request_id,
             name,
             addr,
+            key_fingerprint,
+            pairing_code,
             response_tx,
         } => {
             let approved = rfd::MessageDialog::new()
                 .set_title("Gemacast Connection Request")
                 .set_description(format!(
-                    "Allow {name} ({}) to receive and control this PC's audio?\n\nRequest: {request_id}",
-                    addr.ip()
+                    "Allow {name} ({}) to receive and control this PC's audio?\n\nConfirm that the phone shows this same code:\n\n{pairing_code}\n\nDevice key: {}\nRequest: {request_id}",
+                    addr.ip(),
+                    &key_fingerprint[..key_fingerprint.len().min(16)]
                 ))
                 .set_level(rfd::MessageLevel::Info)
                 .set_buttons(rfd::MessageButtons::YesNo)

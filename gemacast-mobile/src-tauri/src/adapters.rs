@@ -13,6 +13,6 @@ pub mod session_manager;
 
 pub use frontend_notifier::TauriFrontendNotifier;
 pub use network_info::NativeNetworkInfoProvider;
-pub use platform_service::NativePlatformService;
+pub use platform_service::{NativePlatformService, PlatformDeviceAuthSigner};
 pub use sender_control::HttpSenderControlClientFactory;
 pub use session_manager::TokioSessionManager;

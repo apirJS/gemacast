@@ -17,11 +17,21 @@ use tokio::task::JoinSet;
 
 use crate::events::AppCommand;
 use crate::traits::{AudioController, DeviceNotifier, DeviceRegistry, TrayNotifier};
+use crate::trusted_devices::TrustedDeviceStore;
 
 /// Holds the shutdown handle for an active presence broadcaster.
 #[derive(Default)]
 pub(crate) struct BroadcasterState {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+fn online_presence(sender_id: &DeviceId, sender_name: &str) -> ControlMessage {
+    ControlMessage::Presence {
+        device_id: sender_id.clone(),
+        sender_name: sender_name.to_string(),
+        is_offline: false,
+        transport: None,
+    }
 }
 
 /// Handles [`AppCommand`]s from the tray UI.
@@ -30,11 +40,14 @@ pub(crate) struct BroadcasterState {
 /// independently unit-testable with mock implementations.
 pub struct CommandHandler {
     pub is_broadcasting: Arc<AtomicBool>,
+    pub sender_id: DeviceId,
+    pub sender_name: String,
     pub registry: Arc<dyn DeviceRegistry>,
     pub tray: Arc<dyn TrayNotifier>,
     pub audio: Arc<dyn AudioController>,
     pub notifier: Arc<dyn DeviceNotifier>,
     pub authorizer: SessionAuthorizer,
+    pub trusted_devices: TrustedDeviceStore,
 }
 
 impl CommandHandler {
@@ -80,19 +93,14 @@ impl CommandHandler {
         self.is_broadcasting.store(true, Ordering::Relaxed);
         broadcaster.shutdown_tx = Some(stop_tx);
 
-        let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-        let sender_id = DeviceId(format!("PC_{}", device_name.to_uppercase()));
         let registry = self.registry.clone();
+        let sender_id = self.sender_id.clone();
+        let sender_name = self.sender_name.clone();
 
         tokio::spawn(async move {
             let sid = sender_id;
-            let sname = device_name;
-            let factory = move || ControlMessage::Presence {
-                device_id: sid.clone(),
-                sender_name: sname.clone(),
-                is_offline: false,
-                transport: None,
-            };
+            let sname = sender_name;
+            let factory = move || online_presence(&sid, &sname);
             let registry_ref = registry;
             let target_ips = move || {
                 registry_ref
@@ -140,6 +148,9 @@ impl CommandHandler {
         let addr = self.registry.get_addr(&device_id);
         self.registry.unregister(&device_id);
         self.authorizer.revoke(&device_id, None);
+        if let Err(error) = self.trusted_devices.forget(&device_id) {
+            tracing::error!("Failed to remove trusted device {:?}: {}", device_id, error);
+        }
         let _ = self.audio.unsubscribe(&device_id).await;
         self.notifier.notify_disconnect(&device_id, addr).await;
     }
@@ -271,11 +282,14 @@ mod tests {
     ) -> CommandHandler {
         CommandHandler {
             is_broadcasting: Arc::new(AtomicBool::new(true)),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
             registry,
             tray,
             audio,
             notifier,
             authorizer: SessionAuthorizer::default(),
+            trusted_devices: TrustedDeviceStore::in_memory(),
         }
     }
 
@@ -303,6 +317,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn start_broadcasting_should_advertise_the_persistent_pc_identity() {
+        let handler = make_handler(
+            Arc::new(MockDeviceRegistry::new()),
+            Arc::new(MockTrayNotifier::new()),
+            Arc::new(MockAudioController::new()),
+            Arc::new(MockDeviceNotifier::new()),
+        );
+        match online_presence(&handler.sender_id, &handler.sender_name) {
+            ControlMessage::Presence {
+                device_id,
+                sender_name,
+                is_offline,
+                transport,
+            } => {
+                assert_eq!(device_id, handler.sender_id);
+                assert_eq!(sender_name, handler.sender_name);
+                assert!(!is_offline);
+                assert!(transport.is_none());
+            }
+            _ => panic!("online presence helper returned the wrong message type"),
+        }
+    }
+
     #[tokio::test]
     async fn kick_device_should_unregister_and_notify_disconnect() {
         let registry = Arc::new(MockDeviceRegistry::with_device(
@@ -313,16 +351,19 @@ mod tests {
         let audio = Arc::new(MockAudioController::new());
         let notifier = Arc::new(MockDeviceNotifier::new());
         let handler = make_handler(registry.clone(), tray, audio.clone(), notifier.clone());
+        let device_id = DeviceId("phone-1".into());
+        handler
+            .trusted_devices
+            .trust(device_id.clone(), "Phone 1".into(), "key".into())
+            .unwrap();
 
         let mut broadcaster = BroadcasterState::default();
         handler
-            .handle(
-                AppCommand::KickDevice(DeviceId("phone-1".into())),
-                &mut broadcaster,
-            )
+            .handle(AppCommand::KickDevice(device_id.clone()), &mut broadcaster)
             .await;
 
         assert!(!registry.contains("phone-1"));
+        assert!(!handler.trusted_devices.is_trusted(&device_id, "key"));
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);

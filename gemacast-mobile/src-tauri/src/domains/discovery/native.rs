@@ -54,6 +54,188 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
 }
 
 #[cfg(target_os = "android")]
+fn call_native_string_method(
+    app: &tauri::AppHandle,
+    method: &'static str,
+    argument: Option<String>,
+) -> Result<String, String> {
+    use std::sync::mpsc;
+    use tauri::Manager;
+
+    let (result_tx, result_rx) = mpsc::channel();
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Failed to find main webview window".to_string())?;
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, context, _webview| {
+                let result = (|| -> Result<String, String> {
+                    let value = if let Some(argument) = argument {
+                        let argument = env
+                            .new_string(argument)
+                            .map_err(|error| format!("Failed to create JNI string: {error}"))?;
+                        env.call_method(
+                            context,
+                            method,
+                            "(Ljava/lang/String;)Ljava/lang/String;",
+                            &[jni::objects::JValue::from(&argument)],
+                        )
+                    } else {
+                        env.call_method(context, method, "()Ljava/lang/String;", &[])
+                    }
+                    .map_err(|error| format!("Failed to call {method}: {error}"))?;
+                    let value = value
+                        .l()
+                        .map_err(|error| format!("Failed to read {method} result: {error}"))?;
+                    let value: String = env
+                        .get_string(&value.into())
+                        .map_err(|error| format!("Failed to extract {method} result: {error}"))?
+                        .into();
+                    if let Some(error) = value.strip_prefix("ERROR:") {
+                        Err(error.trim().to_string())
+                    } else {
+                        Ok(value)
+                    }
+                })();
+                let _ = result_tx.send(result);
+            });
+        })
+        .map_err(|error| format!("WebView JNI execution failed: {error}"))?;
+    result_rx
+        .recv()
+        .map_err(|error| format!("Failed to receive JNI result: {error}"))?
+}
+
+#[cfg(target_os = "android")]
+pub fn call_native_device_public_key(app: &tauri::AppHandle) -> Result<String, String> {
+    call_native_string_method(app, "getDeviceAuthPublicKey", None)
+}
+
+#[cfg(target_os = "android")]
+pub fn call_native_sign_device_auth(
+    app: &tauri::AppHandle,
+    transcript_base64: &str,
+) -> Result<String, String> {
+    call_native_string_method(
+        app,
+        "signDeviceAuthTranscript",
+        Some(transcript_base64.to_string()),
+    )
+}
+
+#[cfg(target_os = "android")]
+pub fn call_native_trusted_pc_fingerprint(
+    app: &tauri::AppHandle,
+    pc_id: &str,
+) -> Result<Option<String>, String> {
+    let fingerprint =
+        call_native_string_method(app, "getTrustedPcFingerprint", Some(pc_id.to_string()))?;
+    Ok((!fingerprint.is_empty()).then_some(fingerprint))
+}
+
+#[cfg(target_os = "android")]
+pub fn call_native_confirm_pc_identity(
+    app: &tauri::AppHandle,
+    pc_id: &str,
+    pc_name: &str,
+    fingerprint: &str,
+    pairing_code: &str,
+    requires_approval: bool,
+) -> Result<bool, String> {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+    const CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(65);
+
+    let payload = serde_json::json!({
+        "pcId": pc_id,
+        "pcName": pc_name,
+        "fingerprint": fingerprint,
+        "pairingCode": pairing_code,
+        "requiresApproval": requires_approval,
+    })
+    .to_string();
+    let initial = call_native_string_method(app, "confirmPcIdentity", Some(payload.clone()))?;
+    match initial.as_str() {
+        "APPROVED" | "TRUSTED" => Ok(true),
+        "REJECTED" => Ok(false),
+        "PENDING" => {
+            let started = std::time::Instant::now();
+            loop {
+                std::thread::sleep(POLL_INTERVAL);
+                let result = match call_native_string_method(
+                    app,
+                    "pollPcIdentityConfirmation",
+                    Some(payload.clone()),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let _ = call_native_string_method(
+                            app,
+                            "cancelPcIdentityConfirmation",
+                            Some(payload),
+                        );
+                        return Err(error);
+                    }
+                };
+                match result.as_str() {
+                    "APPROVED" => return Ok(true),
+                    "REJECTED" => {
+                        let _ = call_native_string_method(
+                            app,
+                            "cancelPcIdentityConfirmation",
+                            Some(payload),
+                        );
+                        return Ok(false);
+                    }
+                    "PENDING" if started.elapsed() < CONFIRMATION_TIMEOUT => {}
+                    "PENDING" => {
+                        let _ = call_native_string_method(
+                            app,
+                            "cancelPcIdentityConfirmation",
+                            Some(payload),
+                        );
+                        return Err("PC identity confirmation timed out on the phone".to_string());
+                    }
+                    other => {
+                        let _ = call_native_string_method(
+                            app,
+                            "cancelPcIdentityConfirmation",
+                            Some(payload),
+                        );
+                        return Err(format!(
+                            "unexpected PC identity confirmation result: {other}"
+                        ));
+                    }
+                }
+            }
+        }
+        other => Err(format!(
+            "unexpected PC identity confirmation result: {other}"
+        )),
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn call_native_remember_pc_identity(
+    app: &tauri::AppHandle,
+    pc_id: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "pcId": pc_id,
+        "fingerprint": fingerprint,
+    })
+    .to_string();
+    let result = call_native_string_method(app, "rememberPcIdentity", Some(payload))?;
+    if result == "OK" {
+        Ok(())
+    } else {
+        Err(format!(
+            "unexpected PC identity persistence result: {result}"
+        ))
+    }
+}
+
+#[cfg(target_os = "android")]
 /// Calls the Android Activity's `syncServiceState()` method via JNI.
 pub fn call_native_sync_service(
     app: &tauri::AppHandle,

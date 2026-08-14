@@ -1,8 +1,8 @@
-//! Routes inbound control commands (from HTTP and UDP) to the appropriate handlers.
+//! Routes inbound control commands (from HTTPS and UDP) to the appropriate handlers.
 //!
 //! Spawns two tasks:
 //! 1. **Probe heartbeat handler**: Updates `last_seen` for devices sending UDP probes.
-//! 2. **HTTP command handler**: Processes [`ControlCommand`]s from the Axum control server
+//! 2. **HTTPS command handler**: Processes [`ControlCommand`]s from the Axum control server
 //!    (connect, disconnect, change source, change bitrate, get sources, probe).
 
 use std::net::SocketAddr;
@@ -17,14 +17,16 @@ use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::device_auth::{DeviceAuthManager, VerifiedDeviceIdentity};
 use crate::traits::{
     AudioController, DeviceNotifier, DeviceRegistry, RegistrationOutcome, TrayNotifier,
 };
+use crate::trusted_devices::TrustedDeviceStore;
 
 /// Shared context for the control dispatcher.
 ///
 /// Groups all the trait dependencies and identity info needed to handle
-/// HTTP control commands. Extracted as a struct to avoid a 10-parameter
+/// HTTPS control commands. Extracted as a struct to avoid a 10-parameter
 /// function signature.
 pub struct ControlDispatcher {
     pub registry: Arc<dyn DeviceRegistry>,
@@ -33,12 +35,15 @@ pub struct ControlDispatcher {
     pub notifier: Arc<dyn DeviceNotifier>,
     pub sender_id: DeviceId,
     pub sender_name: String,
+    pub pc_certificate_fingerprint: String,
     pub is_broadcasting: Arc<AtomicBool>,
     pub authorizer: SessionAuthorizer,
+    pub device_auth: DeviceAuthManager,
+    pub trusted_devices: TrustedDeviceStore,
 }
 
 impl ControlDispatcher {
-    /// Handle a single HTTP control command.
+    /// Handle a single HTTPS control command.
     ///
     /// Extracted from the receive loop for unit testing.
     pub async fn handle_http_command(&self, cmd: ControlCommand) {
@@ -52,6 +57,7 @@ impl ControlDispatcher {
                 response_tx,
                 authorized,
                 pending_request_id,
+                device_auth,
             } => {
                 tracing::info!(
                     "ControlCommand::Connect from {:?} at {}",
@@ -61,9 +67,30 @@ impl ControlDispatcher {
                 let mut audio_addr = remote_addr;
                 audio_addr.set_port(gemacast_core::network::Ports::AUDIO_UDP);
 
-                let approved_request_id = if authorized {
-                    None
+                let (approved_request_id, identity_to_trust) = if authorized {
+                    (None, None)
                 } else if let Some(request_id) = pending_request_id {
+                    let auth = match device_auth.as_ref() {
+                        Some(auth) => auth,
+                        None => {
+                            let _ = response_tx
+                                .send(Err("LAN device authentication proof is missing".into()));
+                            return;
+                        }
+                    };
+                    let identity = match self.device_auth.pending_pairing(
+                        &request_id,
+                        &device_id,
+                        &auth.public_key,
+                    ) {
+                        Some(identity) => identity,
+                        None => {
+                            let _ = response_tx.send(Err(format!(
+                                "connection request {request_id} does not match this device key"
+                            )));
+                            return;
+                        }
+                    };
                     match self.authorizer.pending_status(&request_id, &device_id) {
                         Some(gemacast_core::control::PendingApprovalStatus::Pending) => {
                             let _ = response_tx.send(Ok(PresenceResponse {
@@ -75,14 +102,19 @@ impl ControlDispatcher {
                                 session_token: None,
                                 session_generation: None,
                                 pending_request_id: Some(request_id),
+                                device_auth_challenge: None,
+                                pc_certificate_fingerprint: Some(
+                                    self.pc_certificate_fingerprint.clone(),
+                                ),
                             }));
                             return;
                         }
                         Some(gemacast_core::control::PendingApprovalStatus::Approved) => {
-                            Some(request_id)
+                            (Some(request_id), Some(identity))
                         }
                         Some(gemacast_core::control::PendingApprovalStatus::Rejected) => {
                             self.authorizer.remove_pending(&request_id);
+                            self.device_auth.remove_pending_pairing(&request_id);
                             let _ = response_tx.send(Err(format!(
                                 "connection request {request_id} was rejected on the PC"
                             )));
@@ -96,40 +128,138 @@ impl ControlDispatcher {
                         }
                     }
                 } else {
-                    let request_id = match self.authorizer.create_pending(device_id.clone()) {
-                        Ok(request_id) => request_id,
+                    let Some(auth) = device_auth else {
+                        let _ = response_tx
+                            .send(Err("LAN device authentication identity is missing".into()));
+                        return;
+                    };
+                    if auth.challenge_id.is_none() && auth.signature.is_none() {
+                        let requires_approval = !self
+                            .trusted_devices
+                            .is_trusted(&device_id, &auth.public_key);
+                        let challenge = match self.device_auth.begin(
+                            device_id.clone(),
+                            self.sender_id.clone(),
+                            self.pc_certificate_fingerprint.clone(),
+                            requires_approval,
+                            auth.public_key,
+                            auth.phone_nonce,
+                        ) {
+                            Ok(challenge) => challenge,
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error));
+                                return;
+                            }
+                        };
+                        let _ = response_tx.send(Ok(PresenceResponse {
+                            device_id: self.sender_id.clone(),
+                            sender_name: self.sender_name.clone(),
+                            is_offline: false,
+                            pc_network_link: None,
+                            device_registered: Some(false),
+                            session_token: None,
+                            session_generation: None,
+                            pending_request_id: None,
+                            device_auth_challenge: Some(challenge),
+                            pc_certificate_fingerprint: Some(
+                                self.pc_certificate_fingerprint.clone(),
+                            ),
+                        }));
+                        return;
+                    }
+                    let identity = match self.device_auth.verify(
+                        &device_id,
+                        &self.sender_id,
+                        &self.pc_certificate_fingerprint,
+                        &auth,
+                    ) {
+                        Ok(identity) => identity,
                         Err(error) => {
                             let _ = response_tx.send(Err(error));
                             return;
                         }
                     };
-                    let tray = self.tray.clone();
-                    let authorizer = self.authorizer.clone();
-                    let approval_device_id = device_id.clone();
-                    let approval_device_name = device_name.clone();
-                    let approval_request_id = request_id.clone();
-                    tokio::spawn(async move {
-                        let approved = tray
-                            .request_connection_approval(
-                                approval_request_id.clone(),
-                                approval_device_id,
-                                approval_device_name,
-                                remote_addr,
-                            )
-                            .await;
-                        authorizer.resolve_pending(&approval_request_id, approved);
-                    });
-                    let _ = response_tx.send(Ok(PresenceResponse {
-                        device_id: self.sender_id.clone(),
-                        sender_name: self.sender_name.clone(),
-                        is_offline: false,
-                        pc_network_link: None,
-                        device_registered: Some(false),
-                        session_token: None,
-                        session_generation: None,
-                        pending_request_id: Some(request_id),
-                    }));
-                    return;
+                    if let Some(trusted_key) = self.trusted_devices.public_key(&device_id)
+                        && trusted_key != identity.public_key
+                    {
+                        let _ = response_tx.send(Err(
+                            "this device ID is already paired to a different key; forget it on the PC before pairing again"
+                                .into(),
+                        ));
+                        return;
+                    }
+                    if self
+                        .trusted_devices
+                        .is_trusted(&device_id, &identity.public_key)
+                    {
+                        (None, None)
+                    } else {
+                        match auth.phone_confirmation {
+                            Some(true) => {}
+                            Some(false) => {
+                                let _ = response_tx
+                                    .send(Err("pairing was cancelled on the phone".into()));
+                                return;
+                            }
+                            None => {
+                                let _ = response_tx.send(Err(
+                                    "phone confirmation is required for first pairing".into(),
+                                ));
+                                return;
+                            }
+                        }
+                        let request_id = match self.authorizer.create_pending(device_id.clone()) {
+                            Ok(request_id) => request_id,
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error));
+                                return;
+                            }
+                        };
+                        if let Err(error) = self.device_auth.hold_pending_pairing(
+                            request_id.clone(),
+                            device_id.clone(),
+                            identity.clone(),
+                        ) {
+                            self.authorizer.remove_pending(&request_id);
+                            let _ = response_tx.send(Err(error));
+                            return;
+                        }
+                        let tray = self.tray.clone();
+                        let authorizer = self.authorizer.clone();
+                        let approval_device_id = device_id.clone();
+                        let approval_device_name = device_name.clone();
+                        let approval_request_id = request_id.clone();
+                        let key_fingerprint = identity.fingerprint.clone();
+                        let pairing_code = identity.pairing_code.clone();
+                        tokio::spawn(async move {
+                            let approved = tray
+                                .request_connection_approval(
+                                    approval_request_id.clone(),
+                                    approval_device_id,
+                                    approval_device_name,
+                                    remote_addr,
+                                    key_fingerprint,
+                                    pairing_code,
+                                )
+                                .await;
+                            authorizer.resolve_pending(&approval_request_id, approved);
+                        });
+                        let _ = response_tx.send(Ok(PresenceResponse {
+                            device_id: self.sender_id.clone(),
+                            sender_name: self.sender_name.clone(),
+                            is_offline: false,
+                            pc_network_link: None,
+                            device_registered: Some(false),
+                            session_token: None,
+                            session_generation: None,
+                            pending_request_id: Some(request_id),
+                            device_auth_challenge: None,
+                            pc_certificate_fingerprint: Some(
+                                self.pc_certificate_fingerprint.clone(),
+                            ),
+                        }));
+                        return;
+                    }
                 };
 
                 let pending_session = match self.authorizer.prepare(device_id.clone()) {
@@ -146,7 +276,7 @@ impl ControlDispatcher {
                     self.audio.as_ref(),
                     device_id.clone(),
                     generation,
-                    device_name,
+                    device_name.clone(),
                     audio_addr,
                     remote_addr,
                     None,
@@ -155,22 +285,48 @@ impl ControlDispatcher {
                 )
                 .await;
 
-                let result = result.and_then(|()| {
-                    let (session_token, session_generation) =
-                        self.authorizer.commit(pending_session)?;
-                    Ok(PresenceResponse {
-                        device_id: self.sender_id.clone(),
-                        sender_name: self.sender_name.clone(),
-                        is_offline: false,
-                        pc_network_link: None,
-                        device_registered: Some(true),
-                        session_token: Some(session_token),
-                        session_generation: Some(session_generation),
-                        pending_request_id: approved_request_id.clone(),
-                    })
-                });
+                let result = match result {
+                    Err(error) => Err(error),
+                    Ok(()) => {
+                        if let Some(VerifiedDeviceIdentity { public_key, .. }) = identity_to_trust
+                            && let Err(error) = self.trusted_devices.trust(
+                                device_id.clone(),
+                                device_name,
+                                public_key,
+                            )
+                        {
+                            let _ = unregister_device(
+                                self.registry.as_ref(),
+                                self.tray.as_ref(),
+                                self.audio.as_ref(),
+                                self.notifier.as_ref(),
+                                device_id.clone(),
+                            )
+                            .await;
+                            Err(format!("failed to remember the approved device: {error}"))
+                        } else {
+                            self.authorizer.commit(pending_session).map(
+                                |(session_token, session_generation)| PresenceResponse {
+                                    device_id: self.sender_id.clone(),
+                                    sender_name: self.sender_name.clone(),
+                                    is_offline: false,
+                                    pc_network_link: None,
+                                    device_registered: Some(true),
+                                    session_token: Some(session_token),
+                                    session_generation: Some(session_generation),
+                                    pending_request_id: approved_request_id.clone(),
+                                    device_auth_challenge: None,
+                                    pc_certificate_fingerprint: Some(
+                                        self.pc_certificate_fingerprint.clone(),
+                                    ),
+                                },
+                            )
+                        }
+                    }
+                };
                 if let Some(request_id) = approved_request_id {
                     self.authorizer.remove_pending(&request_id);
+                    self.device_auth.remove_pending_pairing(&request_id);
                 }
                 let _ = response_tx.send(result);
             }
@@ -251,6 +407,8 @@ impl ControlDispatcher {
                     session_token: None,
                     session_generation: None,
                     pending_request_id: None,
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: Some(self.pc_certificate_fingerprint.clone()),
                 });
             }
         }
@@ -279,7 +437,7 @@ pub fn spawn_control_dispatcher(
         }
     });
 
-    // Task 2: Handle HTTP control commands
+    // Task 2: Handle HTTPS control commands
     set.spawn(async move {
         while let Some(cmd) = http_command_rx.recv().await {
             dispatcher.handle_http_command(cmd).await;
@@ -417,6 +575,11 @@ fn get_platform_sources() -> (
 mod tests {
     use super::*;
     use crate::testing::mocks::*;
+    use base64::Engine;
+    use gemacast_core::control::device_auth::build_device_auth_transcript;
+    use gemacast_core::control::types::DeviceAuthRequest;
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair};
 
     fn make_addr(s: &str) -> SocketAddr {
         s.parse().unwrap()
@@ -616,6 +779,8 @@ mod tests {
         let tray = Arc::new(MockTrayNotifier::new());
         let audio = Arc::new(MockAudioController::new());
         let authorizer = SessionAuthorizer::default();
+        let device_auth = DeviceAuthManager::default();
+        let trusted_devices = TrustedDeviceStore::in_memory();
         let dispatcher = ControlDispatcher {
             registry: registry.clone(),
             tray,
@@ -623,44 +788,28 @@ mod tests {
             notifier: Arc::new(MockDeviceNotifier::new()),
             sender_id: DeviceId("pc-1".into()),
             sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: authorizer.clone(),
+            device_auth: device_auth.clone(),
+            trusted_devices: trusted_devices.clone(),
         };
         let device_id = DeviceId("phone-1".into());
         let remote_addr = make_addr("192.168.1.5:55559");
-
-        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
-        dispatcher
-            .handle_http_command(ControlCommand::Connect {
-                device_id: device_id.clone(),
-                device_name: "My Phone".into(),
-                source: None,
-                remote_addr,
-                bitrate: Some(128_000),
-                response_tx: pending_tx,
-                authorized: false,
-                pending_request_id: None,
-            })
-            .await;
-        let pending = pending_rx.await.unwrap().unwrap();
-        let request_id = pending
-            .pending_request_id
-            .expect("the first LAN request must require approval");
-        assert_eq!(pending.device_registered, Some(false));
-        assert!(!registry.contains("phone-1"));
-
-        for _ in 0..100 {
-            if authorizer.pending_status(&request_id, &device_id)
-                == Some(gemacast_core::control::PendingApprovalStatus::Approved)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            authorizer.pending_status(&request_id, &device_id),
-            Some(gemacast_core::control::PendingApprovalStatus::Approved)
-        );
+        let request_id = authorizer.create_pending(device_id.clone()).unwrap();
+        let public_key = "verified-public-key".to_string();
+        device_auth
+            .hold_pending_pairing(
+                request_id.clone(),
+                device_id.clone(),
+                VerifiedDeviceIdentity {
+                    public_key: public_key.clone(),
+                    fingerprint: "fingerprint".into(),
+                    pairing_code: "123456".into(),
+                },
+            )
+            .unwrap();
+        assert!(authorizer.resolve_pending(&request_id, true));
 
         let (approved_tx, approved_rx) = tokio::sync::oneshot::channel();
         dispatcher
@@ -673,6 +822,13 @@ mod tests {
                 response_tx: approved_tx,
                 authorized: false,
                 pending_request_id: Some(request_id.clone()),
+                device_auth: Some(gemacast_core::control::types::DeviceAuthRequest {
+                    public_key: public_key.clone(),
+                    phone_nonce: "nonce".into(),
+                    challenge_id: None,
+                    signature: None,
+                    phone_confirmation: Some(true),
+                }),
             })
             .await;
         let approved = approved_rx.await.unwrap().unwrap();
@@ -691,12 +847,278 @@ mod tests {
         assert!(registry.contains("phone-1"));
         assert!(authorizer.authenticate(&device_id, &token).is_some());
         assert!(authorizer.is_current(&device_id, generation));
+        assert!(trusted_devices.is_trusted(&device_id, &public_key));
         assert_eq!(authorizer.pending_status(&request_id, &device_id), None);
         assert!(matches!(
             audio.take_calls().as_slice(),
             [AudioCall::Subscribe { device_id: subscribed, bitrate: Some(128_000), .. }]
                 if subscribed == &device_id
         ));
+    }
+
+    #[tokio::test]
+    async fn trusted_lan_key_should_reconnect_without_requesting_approval() {
+        let registry = Arc::new(MockDeviceRegistry::new());
+        let tray = Arc::new(MockTrayNotifier::new());
+        let audio = Arc::new(MockAudioController::new());
+        let device_auth = DeviceAuthManager::default();
+        let trusted_devices = TrustedDeviceStore::in_memory();
+        let dispatcher = ControlDispatcher {
+            registry: registry.clone(),
+            tray: tray.clone(),
+            audio: audio.clone(),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer: SessionAuthorizer::default(),
+            device_auth: device_auth.clone(),
+            trusted_devices: trusted_devices.clone(),
+        };
+        let random = SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING, &random)
+                .unwrap();
+        let key_pair = EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            pkcs8.as_ref(),
+            &random,
+        )
+        .unwrap();
+        let public_key = base64::engine::general_purpose::STANDARD.encode(key_pair.public_key());
+        let phone_nonce = base64::engine::general_purpose::STANDARD.encode([7_u8; 32]);
+        let device_id = DeviceId("phone-1".into());
+        trusted_devices
+            .trust(device_id.clone(), "My Phone".into(), public_key.clone())
+            .unwrap();
+
+        let (challenge_tx, challenge_rx) = tokio::sync::oneshot::channel();
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr: make_addr("192.168.1.5:55559"),
+                bitrate: Some(128_000),
+                response_tx: challenge_tx,
+                authorized: false,
+                pending_request_id: None,
+                device_auth: Some(DeviceAuthRequest {
+                    public_key: public_key.clone(),
+                    phone_nonce: phone_nonce.clone(),
+                    challenge_id: None,
+                    signature: None,
+                    phone_confirmation: None,
+                }),
+            })
+            .await;
+        let challenge = challenge_rx
+            .await
+            .unwrap()
+            .unwrap()
+            .device_auth_challenge
+            .expect("LAN authentication must issue a proof challenge");
+        assert!(!challenge.requires_approval);
+        let transcript = build_device_auth_transcript(
+            &device_id,
+            &dispatcher.sender_id,
+            &dispatcher.pc_certificate_fingerprint,
+            &public_key,
+            &phone_nonce,
+            &challenge.challenge_id,
+            &challenge.challenge,
+        );
+        let signature = key_pair.sign(&random, &transcript).unwrap();
+
+        let (connect_tx, connect_rx) = tokio::sync::oneshot::channel();
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr: make_addr("192.168.1.5:55559"),
+                bitrate: Some(128_000),
+                response_tx: connect_tx,
+                authorized: false,
+                pending_request_id: None,
+                device_auth: Some(DeviceAuthRequest {
+                    public_key,
+                    phone_nonce,
+                    challenge_id: Some(challenge.challenge_id),
+                    signature: Some(
+                        base64::engine::general_purpose::STANDARD.encode(signature.as_ref()),
+                    ),
+                    phone_confirmation: Some(true),
+                }),
+            })
+            .await;
+        let connected = connect_rx.await.unwrap().unwrap();
+
+        assert_eq!(connected.device_registered, Some(true));
+        assert!(connected.session_token.is_some());
+        assert!(connected.pending_request_id.is_none());
+        assert!(registry.contains("phone-1"));
+        assert!(
+            tray.take_calls()
+                .iter()
+                .all(|call| !matches!(call, TrayCall::ApprovalRequested { .. }))
+        );
+        assert!(matches!(
+            audio.take_calls().as_slice(),
+            [AudioCall::Subscribe { device_id: subscribed, .. }] if subscribed == &device_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn forgotten_lan_key_should_require_approval_again() {
+        let trusted_devices = TrustedDeviceStore::in_memory();
+        let dispatcher = ControlDispatcher {
+            registry: Arc::new(MockDeviceRegistry::new()),
+            tray: Arc::new(MockTrayNotifier::new()),
+            audio: Arc::new(MockAudioController::new()),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer: SessionAuthorizer::default(),
+            device_auth: DeviceAuthManager::default(),
+            trusted_devices: trusted_devices.clone(),
+        };
+        let random = SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING, &random)
+                .unwrap();
+        let key_pair = EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            pkcs8.as_ref(),
+            &random,
+        )
+        .unwrap();
+        let public_key = base64::engine::general_purpose::STANDARD.encode(key_pair.public_key());
+        let device_id = DeviceId("phone-1".into());
+        trusted_devices
+            .trust(device_id.clone(), "My Phone".into(), public_key.clone())
+            .unwrap();
+        assert!(trusted_devices.forget(&device_id).unwrap());
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id,
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr: make_addr("192.168.1.5:55559"),
+                bitrate: Some(128_000),
+                response_tx,
+                authorized: false,
+                pending_request_id: None,
+                device_auth: Some(DeviceAuthRequest {
+                    public_key,
+                    phone_nonce: base64::engine::general_purpose::STANDARD.encode([9_u8; 32]),
+                    challenge_id: None,
+                    signature: None,
+                    phone_confirmation: None,
+                }),
+            })
+            .await;
+        let challenge = response_rx
+            .await
+            .unwrap()
+            .unwrap()
+            .device_auth_challenge
+            .expect("forgotten LAN identity must issue a proof challenge");
+
+        assert!(challenge.requires_approval);
+    }
+
+    #[tokio::test]
+    async fn loopback_adb_connect_should_not_create_persistent_trust() {
+        let registry = Arc::new(MockDeviceRegistry::new());
+        let tray = Arc::new(MockTrayNotifier::new());
+        let trusted_devices = TrustedDeviceStore::in_memory();
+        let dispatcher = ControlDispatcher {
+            registry: registry.clone(),
+            tray: tray.clone(),
+            audio: Arc::new(MockAudioController::new()),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer: SessionAuthorizer::default(),
+            device_auth: DeviceAuthManager::default(),
+            trusted_devices: trusted_devices.clone(),
+        };
+        let device_id = DeviceId("adb-phone".into());
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "ADB Phone".into(),
+                source: None,
+                remote_addr: make_addr("127.0.0.1:55559"),
+                bitrate: Some(128_000),
+                response_tx,
+                authorized: true,
+                pending_request_id: None,
+                device_auth: None,
+            })
+            .await;
+        let connected = response_rx.await.unwrap().unwrap();
+
+        assert_eq!(connected.device_registered, Some(true));
+        assert!(connected.session_token.is_some());
+        assert!(registry.contains("adb-phone"));
+        assert!(trusted_devices.public_key(&device_id).is_none());
+        assert!(
+            tray.take_calls()
+                .iter()
+                .all(|call| !matches!(call, TrayCall::ApprovalRequested { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_disconnect_should_preserve_persistent_device_trust() {
+        let registry = Arc::new(MockDeviceRegistry::with_device(
+            "phone-1",
+            "192.168.1.5:9000",
+        ));
+        let trusted_devices = TrustedDeviceStore::in_memory();
+        let device_id = DeviceId("phone-1".into());
+        trusted_devices
+            .trust(device_id.clone(), "Phone".into(), "public-key".into())
+            .unwrap();
+        let authorizer = SessionAuthorizer::default();
+        let (_, generation) = authorizer.issue(device_id.clone()).unwrap();
+        let dispatcher = ControlDispatcher {
+            registry,
+            tray: Arc::new(MockTrayNotifier::new()),
+            audio: Arc::new(MockAudioController::new()),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer,
+            device_auth: DeviceAuthManager::default(),
+            trusted_devices: trusted_devices.clone(),
+        };
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        dispatcher
+            .handle_http_command(ControlCommand::Disconnect {
+                device_id: device_id.clone(),
+                remote_addr: make_addr("192.168.1.5:55559"),
+                generation: Some(generation),
+                response_tx,
+            })
+            .await;
+
+        response_rx.await.unwrap().unwrap();
+        assert!(trusted_devices.is_trusted(&device_id, "public-key"));
     }
 
     mod probe_registration_status {
@@ -711,8 +1133,11 @@ mod tests {
                 notifier: Arc::new(MockDeviceNotifier::new()),
                 sender_id: DeviceId("test-sender".into()),
                 sender_name: "Test Sender".into(),
+                pc_certificate_fingerprint: "pc-certificate".into(),
                 is_broadcasting: Arc::new(AtomicBool::new(true)),
                 authorizer: SessionAuthorizer::default(),
+                device_auth: DeviceAuthManager::default(),
+                trusted_devices: TrustedDeviceStore::in_memory(),
             }
         }
 

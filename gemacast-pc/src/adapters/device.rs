@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
-use gemacast_core::control::HttpControlClient;
 use gemacast_core::control::http::send_ws_event;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::control::types::WsEvent;
@@ -17,7 +16,10 @@ pub type WsConnectionMap = Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>;
 
 /// Notifies devices to disconnect using the best available transport.
 ///
-/// Priority: WebSocket → ADB broadcast (loopback) → HTTP (remote).
+/// Priority: WSS -> ADB broadcast (loopback).
+///
+/// Remote phones have no inbound control listener. If WSS is unavailable,
+/// their authenticated probe/audio liveness will converge on the disconnect.
 pub struct MultiTransportDeviceNotifier {
     ws_connections: WsConnectionMap,
     adb_outbound_control: broadcast::Sender<ControlMessage>,
@@ -41,20 +43,25 @@ impl MultiTransportDeviceNotifier {
 #[async_trait]
 impl DeviceNotifier for MultiTransportDeviceNotifier {
     async fn notify_disconnect(&self, device_id: &DeviceId, addr: Option<SocketAddr>) {
-        // Try WebSocket first
+        // Try WSS first.
         let ws_ok = send_ws_event(&self.ws_connections, device_id, WsEvent::Disconnect)
             .await
             .is_ok();
 
-        // Fallback if WebSocket didn't reach the device
+        // ADB has an independent loopback control channel. Remote devices do
+        // not expose a phone-side HTTPS endpoint, so leave their cleanup to
+        // the probe/audio liveness supervisors.
         if !ws_ok && let Some(addr) = addr {
             if addr.ip().is_loopback() {
                 let _ = self.adb_outbound_control.send(ControlMessage::Disconnect {
                     device_id: device_id.clone(),
                 });
             } else {
-                let client = HttpControlClient::new(addr.ip());
-                let _ = client.send_disconnect_request(device_id.clone()).await;
+                tracing::debug!(
+                    %device_id,
+                    %addr,
+                    "WSS disconnect notification unavailable; remote liveness cleanup remains authoritative"
+                );
             }
         }
     }

@@ -46,15 +46,18 @@ pub fn run() {
             let notifier: Arc<dyn traits::FrontendNotifier> =
                 Arc::new(adapters::TauriFrontendNotifier::new(handle.clone()));
 
+            let platform: Arc<dyn traits::PlatformService> =
+                Arc::new(adapters::NativePlatformService::new(handle.clone()));
+
+            let auth_signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner> =
+                Arc::new(adapters::PlatformDeviceAuthSigner::new(platform.clone()));
+
             let client_factory: Arc<dyn traits::SenderControlClientFactory> =
-                Arc::new(adapters::HttpSenderControlClientFactory::new());
+                Arc::new(adapters::HttpSenderControlClientFactory::new(auth_signer));
 
             let session_mgr: Arc<dyn traits::SessionManager> = Arc::new(
                 adapters::TokioSessionManager::new(notifier.clone(), client_factory.clone()),
             );
-
-            let platform: Arc<dyn traits::PlatformService> =
-                Arc::new(adapters::NativePlatformService::new(handle.clone()));
 
             let network: Arc<dyn traits::NetworkInfoProvider> =
                 Arc::new(adapters::NativeNetworkInfoProvider);

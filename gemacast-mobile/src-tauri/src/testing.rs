@@ -369,6 +369,8 @@ pub mod mocks {
                     session_token: None,
                     session_generation: None,
                     pending_request_id: None,
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: None,
                 })
         }
 
@@ -422,6 +424,8 @@ pub mod mocks {
                 session_token: None,
                 session_generation: None,
                 pending_request_id: None,
+                device_auth_challenge: None,
+                pc_certificate_fingerprint: None,
             })
         }
 
@@ -484,6 +488,8 @@ pub mod mocks {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum PlatformCall {
         GetTransportType,
+        DevicePublicKey,
+        SignDeviceAuth,
         SyncService {
             state: crate::traits::PlaybackState,
             is_exclusive: bool,
@@ -531,6 +537,45 @@ pub mod mocks {
                 state,
                 is_exclusive,
             });
+        }
+
+        fn device_public_key(&self) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::DevicePublicKey);
+            Err("test device identity is not configured".into())
+        }
+
+        fn sign_device_auth(&self, _transcript: &[u8]) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::SignDeviceAuth);
+            Err("test device identity is not configured".into())
+        }
+
+        fn trusted_pc_fingerprint(&self, _pc_id: &DeviceId) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn confirm_pc_identity(
+            &self,
+            _pc_id: &DeviceId,
+            _pc_name: &str,
+            _fingerprint: &str,
+            _pairing_code: &str,
+            _requires_approval: bool,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn remember_pc_identity(
+            &self,
+            _pc_id: &DeviceId,
+            _fingerprint: &str,
+        ) -> Result<(), String> {
+            Ok(())
         }
 
         fn set_streaming_flag(&self, active: bool) {

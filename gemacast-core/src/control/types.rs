@@ -27,6 +27,48 @@ pub struct ConnectReq {
     /// or rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_request_id: Option<String>,
+
+    /// Long-term device identity proof used for LAN pairing and trusted
+    /// reconnects. Loopback ADB connections intentionally omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_auth: Option<DeviceAuthRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthRequest {
+    /// Base64-encoded SEC1 uncompressed point for a P-256 public key.
+    pub public_key: String,
+    /// Random receiver nonce, Base64 encoded, generated once per handshake.
+    pub phone_nonce: String,
+    /// Set after the PC returns a challenge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge_id: Option<String>,
+    /// Base64-encoded ASN.1 DER ECDSA signature over the auth transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// The phone user confirmed the comparison code. `None` means the
+    /// confirmation dialog has not completed yet; `Some(false)` cancels the
+    /// pending pairing on the PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_confirmation: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthChallenge {
+    pub challenge_id: String,
+    /// Random 256-bit challenge, Base64 encoded.
+    pub challenge: String,
+    /// SHA-256 fingerprint of the certificate used by this HTTPS connection.
+    pub pc_certificate_fingerprint: String,
+    /// Six decimal digits independently derived from the signed transcript.
+    pub pairing_code: String,
+    /// True when the PC no longer trusts this phone key and will show a fresh
+    /// local approval prompt. A previously pinned phone must show the code
+    /// again so the two users still have something to compare after a kick.
+    pub requires_approval: bool,
+    pub expires_in_seconds: u64,
 }
 
 fn default_bitrate() -> Option<i32> {
@@ -105,6 +147,15 @@ pub struct PresenceResponse {
     /// Identifier shown in the PC approval prompt for a first LAN connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_request_id: Option<String>,
+
+    /// One-time proof-of-possession challenge for a LAN device identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_auth_challenge: Option<DeviceAuthChallenge>,
+
+    /// SHA-256 fingerprint of the PC's persistent TLS certificate. LAN
+    /// clients compare this with the certificate observed on the connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc_certificate_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +229,7 @@ mod tests {
                 }),
                 network_link: None,
                 pending_request_id: None,
+                device_auth: None,
             };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: ConnectReq = serde_json::from_str(&json).unwrap();

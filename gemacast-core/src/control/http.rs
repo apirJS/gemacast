@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 use crate::control::auth::{AuthorizedSession, SessionGeneration};
 use crate::control::types::{
@@ -33,6 +35,7 @@ pub enum ControlCommand {
         response_tx: oneshot::Sender<Result<PresenceResponse, String>>,
         authorized: bool,
         pending_request_id: Option<String>,
+        device_auth: Option<crate::control::types::DeviceAuthRequest>,
     },
     Disconnect {
         device_id: DeviceId,
@@ -105,6 +108,7 @@ pub struct ControlServerState<P: ProcessLister + 'static> {
     pub ws_connections: Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>,
     pub process_lister: P,
     pub authorizer: crate::control::SessionAuthorizer,
+    pub pc_certificate_fingerprint: String,
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -151,6 +155,8 @@ impl<P: ProcessLister + 'static> ControlServerState<P> {
             session_token: None,
             session_generation: None,
             pending_request_id: None,
+            device_auth_challenge: None,
+            pc_certificate_fingerprint: Some(self.pc_certificate_fingerprint.clone()),
         }
     }
 }
@@ -170,9 +176,10 @@ fn build_router<P: ProcessLister + Clone + 'static>(state: ControlServerState<P>
 
 pub async fn start_control_server<P: ProcessLister + Clone + 'static>(
     state: ControlServerState<P>,
+    tls_config: Arc<rustls::ServerConfig>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), GemaCastError> {
-    tracing::info!("Starting HTTP control server on port {}", Ports::CONTROL);
+    tracing::info!("Starting HTTPS control server on port {}", Ports::CONTROL);
     let app = build_router(state);
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, Ports::CONTROL);
     let listener = TcpListener::bind(addr)
@@ -183,8 +190,8 @@ pub async fn start_control_server<P: ProcessLister + Clone + 'static>(
         })?;
 
     axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        TlsListener::new(listener, tls_config),
+        app.into_make_service_with_connect_info::<PeerAddr>(),
     )
     .with_graceful_shutdown(async {
         let _ = shutdown_rx.await;
@@ -193,6 +200,93 @@ pub async fn start_control_server<P: ProcessLister + Clone + 'static>(
     .map_err(ControlError::ServerStartFailed)?;
 
     Ok(())
+}
+
+struct TlsListener {
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PeerAddr(SocketAddr);
+
+impl TlsListener {
+    fn new(listener: TcpListener, config: Arc<rustls::ServerConfig>) -> Self {
+        Self {
+            listener,
+            acceptor: TlsAcceptor::from(config),
+        }
+    }
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = TlsStream<tokio::net::TcpStream>;
+    type Addr = PeerAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let (stream, addr) = match self.listener.accept().await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::error!("HTTPS accept failed: {error}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+            match self.acceptor.accept(stream).await {
+                Ok(stream) => return (stream, PeerAddr(addr)),
+                Err(error) => {
+                    tracing::debug!("Rejected invalid TLS connection from {addr}: {error}");
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.listener.local_addr().map(PeerAddr)
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TlsListener>>
+    for PeerAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TlsListener>) -> Self {
+        *stream.remote_addr()
+    }
+}
+
+#[cfg(test)]
+struct PlainListener(TcpListener);
+
+#[cfg(test)]
+impl axum::serve::Listener for PlainListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = PeerAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok((stream, addr)) => return (stream, PeerAddr(addr)),
+                Err(error) => {
+                    tracing::error!("test control accept failed: {error}");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.0.local_addr().map(PeerAddr)
+    }
+}
+
+#[cfg(test)]
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, PlainListener>>
+    for PeerAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, PlainListener>) -> Self {
+        *stream.remote_addr()
+    }
 }
 
 async fn handle_probe<P: ProcessLister + 'static>(
@@ -209,17 +303,18 @@ async fn handle_probe<P: ProcessLister + 'static>(
         })
         .await;
 
-    let presence = match response_rx.await {
+    let mut presence = match response_rx.await {
         Ok(p) => p,
         Err(_) => state.build_presence(),
     };
+    presence.pc_certificate_fingerprint = Some(state.pc_certificate_fingerprint.clone());
 
     Json(presence)
 }
 
 async fn handle_connect<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
     Json(req): Json<ConnectReq>,
 ) -> axum::response::Response {
@@ -239,10 +334,9 @@ async fn handle_connect<P: ProcessLister + 'static>(
     }
 
     let current_session = authenticate_device(&state, &headers, &req.device_id);
-    if current_session.is_none() && state.authorizer.has_session(&req.device_id) {
-        return unauthorized();
-    }
-    let authorized = addr.ip().is_loopback() || current_session.is_some();
+    let adb_tunnel =
+        addr.ip().is_loopback() && matches!(req.mode, crate::domain::types::ConnectionMode::Adb);
+    let authorized = adb_tunnel || current_session.is_some();
     let (response_tx, response_rx) = oneshot::channel();
     if state
         .command_tx
@@ -255,6 +349,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
             response_tx,
             authorized,
             pending_request_id: req.pending_request_id,
+            device_auth: req.device_auth,
         })
         .await
         .is_err()
@@ -289,6 +384,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
 
     // Inject the PC's detected network link into the response
     presence.pc_network_link = pc_link;
+    presence.pc_certificate_fingerprint = Some(state.pc_certificate_fingerprint.clone());
 
     let status = if presence.session_token.is_none() && presence.pending_request_id.is_some() {
         StatusCode::ACCEPTED
@@ -300,7 +396,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
 
 async fn handle_disconnect<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
     Json(req): Json<DisconnectReq>,
 ) -> axum::response::Response {
@@ -331,7 +427,7 @@ async fn handle_disconnect<P: ProcessLister + 'static>(
 
 async fn handle_get_sources<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
 ) -> axum::response::Response {
     tracing::info!("HTTP GET /sources");
@@ -360,7 +456,7 @@ async fn handle_get_sources<P: ProcessLister + 'static>(
 
 async fn handle_change_source<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
     Json(req): Json<ChangeSourceReq>,
 ) -> axum::response::Response {
@@ -391,7 +487,7 @@ async fn handle_change_source<P: ProcessLister + 'static>(
 
 async fn handle_change_bitrate<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
     Json(req): Json<ChangeBitrateReq>,
 ) -> axum::response::Response {
@@ -422,7 +518,7 @@ async fn handle_change_bitrate<P: ProcessLister + 'static>(
 
 async fn handle_get_processes<P: ProcessLister + 'static>(
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
 ) -> axum::response::Response {
     tracing::info!("HTTP GET /processes");
@@ -438,7 +534,7 @@ async fn handle_ws_upgrade<P: ProcessLister + 'static>(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
     State(state): State<ControlServerState<P>>,
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    axum::extract::ConnectInfo(PeerAddr(addr)): axum::extract::ConnectInfo<PeerAddr>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     tracing::info!("HTTP GET /ws upgrade request with params: {:?}", params);
@@ -515,6 +611,7 @@ mod tests {
             ws_connections: Arc::new(Mutex::new(HashMap::new())),
             process_lister: MockProcessLister,
             authorizer: authorizer.clone(),
+            pc_certificate_fingerprint: "test-certificate".to_string(),
         };
 
         let app = build_router(state);
@@ -523,8 +620,8 @@ mod tests {
 
         tokio::spawn(async move {
             axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
+                PlainListener(listener),
+                app.into_make_service_with_connect_info::<PeerAddr>(),
             )
             .await
             .unwrap();
@@ -547,6 +644,7 @@ mod tests {
             mode: crate::domain::types::ConnectionMode::Wifi,
             network_link: None,
             pending_request_id: None,
+            device_auth: None,
         };
 
         let request_task = tokio::spawn(async move {
@@ -581,6 +679,8 @@ mod tests {
                     session_token: None,
                     session_generation: None,
                     pending_request_id: None,
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: None,
                 }));
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -603,6 +703,7 @@ mod tests {
             mode: crate::domain::types::ConnectionMode::Wifi,
             network_link: None,
             pending_request_id: None,
+            device_auth: None,
         };
 
         let request_task = tokio::spawn(async move {
@@ -625,6 +726,8 @@ mod tests {
                     session_token: None,
                     session_generation: None,
                     pending_request_id: Some("request-1".into()),
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: None,
                 }));
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -728,6 +831,7 @@ mod tests {
             mode: crate::domain::types::ConnectionMode::Wifi,
             network_link: None,
             pending_request_id: None,
+            device_auth: None,
         };
 
         let res = client
@@ -775,6 +879,8 @@ mod tests {
                     session_token: None,
                     session_generation: None,
                     pending_request_id: None,
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Probe"),

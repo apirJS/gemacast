@@ -16,6 +16,8 @@ pub enum TrayEvent {
         request_id: String,
         name: String,
         addr: SocketAddr,
+        key_fingerprint: String,
+        pairing_code: String,
         response_tx: tokio::sync::oneshot::Sender<bool>,
     },
     /// A new version has been downloaded and is ready to install.

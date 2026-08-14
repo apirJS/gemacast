@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Sends control commands to a PC sender over HTTP.
+/// Sends control commands to a PC sender over certificate-pinned HTTPS.
 ///
 /// **Production**: [`crate::adapters::HttpSenderControlClient`]
 /// **Tests**: [`crate::testing::mocks::MockSenderControlClient`]
@@ -53,6 +53,15 @@ pub trait SenderControlClientFactory: Send + Sync {
 
     /// Return the current session token for WebSocket authentication.
     fn session_token(&self, _ip: IpAddr, _device_id: &DeviceId) -> Option<String> {
+        None
+    }
+
+    /// Return the complete authenticated transport state for WSS pinning.
+    fn session_credentials(
+        &self,
+        _ip: IpAddr,
+        _device_id: &DeviceId,
+    ) -> Option<gemacast_core::control::http_client::ControlCredentials> {
         None
     }
 }

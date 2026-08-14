@@ -21,6 +21,14 @@ pub mod mocks {
 
     #[derive(Debug, Clone, PartialEq)]
     pub enum TrayCall {
+        ApprovalRequested {
+            request_id: String,
+            device_id: DeviceId,
+            name: String,
+            addr: SocketAddr,
+            key_fingerprint: String,
+            pairing_code: String,
+        },
         Discovered {
             device_id: DeviceId,
             name: String,
@@ -61,11 +69,24 @@ pub mod mocks {
     impl TrayNotifier for MockTrayNotifier {
         async fn request_connection_approval(
             &self,
-            _request_id: String,
-            _device_id: DeviceId,
-            _name: String,
-            _addr: SocketAddr,
+            request_id: String,
+            device_id: DeviceId,
+            name: String,
+            addr: SocketAddr,
+            key_fingerprint: String,
+            pairing_code: String,
         ) -> bool {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(TrayCall::ApprovalRequested {
+                    request_id,
+                    device_id,
+                    name,
+                    addr,
+                    key_fingerprint,
+                    pairing_code,
+                });
             true
         }
 

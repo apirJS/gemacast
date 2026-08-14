@@ -24,6 +24,8 @@ impl TrayNotifier for EventLoopTrayNotifier {
         _device_id: DeviceId,
         name: String,
         addr: SocketAddr,
+        key_fingerprint: String,
+        pairing_code: String,
     ) -> bool {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         if self
@@ -32,6 +34,8 @@ impl TrayNotifier for EventLoopTrayNotifier {
                 request_id,
                 name,
                 addr,
+                key_fingerprint,
+                pairing_code,
                 response_tx,
             })
             .is_err()

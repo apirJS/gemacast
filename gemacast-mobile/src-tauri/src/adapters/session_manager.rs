@@ -198,9 +198,9 @@ impl SessionManager for TokioSessionManager {
     }
 }
 
-/// Run the HTTP probe heartbeat loop until cancelled.
+/// Run the HTTPS probe heartbeat loop until cancelled.
 ///
-/// Sends an HTTP probe to the PC sender every 5 seconds so the PC's
+/// Sends an HTTPS probe to the PC sender every 5 seconds so the PC's
 /// device watchdog keeps the connection alive. This replaces the old
 /// WebView `setInterval` timer which Android would throttle when the
 /// app was backgrounded or the screen was off.

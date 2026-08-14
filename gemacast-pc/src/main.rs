@@ -22,12 +22,15 @@ mod autostart;
 mod background;
 mod config;
 mod crash_log;
+mod device_auth;
 mod events;
 mod logging;
+mod pc_identity;
 mod state;
 pub mod tasks;
 pub mod traits;
 mod tray;
+mod trusted_devices;
 mod updater;
 
 #[cfg(test)]

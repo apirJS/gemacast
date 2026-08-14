@@ -55,7 +55,7 @@ pub struct ConnectParams {
     pub phone_network_link: Option<NetworkLink>,
 }
 
-/// Parameters for resuming audio playback with an HTTP reconnect.
+/// Parameters for resuming audio playback after an HTTPS reconnect.
 #[derive(Debug, Clone)]
 pub struct ResumeParams {
     pub ip: IpAddr,

@@ -1,6 +1,7 @@
 package com.apir.gemacast
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -20,10 +22,30 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.annotation.Keep
 import java.io.File
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.Signature
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import java.math.BigInteger
+import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
+    companion object {
+        private const val DEVICE_AUTH_KEY_ALIAS = "gemacast_device_auth_p256_v1"
+        private const val P256_COORDINATE_SIZE = 32
+        private const val TRUSTED_PC_PREFERENCES = "gemacast_trusted_pcs_v1"
+    }
     private var gemaCastService: GemaCastService? = null
     private var serviceBound = false
+    @Volatile private var pendingPcId: String? = null
+    @Volatile private var pendingPcFingerprint: String? = null
+    private val pcIdentityConfirmationState = PcIdentityConfirmationState()
+    private var pcIdentityConfirmationDialog: AlertDialog? = null
+    private var pcIdentityConfirmationDialogKey: PcIdentityConfirmationKey? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -108,6 +130,233 @@ class MainActivity : TauriActivity() {
 
             "${networkType}|${adbStatus}"
         } catch (e: Exception) {
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun getOrCreateDeviceAuthKeyPair(): java.security.KeyPair {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existingPrivateKey = keyStore.getKey(DEVICE_AUTH_KEY_ALIAS, null)
+        val existingCertificate = keyStore.getCertificate(DEVICE_AUTH_KEY_ALIAS)
+        if (existingPrivateKey != null && existingCertificate != null) {
+            return java.security.KeyPair(existingCertificate.publicKey, existingPrivateKey as java.security.PrivateKey)
+        }
+
+        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(
+            DEVICE_AUTH_KEY_ALIAS,
+            KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+        )
+            .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setUserAuthenticationRequired(false)
+            .build()
+        generator.initialize(spec)
+        return generator.generateKeyPair()
+    }
+
+    private fun fixedUnsigned(value: BigInteger): ByteArray {
+        val encoded = value.toByteArray()
+        val unsigned = if (encoded.size == P256_COORDINATE_SIZE + 1 && encoded[0].toInt() == 0) {
+            encoded.copyOfRange(1, encoded.size)
+        } else {
+            encoded
+        }
+        require(unsigned.size <= P256_COORDINATE_SIZE) { "P-256 coordinate is too large" }
+        return ByteArray(P256_COORDINATE_SIZE - unsigned.size) + unsigned
+    }
+
+    @Keep
+    fun getDeviceAuthPublicKey(): String {
+        return try {
+            val publicKey = getOrCreateDeviceAuthKeyPair().public as ECPublicKey
+            val sec1 = byteArrayOf(0x04) + fixedUnsigned(publicKey.w.affineX) + fixedUnsigned(publicKey.w.affineY)
+            Base64.encodeToString(sec1, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun signDeviceAuthTranscript(transcriptBase64: String): String {
+        return try {
+            val transcript = Base64.decode(transcriptBase64, Base64.DEFAULT)
+            val signature = Signature.getInstance("SHA256withECDSA").apply {
+                initSign(getOrCreateDeviceAuthKeyPair().private)
+                update(transcript)
+            }
+            Base64.encodeToString(signature.sign(), Base64.NO_WRAP)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun getTrustedPcFingerprint(pcId: String): String {
+        return try {
+            getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(pcId, "") ?: ""
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun pcIdentityConfirmationKey(request: JSONObject): PcIdentityConfirmationKey {
+        val pcId = request.getString("pcId")
+        val fingerprint = request.getString("fingerprint").lowercase()
+        val pairingCode = request.getString("pairingCode")
+        require(fingerprint.matches(Regex("[0-9a-f]{64}"))) {
+            "Invalid PC certificate fingerprint"
+        }
+        require(pairingCode.matches(Regex("[0-9]{6}"))) {
+            "Invalid pairing code"
+        }
+        return PcIdentityConfirmationKey(pcId, fingerprint, pairingCode)
+    }
+
+    @Keep
+    fun confirmPcIdentity(payload: String): String {
+        return try {
+            val request = JSONObject(payload)
+            val key = pcIdentityConfirmationKey(request)
+            val pcName = request.getString("pcName")
+            val requiresApproval = request.optBoolean("requiresApproval", true)
+
+            val stored = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(key.pcId, null)
+            if (stored != null && !stored.equals(key.fingerprint, ignoreCase = true)) {
+                return "ERROR: The paired PC certificate changed. Forget this PC before pairing again."
+            }
+            if (stored != null && !requiresApproval) {
+                return "TRUSTED"
+            }
+
+            when (pcIdentityConfirmationState.begin(key, SystemClock.elapsedRealtime())) {
+                PcIdentityConfirmationState.BeginResult.APPROVED -> "APPROVED"
+                PcIdentityConfirmationState.BeginResult.REJECTED -> "REJECTED"
+                PcIdentityConfirmationState.BeginResult.PENDING -> "PENDING"
+                PcIdentityConfirmationState.BeginResult.BUSY ->
+                    "ERROR: Another PC pairing confirmation is already pending"
+                PcIdentityConfirmationState.BeginResult.STARTED -> {
+                    runOnUiThread {
+                        pcIdentityConfirmationDialog?.dismiss()
+                        val shortFingerprint = key.fingerprint.take(16).chunked(4).joinToString(" ")
+                        val dialog = AlertDialog.Builder(this)
+                            .setTitle("Verify Gemacast PC")
+                            .setMessage(
+                                "Connect to $pcName?\n\n" +
+                                    "Pairing code:  ${key.pairingCode}\n\n" +
+                                    "After tapping Continue, confirm that the PC shows the same code.\n\n" +
+                                    "PC certificate: $shortFingerprint"
+                            )
+                            .setPositiveButton("Continue") { _, _ ->
+                                if (
+                                    pcIdentityConfirmationState.complete(
+                                        key,
+                                        approved = true,
+                                        nowMillis = SystemClock.elapsedRealtime(),
+                                    )
+                                ) {
+                                    pendingPcId = key.pcId
+                                    pendingPcFingerprint = key.fingerprint
+                                }
+                            }
+                            .setNegativeButton("Cancel") { _, _ ->
+                                pcIdentityConfirmationState.complete(
+                                    key,
+                                    approved = false,
+                                    nowMillis = SystemClock.elapsedRealtime(),
+                                )
+                            }
+                            .create()
+                        dialog.setOnCancelListener {
+                            pcIdentityConfirmationState.complete(
+                                key,
+                                approved = false,
+                                nowMillis = SystemClock.elapsedRealtime(),
+                            )
+                        }
+                        dialog.setOnDismissListener {
+                            if (pcIdentityConfirmationDialogKey == key) {
+                                pcIdentityConfirmationDialog = null
+                                pcIdentityConfirmationDialogKey = null
+                            }
+                        }
+                        pcIdentityConfirmationDialog = dialog
+                        pcIdentityConfirmationDialogKey = key
+                        dialog.show()
+                    }
+                    "PENDING"
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun pollPcIdentityConfirmation(payload: String): String {
+        return try {
+            val key = pcIdentityConfirmationKey(JSONObject(payload))
+            pcIdentityConfirmationState.poll(key, SystemClock.elapsedRealtime()).name
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun cancelPcIdentityConfirmation(payload: String): String {
+        return try {
+            val key = pcIdentityConfirmationKey(JSONObject(payload))
+            pcIdentityConfirmationState.cancel(key)
+            runOnUiThread {
+                if (pcIdentityConfirmationDialogKey == key) {
+                    pcIdentityConfirmationDialog?.dismiss()
+                    pcIdentityConfirmationDialog = null
+                    pcIdentityConfirmationDialogKey = null
+                }
+            }
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun rememberPcIdentity(payload: String): String {
+        return try {
+            val request = JSONObject(payload)
+            val pcId = request.getString("pcId")
+            val fingerprint = request.getString("fingerprint").lowercase()
+            require(fingerprint.matches(Regex("[0-9a-f]{64}"))) {
+                "Invalid PC certificate fingerprint"
+            }
+            val existing = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(pcId, null)
+            if (existing != null && !existing.equals(fingerprint, ignoreCase = true)) {
+                return "ERROR: Refusing to replace an existing PC certificate pin"
+            }
+            if (existing == null && (pendingPcId != pcId || pendingPcFingerprint != fingerprint)) {
+                return "ERROR: PC certificate was not confirmed by the phone user"
+            }
+            val saved = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .putString(pcId, fingerprint)
+                .commit()
+            if (!saved) {
+                return "ERROR: Android could not persist the PC certificate pin"
+            }
+            pendingPcId = null
+            pendingPcFingerprint = null
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
             "ERROR: ${e.message}"
         }
     }
@@ -220,6 +469,10 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        pcIdentityConfirmationState.cancelAll()
+        pcIdentityConfirmationDialog?.dismiss()
+        pcIdentityConfirmationDialog = null
+        pcIdentityConfirmationDialogKey = null
         super.onDestroy()
     }
 }

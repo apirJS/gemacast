@@ -15,6 +15,8 @@ pub trait TrayNotifier: Send + Sync {
         device_id: DeviceId,
         name: String,
         addr: SocketAddr,
+        key_fingerprint: String,
+        pairing_code: String,
     ) -> bool;
 
     /// A new device connected (or reconnected at a new address).
