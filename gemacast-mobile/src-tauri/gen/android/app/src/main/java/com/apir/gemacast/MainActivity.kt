@@ -31,6 +31,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.math.BigInteger
+import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -198,6 +199,23 @@ class MainActivity : TauriActivity() {
         return try {
             getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
                 .getString(pcId, "") ?: ""
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun getTrustedPcIds(): String {
+        return try {
+            val ids = JSONArray()
+            getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .all
+                .keys
+                .asSequence()
+                .sorted()
+                .forEach(ids::put)
+            ids.toString()
         } catch (e: Exception) {
             e.printStackTrace()
             "ERROR: ${e.message}"

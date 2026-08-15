@@ -91,6 +91,8 @@ export const tauriBridge = {
 
   forgetPcIdentity: (pcId: string) => invoke('forget_pc_identity', { pcId }),
 
+  getPairedPcIds: () => invoke<string[]>('get_paired_pc_ids'),
+
   getLocalIp: () => invoke<string>('get_local_ip'),
 
   getNetworkIdentifier: () => invoke<string>('get_network_identifier'),

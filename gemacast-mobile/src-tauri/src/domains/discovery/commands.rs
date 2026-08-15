@@ -94,3 +94,8 @@ pub fn get_network_state(
 pub fn forget_pc_identity(pc_id: DeviceId, state: State<'_, AppState>) -> Result<(), String> {
     super::service::forget_pc_identity(state.platform.as_ref(), &pc_id)
 }
+
+#[tauri::command]
+pub fn get_paired_pc_ids(state: State<'_, AppState>) -> Result<Vec<DeviceId>, String> {
+    super::service::paired_pc_ids(state.platform.as_ref())
+}

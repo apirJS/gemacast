@@ -10,6 +10,7 @@ import { Status } from '../core/types';
 import {
   connectToSender,
   disconnect,
+  getPairingDecisionWarning,
   handleSenderTimeout,
   handleForceDisconnect,
   handleLinkLost,
@@ -18,6 +19,7 @@ import {
   isTerminalConnectError,
 } from './use-connection';
 import { ErrorCode } from '../core/error';
+import { useToastStore } from '../stores/toast-store';
 
 beforeEach(() => {
   setupInvokeMock({
@@ -35,12 +37,23 @@ beforeEach(() => {
   });
   useAppStore.getState().init(makeDeviceInfo());
   useAppStore.getState().setStatus(Status.Listening);
+  useToastStore.setState({ toasts: [] });
 });
 
 describe('connectToSender', () => {
   it('classifies pairing decisions as terminal', () => {
     expect(isTerminalConnectError('sender rejected the request (pairing_rejected)')).toBe(true);
     expect(isTerminalConnectError(new Error('HTTP request failed'))).toBe(false);
+  });
+
+  it('maps pairing decisions to concise warnings', () => {
+    expect(getPairingDecisionWarning('sender rejected the request (pairing_rejected)')).toBe(
+      'Pairing request rejected on the PC',
+    );
+    expect(getPairingDecisionWarning(new Error('pairing was cancelled on the phone'))).toBe(
+      'Pairing cancelled',
+    );
+    expect(getPairingDecisionWarning('HTTP request failed')).toBeNull();
   });
 
   it('transitions through Connecting → Connected on success', async () => {
@@ -89,6 +102,42 @@ describe('connectToSender', () => {
     await connectToSender(makeDiscoveredSender());
 
     expect(attempts).toBe(1);
+  });
+
+  it('shows a warning instead of a playback error when the PC rejects pairing', async () => {
+    setupInvokeMock({
+      connect_to_sender: () => {
+        throw new Error('sender rejected the request (pairing_rejected)');
+      },
+    });
+
+    const result = await connectToSender(makeDiscoveredSender());
+
+    expect(result.ok).toBe(false);
+    expect(useAppStore.getState().error).toBeNull();
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    expect(useToastStore.getState().toasts[0]).toMatchObject({
+      type: 'warning',
+      message: 'Pairing request rejected on the PC',
+    });
+  });
+
+  it('shows a warning instead of a playback error when pairing is cancelled on the phone', async () => {
+    setupInvokeMock({
+      connect_to_sender: () => {
+        throw new Error('PC identity confirmation was cancelled on the phone');
+      },
+    });
+
+    const result = await connectToSender(makeDiscoveredSender());
+
+    expect(result.ok).toBe(false);
+    expect(useAppStore.getState().error).toBeNull();
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    expect(useToastStore.getState().toasts[0]).toMatchObject({
+      type: 'warning',
+      message: 'Pairing cancelled',
+    });
   });
 
   it('resets reconnectAttempts to 0 on connect', async () => {

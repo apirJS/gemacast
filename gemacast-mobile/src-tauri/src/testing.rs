@@ -490,6 +490,7 @@ pub mod mocks {
         GetTransportType,
         DevicePublicKey,
         SignDeviceAuth,
+        PairedPcIds,
         ForgetPcIdentity {
             pc_id: DeviceId,
         },
@@ -506,6 +507,7 @@ pub mod mocks {
     pub struct MockPlatformService {
         pub calls: Mutex<Vec<PlatformCall>>,
         transport_type: Mutex<Result<String, String>>,
+        paired_pc_ids: Mutex<Result<Vec<DeviceId>, String>>,
     }
 
     impl MockPlatformService {
@@ -513,11 +515,17 @@ pub mod mocks {
             Self {
                 calls: Mutex::new(Vec::new()),
                 transport_type: Mutex::new(Err("not android".to_string())),
+                paired_pc_ids: Mutex::new(Ok(Vec::new())),
             }
         }
 
         pub fn with_transport_type(self, transport: &str) -> Self {
             *self.transport_type.lock().unwrap() = Ok(transport.to_string());
+            self
+        }
+
+        pub fn with_paired_pc_ids(self, ids: Vec<DeviceId>) -> Self {
+            *self.paired_pc_ids.lock().unwrap() = Ok(ids);
             self
         }
 
@@ -560,6 +568,11 @@ pub mod mocks {
 
         fn trusted_pc_fingerprint(&self, _pc_id: &DeviceId) -> Result<Option<String>, String> {
             Ok(None)
+        }
+
+        fn paired_pc_ids(&self) -> Result<Vec<DeviceId>, String> {
+            self.calls.lock().unwrap().push(PlatformCall::PairedPcIds);
+            self.paired_pc_ids.lock().unwrap().clone()
         }
 
         fn confirm_pc_identity(

@@ -298,8 +298,10 @@ impl HttpControlClient {
                     }
                     .into());
                 }
-                if (trusted_fingerprint.is_none() || challenge.requires_approval)
-                    && !signer
+                let phone_confirmed = if trusted_fingerprint.is_none()
+                    || challenge.requires_approval
+                {
+                    if !signer
                         .confirm_pc_identity(
                             &presence.device_id,
                             &presence.sender_name,
@@ -308,19 +310,23 @@ impl HttpControlClient {
                             challenge.requires_approval,
                         )
                         .map_err(|reason| ControlError::Rejected { reason })?
-                {
-                    return Err(ControlError::Rejected {
-                        reason: "PC identity confirmation was cancelled on the phone".into(),
+                    {
+                        return Err(ControlError::Rejected {
+                            reason: "PC identity confirmation was cancelled on the phone".into(),
+                        }
+                        .into());
                     }
-                    .into());
-                }
+                    true
+                } else {
+                    false
+                };
                 auth.challenge_id = Some(challenge.challenge_id.clone());
                 auth.signature = Some(
                     signer
                         .sign(&transcript)
                         .map_err(|reason| ControlError::Rejected { reason })?,
                 );
-                auth.phone_confirmation = Some(true);
+                auth.phone_confirmation = phone_confirmed.then_some(true);
                 if trusted_fingerprint.is_none() {
                     candidate_pc_identity =
                         Some((presence.device_id.clone(), pc_fingerprint.clone()));

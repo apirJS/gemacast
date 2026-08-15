@@ -180,10 +180,10 @@ impl ControlDispatcher {
                             return;
                         }
                     };
-                    if self
+                    let already_trusted = self
                         .trusted_devices
-                        .is_trusted(&device_id, &identity.public_key)
-                    {
+                        .is_trusted(&device_id, &identity.public_key);
+                    if already_trusted && auth.phone_confirmation.is_none() {
                         (None, None)
                     } else {
                         match auth.phone_confirmation {
@@ -194,9 +194,8 @@ impl ControlDispatcher {
                                 return;
                             }
                             None => {
-                                let _ = response_tx.send(Err(
-                                    "phone confirmation is required for first pairing".into(),
-                                ));
+                                let _ = response_tx
+                                    .send(Err("phone confirmation is required for pairing".into()));
                                 return;
                             }
                         }
@@ -860,7 +859,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_lan_key_should_reconnect_without_requesting_approval() {
+    async fn trusted_lan_key_should_reconnect_silently_but_phone_repair_requires_approval() {
         let registry = Arc::new(MockDeviceRegistry::new());
         let tray = Arc::new(MockTrayNotifier::new());
         let audio = Arc::new(MockAudioController::new());
@@ -946,13 +945,13 @@ mod tests {
                 authorized: false,
                 pending_request_id: None,
                 device_auth: Some(DeviceAuthRequest {
-                    public_key,
-                    phone_nonce,
+                    public_key: public_key.clone(),
+                    phone_nonce: phone_nonce.clone(),
                     challenge_id: Some(challenge.challenge_id),
                     signature: Some(
                         base64::engine::general_purpose::STANDARD.encode(signature.as_ref()),
                     ),
-                    phone_confirmation: Some(true),
+                    phone_confirmation: None,
                 }),
             })
             .await;
@@ -971,6 +970,115 @@ mod tests {
             audio.take_calls().as_slice(),
             [AudioCall::Subscribe { device_id: subscribed, .. }] if subscribed == &device_id
         ));
+
+        let repair_registry = Arc::new(MockDeviceRegistry::new());
+        let repair_tray = Arc::new(MockTrayNotifier::new());
+        let repair_audio = Arc::new(MockAudioController::new());
+        let repair_authorizer = SessionAuthorizer::default();
+        let repair_device_auth = DeviceAuthManager::default();
+        let repair_dispatcher = ControlDispatcher {
+            registry: repair_registry,
+            tray: repair_tray.clone(),
+            audio: repair_audio.clone(),
+            notifier: Arc::new(MockDeviceNotifier::new()),
+            sender_id: DeviceId("pc-1".into()),
+            sender_name: "Test PC".into(),
+            pc_certificate_fingerprint: "pc-certificate".into(),
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            authorizer: repair_authorizer,
+            device_auth: repair_device_auth,
+            trusted_devices: trusted_devices.clone(),
+        };
+        let repair_nonce = base64::engine::general_purpose::STANDARD.encode([8_u8; 32]);
+        let (repair_challenge_tx, repair_challenge_rx) = tokio::sync::oneshot::channel();
+        repair_dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr: make_addr("192.168.1.5:55559"),
+                bitrate: Some(128_000),
+                response_tx: repair_challenge_tx,
+                authorized: false,
+                pending_request_id: None,
+                device_auth: Some(DeviceAuthRequest {
+                    public_key: public_key.clone(),
+                    phone_nonce: repair_nonce.clone(),
+                    challenge_id: None,
+                    signature: None,
+                    phone_confirmation: None,
+                }),
+            })
+            .await;
+        let repair_challenge = repair_challenge_rx
+            .await
+            .unwrap()
+            .unwrap()
+            .device_auth_challenge
+            .expect("trusted repair must issue a proof challenge");
+        assert!(!repair_challenge.requires_approval);
+        let repair_transcript = build_device_auth_transcript(
+            &device_id,
+            &repair_dispatcher.sender_id,
+            &repair_dispatcher.pc_certificate_fingerprint,
+            &public_key,
+            &repair_nonce,
+            &repair_challenge.challenge_id,
+            &repair_challenge.challenge,
+        );
+        let repair_signature = key_pair.sign(&random, &repair_transcript).unwrap();
+        let (repair_tx, repair_rx) = tokio::sync::oneshot::channel();
+        repair_dispatcher
+            .handle_http_command(ControlCommand::Connect {
+                device_id: device_id.clone(),
+                device_name: "My Phone".into(),
+                source: None,
+                remote_addr: make_addr("192.168.1.5:55559"),
+                bitrate: Some(128_000),
+                response_tx: repair_tx,
+                authorized: false,
+                pending_request_id: None,
+                device_auth: Some(DeviceAuthRequest {
+                    public_key,
+                    phone_nonce: repair_nonce,
+                    challenge_id: Some(repair_challenge.challenge_id),
+                    signature: Some(
+                        base64::engine::general_purpose::STANDARD.encode(repair_signature.as_ref()),
+                    ),
+                    phone_confirmation: Some(true),
+                }),
+            })
+            .await;
+        let repair_pending = repair_rx.await.unwrap().unwrap();
+
+        assert!(repair_pending.pending_request_id.is_some());
+        assert_eq!(repair_pending.device_registered, Some(false));
+        assert!(repair_audio.take_calls().is_empty());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if repair_tray.calls.lock().unwrap().iter().any(|call| {
+                    matches!(
+                        call,
+                        TrayCall::ApprovalRequested {
+                            replaces_existing_identity: false,
+                            ..
+                        }
+                    )
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("phone-requested re-pair must show PC approval");
+        assert!(repair_tray.take_calls().iter().any(|call| matches!(
+            call,
+            TrayCall::ApprovalRequested {
+                replaces_existing_identity: false,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]

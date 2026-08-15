@@ -26,6 +26,9 @@ pub trait PlatformService: Send + Sync {
     /// Return the app-private certificate pin for a previously approved PC.
     fn trusted_pc_fingerprint(&self, pc_id: &DeviceId) -> Result<Option<String>, String>;
 
+    /// Return the IDs of all PCs with a locally stored certificate pin.
+    fn paired_pc_ids(&self) -> Result<Vec<DeviceId>, String>;
+
     /// Ask the phone user to compare the PC's pairing code.
     fn confirm_pc_identity(
         &self,

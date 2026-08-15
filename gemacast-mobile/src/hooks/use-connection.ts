@@ -28,6 +28,18 @@ export function isTerminalConnectError(error: unknown): boolean {
   return TERMINAL_CONNECT_ERROR_CODES.some((code) => normalized.includes(code));
 }
 
+export function getPairingDecisionWarning(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes('pairing_cancelled') || normalized.includes('cancelled on the phone')) {
+    return 'Pairing cancelled';
+  }
+  if (normalized.includes('pairing_rejected') || normalized.includes('rejected on the pc')) {
+    return 'Pairing request rejected on the PC';
+  }
+  return null;
+}
+
 async function connectWithRetry(
   args: Parameters<typeof tauriBridge.connectToSender>[0],
   maxRetries: number,
@@ -126,8 +138,14 @@ export async function connectToSender(
 
     return ok(true);
   } catch (e) {
-    const error = GemaCastError.failedToStartPlayback(e);
-    store.getState().displayError(error);
+    const pairingWarning = getPairingDecisionWarning(e);
+    const error = pairingWarning ? GemaCastError.from(e) : GemaCastError.failedToStartPlayback(e);
+    if (pairingWarning) {
+      store.getState().dismissError();
+      toast.getState().show('warning', pairingWarning);
+    } else {
+      store.getState().displayError(error);
+    }
     store.getState().patch({
       isLoading: false,
       status: Status.Listening,

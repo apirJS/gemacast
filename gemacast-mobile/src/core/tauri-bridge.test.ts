@@ -72,6 +72,11 @@ describe('tauriBridge', () => {
     expect((invokeCalls[0].args as Record<string, unknown>).pcId).toBe('pc-1');
   });
 
+  it('getPairedPcIds invokes the native paired-PC list command', async () => {
+    await tauriBridge.getPairedPcIds();
+    expect(invokeCalls[0]).toEqual({ cmd: 'get_paired_pc_ids', args: undefined });
+  });
+
   it('startListeningForSenders passes correct args', async () => {
     await tauriBridge.startListeningForSenders({ deviceId: 'dev1', mode: ConnectionMode.Wifi });
     expect(invokeCalls[0].cmd).toBe('start_listening_for_senders');

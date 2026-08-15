@@ -72,6 +72,17 @@ impl PlatformService for NativePlatformService {
         }
     }
 
+    fn paired_pc_ids(&self) -> Result<Vec<gemacast_core::domain::types::DeviceId>, String> {
+        #[cfg(target_os = "android")]
+        {
+            crate::domains::discovery::native::call_native_paired_pc_ids(&self.app_handle)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            Ok(Vec::new())
+        }
+    }
+
     fn confirm_pc_identity(
         &self,
         pc_id: &gemacast_core::domain::types::DeviceId,

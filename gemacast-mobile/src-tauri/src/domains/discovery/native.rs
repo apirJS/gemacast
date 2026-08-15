@@ -134,6 +134,14 @@ pub fn call_native_trusted_pc_fingerprint(
 }
 
 #[cfg(target_os = "android")]
+pub fn call_native_paired_pc_ids(
+    app: &tauri::AppHandle,
+) -> Result<Vec<gemacast_core::domain::types::DeviceId>, String> {
+    let ids = call_native_string_method(app, "getTrustedPcIds", None)?;
+    serde_json::from_str(&ids).map_err(|error| format!("invalid paired PC ID list: {error}"))
+}
+
+#[cfg(target_os = "android")]
 pub fn call_native_confirm_pc_identity(
     app: &tauri::AppHandle,
     pc_id: &str,

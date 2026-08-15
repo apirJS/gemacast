@@ -114,6 +114,11 @@ pub fn forget_pc_identity(platform: &dyn PlatformService, pc_id: &DeviceId) -> R
     platform.forget_pc_identity(pc_id)
 }
 
+/// Return the locally stored PC identities used by the paired-PC settings UI.
+pub fn paired_pc_ids(platform: &dyn PlatformService) -> Result<Vec<DeviceId>, String> {
+    platform.paired_pc_ids()
+}
+
 /// Detect the phone's network link type from platform transport info.
 ///
 /// Combines the user-selected connection mode with the Android JNI transport
@@ -254,6 +259,22 @@ mod tests {
         assert!(platform.calls.lock().unwrap().iter().any(|call| {
             matches!(call, PlatformCall::ForgetPcIdentity { pc_id: observed } if observed == &pc_id)
         }));
+    }
+
+    #[test]
+    fn paired_pc_ids_delegates_to_platform() {
+        let expected = vec![DeviceId("pc-1".into()), DeviceId("pc-2".into())];
+        let platform = MockPlatformService::new().with_paired_pc_ids(expected.clone());
+
+        assert_eq!(paired_pc_ids(&platform).unwrap(), expected);
+        assert!(
+            platform
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, PlatformCall::PairedPcIds))
+        );
     }
 
     #[test]
