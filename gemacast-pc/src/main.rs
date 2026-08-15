@@ -23,6 +23,7 @@ mod background;
 mod config;
 mod crash_log;
 mod device_auth;
+mod dialog;
 mod events;
 mod logging;
 mod pc_identity;
@@ -32,6 +33,8 @@ pub mod traits;
 mod tray;
 mod trusted_devices;
 mod updater;
+
+use crate::dialog as rfd;
 
 #[cfg(test)]
 pub mod testing;

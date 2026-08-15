@@ -17,6 +17,7 @@ include = ["adb", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"]
 
 [build-dependencies]
 embed-manifest = "1"
+tauri-winres = "0.3.6"
 
 [dependencies]
 gemacast-core = { path = "../gemacast-core" }
@@ -50,7 +51,12 @@ winreg = "0.55"
 # Console feature only: lets the GUI subsystem binary (`windows_subsystem =
 # "windows"`) attach to the parent terminal's console when launched from one, so
 # tracing output is visible. Without this, stderr goes nowhere for a GUI binary.
-windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # ── Linux .deb packaging (cargo-deb) ─────────────────────────────────────────
 [package.metadata.deb]

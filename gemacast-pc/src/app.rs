@@ -3,6 +3,7 @@
 //! Runs the `tao` event loop on the main thread, processing [`TrayEvent`]s
 //! from background tasks and [`MenuEvent`]s from user clicks on the system tray.
 
+use crate::dialog as rfd;
 use crate::events::{AppCommand, TrayEvent};
 use crate::tray::TrayManager;
 use std::path::PathBuf;
