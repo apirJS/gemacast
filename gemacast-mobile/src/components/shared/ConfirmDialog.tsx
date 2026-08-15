@@ -29,8 +29,9 @@ export function ConfirmDialog({
     <dialog
       ref={dialogRef}
       className={`
-        fixed inset-0 z-50 m-auto w-[min(90vw,320px)] rounded-lg
-        border border-border bg-popover p-5 text-popover-foreground shadow-xl
+        fixed inset-0 z-50 m-auto max-h-[min(80vh,28rem)] min-w-0 w-[min(90vw,320px)]
+        max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border
+        bg-popover p-5 text-popover-foreground shadow-xl
         backdrop:bg-black/50
       `}
       onClose={(e) => {
@@ -38,12 +39,18 @@ export function ConfirmDialog({
         onCancel();
       }}
     >
-      <p className="mb-4 text-sm">{message}</p>
+      <p className="mb-4 max-h-[min(50vh,16rem)] overflow-y-auto overscroll-contain break-words pr-1 text-sm [overflow-wrap:anywhere]">
+        {message}
+      </p>
       <div className="flex gap-2">
-        <button type="button" className="btn btn-secondary flex-1" onClick={onCancel}>
+        <button type="button" className="btn btn-secondary flex-1 font-semibold" onClick={onCancel}>
           {cancelLabel}
         </button>
-        <button type="button" className="btn btn-destructive flex-1" onClick={onConfirm}>
+        <button
+          type="button"
+          className="btn btn-destructive flex-1 font-semibold text-primary-foreground!"
+          onClick={onConfirm}
+        >
           {confirmLabel}
         </button>
       </div>

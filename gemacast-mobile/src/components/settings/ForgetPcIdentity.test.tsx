@@ -25,6 +25,23 @@ describe('ForgetPcIdentity', () => {
     expect(screen.queryByLabelText('Forget Desktop PC')).toBeNull();
   });
 
+  it('wraps long PC names inside a vertically bounded list', async () => {
+    const longName = `Living room ${'streaming-pc-'.repeat(20)}`;
+    setupInvokeMock({ get_paired_pc_ids: ['pc-long'] });
+    useAppStore
+      .getState()
+      .setDiscoveredSenders([makeDiscoveredSender({ deviceId: 'pc-long', deviceName: longName })]);
+    render(<ForgetPcIdentity />);
+
+    const name = await screen.findByText(longName);
+    expect(name.className).toContain('[overflow-wrap:anywhere]');
+    expect(name.className).not.toContain('truncate');
+
+    const list = screen.getByRole('list', { name: 'Paired PCs' });
+    expect(list.className).toContain('max-h-40');
+    expect(list.className).toContain('overflow-y-auto');
+  });
+
   it('refreshes the native trust store after a PC connects', async () => {
     let pairedPcIds: string[] = [];
     setupInvokeMock({ get_paired_pc_ids: () => pairedPcIds });

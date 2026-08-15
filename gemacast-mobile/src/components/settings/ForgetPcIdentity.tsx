@@ -67,10 +67,20 @@ export function ForgetPcIdentity() {
       {senders.length === 0 ? (
         <p className="text-xs text-muted-foreground/70">No paired PCs</p>
       ) : (
-        <div className="space-y-1">
+        <div
+          className="max-h-40 space-y-1 overflow-y-auto overscroll-contain pr-1"
+          role="list"
+          aria-label="Paired PCs"
+        >
           {senders.map((sender) => (
-            <div key={sender.deviceId} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate">{sender.deviceName}</span>
+            <div
+              key={sender.deviceId}
+              className="flex items-start justify-between gap-3 text-sm"
+              role="listitem"
+            >
+              <span className="min-w-0 flex-1 wrap-break-words leading-snug">
+                {sender.deviceName}
+              </span>
               <button
                 type="button"
                 className="shrink-0 rounded-default p-2 text-muted-foreground hover:bg-muted hover:text-status-lost"

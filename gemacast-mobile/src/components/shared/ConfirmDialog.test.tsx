@@ -25,6 +25,19 @@ describe('ConfirmDialog', () => {
     expect(screen.getByText('Cancel')).toBeTruthy();
   });
 
+  it('bounds long messages and uses a stronger confirm-button foreground', () => {
+    const message = `Forget ${'pc-name'.repeat(40)}?`;
+    render(<ConfirmDialog open={true} message={message} onConfirm={mock()} onCancel={mock()} />);
+
+    const messageElement = screen.getByText(message);
+    expect(messageElement.className).toContain('overflow-y-auto');
+    expect(messageElement.className).toContain('[overflow-wrap:anywhere]');
+
+    const confirmButton = screen.getByRole('button', { name: 'Delete', hidden: true });
+    expect(confirmButton.className).toContain('font-semibold');
+    expect(confirmButton.className).toContain('text-primary-foreground!');
+  });
+
   it('calls onConfirm when confirm button clicked', () => {
     const onConfirm = mock();
     render(<ConfirmDialog open={true} message="Test" onConfirm={onConfirm} onCancel={mock()} />);
