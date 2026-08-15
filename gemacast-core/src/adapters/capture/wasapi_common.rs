@@ -221,7 +221,10 @@ use windows::{
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         },
         System::{
-            Com::{COINIT_MULTITHREADED, CoInitializeEx, StructuredStorage::PROPVARIANT},
+            Com::{
+                COINIT_MULTITHREADED, CoInitializeEx, IAgileObject, IAgileObject_Impl,
+                StructuredStorage::PROPVARIANT,
+            },
             Variant::VT_BLOB,
         },
     },
@@ -232,10 +235,12 @@ use windows::{
 ///
 /// Receives the activated `IAudioClient` (or error) and sends it back
 /// to the calling thread via a `std::sync::mpsc` channel.
-#[implement(IActivateAudioInterfaceCompletionHandler)]
+#[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
 pub(crate) struct AudioActivator {
     pub sender: std::sync::mpsc::Sender<Result<IAudioClient, GemaCastError>>,
 }
+
+impl IAgileObject_Impl for AudioActivator {}
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivator {
     fn ActivateCompleted(
