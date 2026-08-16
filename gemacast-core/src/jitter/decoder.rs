@@ -153,22 +153,30 @@ impl FrameDecoder {
             // is playing. Concealment must repeat played audio, not extrapolate.
             self.codec_state = CodecState::Cold;
         } else if pkt.is_uncompressed {
-            let f32_len = pkt.payload_len / std::mem::size_of::<f32>();
+            // Clamp to the buffer's capacity BEFORE copying, not after. A
+            // conformant sender emits exactly OPUS_FRAME_SAMPLES f32s, but
+            // `payload_len` arrives here unclamped from `parse_packet`, and the
+            // audio ports carry no authentication — so an oversized or malformed
+            // uncompressed packet must be truncated to one frame rather than
+            // writing past `decode_buf`, which is fixed at OPUS_FRAME_SAMPLES and
+            // never grows. Clamping `decode_len` alone (the old code) bounded the
+            // reported length but left the write loop free to run off the end.
+            let f32_len = (pkt.payload_len / std::mem::size_of::<f32>()).min(self.decode_buf.len());
             if f32_len == 0 {
                 // Empty uncompressed payload — generate PLC as fallback
                 self.decode_plc();
             } else {
-                // Copy raw PCM directly without decoder interaction.
-                // Don't feed PLC — uncompressed frames are a format choice,
-                // not a loss event. Mixing PLC state into a non-Opus path
-                // only poisons future Opus decode transitions.
-                for (i, chunk) in pkt.payload_data[..pkt.payload_len]
+                // Copy raw PCM directly without decoder interaction. Don't feed
+                // PLC — uncompressed frames are a format choice, not a loss
+                // event. Mixing PLC state into a non-Opus path only poisons
+                // future Opus decode transitions.
+                for (i, chunk) in pkt.payload_data[..f32_len * std::mem::size_of::<f32>()]
                     .chunks_exact(4)
                     .enumerate()
                 {
                     self.decode_buf[i] = f32::from_ne_bytes(chunk.try_into().unwrap());
                 }
-                self.decode_len = f32_len.min(self.decode_buf.len());
+                self.decode_len = f32_len;
             }
             // Set after the branch so it also covers the empty-payload fallback
             // above: that `decode_plc` call runs on a codec this stream has never
@@ -401,6 +409,49 @@ mod tests {
         assert_eq!(
             dec.decode_len, OPUS_FRAME_SAMPLES,
             "the frame is still filled"
+        );
+    }
+
+    /// An oversized or malformed uncompressed payload must be truncated to one
+    /// frame, never written past `decode_buf`. `payload_len` reaches `capture`
+    /// unclamped from `parse_packet` (only the copy into `payload_data` is
+    /// bounded), and the audio UDP port carries no authentication — so any LAN
+    /// host can deliver a datagram whose payload exceeds one frame. The old code
+    /// applied its `.min()` to `decode_len` *after* the copy loop, so this input
+    /// drove `decode_buf[i]` off the end and panicked on the audio callback
+    /// thread (undefined behaviour across Oboe's C++ FFI on Android). Reverting
+    /// to that code makes this test abort instead of pass.
+    #[test]
+    fn an_oversized_uncompressed_payload_should_truncate_to_one_frame_without_panicking() {
+        let mut dec = decoder();
+        let mut pkt = RawPacket::zeroed();
+        pkt.seq_num = 1;
+        pkt.is_uncompressed = true;
+        // The largest payload the receive path can deliver: a full payload_data
+        // buffer is 2000 f32s, more than double the 960-sample decode buffer.
+        pkt.payload_len = pkt.payload_data.len();
+        // A recognizable non-zero pattern (0.25 is exact in f32) so the copy is
+        // observably real, not a buffer left at its zeroed default.
+        let marker = 0.25f32.to_ne_bytes();
+        for chunk in pkt.payload_data.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&marker);
+        }
+
+        // Must not panic: the write loop is now bounded to decode_buf.len().
+        dec.capture(&pkt);
+
+        assert_eq!(
+            dec.decode_len, OPUS_FRAME_SAMPLES,
+            "an oversized PCM payload must be truncated to exactly one frame",
+        );
+        assert_eq!(
+            dec.decoded().len(),
+            OPUS_FRAME_SAMPLES,
+            "decoded() must stay within the buffer's fixed capacity",
+        );
+        assert!(
+            dec.decoded().iter().all(|&s| s == 0.25),
+            "the first frame's worth of samples must be copied verbatim",
         );
     }
 }
