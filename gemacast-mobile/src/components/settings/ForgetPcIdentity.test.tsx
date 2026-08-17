@@ -34,7 +34,7 @@ describe('ForgetPcIdentity', () => {
     render(<ForgetPcIdentity />);
 
     const name = await screen.findByText(longName);
-    expect(name.className).toContain('[overflow-wrap:anywhere]');
+    expect(name.className).toContain('wrap-anywhere');
     expect(name.className).not.toContain('truncate');
 
     const list = screen.getByRole('list', { name: 'Paired PCs' });

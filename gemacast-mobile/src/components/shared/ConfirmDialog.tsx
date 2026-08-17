@@ -39,7 +39,7 @@ export function ConfirmDialog({
         onCancel();
       }}
     >
-      <p className="mb-4 max-h-[min(50vh,16rem)] overflow-y-auto overscroll-contain break-words pr-1 text-sm [overflow-wrap:anywhere]">
+      <p className="mb-4 max-h-[min(50vh,16rem)] overflow-y-auto overscroll-contain pr-1 text-sm wrap-anywhere">
         {message}
       </p>
       <div className="flex gap-2">

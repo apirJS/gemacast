@@ -3,9 +3,14 @@ import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
 import type { AudioSource, DiscoveredSender } from '../../core/types';
 import { connectToSender, disconnect, changeAudioSource } from '../../hooks/use-connection';
+import { refreshSenders } from '../../hooks/use-discovery';
 import { startPlayback, stopPlayback } from '../../hooks/use-audio';
+import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
 import { SenderCard } from './SenderCard';
 import { EmptyState } from './EmptyState';
+import { PullToRefreshIndicator } from './PullToRefreshIndicator';
+
+const PULL_THRESHOLD = 64;
 
 export function SenderList() {
   const senders = useAppStore((s) => s.discoveredSenders);
@@ -60,41 +65,61 @@ export function SenderList() {
     changeAudioSource(source);
   }, []);
 
+  const {
+    ref: scrollRef,
+    pull,
+    refreshing,
+  } = usePullToRefresh<HTMLDivElement>({
+    onRefresh: () => refreshSenders().then(() => {}),
+    threshold: PULL_THRESHOLD,
+  });
+
   return (
-    <section className="flex-1 min-h-0 flex flex-col">
-      {isEmpty && <EmptyState />}
+    <section className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+      <PullToRefreshIndicator pull={pull} refreshing={refreshing} threshold={PULL_THRESHOLD} />
 
-      <ul
-        className="flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-2 min-h-80"
-        aria-label="Discovered senders"
+      <div
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar pr-2"
       >
-        {senders.map((sender) => {
-          const isConnected = connectedSender?.deviceId === sender.deviceId;
-          const isConnecting =
-            status === Status.Connecting && connectingSenderId === sender.deviceId;
-          const isPlaying =
-            isConnected && (status === Status.Playing || status === Status.Connected);
+        <div
+          style={{
+            transform: `translateY(${refreshing ? PULL_THRESHOLD : pull}px)`,
+            transition: pull > 0 || refreshing ? 'none' : 'transform 200ms ease',
+          }}
+        >
+          {isEmpty && <EmptyState />}
 
-          return (
-            <SenderCard
-              key={sender.deviceId}
-              sender={sender}
-              isConnected={isConnected}
-              isConnecting={isConnecting}
-              isPlaying={isPlaying}
-              isLoading={isLoading && (isConnected || isConnecting)}
-              isDisabled={isLoading || status === Status.Connecting}
-              audioSources={isConnected ? audioSources : []}
-              processList={isConnected ? processList : []}
-              senderCapabilities={isConnected ? senderCapabilities : null}
-              currentSource={isConnected ? currentAudioSource : { type: 'desktop' }}
-              onToggle={() => handleToggle(sender, isConnected)}
-              onPlayPause={handlePlayPause}
-              onSourceChange={handleSourceChange}
-            />
-          );
-        })}
-      </ul>
+          <ul className="flex flex-col gap-2 pb-2 min-h-80" aria-label="Discovered senders">
+            {senders.map((sender) => {
+              const isConnected = connectedSender?.deviceId === sender.deviceId;
+              const isConnecting =
+                status === Status.Connecting && connectingSenderId === sender.deviceId;
+              const isPlaying =
+                isConnected && (status === Status.Playing || status === Status.Connected);
+
+              return (
+                <SenderCard
+                  key={sender.deviceId}
+                  sender={sender}
+                  isConnected={isConnected}
+                  isConnecting={isConnecting}
+                  isPlaying={isPlaying}
+                  isLoading={isLoading && (isConnected || isConnecting)}
+                  isDisabled={isLoading || status === Status.Connecting}
+                  audioSources={isConnected ? audioSources : []}
+                  processList={isConnected ? processList : []}
+                  senderCapabilities={isConnected ? senderCapabilities : null}
+                  currentSource={isConnected ? currentAudioSource : { type: 'desktop' }}
+                  onToggle={() => handleToggle(sender, isConnected)}
+                  onPlayPause={handlePlayPause}
+                  onSourceChange={handleSourceChange}
+                />
+              );
+            })}
+          </ul>
+        </div>
+      </div>
     </section>
   );
 }

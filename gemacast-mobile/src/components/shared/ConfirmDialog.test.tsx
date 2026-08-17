@@ -31,7 +31,7 @@ describe('ConfirmDialog', () => {
 
     const messageElement = screen.getByText(message);
     expect(messageElement.className).toContain('overflow-y-auto');
-    expect(messageElement.className).toContain('[overflow-wrap:anywhere]');
+    expect(messageElement.className).toContain('wrap-anywhere');
 
     const confirmButton = screen.getByRole('button', { name: 'Delete', hidden: true });
     expect(confirmButton.className).toContain('font-semibold');

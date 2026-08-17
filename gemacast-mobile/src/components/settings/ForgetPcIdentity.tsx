@@ -78,7 +78,7 @@ export function ForgetPcIdentity() {
               className="flex items-start justify-between gap-3 text-sm"
               role="listitem"
             >
-              <span className="min-w-0 flex-1 wrap-break-words leading-snug">
+              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">
                 {sender.deviceName}
               </span>
               <button
