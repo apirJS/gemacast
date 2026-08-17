@@ -118,7 +118,7 @@ export function useNetworkMonitor() {
           connectedSender: null,
           lastConnectedSender: null,
         });
-        store.getState().resetLatency();
+        store.getState().resetMetrics();
         killPlayback();
         saveLastSender(null);
       }

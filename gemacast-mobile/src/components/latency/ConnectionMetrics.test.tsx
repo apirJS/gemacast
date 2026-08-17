@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import { render, screen, cleanup } from '@testing-library/react';
 import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
-import { LatencyStats } from './LatencyStats';
+import { ConnectionMetrics } from './ConnectionMetrics';
 
 beforeEach(() => {
   cleanup();
@@ -13,39 +13,38 @@ beforeEach(() => {
   });
 });
 
-describe('LatencyStats', () => {
+describe('ConnectionMetrics', () => {
   it('renders nothing when Idle', () => {
     useAppStore.getState().setStatus(Status.Idle);
-    const { container } = render(<LatencyStats />);
+    const { container } = render(<ConnectionMetrics />);
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when Listening', () => {
     useAppStore.getState().setStatus(Status.Listening);
-    const { container } = render(<LatencyStats />);
+    const { container } = render(<ConnectionMetrics />);
     expect(container.innerHTML).toBe('');
   });
 
-  it('renders stats when Connected', () => {
+  it('renders the three metrics when Connected', () => {
     useAppStore.getState().setStatus(Status.Connected);
-    useAppStore.getState().updateLatency({ current: 42, avg: 38, max: 90, min: 12 });
-    render(<LatencyStats />);
+    useAppStore.getState().updateMetrics({ bufferMs: 42, networkRttMs: 18, jitterMs: 3 });
+    render(<ConnectionMetrics />);
     expect(screen.getByText('42 ms')).toBeTruthy();
-    expect(screen.getByText('38 ms')).toBeTruthy();
-    expect(screen.getByText('90 ms')).toBeTruthy();
-    expect(screen.getByText('12 ms')).toBeTruthy();
+    expect(screen.getByText('18 ms')).toBeTruthy();
+    expect(screen.getByText('3 ms')).toBeTruthy();
   });
 
-  it('renders stats when Playing', () => {
+  it('renders buffer metric when Playing', () => {
     useAppStore.getState().setStatus(Status.Playing);
-    useAppStore.getState().updateLatency({ current: 55, avg: 50, max: 100, min: 20 });
-    render(<LatencyStats />);
+    useAppStore.getState().updateMetrics({ bufferMs: 55 });
+    render(<ConnectionMetrics />);
     expect(screen.getByText('55 ms')).toBeTruthy();
   });
 
-  it('renders placeholder when latency is null', () => {
+  it('renders placeholders when metrics are null', () => {
     useAppStore.getState().setStatus(Status.Connected);
-    render(<LatencyStats />);
-    expect(screen.getAllByText('-- ms')).toHaveLength(4);
+    render(<ConnectionMetrics />);
+    expect(screen.getAllByText('-- ms')).toHaveLength(3);
   });
 });

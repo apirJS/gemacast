@@ -44,11 +44,18 @@ export enum Status {
 
 export type ConnectionHealth = 'ok' | 'degraded' | 'lost';
 
-export type LatencyStats = {
-  current: number | null;
-  avg: number | null;
-  max: number | null;
-  min: number | null;
+/**
+ * The three live connection metrics shown in the UI. Each is milliseconds or
+ * `null` when not yet measured. They are three genuinely distinct signals, not
+ * views of one:
+ * - `bufferMs`   — jitter-buffer dwell time (a frame's time from arrival to playback).
+ * - `networkRttMs` — control-channel probe round-trip; `null` on ADB/loopback (no probe loop).
+ * - `jitterMs`   — rolling network inter-arrival jitter estimate.
+ */
+export type Metrics = {
+  bufferMs: number | null;
+  networkRttMs: number | null;
+  jitterMs: number | null;
 };
 
 export enum ConnectionMode {
@@ -151,7 +158,7 @@ export type AppState = {
   isLoading: boolean;
   isSuspended: boolean;
   reconnectAttempts: number;
-  latency: LatencyStats;
+  metrics: Metrics;
   settings: AppSettings;
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
   audioSources: AudioSource[];

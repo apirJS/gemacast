@@ -6,7 +6,7 @@ import type {
   ConnectionHealth,
   DeviceInfo,
   DiscoveredSender,
-  LatencyStats,
+  Metrics,
   NetworkLinkPairInfo,
   ProcessInfo,
   SenderCapabilities,
@@ -16,7 +16,7 @@ import { GemaCastError } from '../core/error';
 import { loadLastSender, loadSettings, saveSettings } from '../core/persistence';
 import { useToastStore } from './toast-store';
 
-const EMPTY_LATENCY: LatencyStats = { current: null, avg: null, max: null, min: null };
+const EMPTY_METRICS: Metrics = { bufferMs: null, networkRttMs: null, jitterMs: null };
 
 function createInitialState(deviceInfo: DeviceInfo): AppState {
   return {
@@ -32,7 +32,7 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     isLoading: false,
     isSuspended: false,
     reconnectAttempts: 0,
-    latency: EMPTY_LATENCY,
+    metrics: EMPTY_METRICS,
     settings: loadSettings(),
     availableModes: { wifi: true, usb: false, adb: false },
     audioSources: [],
@@ -64,8 +64,8 @@ type AppActions = {
   displayError: (error: string | GemaCastError) => void;
   dismissError: () => void;
 
-  updateLatency: (stats: LatencyStats) => void;
-  resetLatency: () => void;
+  updateMetrics: (patch: Partial<Metrics>) => void;
+  resetMetrics: () => void;
 
   updateSettings: (patch: Partial<AppSettings>) => void;
   setAvailableModes: (modes: { wifi: boolean; usb: boolean; adb: boolean }) => void;
@@ -119,7 +119,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           status: Status.Listening,
           connectionHealth: 'ok',
           reconnectAttempts: 0,
-          latency: EMPTY_LATENCY,
+          metrics: EMPTY_METRICS,
         });
         return null;
       }
@@ -171,8 +171,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     useToastStore.getState().clearError();
   },
 
-  updateLatency: (stats) => set({ latency: stats }),
-  resetLatency: () => set({ latency: EMPTY_LATENCY }),
+  updateMetrics: (patch) => set((state) => ({ metrics: { ...state.metrics, ...patch } })),
+  resetMetrics: () => set({ metrics: EMPTY_METRICS }),
 
   updateSettings: (patch) => {
     const current = get().settings;

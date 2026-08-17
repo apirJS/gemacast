@@ -34,6 +34,7 @@ fn setup_env() -> (
     let manager = JitterBufferManager::new(
         decoder,
         atomic,
+        Arc::new(std::sync::atomic::AtomicU32::new(0)),
         config_ref,
         is_tcp_mode,
         NetworkLink::Unknown,
@@ -287,7 +288,14 @@ fn setup_env_with(
     let atomic = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let config_ref = Arc::new(std::sync::RwLock::new(config));
     let is_tcp_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let manager = JitterBufferManager::new(decoder, atomic, config_ref, is_tcp_mode, link);
+    let manager = JitterBufferManager::new(
+        decoder,
+        atomic,
+        Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        config_ref,
+        is_tcp_mode,
+        link,
+    );
     let rb = HeapRb::<RawPacket>::new(4000);
     let (prod, cons) = rb.split();
     (manager, encoder, prod, cons)
@@ -613,6 +621,7 @@ mod depth_control {
         let mut manager = JitterBufferManager::new(
             decoder,
             atomic,
+            Arc::new(std::sync::atomic::AtomicU32::new(0)),
             config_ref,
             is_tcp_mode,
             NetworkLink::Unknown,
@@ -656,6 +665,7 @@ mod depth_control {
         let mut manager = JitterBufferManager::new(
             decoder,
             atomic,
+            Arc::new(std::sync::atomic::AtomicU32::new(0)),
             config_ref,
             is_tcp_mode,
             NetworkLink::Unknown,

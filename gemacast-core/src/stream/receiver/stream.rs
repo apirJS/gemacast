@@ -92,6 +92,7 @@ pub fn build_playback_stream(
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
+    jitter_metric: Arc<AtomicU32>,
     stream_error_tx: mpsc::Sender<StreamError>,
 ) -> Result<PlaybackStream, GemaCastError> {
     let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
@@ -144,6 +145,7 @@ pub fn build_playback_stream(
     let mut jitter_manager = JitterBufferManager::new(
         decoder,
         latency_metric,
+        jitter_metric,
         config_ref,
         is_tcp_mode,
         network_link,
@@ -188,6 +190,7 @@ pub fn build_playback_stream(
 
 /// Build a cpal-based playback stream on Android as a fallback when Oboe fails.
 #[cfg(target_os = "android")]
+#[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
 pub fn build_cpal_fallback_stream(
     mut packet_consumer: ringbuf::HeapCons<RawPacket>,
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
@@ -196,6 +199,7 @@ pub fn build_cpal_fallback_stream(
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
+    jitter_metric: Arc<AtomicU32>,
 ) -> Result<PlaybackStream, GemaCastError> {
     use cpal::traits::*;
 
@@ -218,6 +222,7 @@ pub fn build_cpal_fallback_stream(
     let mut jitter_manager = JitterBufferManager::new(
         decoder,
         latency_metric,
+        jitter_metric,
         config_ref,
         is_tcp_mode,
         network_link,
@@ -271,6 +276,7 @@ pub fn build_playback_stream(
     is_playing: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
+    jitter_metric: Arc<AtomicU32>,
     exclusive_mode: bool,
 ) -> Result<(PlaybackStream, bool), GemaCastError> {
     let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
@@ -282,6 +288,7 @@ pub fn build_playback_stream(
         jitter_manager: JitterBufferManager::new(
             decoder,
             latency_metric.clone(),
+            jitter_metric,
             config_ref.clone(),
             is_tcp_mode.clone(),
             network_link,

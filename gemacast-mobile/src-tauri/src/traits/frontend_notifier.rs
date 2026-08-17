@@ -46,10 +46,25 @@ pub trait FrontendNotifier: Send + Sync {
     fn emit_sender_connected(&self, ip: String);
 
     /// Periodic audio telemetry update.
-    fn emit_audio_telemetry(&self, latency: f32, is_active: bool);
+    ///
+    /// `latency` is the buffer dwell time in ms (a frame's time between arrival
+    /// and playback); `jitter_ms` is the rolling network arrival-jitter estimate
+    /// in ms. Two distinct signals — see the jitter buffer's `latency_metric` /
+    /// `jitter_metric`.
+    fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32);
 
     /// An error occurred during audio playback.
     fn emit_playback_error(&self, error: String);
+
+    /// Raw wire round-trip time (ms) from the UDP echo ping.
+    ///
+    /// The phone piggybacks a timestamped ping on its keepalive heartbeat
+    /// (~every 500 ms); the PC reflects it and the receiver reports the
+    /// round-trip here. Measures the real UDP path latency, not a TLS
+    /// handshake. UDP-only: ADB/loopback runs over TCP with no echo, so the
+    /// frontend shows `--` there. Independent of
+    /// [`Self::emit_audio_telemetry`]'s cadence.
+    fn emit_network_rtt(&self, rtt_ms: f32);
 
     /// The WebSocket control connection was closed.
     fn emit_ws_disconnect(&self);

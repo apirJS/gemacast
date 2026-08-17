@@ -174,16 +174,17 @@ describe('disconnect', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('resets latency to all-null', async () => {
+  it('resets metrics to all-null', async () => {
     useAppStore.getState().patch({
       connectedSender: makeDiscoveredSender(),
       status: Status.Connected,
     });
-    useAppStore.getState().updateLatency({ current: 10, avg: 12, max: 20, min: 5 });
+    useAppStore.getState().updateMetrics({ bufferMs: 10, networkRttMs: 12, jitterMs: 5 });
     await disconnect();
-    const { latency } = useAppStore.getState();
-    expect(latency.current).toBeNull();
-    expect(latency.avg).toBeNull();
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBeNull();
+    expect(metrics.networkRttMs).toBeNull();
+    expect(metrics.jitterMs).toBeNull();
   });
 });
 

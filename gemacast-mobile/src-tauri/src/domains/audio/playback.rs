@@ -7,12 +7,16 @@ use gemacast_core::domain::types::JitterConfig;
 
 use crate::traits::FrontendNotifier;
 
-pub fn setup_event_forwarding(
-    notifier: Arc<dyn FrontendNotifier>,
-) -> (
+/// Channels `setup_event_forwarding` hands back to the receive loop: the
+/// sender-IP oneshot, the audio-telemetry tuple stream `(buffer_ms, rms,
+/// jitter_ms)`, and the wire-RTT stream.
+type EventForwardingChannels = (
     oneshot::Sender<String>,
-    tokio::sync::mpsc::Sender<(f32, f32)>,
-) {
+    tokio::sync::mpsc::Sender<(f32, f32, f32)>,
+    tokio::sync::mpsc::Sender<f32>,
+);
+
+pub fn setup_event_forwarding(notifier: Arc<dyn FrontendNotifier>) -> EventForwardingChannels {
     let (sender_ip_tx, sender_ip_rx) = oneshot::channel::<String>();
     let notifier_conn = notifier.clone();
     tokio::spawn(async move {
@@ -21,19 +25,30 @@ pub fn setup_event_forwarding(
         }
     });
 
-    let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32)>(10);
+    // Raw wire RTT from the UDP echo ping (receiver intercepts the reflected
+    // ping and sends the round-trip here, ~every 500 ms). ADB/loopback has no
+    // UDP echo, so this channel simply stays quiet there and the UI shows `--`.
+    let (rtt_tx, mut rtt_rx) = tokio::sync::mpsc::channel::<f32>(10);
+    let notifier_rtt = notifier.clone();
+    tokio::spawn(async move {
+        while let Some(rtt_ms) = rtt_rx.recv().await {
+            notifier_rtt.emit_network_rtt(rtt_ms);
+        }
+    });
+
+    let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32, f32)>(10);
     tokio::spawn(async move {
         // Cadence is bounded upstream — the receive loop only sends on every 100th
         // packet (~1 s, listener.rs) — so no extra throttle is needed here. The
         // `Latency: …ms RMS: …` line is a load-bearing field diagnostic (it is what
         // identified the v20 wire formats); keep it.
-        while let Some((latency, rms)) = latency_rx.recv().await {
-            notifier.emit_audio_telemetry(latency, rms > 0.0001);
+        while let Some((latency, rms, jitter)) = latency_rx.recv().await {
+            notifier.emit_audio_telemetry(latency, rms > 0.0001, jitter);
             println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
         }
     });
 
-    (sender_ip_tx, latency_tx)
+    (sender_ip_tx, latency_tx, rtt_tx)
 }
 
 pub type SessionReceiverResult = Result<
@@ -82,7 +97,7 @@ pub fn spawn_session_receiver(
     let exclusive_granted = receiver.exclusive_granted;
 
     let mut receiver = receiver;
-    let (sender_ip_tx, latency_tx) = setup_event_forwarding(notifier.clone());
+    let (sender_ip_tx, latency_tx, rtt_tx) = setup_event_forwarding(notifier.clone());
 
     let task = tokio::spawn(async move {
         if let Err(e) = receiver.activate_playback_stream() {
@@ -94,6 +109,7 @@ pub fn spawn_session_receiver(
             .run_audio_receive_loop(
                 Some(sender_ip_tx),
                 Some(latency_tx),
+                Some(rtt_tx),
                 target_ip,
                 mode,
                 gemacast_core::stream::receiver::AudioSessionCredentials {

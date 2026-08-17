@@ -113,20 +113,29 @@ describe('app-store — error handling', () => {
   });
 });
 
-describe('app-store — latency', () => {
-  it('updates latency stats', () => {
-    useAppStore.getState().updateLatency({ current: 50, avg: 45, max: 80, min: 20 });
-    const { latency } = useAppStore.getState();
-    expect(latency.current).toBe(50);
-    expect(latency.avg).toBe(45);
+describe('app-store — metrics', () => {
+  it('updates metrics by patch', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50, jitterMs: 4 });
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBe(50);
+    expect(metrics.jitterMs).toBe(4);
   });
 
-  it('resets latency', () => {
-    useAppStore.getState().updateLatency({ current: 50, avg: 45, max: 80, min: 20 });
-    useAppStore.getState().resetLatency();
-    const { latency } = useAppStore.getState();
-    expect(latency.current).toBeNull();
-    expect(latency.avg).toBeNull();
+  it('merges successive metric patches', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50 });
+    useAppStore.getState().updateMetrics({ networkRttMs: 18 });
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBe(50);
+    expect(metrics.networkRttMs).toBe(18);
+  });
+
+  it('resets metrics', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50, networkRttMs: 18, jitterMs: 4 });
+    useAppStore.getState().resetMetrics();
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBeNull();
+    expect(metrics.networkRttMs).toBeNull();
+    expect(metrics.jitterMs).toBeNull();
   });
 });
 

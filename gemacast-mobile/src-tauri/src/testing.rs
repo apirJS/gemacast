@@ -30,11 +30,18 @@ pub mod mocks {
         SenderTimeout(DeviceId),
         ForceDisconnect,
         LinkLost,
-        LinkRecovered { device_registered: Option<bool> },
+        LinkRecovered {
+            device_registered: Option<bool>,
+        },
         LinkRecoveryGaveUp,
         SenderConnected(String),
-        AudioTelemetry { latency: f32, is_active: bool },
+        AudioTelemetry {
+            latency: f32,
+            is_active: bool,
+            jitter_ms: f32,
+        },
         PlaybackError(String),
+        NetworkRtt(f32),
         WsDisconnect,
         WsError(String),
         ServiceCommand(String),
@@ -104,11 +111,15 @@ pub mod mocks {
                 .push(FrontendEvent::SenderConnected(ip));
         }
 
-        fn emit_audio_telemetry(&self, latency: f32, is_active: bool) {
+        fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::AudioTelemetry { latency, is_active });
+                .push(FrontendEvent::AudioTelemetry {
+                    latency,
+                    is_active,
+                    jitter_ms,
+                });
         }
 
         fn emit_playback_error(&self, error: String) {
@@ -116,6 +127,13 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(FrontendEvent::PlaybackError(error));
+        }
+
+        fn emit_network_rtt(&self, rtt_ms: f32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(FrontendEvent::NetworkRtt(rtt_ms));
         }
 
         fn emit_ws_disconnect(&self) {

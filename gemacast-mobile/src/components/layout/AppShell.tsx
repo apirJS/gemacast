@@ -2,7 +2,7 @@ import { DeviceInfo } from '../device/DeviceInfo';
 import { StatusChip } from '../device/StatusChip';
 import { SenderList } from '../senders/SenderList';
 import { ManualConnect } from '../senders/ManualConnect';
-import { LatencyStats } from '../latency/LatencyStats';
+import { ConnectionMetrics } from '../latency/ConnectionMetrics';
 import { NetworkLinkBadge } from '../latency/NetworkLinkBadge';
 import { ToastContainer } from '../feedback/ToastContainer';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
@@ -31,7 +31,7 @@ export function AppShell() {
 
         <section className="mt-auto flex flex-col items-center gap-2 pt-4">
           <StatusChip />
-          <LatencyStats />
+          <ConnectionMetrics />
           <NetworkLinkBadge />
         </section>
       </main>

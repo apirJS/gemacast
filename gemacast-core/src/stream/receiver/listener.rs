@@ -36,6 +36,7 @@ pub struct AudioStreamReceiver {
     stream_error_rx: mpsc::Receiver<StreamError>,
     playback_shutdown_rx: oneshot::Receiver<()>,
     latency_metric: Arc<AtomicU32>,
+    jitter_metric: Arc<AtomicU32>,
     pub exclusive_granted: bool,
 }
 
@@ -53,6 +54,7 @@ impl AudioStreamReceiver {
         let packet_rb = HeapRb::<RawPacket>::new(PACKET_CHANNEL_CAPACITY);
         let (packet_producer, packet_consumer) = packet_rb.split();
         let latency_metric = Arc::new(AtomicU32::new(0));
+        let jitter_metric = Arc::new(AtomicU32::new(0));
 
         #[cfg(not(target_os = "android"))]
         let playback_stream = build_playback_stream(
@@ -63,6 +65,7 @@ impl AudioStreamReceiver {
             is_playing,
             volume,
             latency_metric.clone(),
+            jitter_metric.clone(),
             _stream_error_tx,
         )?;
 
@@ -81,6 +84,7 @@ impl AudioStreamReceiver {
                 is_playing.clone(),
                 volume.clone(),
                 latency_metric.clone(),
+                jitter_metric.clone(),
                 _exclusive_mode,
             ) {
                 Ok((stream, granted)) => (packet_producer, stream, granted),
@@ -96,6 +100,7 @@ impl AudioStreamReceiver {
                         is_playing,
                         volume,
                         latency_metric.clone(),
+                        jitter_metric.clone(),
                     )?;
                     (fb_producer, stream, false)
                 }
@@ -108,6 +113,7 @@ impl AudioStreamReceiver {
             stream_error_rx,
             playback_shutdown_rx,
             latency_metric,
+            jitter_metric,
             exclusive_granted,
         })
     }
@@ -115,7 +121,8 @@ impl AudioStreamReceiver {
     pub async fn run_audio_receive_loop(
         mut self,
         sender_ip_tx: Option<oneshot::Sender<String>>,
-        latency_tx: Option<mpsc::Sender<(f32, f32)>>,
+        latency_tx: Option<mpsc::Sender<(f32, f32, f32)>>,
+        rtt_tx: Option<mpsc::Sender<f32>>,
         target_ip: Option<std::net::IpAddr>,
         mode: crate::domain::types::ConnectionMode,
         credentials: AudioSessionCredentials,
@@ -148,8 +155,10 @@ impl AudioStreamReceiver {
             transport,
             self.packet_producer,
             self.latency_metric.clone(),
+            self.jitter_metric.clone(),
             sender_ip_tx,
             latency_tx,
+            rtt_tx,
             receiver_active.clone(),
             sender_port,
             network_dropped_tx,
@@ -243,8 +252,10 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
     mut transport: T,
     mut packet_producer: HeapProd<RawPacket>,
     latency_metric: Arc<AtomicU32>,
+    jitter_metric: Arc<AtomicU32>,
     mut sender_ip_tx: Option<oneshot::Sender<String>>,
-    latency_tx: Option<mpsc::Sender<(f32, f32)>>,
+    latency_tx: Option<mpsc::Sender<(f32, f32, f32)>>,
+    rtt_tx: Option<mpsc::Sender<f32>>,
     active: Arc<AtomicBool>,
     sender_port: Arc<AtomicU16>,
     network_dropped_tx: mpsc::Sender<()>,
@@ -272,6 +283,17 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
                             observed = %r.1.ip(),
                             "[Receiver] Ignoring audio packet from an unexpected sender"
                         );
+                        continue;
+                    }
+                    // An echo ping the PC reflected back: record the wire RTT and
+                    // skip the audio path entirely. This must run before the
+                    // bookkeeping below — an echo is liveness, not audio, so it
+                    // must not seed the sender IP, reset the audio-arrival
+                    // timeout, or trip the "first packet" log.
+                    if crate::stream::echo::is_echo(&recv_buff, r.0) {
+                        if let Some(ref tx) = rtt_tx {
+                            let _ = tx.try_send(crate::stream::echo::read_rtt_ms(&recv_buff));
+                        }
                         continue;
                     }
                     if !first_packet_received {
@@ -330,8 +352,9 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             {
                 let rms_data = &recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len];
                 let rms = compute_rms(rms_data, is_silence, is_uncompressed);
-                let jitter_delay_ms = latency_metric.load(Ordering::Relaxed) as f32;
-                let _ = tx.try_send((jitter_delay_ms, rms));
+                let buffer_delay_ms = latency_metric.load(Ordering::Relaxed) as f32;
+                let jitter_ms = jitter_metric.load(Ordering::Relaxed) as f32;
+                let _ = tx.try_send((buffer_delay_ms, rms, jitter_ms));
             }
         }
     })
@@ -399,6 +422,8 @@ mod tests {
             transport,
             producer,
             latency_metric,
+            Arc::new(AtomicU32::new(0)),
+            None,
             None,
             None,
             active,
@@ -440,6 +465,8 @@ mod tests {
             },
             producer,
             Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+            None,
             None,
             None,
             active,
@@ -452,5 +479,46 @@ mod tests {
         assert!(network_dropped_rx.recv().await.is_some());
         assert!(consumer.try_pop().is_none());
         assert_eq!(sender_port.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn should_reflect_an_echo_ping_to_the_rtt_channel_and_not_the_ring_buffer() {
+        let packet_rb = HeapRb::<RawPacket>::new(8);
+        let (producer, mut consumer) = packet_rb.split();
+        let active = Arc::new(AtomicBool::new(true));
+        let sender_port = Arc::new(AtomicU16::new(0));
+        let (network_dropped_tx, _network_dropped_rx) = mpsc::channel(1);
+        let (rtt_tx, mut rtt_rx) = mpsc::channel::<f32>(4);
+
+        let ping = crate::stream::echo::build_ping().to_vec();
+
+        let handle = spawn_packet_receive_thread(
+            MockTransport {
+                packet_to_send: Some(ping),
+                sender_addr: "10.0.0.1:50000".parse().unwrap(),
+            },
+            producer,
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+            None,
+            None,
+            Some(rtt_tx),
+            active,
+            sender_port.clone(),
+            network_dropped_tx,
+            Some("10.0.0.1".parse().unwrap()),
+        );
+
+        handle.join().unwrap();
+
+        // An echo is liveness, not audio: nothing reaches the jitter ring and
+        // the audio bookkeeping (sender port) is untouched...
+        assert!(consumer.try_pop().is_none());
+        assert_eq!(sender_port.load(Ordering::Relaxed), 0);
+        // ...but a wire-RTT sample was emitted.
+        let rtt = rtt_rx
+            .try_recv()
+            .expect("an RTT sample should have been sent");
+        assert!(rtt >= 0.0, "rtt should be non-negative, got {rtt}");
     }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
@@ -12,22 +12,26 @@ import {
   disconnect,
 } from './use-connection';
 import { updateAudioActive, startPlayback, stopPlayback } from './use-audio';
-import { LatencyTracker } from '../core/latency-tracker';
 import { GemaCastError } from '../core/error';
 import type { DiscoveredSender } from '../core/types';
 
 export function useTauriEvents() {
-  const trackerRef = useRef<LatencyTracker | null>(null);
-
   useEffect(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
     unlisteners.push(
-      listen<{ latency: number; isActive: boolean }>('audio-telemetry', (event) => {
-        const tracker = (trackerRef.current ??= new LatencyTracker());
-        const stats = tracker.update(event.payload.latency);
-        useAppStore.getState().updateLatency(stats);
+      listen<{ latency: number; isActive: boolean; jitter: number }>('audio-telemetry', (event) => {
+        useAppStore.getState().updateMetrics({
+          bufferMs: Math.round(event.payload.latency),
+          jitterMs: Math.round(event.payload.jitter),
+        });
         updateAudioActive(event.payload.isActive);
+      }),
+    );
+
+    unlisteners.push(
+      listen<number>('network-rtt', (event) => {
+        useAppStore.getState().updateMetrics({ networkRttMs: Math.round(event.payload) });
       }),
     );
 

@@ -371,6 +371,10 @@ async fn run_per_target_encode_loop(
     let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
     let mut packet_buf: Vec<u8> =
         Vec::with_capacity(SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE);
+    // Inbound datagrams on this socket are the phone's keepalive pings. 64 bytes
+    // comfortably holds a 10-byte echo ping; anything else the phone might send
+    // is consumed and ignored.
+    let mut ping_buf = [0u8; 64];
 
     loop {
         tokio::select! {
@@ -383,10 +387,6 @@ async fn run_per_target_encode_loop(
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
-
-                // Drain any stale data from the socket
-                let mut drain_buf = [0u8; 1];
-                while audio_socket.try_recv(&mut drain_buf).is_ok() {}
 
                 encode_frame(
                     &frame,
@@ -405,6 +405,18 @@ async fn run_per_target_encode_loop(
                 }
 
                 seq_num = seq_num.wrapping_add(1);
+            }
+            // Reflect the phone's echo pings so it can measure raw wire RTT.
+            // This also serves the buffer hygiene the old blind drain provided:
+            // inbound keepalives are consumed here promptly instead of piling up.
+            // Non-ping datagrams (e.g. an old phone's 1-byte heartbeat) are read
+            // and dropped.
+            result = audio_socket.recv_from(&mut ping_buf) => {
+                if let Ok((n, src)) = result
+                    && crate::stream::echo::is_echo(&ping_buf, n)
+                {
+                    let _ = audio_socket.try_send_to(&ping_buf[..n], src);
+                }
             }
             _ = &mut shutdown_rx => break,
         }
@@ -933,6 +945,90 @@ mod tests {
         assert!(len > 9);
 
         // 4. Test clean teardown
+        instance.remove_target_encoder(&target_addr).await;
+        if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
+            stop_tx.send(()).unwrap();
+            instance
+                .capture_join_handle
+                .await
+                .expect("Capture loop panicked");
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_encoder_should_reflect_an_echo_ping_back_to_its_source() {
+        let ring_buffer = HeapRb::<f32>::new(48000 * 2);
+        let (mut producer, consumer) = ring_buffer.split();
+        let notify = Arc::new(Notify::new());
+        let (_err_tx, err_rx) = mpsc::channel(1);
+
+        let capture_handle = CaptureHandle {
+            backend: MockBackend,
+            consumer,
+            notify: notify.clone(),
+            stream_error_rx: err_rx,
+        };
+
+        let (failure_tx, _failure_rx) = mpsc::unbounded_channel();
+        let mut instance =
+            AudioCaptureInstance::new(capture_handle, AudioSource::Desktop, 1, failure_tx)
+                .expect("Failed to create AudioCaptureInstance");
+
+        // Stand in for the phone: the encoder sends audio to this socket, and
+        // its own ephemeral source address is where we bounce a ping off.
+        let phone_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = phone_socket.local_addr().unwrap();
+
+        instance
+            .spawn_target_encoder(target_addr, Some(128000))
+            .await
+            .expect("Failed to spawn UDP encoder");
+
+        let frame_size = crate::audio::OPUS_FRAME_SAMPLES;
+        let fake_audio = vec![0.5f32; frame_size];
+        let mut buf = vec![0u8; 1500];
+
+        // Learn the encoder's ephemeral source address from an audio packet.
+        // Re-push each iteration because the broadcast subscription and a
+        // localhost UDP datagram can both need a moment to catch the first
+        // frame; bounded so a genuinely dead encoder fails instead of hanging.
+        let mut encoder_src = None;
+        for _ in 0..200 {
+            producer.push_slice(&fake_audio);
+            notify.notify_one();
+            let recv_future = phone_socket.recv_from(&mut buf);
+            if let Ok(Ok((_len, src))) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), recv_future).await
+            {
+                encoder_src = Some(src);
+                break;
+            }
+        }
+        let encoder_src = encoder_src.expect("encoder never sent an audio packet");
+
+        // Bounce a ping off the encoder and expect the exact bytes back. Both
+        // the ping and audio are re-sent each iteration because localhost UDP
+        // can still drop a datagram, and most reads will be audio packets until
+        // the reflected ping arrives.
+        let ping = crate::stream::echo::build_ping();
+        let reflected = loop {
+            producer.push_slice(&fake_audio);
+            notify.notify_one();
+            phone_socket.send_to(&ping, encoder_src).await.unwrap();
+
+            let recv_future = phone_socket.recv_from(&mut buf);
+            let (len, src) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), recv_future)
+                    .await
+                    .expect("Timed out waiting for the reflected ping")
+                    .expect("Failed to receive reflected ping");
+            if src == encoder_src && crate::stream::echo::is_echo(&buf, len) {
+                break buf[..len].to_vec();
+            }
+        };
+
+        assert_eq!(reflected, ping.to_vec());
+
         instance.remove_target_encoder(&target_addr).await;
         if let Some(stop_tx) = instance.capture_shutdown_tx.take() {
             stop_tx.send(()).unwrap();

@@ -189,7 +189,7 @@ export async function disconnect(
         isSuspended: !forgetSender,
         networkLinkPair: null,
       });
-      store.getState().resetLatency();
+      store.getState().resetMetrics();
       tauriBridge.notifyStreamingStopped().catch(console.warn);
       if (forgetSender) toast.getState().show('info', 'Disconnected');
       return ok(true);
@@ -223,7 +223,7 @@ export async function disconnect(
       processList: [],
       networkLinkPair: null,
     });
-    store.getState().resetLatency();
+    store.getState().resetMetrics();
     if (forgetSender) toast.getState().show('info', 'Disconnected');
     return ok(true);
   } finally {
@@ -243,7 +243,7 @@ export function handleSenderTimeout(deviceId: string) {
       status: Status.Listening,
       connectedSender: null,
     });
-    store.getState().resetLatency();
+    store.getState().resetMetrics();
     tauriBridge.killPlayback().catch(console.warn);
   }
 }
@@ -267,7 +267,7 @@ export function handleForceDisconnect(forgetSender: boolean = true) {
     reconnectAttempts: 0,
     isSuspended: !forgetSender,
   });
-  store.getState().resetLatency();
+  store.getState().resetMetrics();
   tauriBridge.notifyStreamingStopped().catch(console.warn);
   tauriBridge.killPlayback().catch(console.warn);
 }
@@ -300,7 +300,7 @@ export async function handleLinkLost() {
     reconnectAttempts: 0,
     isSuspended: true,
   });
-  store.getState().resetLatency();
+  store.getState().resetMetrics();
 
   // Both of these cancel link recovery on the Rust side, so the prober has to
   // start strictly *after* them — firing all three concurrently would let a

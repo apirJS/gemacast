@@ -511,6 +511,10 @@ pub struct JitterBufferManager {
     playback_buf: VecDeque<f32>,
     /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
     latency_metric: Arc<AtomicU32>,
+    /// Rolling jitter estimate (`stats.ema_jitter`) in whole milliseconds, mirrored
+    /// out to the receiver backend the same way as `latency_metric`. Distinct signal:
+    /// `latency_metric` is per-frame buffer dwell time, this is network arrival jitter.
+    jitter_metric: Arc<AtomicU32>,
     config: JitterConfig,
     config_ref: Arc<RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
@@ -561,6 +565,7 @@ impl JitterBufferManager {
     pub fn new(
         decoder: Decoder,
         latency_metric: Arc<AtomicU32>,
+        jitter_metric: Arc<AtomicU32>,
         config_ref: Arc<RwLock<JitterConfig>>,
         is_tcp_mode: Arc<AtomicBool>,
         network_link: NetworkLink,
@@ -573,6 +578,7 @@ impl JitterBufferManager {
             buffer: JitterBuffer::new(),
             playback_buf: VecDeque::with_capacity(OPUS_FRAME_SAMPLES * 100),
             latency_metric,
+            jitter_metric,
             config: initial_config,
             config_ref,
             is_tcp_mode,
@@ -1240,6 +1246,10 @@ impl JitterBufferManager {
         self.log_window.frames_played += 1;
         let delay_ms = ctx.now.duration_since(pkt.arrival_time).as_millis() as u32;
         self.latency_metric.store(delay_ms, Ordering::Relaxed);
+        // Mirror the network jitter estimate out on the same cadence. `ema_jitter`
+        // is in frames; scale to whole ms. Instrumentation only — no alloc/block/log.
+        let jitter_ms = (self.stats.ema_jitter * MILLIS_PER_FRAME as f32).round() as u32;
+        self.jitter_metric.store(jitter_ms, Ordering::Relaxed);
         // Keep the frame that is about to be overwritten as `expand`'s
         // "already played" half (NetEQ's `old_data`). It has to be captured
         // here, before `capture` clobbers `decode_buf`, and it has to happen on
