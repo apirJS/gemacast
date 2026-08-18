@@ -58,4 +58,48 @@ describe('ConnectionReadout', () => {
     expect(withLink.textContent).toContain('|');
     expect(screen.getByText('5 GHz')).toBeTruthy();
   });
+
+  it.each([
+    [
+      'a hotspot pair',
+      {
+        pair: { phone: 'wifiUnknown', pc: 'wifi5Ghz', effective: 'wifi5Ghz' },
+        shown: '5 GHz',
+        absent: 'WiFi',
+        title: 'Phone WiFi, PC 5 GHz — buffer tuned for 5 GHz',
+      },
+    ],
+    [
+      'a real band split',
+      {
+        pair: { phone: 'wifi2_4Ghz', pc: 'wifi5Ghz', effective: 'wifi2_4Ghz' },
+        shown: '2.4 GHz',
+        absent: '5 GHz',
+        title: 'Phone 2.4 GHz, PC 5 GHz — buffer tuned for 2.4 GHz',
+      },
+    ],
+    [
+      // `effective_link()` rule 4 answers `WifiUnknown` for this pair, so
+      // `effective` is neither side and "the other one" is undefinable.
+      'a pair whose effective side is neither',
+      {
+        pair: { phone: 'unknown', pc: 'ethernet', effective: 'wifiUnknown' },
+        shown: 'WiFi',
+        absent: 'Ethernet',
+        title: 'Phone Unknown, PC Ethernet — buffer tuned for WiFi',
+      },
+    ],
+  ] as const)('shows only the effective link for %s', (_name, { pair, shown, absent, title }) => {
+    useAppStore.getState().setStatus(Status.Connected);
+    useAppStore.getState().setNetworkLinkPair({ ...pair, effectiveLabel: shown });
+    const { container } = render(<ConnectionReadout />);
+
+    expect(screen.getByText(shown)).toBeTruthy();
+    expect(container.textContent).not.toContain('via');
+    expect(container.textContent).not.toContain(absent);
+
+    // The dropped side stays reachable by assistive tech, and naming both sides
+    // explicitly is what keeps the rule-4 pair correct.
+    expect(container.querySelector('#network-link-badge')?.getAttribute('title')).toBe(title);
+  });
 });

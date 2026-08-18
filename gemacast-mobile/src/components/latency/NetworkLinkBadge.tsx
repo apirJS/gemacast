@@ -38,14 +38,6 @@ type NetworkLinkBadgeProps = {
   withLeadingSeparator?: boolean;
 };
 
-/**
- * The link the buffer is actually tuned for.
- *
- * `LinkPair::effective_link()` on the Rust side picks the *weaker* of the two
- * sides, and that is the side the jitter profile keys on — so when the two
- * differ, the binding side is the only one worth emphasising. When they match,
- * rendering both is pure repetition and we collapse to a single label.
- */
 export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBadgeProps = {}) {
   const linkPair = useAppStore((s) => s.networkLinkPair);
   const status = useAppStore((s) => s.status);
@@ -59,10 +51,11 @@ export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBa
   const effective = getLinkMeta(linkPair.effective);
   const EffectiveIcon = effective.icon;
 
-  // Both ends agree, so one label describes the whole path.
+  // Named per side rather than as "effective vs the other one", so the tooltip
+  // stays correct when `effective` is neither side (rule 4, above).
   const isSymmetric = linkPair.phone === linkPair.pc;
-  const otherSide = linkPair.effective === linkPair.phone ? linkPair.pc : linkPair.phone;
-  const other = getLinkMeta(otherSide);
+  const phone = getLinkMeta(linkPair.phone);
+  const pc = getLinkMeta(linkPair.pc);
 
   return (
     <div
@@ -71,7 +64,7 @@ export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBa
       title={
         isSymmetric
           ? `Link: ${effective.label}`
-          : `Buffer tuned for the weaker side: ${effective.label} (other side ${other.label})`
+          : `Phone ${phone.label}, PC ${pc.label} — buffer tuned for ${effective.label}`
       }
     >
       {withLeadingSeparator && (
@@ -81,9 +74,6 @@ export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBa
       )}
       <EffectiveIcon size={12} className={`shrink-0 ${effective.color}`} aria-hidden="true" />
       <span className={`truncate ${effective.color}`}>{effective.label}</span>
-      {!isSymmetric && (
-        <span className="shrink-0 text-[10px] text-muted-foreground/60">via {other.label}</span>
-      )}
     </div>
   );
 }
