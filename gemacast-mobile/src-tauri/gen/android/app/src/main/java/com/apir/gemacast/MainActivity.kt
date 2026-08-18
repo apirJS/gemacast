@@ -118,18 +118,46 @@ class MainActivity : TauriActivity() {
             
             val networkType = if (activeTransports.isEmpty()) "NONE" else activeTransports.joinToString(",")
 
+            // Tethering state. Needed because when this phone shares its
+            // connection, its *active* network is the upstream (often cellular),
+            // so the checks above report neither WIFI nor ETHERNET — and a Wi-Fi
+            // hotspot would otherwise be indistinguishable from a USB cable.
+            val tether = try {
+                val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+                    ?.toList()
+                    ?.filter { it.isUp && !it.isLoopback }
+                    ?.map { iface ->
+                        TetherClassifier.Iface(
+                            iface.name ?: "",
+                            iface.inetAddresses.toList()
+                                .filterIsInstance<java.net.Inet4Address>()
+                                .mapNotNull { it.hostAddress },
+                        )
+                    }
+                    ?: emptyList()
+                TetherClassifier.classify(ifaces)
+            } catch (e: Exception) {
+                TetherClassifier.Tether.NONE
+            }
+
             val intentFilter = android.content.IntentFilter("android.hardware.usb.action.USB_STATE")
             val usbIntent = registerReceiver(null, intentFilter)
             val usbConnected = usbIntent?.extras?.getBoolean("connected") ?: false
 
             val adbActive = android.provider.Settings.Global.getInt(
-                contentResolver, 
+                contentResolver,
                 android.provider.Settings.Global.ADB_ENABLED, 0
             ) != 0
 
             val adbStatus = if (usbConnected && adbActive) "ADB_ON" else "ADB_OFF"
 
-            "${networkType}|${adbStatus}"
+            val tetherStatus = when (tether) {
+                TetherClassifier.Tether.HOTSPOT -> "|HOTSPOT"
+                TetherClassifier.Tether.USB -> "|USB_TETHER"
+                TetherClassifier.Tether.NONE -> ""
+            }
+
+            "${networkType}|${adbStatus}${tetherStatus}"
         } catch (e: Exception) {
             "ERROR: ${e.message}"
         }

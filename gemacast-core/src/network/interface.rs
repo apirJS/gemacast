@@ -77,6 +77,22 @@ pub fn get_broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
     addrs
 }
 
+/// Android's tethering gateways are fixed per transport, which makes the
+/// interface's own address a stronger signal than its name.
+///
+/// | transport | gateway |
+/// | --- | --- |
+/// | USB / RNDIS | `192.168.42.1` |
+/// | Wi-Fi hotspot (soft AP) | `192.168.43.1` |
+/// | Bluetooth | `192.168.44.1` |
+///
+/// Android 11+ may randomise the hotspot subnet, so the name heuristics below
+/// remain the backstop.
+fn is_soft_ap_subnet(ip: &std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 192 && octets[1] == 168 && octets[2] == 43
+}
+
 pub fn classify_interface(interface: &netdev::Interface) -> (bool, bool) {
     let if_type = &interface.if_type;
     let name_lower = interface.name.to_lowercase();
@@ -110,10 +126,31 @@ pub fn classify_interface(interface: &netdev::Interface) -> (bool, bool) {
     }
 
     // 2. WiFi check (100% native via OS)
+    //
+    // A phone acting as a Wi-Fi hotspot is the load-bearing case here. Its
+    // soft-AP interface is named `ap0` / `softap0` / `swlan0` depending on the
+    // vendor — none of which contain "wlan" — so before this check existed it
+    // failed the Wi-Fi test and fell into the "assume USB cable" fallback below.
+    // That made a hotspot indistinguishable from a real cable: `modes.usb` went
+    // true while `modes.wifi` stayed false (so the Wi-Fi button was disabled),
+    // and the link reported `UsbTether`, which selects a jitter profile capped
+    // at 100 ms — sized for USB's ~22 ms delivery grid, and unable to cover the
+    // 100-600 ms gaps a radio link actually produces.
+    let has_soft_ap_addr = interface
+        .ipv4
+        .iter()
+        .any(|net| is_soft_ap_subnet(&net.addr()));
+    let is_soft_ap_name = name_lower.starts_with("ap")
+        || name_lower.contains("softap")
+        || name_lower.contains("swlan")
+        || name_lower.contains("p2p");
+
     let is_wifi = *if_type == netdev::prelude::InterfaceType::Wireless80211
         // Fallback for Android/Linux where if_type might just be Ethernet or Unknown
         || name_lower.contains("wlan")
-        || name_lower.contains("wifi");
+        || name_lower.contains("wifi")
+        || has_soft_ap_addr
+        || is_soft_ap_name;
 
     // 3. USB Tethering check (NDIS / RNDIS)
     // Windows/macOS reports USB tethering as Ethernet, so we check descriptions for "ndis".
@@ -124,6 +161,9 @@ pub fn classify_interface(interface: &netdev::Interface) -> (bool, bool) {
         || friendly_lower.contains("ndis");
 
     let is_usb = is_ndis
+        // Positive evidence, checked before the fallback so a rename cannot lose it.
+        || name_lower.starts_with("usb")
+        || interface.ipv4.iter().any(|net| is_usb_subnet(&net.addr()))
         // Aggressive fallback for Android: if it's not WiFi/Loopback/VPN, assume it's the USB cable.
         // We restrict this aggressive fallback slightly by checking it's not a known PC Ethernet.
         || (!is_wifi
@@ -423,6 +463,19 @@ mod tests {
         iface
     }
 
+    /// Same as [`make_interface`] but with one IPv4 address attached, so the
+    /// subnet-based branches of `classify_interface` are reachable.
+    fn make_interface_with_ip(
+        name: &str,
+        if_type: netdev::prelude::InterfaceType,
+        ip: &str,
+    ) -> netdev::Interface {
+        let mut iface = make_interface(name, if_type, None, None);
+        let addr: std::net::Ipv4Addr = ip.parse().unwrap();
+        iface.ipv4 = vec![netdev::ipnet::Ipv4Net::new(addr, 24).unwrap()];
+        iface
+    }
+
     mod classify_interface {
         use super::*;
 
@@ -507,6 +560,70 @@ mod tests {
             let (is_wifi, is_usb) = super::super::classify_interface(&iface);
             assert!(!is_wifi, "Standard ethernet is not wifi");
             assert!(!is_usb, "Standard ethernet is not usb");
+        }
+
+        // A phone sharing its connection as a Wi-Fi hotspot must not look like a
+        // cable. Before these, the soft-AP interface fell through to the
+        // "assume USB" fallback, which disabled the Wi-Fi mode button and picked
+        // a 100 ms-capped jitter profile for a radio link.
+        #[test]
+        fn should_identify_soft_ap_subnet_as_wifi_not_usb() {
+            // 192.168.43.1 is Android's Wi-Fi-hotspot gateway; .42 is USB.
+            let iface = make_interface_with_ip(
+                "ap0",
+                netdev::prelude::InterfaceType::Ethernet,
+                "192.168.43.1",
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(is_wifi, "Soft-AP subnet should be classified as wifi");
+            assert!(!is_usb, "Soft-AP must not be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_vendor_soft_ap_names_as_wifi() {
+            for name in ["ap0", "softap0", "swlan0", "p2p0"] {
+                let iface =
+                    make_interface(name, netdev::prelude::InterfaceType::Unknown, None, None);
+                let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+                assert!(is_wifi, "{name} should be classified as wifi");
+                assert!(!is_usb, "{name} must not be classified as usb");
+            }
+        }
+
+        #[test]
+        fn should_still_identify_usb_tether_subnet_as_usb() {
+            // The other half of the discriminator: 192.168.42.x stays USB, so
+            // fixing the hotspot case cannot regress real tethering.
+            let iface = make_interface_with_ip(
+                "rndis0",
+                netdev::prelude::InterfaceType::Ethernet,
+                "192.168.42.129",
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "USB tether subnet is not wifi");
+            assert!(is_usb, "USB tether subnet should be classified as usb");
+        }
+
+        #[test]
+        fn should_identify_usb0_by_name_as_usb() {
+            let iface = make_interface("usb0", netdev::prelude::InterfaceType::Unknown, None, None);
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(!is_wifi, "usb0 is not wifi");
+            assert!(is_usb, "usb0 should be classified as usb");
+        }
+
+        #[test]
+        fn should_keep_wlan_as_wifi_when_holding_a_hotspot_client_address() {
+            // The PC side of the same link: its own Wi-Fi adapter is a *client*
+            // of the phone's AP and sits on 192.168.43.x too. It must stay Wi-Fi.
+            let iface = make_interface_with_ip(
+                "wlan0",
+                netdev::prelude::InterfaceType::Wireless80211,
+                "192.168.43.55",
+            );
+            let (is_wifi, is_usb) = super::super::classify_interface(&iface);
+            assert!(is_wifi, "PC Wi-Fi client of a hotspot is still wifi");
+            assert!(!is_usb, "PC Wi-Fi client of a hotspot is not usb");
         }
     }
 
