@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useSettings } from './use-settings';
 import type { JitterConfig } from '../core/types';
 import { validateJitterConfig, isJitterConfigEqual } from '../core/validation';
@@ -86,10 +86,10 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
     settings.customJitterConfig,
   ]);
 
-  const validation = useMemo(() => validateJitterConfig(config), [config]);
+  const validation = validateJitterConfig(config);
   const isValid = validation.valid;
 
-  const canSave = useMemo(() => {
+  const canSave = (() => {
     if (!presetName.trim()) return false;
     if (!isValid) return false;
 
@@ -110,16 +110,13 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
     }
 
     return true;
-  }, [presetName, isValid, settings.savedPresets, config, isEditingSaved, savedMatchIndex]);
+  })();
 
-  const updateField = useCallback(
-    (patch: Partial<JitterConfig>) => {
-      setConfig((current) => ({ ...current, ...patch }));
-    },
-    [],
-  );
+  const updateField = (patch: Partial<JitterConfig>) => {
+    setConfig((current) => ({ ...current, ...patch }));
+  };
 
-  const handleSave = useCallback(() => {
+  const handleSave = () => {
     if (!canSave) return;
 
     const trimmedName = presetName.trim();
@@ -146,18 +143,9 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       bufferPreset: newBufferPreset,
       customJitterConfig: config,
     });
-  }, [
-    canSave,
-    presetName,
-    config,
-    settings.savedPresets,
-    update,
-    isEditingSaved,
-    savedMatchIndex,
-    settings.bufferPreset,
-  ]);
+  };
 
-  const handleReset = useCallback(() => {
+  const handleReset = () => {
     if (isEditingSaved) {
       // Reset to the saved preset's original config
       const savedConfig = settings.savedPresets[savedMatchIndex].config;
@@ -174,16 +162,16 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       void update({ customJitterConfig: defaultConfig });
       setPresetName('');
     }
-  }, [isEditingSaved, savedMatchIndex, settings.savedPresets, update]);
+  };
 
   /**
    * Delete preset. After deletion, reset to default static config for creating new.
    */
-  const requestDelete = useCallback(() => {
+  const requestDelete = () => {
     setIsDeleteDialogOpen(true);
-  }, []);
+  };
 
-  const confirmDelete = useCallback(() => {
+  const confirmDelete = () => {
     if (savedMatchIndex >= 0) {
       const saved = [...settings.savedPresets];
       saved.splice(savedMatchIndex, 1);
@@ -198,11 +186,11 @@ export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetE
       setPresetName('');
     }
     setIsDeleteDialogOpen(false);
-  }, [savedMatchIndex, settings.savedPresets, update]);
+  };
 
-  const cancelDelete = useCallback(() => {
+  const cancelDelete = () => {
     setIsDeleteDialogOpen(false);
-  }, []);
+  };
 
   return {
     isCustom,

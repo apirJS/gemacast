@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState } from 'react';
 import { Monitor, Volume2, Settings, ChevronDown } from 'lucide-react';
 import type { AudioSource, ProcessInfo, DiscoveredSender } from '../../core/types';
 import { useConnection } from '../../hooks/use-connection';
@@ -26,7 +26,7 @@ export function ProcessSelect({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const { fetchProcessList } = useConnection();
 
-  const startClosing = useCallback(() => {
+  const startClosing = () => {
     if (closing) return;
     setClosing(true);
     setTimeout(() => {
@@ -34,24 +34,22 @@ export function ProcessSelect({
       setClosing(false);
       setSearch('');
     }, 150);
-  }, [closing]);
+  };
 
-  const sortedProcesses = useMemo(() => {
-    return [...processList].sort((a, b) => {
-      if (a.hasAudioSession !== b.hasAudioSession) {
-        return a.hasAudioSession ? -1 : 1;
-      }
-      return a.name.localeCompare(b.name);
-    });
-  }, [processList]);
+  const sortedProcesses = [...processList].sort((a, b) => {
+    if (a.hasAudioSession !== b.hasAudioSession) {
+      return a.hasAudioSession ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
 
-  const filteredProcesses = useMemo(() => {
+  const filteredProcesses = (() => {
     if (!search.trim()) return sortedProcesses;
     const q = search.toLowerCase();
     return sortedProcesses.filter((p) => p.name.toLowerCase().includes(q));
-  }, [sortedProcesses, search]);
+  })();
 
-  const currentLabel = useMemo(() => {
+  const currentLabel = (() => {
     if (currentSource.type === 'desktop') {
       return (
         <div className="flex min-w-0 items-center gap-1.5">
@@ -72,15 +70,12 @@ export function ProcessSelect({
         </span>
       </div>
     );
-  }, [currentSource]);
+  })();
 
-  const handleSelect = useCallback(
-    (source: AudioSource) => {
-      onSourceChange(source);
-      startClosing();
-    },
-    [onSourceChange, startClosing],
-  );
+  const handleSelect = (source: AudioSource) => {
+    onSourceChange(source);
+    startClosing();
+  };
 
   const hasDesktop = audioSources.some((s) => s.type === 'desktop');
 

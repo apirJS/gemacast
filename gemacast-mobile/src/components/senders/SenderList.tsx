@@ -1,4 +1,3 @@
-import { useCallback } from 'react';
 import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
 import type { AudioSource, DiscoveredSender } from '../../core/types';
@@ -34,36 +33,33 @@ export function SenderList() {
 
   const isEmpty = senders.length === 0 && isListening;
 
-  const handleToggle = useCallback(
-    async (sender: DiscoveredSender, isConnected: boolean) => {
-      if (isConnected) {
-        await disconnect();
-        // Remove manual senders from list on disconnect
-        if (sender.deviceId.startsWith('manual-')) {
-          const state = useAppStore.getState();
-          const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
-          state.setDiscoveredSenders(newList);
-        }
-      } else {
-        if (connectedSender) await disconnect();
-        await connectToSender(sender);
+  const handleToggle = async (sender: DiscoveredSender, isConnected: boolean) => {
+    if (isConnected) {
+      await disconnect();
+      // Remove manual senders from list on disconnect
+      if (sender.deviceId.startsWith('manual-')) {
+        const state = useAppStore.getState();
+        const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
+        state.setDiscoveredSenders(newList);
       }
-    },
-    [connectedSender],
-  );
+    } else {
+      if (connectedSender) await disconnect();
+      await connectToSender(sender);
+    }
+  };
 
-  const handlePlayPause = useCallback(async () => {
+  const handlePlayPause = async () => {
     const currentStatus = useAppStore.getState().status;
     if (currentStatus === Status.Playing || currentStatus === Status.Connected) {
       await stopPlayback();
     } else if (currentStatus === Status.Paused) {
       await startPlayback();
     }
-  }, []);
+  };
 
-  const handleSourceChange = useCallback((source: AudioSource) => {
+  const handleSourceChange = (source: AudioSource) => {
     changeAudioSource(source);
-  }, []);
+  };
 
   const {
     ref: scrollRef,

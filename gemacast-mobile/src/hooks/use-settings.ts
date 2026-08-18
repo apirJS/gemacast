@@ -1,4 +1,3 @@
-import { useCallback } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { tauriBridge, resolveBitrate } from '../core/tauri-bridge';
 import { getPresetConfig } from '../core/presets';
@@ -9,45 +8,44 @@ export function useSettings() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
-  const update = useCallback(
-    (patch: Partial<AppSettings>): Promise<boolean> => {
-      const state = useAppStore.getState();
-      const nextSettings = { ...state.settings, ...patch };
-      const connectedSender =
-        (state.status === Status.Connected ||
-          state.status === Status.Playing ||
-          state.status === Status.Paused) &&
-        state.connectedSender
-          ? state.connectedSender
-          : null;
+  const update = (patch: Partial<AppSettings>): Promise<boolean> => {
+    const state = useAppStore.getState();
+    const nextSettings = { ...state.settings, ...patch };
+    const connectedSender =
+      (state.status === Status.Connected ||
+        state.status === Status.Playing ||
+        state.status === Status.Paused) &&
+      state.connectedSender
+        ? state.connectedSender
+        : null;
 
-      const needsRemoteApply = Boolean(
-        connectedSender &&
-          (patch.bufferPreset !== undefined ||
-            patch.customJitterConfig !== undefined ||
-            patch.bitratePreset !== undefined ||
-            patch.customBitrateKbps !== undefined ||
-            patch.exclusiveMode !== undefined ||
-            patch.gainDb !== undefined),
-      );
+    const needsRemoteApply = Boolean(
+      connectedSender &&
+      (patch.bufferPreset !== undefined ||
+        patch.customJitterConfig !== undefined ||
+        patch.bitratePreset !== undefined ||
+        patch.customBitrateKbps !== undefined ||
+        patch.exclusiveMode !== undefined ||
+        patch.gainDb !== undefined),
+    );
 
-      // No stream is active, so there is nothing to acknowledge. Keep this
-      // synchronous for ordinary settings/preset editing and persist directly.
-      if (!needsRemoteApply) {
-        updateSettings(patch);
-        return Promise.resolve(true);
-      }
+    // No stream is active, so there is nothing to acknowledge. Keep this
+    // synchronous for ordinary settings/preset editing and persist directly.
+    if (!needsRemoteApply) {
+      updateSettings(patch);
+      return Promise.resolve(true);
+    }
 
-      return (async () => {
-        try {
+    return (async () => {
+      try {
         // Apply live settings first. Persistence follows only after the backend
         // acknowledges the operation, so a failed change leaves the previous
         // known-good setting intact.
         if (patch.bufferPreset !== undefined || patch.customJitterConfig !== undefined) {
-        const activeConfig = getPresetConfig(
-          nextSettings.bufferPreset,
-          nextSettings.customJitterConfig,
-        );
+          const activeConfig = getPresetConfig(
+            nextSettings.bufferPreset,
+            nextSettings.customJitterConfig,
+          );
           await tauriBridge.updateJitterConfig({ jitterConfig: activeConfig });
         }
 
@@ -74,15 +72,13 @@ export function useSettings() {
 
         updateSettings(patch);
         return true;
-        } catch (error) {
-          console.warn('Failed to apply settings', error);
-          useToastStore.getState().show('warning', 'Setting was not applied');
-          return false;
-        }
-      })();
-    },
-    [updateSettings],
-  );
+      } catch (error) {
+        console.warn('Failed to apply settings', error);
+        useToastStore.getState().show('warning', 'Setting was not applied');
+        return false;
+      }
+    })();
+  };
 
   return { settings, update };
 }

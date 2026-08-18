@@ -37,10 +37,12 @@ function sanitizeJitterConfig(value: unknown, fallback: JitterConfig): JitterCon
 function sanitizeSettings(value: unknown): AppSettings {
   if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
   const incoming = value as Partial<AppSettings>;
-  const customBitrateKbps = Number.isInteger(incoming.customBitrateKbps) &&
-      incoming.customBitrateKbps! >= 6 && incoming.customBitrateKbps! <= 512
-    ? incoming.customBitrateKbps!
-    : DEFAULT_SETTINGS.customBitrateKbps;
+  const customBitrateKbps =
+    Number.isInteger(incoming.customBitrateKbps) &&
+    incoming.customBitrateKbps! >= 6 &&
+    incoming.customBitrateKbps! <= 512
+      ? incoming.customBitrateKbps!
+      : DEFAULT_SETTINGS.customBitrateKbps;
   const savedPresets = Array.isArray(incoming.savedPresets)
     ? incoming.savedPresets
         .filter((preset): preset is SavedPreset => Boolean(preset?.name && preset.config))

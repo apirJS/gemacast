@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useSettings } from '../../hooks/use-settings';
 import { tauriBridge } from '../../core/tauri-bridge';
 
@@ -24,29 +24,26 @@ export function GainSlider() {
     setLocalDb(settings.gainDb);
   }, [settings.gainDb]);
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = parseFloat(e.target.value);
-      setLocalDb(value);
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseFloat(e.target.value);
+    setLocalDb(value);
 
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        update({ gainDb: value });
-        tauriBridge.setAudioGain({ gainDb: value }).catch((err) => {
-          console.warn('Failed to set audio gain:', err);
-        });
-      }, DEBOUNCE_MS);
-    },
-    [update],
-  );
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      update({ gainDb: value });
+      tauriBridge.setAudioGain({ gainDb: value }).catch((err) => {
+        console.warn('Failed to set audio gain:', err);
+      });
+    }, DEBOUNCE_MS);
+  };
 
-  const handleReset = useCallback(() => {
+  const handleReset = () => {
     setLocalDb(0);
     update({ gainDb: 0 });
     tauriBridge.setAudioGain({ gainDb: 0 }).catch((err) => {
       console.warn('Failed to reset audio gain:', err);
     });
-  }, [update]);
+  };
 
   // Calculate offset ratios (0 to 1)
   const offset = (localDb - MIN_DB) / (MAX_DB - MIN_DB);

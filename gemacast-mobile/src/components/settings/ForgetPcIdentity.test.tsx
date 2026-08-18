@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { invokeCalls, makeDeviceInfo, makeDiscoveredSender, setupInvokeMock } from '../../__tests__/setup';
+import {
+  invokeCalls,
+  makeDeviceInfo,
+  makeDiscoveredSender,
+  setupInvokeMock,
+} from '../../__tests__/setup';
 import { Status } from '../../core/types';
 import { useAppStore } from '../../stores/app-store';
 import { ForgetPcIdentity } from './ForgetPcIdentity';
@@ -14,10 +19,12 @@ beforeEach(() => {
 describe('ForgetPcIdentity', () => {
   it('shows only PCs present in the native trust store', async () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-2', 'missing-name'] });
-    useAppStore.getState().setDiscoveredSenders([
-      makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
-      makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
-    ]);
+    useAppStore
+      .getState()
+      .setDiscoveredSenders([
+        makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
+        makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
+      ]);
     render(<ForgetPcIdentity />);
 
     expect(await screen.findByLabelText('Forget Laptop')).toBeTruthy();
@@ -58,10 +65,12 @@ describe('ForgetPcIdentity', () => {
 
   it('removes only the selected PC after native removal succeeds', async () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-1', 'pc-2'] });
-    useAppStore.getState().setDiscoveredSenders([
-      makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
-      makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
-    ]);
+    useAppStore
+      .getState()
+      .setDiscoveredSenders([
+        makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
+        makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
+      ]);
     render(<ForgetPcIdentity />);
 
     await screen.findByLabelText('Forget Laptop');

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
@@ -23,15 +23,18 @@ export function useManualConnect() {
 
   const isManualConnecting = isProbing || (isLoading && connectingSenderId?.startsWith('manual-'));
 
-  const handleConnect = useCallback(async () => {
+  const handleConnect = async () => {
     const trimmed = ip.trim();
     if (!trimmed) return;
 
     const octets = trimmed.split('.');
-    const validIpv4 = octets.length === 4 && octets.every((octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+    const validIpv4 =
+      octets.length === 4 &&
+      octets.every((octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
     const first = Number(octets[0]);
     const last = Number(octets[3]);
-    const forbidden = first === 0 || first === 127 || first >= 224 || (first === 255 && last === 255);
+    const forbidden =
+      first === 0 || first === 127 || first >= 224 || (first === 255 && last === 255);
     if (!validIpv4 || forbidden) {
       useToastStore.getState().show('warning', 'Invalid IP address');
       return;
@@ -78,7 +81,7 @@ export function useManualConnect() {
         useToastStore.getState().show('warning', 'Could not restore the previous stream');
       }
     }
-  }, [ip]);
+  };
 
   return {
     ip,

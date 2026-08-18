@@ -74,13 +74,7 @@ export type JitterConfig = {
 
 /** Detected network link type for one side of the connection. */
 export type NetworkLink =
-  | 'adb'
-  | 'usbTether'
-  | 'wifi5Ghz'
-  | 'wifi2_4Ghz'
-  | 'ethernet'
-  | 'wifiUnknown'
-  | 'unknown';
+  'adb' | 'usbTether' | 'wifi5Ghz' | 'wifi2_4Ghz' | 'ethernet' | 'wifiUnknown' | 'unknown';
 
 /** Network link pair info from the backend (both sides + effective). */
 export type NetworkLinkPairInfo = {
@@ -96,27 +90,10 @@ export type SavedPreset = {
 };
 
 export type PresetId =
-  | 'nobuffer'
-  | 'auto'
-  | 'wired'
-  | 'fast'
-  | 'balanced'
-  | 'stable'
-  | 'resilient'
-  | 'custom';
+  'nobuffer' | 'auto' | 'wired' | 'fast' | 'balanced' | 'stable' | 'resilient' | 'custom';
 
 export type BitratePreset =
-  | '10'
-  | '24'
-  | '32'
-  | '64'
-  | '96'
-  | '128'
-  | '256'
-  | '450'
-  | '512'
-  | 'raw'
-  | 'custom';
+  '10' | '24' | '32' | '64' | '96' | '128' | '256' | '450' | '512' | 'raw' | 'custom';
 
 export type AppSettings = {
   theme: 'light' | 'dark';
@@ -132,8 +109,7 @@ export type AppSettings = {
 };
 
 export type AudioSource =
-  | { type: 'desktop' }
-  | { type: 'process'; pid: number; name: string; hasAudioSession?: boolean };
+  { type: 'desktop' } | { type: 'process'; pid: number; name: string; hasAudioSession?: boolean };
 
 export type SenderCapabilities = {
   supportsProcessCapture: boolean;

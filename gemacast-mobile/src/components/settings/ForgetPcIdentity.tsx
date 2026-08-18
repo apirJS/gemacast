@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { tauriBridge } from '../../core/tauri-bridge';
 import { disconnect } from '../../hooks/use-connection';
@@ -12,7 +12,9 @@ export function ForgetPcIdentity() {
   const lastConnectedSender = useAppStore((state) => state.lastConnectedSender);
   const discoveredSenders = useAppStore((state) => state.discoveredSenders);
   const [pairedPcIds, setPairedPcIds] = useState<string[]>([]);
-  const [selectedPc, setSelectedPc] = useState<{ deviceId: string; deviceName: string } | null>(null);
+  const [selectedPc, setSelectedPc] = useState<{ deviceId: string; deviceName: string } | null>(
+    null,
+  );
   const hasLoadedPairedPcs = useRef(false);
 
   useEffect(() => {
@@ -34,7 +36,7 @@ export function ForgetPcIdentity() {
     };
   }, [connectedSenderId]);
 
-  const senders = useMemo(() => {
+  const senders = (() => {
     const byId = new Map<string, { deviceId: string; deviceName: string }>();
     for (const sender of [...discoveredSenders, lastConnectedSender, connectedSender]) {
       if (sender) byId.set(sender.deviceId, sender);
@@ -43,7 +45,7 @@ export function ForgetPcIdentity() {
       deviceId,
       deviceName: byId.get(deviceId)?.deviceName ?? deviceId,
     }));
-  }, [connectedSender, discoveredSenders, lastConnectedSender, pairedPcIds]);
+  })();
 
   const forget = async () => {
     if (!selectedPc) return;
@@ -78,9 +80,7 @@ export function ForgetPcIdentity() {
               className="flex items-start justify-between gap-3 text-sm"
               role="listitem"
             >
-              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">
-                {sender.deviceName}
-              </span>
+              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">{sender.deviceName}</span>
               <button
                 type="button"
                 className="shrink-0 rounded-default p-2 text-muted-foreground hover:bg-muted hover:text-status-lost"

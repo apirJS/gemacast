@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useSettings } from '../../hooks/use-settings';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import type { BitratePreset } from '../../core/types';
@@ -36,17 +36,15 @@ export function BitrateSelect() {
     }
   };
 
-  const options = React.useMemo(() => {
-    return BITRATE_OPTIONS.map((opt) => {
-      if (opt.value === 'custom' && settings.bitratePreset === 'custom') {
-        return {
-          ...opt,
-          label: `Custom - ${settings.customBitrateKbps} Kbps`,
-        };
-      }
-      return opt;
-    });
-  }, [settings.bitratePreset, settings.customBitrateKbps]);
+  const options = BITRATE_OPTIONS.map((opt) => {
+    if (opt.value === 'custom' && settings.bitratePreset === 'custom') {
+      return {
+        ...opt,
+        label: `Custom - ${settings.customBitrateKbps} Kbps`,
+      };
+    }
+    return opt;
+  });
 
   return (
     <div>

@@ -23,10 +23,14 @@ const domGlobals = [
   'Event',
 ] as const;
 
+// Always take these from happy-dom, even where Bun ships a native global (it
+// does for `Event` and `CustomEvent`). The DOM realm must be internally
+// consistent: happy-dom's `dispatchEvent` does `event instanceof <happy-dom
+// Event>`, so a Bun-native `Event` dispatched onto a happy-dom node throws. A
+// `!(key in globalThis)` guard here silently leaves those two shadowed by Bun's
+// and breaks any test that constructs `new Event(...)` and dispatches it.
 for (const key of domGlobals) {
-  if (!(key in globalThis)) {
-    (globalThis as Record<string, unknown>)[key] = (win as unknown as Record<string, unknown>)[key];
-  }
+  (globalThis as Record<string, unknown>)[key] = (win as unknown as Record<string, unknown>)[key];
 }
 
 if (typeof globalThis.window === 'undefined') {

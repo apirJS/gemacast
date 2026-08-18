@@ -18,7 +18,7 @@ function AppInner() {
     startListening(mode);
 
     // Hardware back button double-press to exit logic
-    window.history.pushState({ root: true }, '', '#root');
+    window.history.pushState(null, '', '#root');
     let lastBackPressed = 0;
 
     const handlePopState = () => {
@@ -31,7 +31,7 @@ function AppInner() {
         } else {
           lastBackPressed = now;
           useToastStore.getState().show('info', 'Press back again to exit');
-          window.history.pushState({ root: true }, '', '#root');
+          window.history.pushState(null, '', '#root');
         }
       }
     };
