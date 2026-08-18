@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { ProcessSelect } from './ProcessSelect';
+import { PULL_REFRESH_IGNORE_ATTR } from '../../hooks/use-pull-to-refresh';
 
 beforeEach(() => {
   cleanup();
@@ -92,5 +93,17 @@ describe('ProcessSelect', () => {
     fireEvent.click(refreshBtn);
 
     expect(mockFetchProcessList).toHaveBeenCalledWith(defaultProps.sender);
+  });
+
+  it('marks the dropdown so the sender list pull-to-refresh ignores it', () => {
+    render(<ProcessSelect {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button'));
+
+    // The dropdown renders inside the sender list's scroll container, so touch
+    // events from it bubble to the pull gesture. The marker is what stops a
+    // process-list scroll from rubber-banding the list behind it — asserted on
+    // the real markup because the hook-level guard is inert without it.
+    const row = screen.getByText('Spotify.exe');
+    expect(row.closest(`[${PULL_REFRESH_IGNORE_ATTR}]`)).toBeTruthy();
   });
 });

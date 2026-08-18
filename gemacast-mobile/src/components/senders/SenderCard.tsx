@@ -50,7 +50,7 @@ export function SenderCard({
   return (
     <li
       className={`
-        relative flex items-center justify-between gap-4 rounded-default border bg-transparent
+        surface-card relative flex items-center justify-between gap-4 rounded-lg
         px-5 py-4 transition-all duration-200 animate-[fade-in_200ms_ease-out]
         ${hasSource ? 'flex-wrap' : ''}
         ${isConnected ? 'border-primary shadow-[0_0_0_1px_var(--color-primary)]' : 'border-border hover:border-primary'}
@@ -82,7 +82,7 @@ export function SenderCard({
             ${
               isConnected
                 ? 'border-destructive text-destructive bg-transparent hover:bg-destructive hover:text-destructive-foreground'
-                : 'border-border bg-secondary text-secondary-foreground hover:bg-primary hover:text-primary-foreground'
+                : 'border-border bg-background text-foreground hover:bg-primary hover:text-primary-foreground'
             }
           `}
           onClick={onToggle}
@@ -102,7 +102,7 @@ export function SenderCard({
           <button
             type="button"
             disabled={isDisabled}
-            className="inline-flex shrink-0 items-center justify-center rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-secondary p-1.5 text-secondary-foreground transition-all duration-150 hover:bg-primary hover:text-primary-foreground"
+            className="inline-flex shrink-0 items-center justify-center rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background p-1.5 text-foreground transition-all duration-150 hover:bg-primary hover:text-primary-foreground"
             onClick={onPlayPause}
             aria-label={isPlaying ? `Pause ${sender.deviceName}` : `Resume ${sender.deviceName}`}
           >

@@ -1,9 +1,7 @@
 import { DeviceInfo } from '../device/DeviceInfo';
-import { StatusChip } from '../device/StatusChip';
 import { SenderList } from '../senders/SenderList';
 import { ManualConnect } from '../senders/ManualConnect';
-import { ConnectionMetrics } from '../latency/ConnectionMetrics';
-import { NetworkLinkBadge } from '../latency/NetworkLinkBadge';
+import { ConnectionReadout } from '../latency/ConnectionReadout';
 import { ToastContainer } from '../feedback/ToastContainer';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
 import { useWakeLock } from '../../hooks/use-wake-lock';
@@ -26,14 +24,12 @@ export function AppShell() {
         }}
       >
         <DeviceInfo />
+
+        {/* Self-hiding: absent unless there is a live session to report on. */}
+        <ConnectionReadout />
+
         <ManualConnect />
         <SenderList />
-
-        <section className="mt-auto flex flex-col items-center gap-2 pt-4">
-          <StatusChip />
-          <ConnectionMetrics />
-          <NetworkLinkBadge />
-        </section>
       </main>
     </>
   );

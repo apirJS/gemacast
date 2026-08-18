@@ -1,5 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 
+/**
+ * Marks a subtree the pull gesture must never claim.
+ *
+ * Touch events bubble, so a listener on the scroll container also sees drags
+ * that started in any descendant — including a popover that merely *renders*
+ * inside the list but scrolls independently of it. Without this, scrolling the
+ * process picker rubber-banded the sender list behind it and kicked off a
+ * discovery refresh.
+ *
+ * Exported so the marker and this check cannot drift apart.
+ */
+export const PULL_REFRESH_IGNORE_ATTR = 'data-pull-refresh-ignore';
+
+/** True when the touch landed inside a subtree marked with the ignore attribute. */
+function startedInIgnoredRegion(target: EventTarget | null): boolean {
+  // Touch targets can be text nodes, which have no `closest`.
+  const element =
+    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  return element?.closest(`[${PULL_REFRESH_IGNORE_ATTR}]`) != null;
+}
+
 type PullToRefreshOptions = {
   /** Runs when the user releases past the threshold. May be async. */
   onRefresh: () => void | Promise<void>;
@@ -74,7 +95,10 @@ export function usePullToRefresh<T extends HTMLElement>({
     };
 
     const onTouchStart = (event: TouchEvent) => {
-      if (refreshingRef.current || el.scrollTop > 0) {
+      // Leaving startY null is what disarms the gesture: onTouchMove and
+      // onTouchEnd both bail on it, so the nested region scrolls natively and
+      // never gets a preventDefault from us.
+      if (refreshingRef.current || el.scrollTop > 0 || startedInIgnoredRegion(event.target)) {
         startY.current = null;
         return;
       }

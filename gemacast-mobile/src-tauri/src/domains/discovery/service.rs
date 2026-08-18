@@ -38,6 +38,31 @@ pub fn get_network_identifier(network: &dyn NetworkInfoProvider) -> Result<Strin
     Ok(format!("{}_{}_{}", iface.name, mac, ip))
 }
 
+/// Tethering state reported by the Android layer, third field of the transport
+/// string (`"<transports>|<adb>|<tether>"`).
+///
+/// Present because a tethering phone's *active* network is its upstream — often
+/// cellular — so `NetworkCapabilities` reports neither WIFI nor ETHERNET, and a
+/// Wi-Fi hotspot is otherwise indistinguishable from a USB cable. Classified in
+/// Kotlin by `TetherClassifier` (a pure function with JVM tests) because the
+/// Android APIs that would answer directly are all `@SystemApi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TetherState {
+    Hotspot,
+    UsbTether,
+    None,
+}
+
+/// Parse the tether field out of a transport string. Absent field → `None`, so
+/// an older Kotlin layer that does not send it still behaves as before.
+pub fn parse_tether_state(transport_str: &str) -> TetherState {
+    match transport_str.split('|').nth(2).unwrap_or("") {
+        "HOTSPOT" => TetherState::Hotspot,
+        "USB_TETHER" => TetherState::UsbTether,
+        _ => TetherState::None,
+    }
+}
+
 /// Determine which connection modes are available.
 ///
 /// Checks the platform transport type (Android JNI) and enriches
@@ -67,6 +92,15 @@ pub fn get_connection_status(
             } else if transport == "ETHERNET" {
                 modes.usb = true;
             }
+        }
+
+        // A hotspot is an IP-routable radio link, i.e. Wi-Fi mode. Without this
+        // the Wi-Fi button stayed disabled and USB was the only option, which
+        // forced the cable jitter profile onto a radio link.
+        match parse_tether_state(&transport_str) {
+            TetherState::Hotspot => modes.wifi = true,
+            TetherState::UsbTether => modes.usb = true,
+            TetherState::None => {}
         }
     }
 
@@ -150,6 +184,26 @@ pub fn detect_phone_link(
 
     // 3. WIFI mode → Only look for WiFi transports from Android JNI
     if mode == "wifi" && !transport_str.is_empty() {
+        // A hotspot answers before the STA frequency is read, because those two
+        // radios are not the same link. In Wi-Fi+hotspot concurrent mode
+        // `WifiInfo.getFrequency()` reports the *upstream* channel this phone is
+        // a client of, which says nothing about the AP the PC is attached to.
+        //
+        // We report `WifiUnknown` rather than assuming a band, and that is what
+        // makes the band knowable at all: the PC *is* a client of this AP, so it
+        // measures the real channel (`netsh wlan show interfaces` and friends)
+        // and `LinkPair::effective_link()` resolves the pair in the PC's favour —
+        // its rule 3 returns `Wifi5Ghz` when the other side is `WifiUnknown`.
+        // Asserting `Wifi2_4Ghz` here would instead hit rule 2 and let a guess
+        // override that measurement, costing latency on a clean 5 GHz hotspot.
+        if parse_tether_state(&transport_str) == TetherState::Hotspot {
+            tracing::info!(
+                link = ?NetworkLink::WifiUnknown,
+                "Phone link detected (Wi-Fi hotspot; band is measured by the PC side)"
+            );
+            return NetworkLink::WifiUnknown;
+        }
+
         let parts: Vec<&str> = transport_str.split('|').collect();
         let network_type = parts.first().unwrap_or(&"");
 
@@ -332,6 +386,100 @@ mod tests {
         let modes = get_connection_status(&network, &platform).unwrap();
         assert!(modes.wifi, "WIFI:5180 should still enable wifi mode");
         assert!(!modes.adb);
+    }
+
+    // ---------------------------------------------------------------
+    // Hotspot vs USB tether
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn parse_tether_state_reads_the_third_field() {
+        assert_eq!(
+            parse_tether_state("NONE|ADB_OFF|HOTSPOT"),
+            TetherState::Hotspot
+        );
+        assert_eq!(
+            parse_tether_state("WIFI:5180|ADB_ON|USB_TETHER"),
+            TetherState::UsbTether
+        );
+        assert_eq!(parse_tether_state("WIFI|ADB_ON"), TetherState::None);
+        assert_eq!(parse_tether_state(""), TetherState::None);
+    }
+
+    #[test]
+    fn a_hotspot_enables_wifi_mode_rather_than_usb() {
+        // The reported bug. A tethering phone's active network is its cellular
+        // upstream, so neither WIFI nor ETHERNET is reported and `wifi` used to
+        // stay false — leaving USB as the only selectable mode for a radio link.
+        let network = MockNetworkInfoProvider::new();
+        let platform = MockPlatformService::new().with_transport_type("NONE|ADB_OFF|HOTSPOT");
+
+        let modes = get_connection_status(&network, &platform).unwrap();
+        assert!(modes.wifi, "A Wi-Fi hotspot must enable Wi-Fi mode");
+        assert!(!modes.usb, "A Wi-Fi hotspot is not a cable");
+    }
+
+    #[test]
+    fn a_usb_tether_still_enables_usb_mode() {
+        let network = MockNetworkInfoProvider::new();
+        let platform = MockPlatformService::new().with_transport_type("NONE|ADB_OFF|USB_TETHER");
+
+        let modes = get_connection_status(&network, &platform).unwrap();
+        assert!(modes.usb, "A USB tether must enable USB mode");
+    }
+
+    #[test]
+    fn detect_phone_link_reports_unknown_band_for_a_hotspot_so_the_pc_measurement_wins() {
+        // In Wi-Fi+hotspot concurrent mode the STA frequency describes the
+        // *upstream* link, not the AP the PC is attached to. Claiming a band here
+        // would beat the PC's real channel measurement in `effective_link`.
+        let network = MockNetworkInfoProvider::new();
+        let platform = MockPlatformService::new().with_transport_type("WIFI:5180|ADB_OFF|HOTSPOT");
+
+        let link = detect_phone_link(&network, &platform, "wifi");
+        assert_eq!(
+            link,
+            NetworkLink::WifiUnknown,
+            "A hotspot must not assert the upstream STA band as its own"
+        );
+    }
+
+    #[test]
+    fn detect_phone_link_still_reads_the_band_without_a_hotspot() {
+        // The guard must be scoped to hotspots only: an ordinary Wi-Fi client
+        // still gets its band from the JNI frequency.
+        let network = MockNetworkInfoProvider::new();
+        let platform = MockPlatformService::new().with_transport_type("WIFI:5180|ADB_OFF");
+
+        let link = detect_phone_link(&network, &platform, "wifi");
+        assert_eq!(link, NetworkLink::Wifi5Ghz);
+    }
+
+    #[test]
+    fn a_hotspot_pair_resolves_to_the_band_the_pc_measured() {
+        // End to end over the two crates: phone cannot know the band, PC can,
+        // and the pair must land on the PC's measurement rather than a fallback.
+        use gemacast_core::domain::types::LinkPair;
+
+        let pair_5 = LinkPair {
+            phone: NetworkLink::WifiUnknown,
+            pc: NetworkLink::Wifi5Ghz,
+        };
+        assert_eq!(pair_5.effective_link(), NetworkLink::Wifi5Ghz);
+
+        let pair_24 = LinkPair {
+            phone: NetworkLink::WifiUnknown,
+            pc: NetworkLink::Wifi2_4Ghz,
+        };
+        assert_eq!(pair_24.effective_link(), NetworkLink::Wifi2_4Ghz);
+
+        // Neither side could measure: falls back to the conservative Wi-Fi
+        // profile, never to the 100 ms-capped cable profile.
+        let pair_unknown = LinkPair {
+            phone: NetworkLink::WifiUnknown,
+            pc: NetworkLink::WifiUnknown,
+        };
+        assert_eq!(pair_unknown.effective_link(), NetworkLink::WifiUnknown);
     }
 
     // ---------------------------------------------------------------

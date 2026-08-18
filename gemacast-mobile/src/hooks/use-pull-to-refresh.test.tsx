@@ -53,6 +53,27 @@ afterEach(() => {
   cleanup();
 });
 
+/**
+ * Mirrors the real tree: an overlay that renders *inside* the scroll container
+ * but scrolls independently, marked so the pull gesture ignores it.
+ */
+function NestedHarness({ onRefresh }: HarnessProps) {
+  const { ref, pull, refreshing } = usePullToRefresh<HTMLDivElement>({
+    onRefresh,
+    threshold: 64,
+    minSpinMs: 0,
+  });
+  return (
+    <div ref={ref} data-testid="scroller">
+      <div data-pull-refresh-ignore="" data-testid="overlay">
+        <span data-testid="overlay-child">a process row</span>
+      </div>
+      <span data-testid="pull">{pull}</span>
+      <span data-testid="refreshing">{String(refreshing)}</span>
+    </div>
+  );
+}
+
 describe('usePullToRefresh', () => {
   it('triggers onRefresh when released past the threshold', async () => {
     render(<Harness onRefresh={onRefresh} />);
@@ -105,5 +126,35 @@ describe('usePullToRefresh', () => {
 
     await act(async () => dispatchTouch(el, 'touchend', null));
     expect(refreshCount).toBe(0);
+  });
+
+  describe('nested scrollable regions', () => {
+    it('ignores a downward drag that starts inside a marked overlay', async () => {
+      render(<NestedHarness onRefresh={onRefresh} />);
+      const child = screen.getByTestId('overlay-child');
+
+      // Same gesture that pulls 96px on the bare container. Events bubble to the
+      // scroller's listeners either way — the marker is what disarms it.
+      await act(async () => dispatchTouch(child, 'touchstart', 100));
+      await act(async () => dispatchTouch(child, 'touchmove', 300));
+      expect(pullValue()).toBe(0);
+
+      await act(async () => dispatchTouch(child, 'touchend', null));
+      expect(refreshCount).toBe(0);
+    });
+
+    it('still pulls when the drag starts outside the overlay', async () => {
+      render(<NestedHarness onRefresh={onRefresh} />);
+      const el = scroller();
+
+      // Proves the guard is scoped to the marked subtree and did not disable the
+      // whole gesture — the failure mode a `closest` typo would produce.
+      await act(async () => dispatchTouch(el, 'touchstart', 100));
+      await act(async () => dispatchTouch(el, 'touchmove', 300));
+      expect(pullValue()).toBe(96);
+
+      await act(async () => dispatchTouch(el, 'touchend', null));
+      expect(refreshCount).toBe(1);
+    });
   });
 });

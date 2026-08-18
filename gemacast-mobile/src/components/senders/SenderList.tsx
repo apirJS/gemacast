@@ -76,7 +76,7 @@ export function SenderList() {
 
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar pr-2"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain hide-scrollbar"
       >
         <div
           style={{

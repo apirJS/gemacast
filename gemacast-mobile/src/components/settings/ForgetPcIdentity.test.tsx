@@ -7,6 +7,7 @@ import {
   setupInvokeMock,
 } from '../../__tests__/setup';
 import { Status } from '../../core/types';
+import { loadPcNames, rememberPcName } from '../../core/persistence';
 import { useAppStore } from '../../stores/app-store';
 import { ForgetPcIdentity } from './ForgetPcIdentity';
 
@@ -138,5 +139,77 @@ describe('ForgetPcIdentity', () => {
       }),
     );
     expect(screen.getByLabelText('Forget Laptop')).toBeTruthy();
+  });
+
+  describe('name resolution when the PC is not live', () => {
+    const PC_ID = 'PC_194bf7dbba0d04b999197dc6a6a9433fe22599b9417590b490c57b9845c603e3';
+
+    // The reported bug, both halves. Wi-Fi off empties discoveredSenders and
+    // nulls connectedSender/lastConnectedSender; switching to ADB and back
+    // empties discovery the same way. With no live sender the list used to fall
+    // back to the raw PC_<hex> id.
+    it('shows the remembered name with no live sender at all', async () => {
+      rememberPcName(PC_ID, 'DESKTOP-KJCRNVV');
+      setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
+      useAppStore.getState().patch({
+        discoveredSenders: [],
+        connectedSender: null,
+        lastConnectedSender: null,
+      });
+      render(<ForgetPcIdentity />);
+
+      expect(await screen.findByText('DESKTOP-KJCRNVV')).toBeTruthy();
+      expect(screen.queryByText(PC_ID)).toBeNull();
+    });
+
+    it('still falls back to the id when no name was ever recorded', async () => {
+      setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
+      render(<ForgetPcIdentity />);
+
+      expect(await screen.findByText(PC_ID)).toBeTruthy();
+    });
+
+    it('prefers a live sender name over a stale cached one', async () => {
+      rememberPcName(PC_ID, 'OLD-NAME');
+      setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
+      useAppStore
+        .getState()
+        .setDiscoveredSenders([
+          makeDiscoveredSender({ deviceId: PC_ID, deviceName: 'RENAMED-PC' }),
+        ]);
+      render(<ForgetPcIdentity />);
+
+      expect(await screen.findByText('RENAMED-PC')).toBeTruthy();
+      expect(screen.queryByText('OLD-NAME')).toBeNull();
+    });
+
+    it('drops the cached name when the PC is forgotten', async () => {
+      rememberPcName(PC_ID, 'DESKTOP-KJCRNVV');
+      setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
+      render(<ForgetPcIdentity />);
+
+      await screen.findByLabelText('Forget DESKTOP-KJCRNVV');
+      fireEvent.click(screen.getByLabelText('Forget DESKTOP-KJCRNVV'));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget', hidden: true }));
+
+      await waitFor(() => expect(loadPcNames()[PC_ID]).toBeUndefined());
+    });
+
+    it('records the name from a discovery packet, so it survives losing the link', async () => {
+      // Exactly the Wi-Fi-off sequence: discovered while up, then everything
+      // live is cleared, and the name has to come back from the cache.
+      useAppStore
+        .getState()
+        .updateDiscoveredSender(
+          makeDiscoveredSender({ deviceId: PC_ID, deviceName: 'DESKTOP-KJCRNVV' }),
+        );
+      expect(loadPcNames()[PC_ID]).toBe('DESKTOP-KJCRNVV');
+
+      setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
+      useAppStore.getState().patch({ discoveredSenders: [], lastConnectedSender: null });
+      render(<ForgetPcIdentity />);
+
+      expect(await screen.findByText('DESKTOP-KJCRNVV')).toBeTruthy();
+    });
   });
 });

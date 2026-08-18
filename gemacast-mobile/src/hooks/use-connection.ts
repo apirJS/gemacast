@@ -3,7 +3,7 @@ import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
 import { GemaCastError } from '../core/error';
 import { getPresetConfig } from '../core/presets';
-import { saveLastSender } from '../core/persistence';
+import { rememberPcName, saveLastSender } from '../core/persistence';
 import { Status } from '../core/types';
 import type { AudioSource, DiscoveredSender, Result } from '../core/types';
 import { ok, err } from '../core/types';
@@ -107,6 +107,10 @@ export async function connectToSender(
       .catch((e) => console.warn('WebSocket setup failed (non-fatal):', e));
 
     saveLastSender(sender);
+    // A completed connect is what puts this PC in the native trust store, so it
+    // is also where its name must be cached for the Paired PCs list. Covers the
+    // paths discovery never sees, e.g. connecting by address.
+    rememberPcName(sender.deviceId, sender.deviceName);
 
     store.getState().dismissError();
     store.getState().patch({

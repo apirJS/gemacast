@@ -13,7 +13,7 @@ import type {
 } from '../core/types';
 import { Status, ConnectionMode } from '../core/types';
 import { GemaCastError } from '../core/error';
-import { loadLastSender, loadSettings, saveSettings } from '../core/persistence';
+import { loadLastSender, loadSettings, rememberPcName, saveSettings } from '../core/persistence';
 import { useToastStore } from './toast-store';
 
 const EMPTY_METRICS: Metrics = { bufferMs: null, networkRttMs: null, jitterMs: null };
@@ -124,6 +124,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return null;
       }
     } else {
+      // Cache the name while we have it: this packet is the only place a PC's
+      // display name enters the app, and it outlives the discovery list.
+      rememberPcName(sender.deviceId, sender.deviceName);
+
       if (index >= 0) {
         list[index] = sender;
       } else {

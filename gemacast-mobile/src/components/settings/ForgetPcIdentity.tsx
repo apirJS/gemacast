@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { tauriBridge } from '../../core/tauri-bridge';
+import { forgetPcName, loadPcNames } from '../../core/persistence';
 import { disconnect } from '../../hooks/use-connection';
 import { useAppStore } from '../../stores/app-store';
 import { useToastStore } from '../../stores/toast-store';
@@ -12,6 +13,7 @@ export function ForgetPcIdentity() {
   const lastConnectedSender = useAppStore((state) => state.lastConnectedSender);
   const discoveredSenders = useAppStore((state) => state.discoveredSenders);
   const [pairedPcIds, setPairedPcIds] = useState<string[]>([]);
+  const [rememberedNames, setRememberedNames] = useState<Record<string, string>>({});
   const [selectedPc, setSelectedPc] = useState<{ deviceId: string; deviceName: string } | null>(
     null,
   );
@@ -24,7 +26,12 @@ export function ForgetPcIdentity() {
     void tauriBridge
       .getPairedPcIds()
       .then((ids) => {
-        if (active) setPairedPcIds([...new Set(ids)]);
+        if (active) {
+          setPairedPcIds([...new Set(ids)]);
+          // Read the cache alongside the trust store rather than during render,
+          // so the two always describe the same moment.
+          setRememberedNames(loadPcNames());
+        }
       })
       .catch((error) => {
         if (active) {
@@ -37,13 +44,16 @@ export function ForgetPcIdentity() {
   }, [connectedSenderId]);
 
   const senders = (() => {
-    const byId = new Map<string, { deviceId: string; deviceName: string }>();
+    // Cached names first, then live state on top: a PC that is currently
+    // discovered or connected has the freshest name, but the cache is the only
+    // source that survives Wi-Fi dropping or a switch through ADB.
+    const byId = new Map<string, string>(Object.entries(rememberedNames));
     for (const sender of [...discoveredSenders, lastConnectedSender, connectedSender]) {
-      if (sender) byId.set(sender.deviceId, sender);
+      if (sender?.deviceName) byId.set(sender.deviceId, sender.deviceName);
     }
     return pairedPcIds.map((deviceId) => ({
       deviceId,
-      deviceName: byId.get(deviceId)?.deviceName ?? deviceId,
+      deviceName: byId.get(deviceId) ?? deviceId,
     }));
   })();
 
@@ -57,6 +67,7 @@ export function ForgetPcIdentity() {
         if (!result.ok) throw result.error;
       }
       await tauriBridge.forgetPcIdentity(pc.deviceId);
+      forgetPcName(pc.deviceId);
       setPairedPcIds((ids) => ids.filter((id) => id !== pc.deviceId));
       useToastStore.getState().show('success', `Forgot ${pc.deviceName}`);
     } catch (error) {

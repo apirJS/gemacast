@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Monitor, Volume2, Settings, ChevronDown } from 'lucide-react';
 import type { AudioSource, ProcessInfo, DiscoveredSender } from '../../core/types';
 import { useConnection } from '../../hooks/use-connection';
+import { PULL_REFRESH_IGNORE_ATTR } from '../../hooks/use-pull-to-refresh';
 
 type ProcessSelectProps = {
   audioSources: AudioSource[];
@@ -88,7 +89,7 @@ export function ProcessSelect({
         type="button"
         className={`
           flex min-w-0 flex-1 items-center gap-1.5 rounded-[calc(var(--radius-default)-0.2rem)]
-          border border-border bg-secondary px-2 py-1 text-[0.7rem] font-medium text-secondary-foreground
+          border border-border bg-background px-2 py-1 text-[0.7rem] font-medium text-foreground
           transition-colors hover:border-primary focus-visible:border-primary focus-visible:shadow-[0_0_0_1px_var(--color-primary)] focus-visible:outline-none
         `}
         onClick={() => (open ? startClosing() : setOpen(true))}
@@ -103,7 +104,10 @@ export function ProcessSelect({
 
       {(open || closing) && (
         <div
-          className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}
+          // Scrolls its own process list; the sender list's pull-to-refresh must
+          // not claim drags that start in here.
+          {...{ [PULL_REFRESH_IGNORE_ATTR]: '' }}
+          className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-popover shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}
         >
           <div className="flex items-stretch border-b border-border">
             <input

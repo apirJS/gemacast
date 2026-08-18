@@ -100,4 +100,15 @@ describe('SenderList', () => {
     render(<SenderList />);
     expect(screen.getByRole('button', { name: /Resume/i })).toBeTruthy();
   });
+
+  it('scrolls without a visible scrollbar', () => {
+    useAppStore.getState().setStatus(Status.Listening);
+    render(<SenderList />);
+    const scroller = screen.getByLabelText('Discovered senders').closest('.overflow-y-auto');
+    // Scrolling must survive hiding the bar — `hide-scrollbar` only suppresses
+    // the chrome, so the container has to keep `overflow-y-auto`.
+    expect(scroller).toBeTruthy();
+    expect(scroller?.className).toContain('hide-scrollbar');
+    expect(scroller?.className).not.toContain('custom-scrollbar');
+  });
 });

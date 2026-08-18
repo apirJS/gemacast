@@ -42,6 +42,24 @@ export enum Status {
   Reconnecting = 'reconnecting',
 }
 
+/**
+ * True while a session exists — i.e. the phone is attached to a PC, whether the
+ * stream is currently flowing, held, or being re-established.
+ *
+ * `Connecting` is excluded on purpose: nothing is established yet, so a UI that
+ * commits to "we have a session" would flicker on a failed attempt. Live in one
+ * place because more than one surface keys off it, and the set drifting apart
+ * would show two contradictory states on the same screen.
+ */
+export function hasLiveSession(status: Status): boolean {
+  return (
+    status === Status.Connected ||
+    status === Status.Playing ||
+    status === Status.Paused ||
+    status === Status.Reconnecting
+  );
+}
+
 export type ConnectionHealth = 'ok' | 'degraded' | 'lost';
 
 /**

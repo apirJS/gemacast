@@ -1,20 +1,29 @@
 import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useManualConnect } from '../../hooks/use-manual-connect';
+import { useAppStore } from '../../stores/app-store';
+import { hasLiveSession } from '../../core/types';
 
 /**
  * Collapsible form for connecting to a sender by IP address.
  * Collapsed by default to keep the main screen clean when discovery works.
+ *
+ * Hidden outright once a session is live: it is a way to *reach* a PC that
+ * discovery missed, so with a stream already running it is dead weight above the
+ * card that matters. Disconnecting brings it back.
  */
 export function ManualConnect() {
   const { ip, setIp, isLoading, isDisabled, handleConnect } = useManualConnect();
   const [expanded, setExpanded] = useState(false);
+  const status = useAppStore((s) => s.status);
+
+  if (hasLiveSession(status)) return null;
 
   return (
-    <div className="relative z-0 mb-1 rounded-default border border-border bg-card shadow-sm overflow-hidden">
+    <div className="surface-card relative z-0 mb-1 rounded-lg overflow-hidden">
       <button
         type="button"
-        className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-card-foreground transition-colors hover:bg-secondary/50"
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-card-foreground transition-colors hover:bg-accent/40"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         aria-controls="manual-connect-form"
@@ -54,7 +63,7 @@ export function ManualConnect() {
             />
             <button
               type="button"
-              className={`relative inline-flex items-center justify-center whitespace-nowrap rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background px-4 py-1.5 text-[0.75rem] font-semibold text-foreground transition-all duration-150 hover:bg-secondary disabled:pointer-events-none ${isDisabled && !isLoading ? 'opacity-50' : ''}`}
+              className={`relative inline-flex items-center justify-center whitespace-nowrap rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background px-4 py-1.5 text-[0.75rem] font-semibold text-foreground transition-all duration-150 hover:bg-accent disabled:pointer-events-none ${isDisabled && !isLoading ? 'opacity-50' : ''}`}
               onClick={handleConnect}
               disabled={isDisabled}
               tabIndex={expanded ? 0 : -1}
