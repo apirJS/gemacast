@@ -139,6 +139,20 @@ export type ProcessInfo = {
   hasAudioSession: boolean;
 };
 
+/**
+ * Whether the app may post the streaming notification.
+ *
+ * Mirrors `NotificationPermission` in the Rust port, which mirrors
+ * `NotificationPermissionState.kt`. A denial does not stop playback — the
+ * foreground service needs no permission — it removes the Pause and Disconnect
+ * buttons that exist outside the app.
+ *
+ * `denied` and `blocked` differ in what can be done about them: `denied` can
+ * still be asked again, `blocked` can only be undone in system settings.
+ * `notRequired` also covers "could not be read", so treat it as "say nothing".
+ */
+export type NotificationPermission = 'notRequired' | 'granted' | 'denied' | 'blocked';
+
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
@@ -163,4 +177,6 @@ export type AppState = {
   networkLinkPair: NetworkLinkPairInfo | null;
   /** Whether the device supports Oboe exclusive audio mode (probed at startup). */
   exclusiveSupported: boolean;
+  /** Whether the app may post the streaming notification (probed at startup). */
+  notificationPermission: NotificationPermission;
 };

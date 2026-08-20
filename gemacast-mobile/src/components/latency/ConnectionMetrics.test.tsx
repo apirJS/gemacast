@@ -76,4 +76,36 @@ describe('ConnectionMetrics', () => {
     expect(screen.getByText('n/a')).toBeTruthy();
     expect(screen.queryByText('--')).toBeNull();
   });
+
+  // The help button is passed in rather than built here, so the row keeps
+  // rendering standalone and the dialog stays owned by one component.
+  it('renders no help affordance unless the caller supplies one', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    render(<ConnectionMetrics />);
+    expect(screen.queryByLabelText('Help')).toBeNull();
+  });
+
+  it('asks for help on the metrics key, not some other entry', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    // Echoing the requested key back as the label is what makes a wrong key
+    // fail here: it would otherwise open an empty dialog and assert nothing.
+    render(
+      <ConnectionMetrics renderHelpButton={(key) => <button aria-label="Help">{key}</button>} />,
+    );
+    expect(screen.getByLabelText('Help').textContent).toBe('connection-metrics');
+  });
+
+  // The help button occupies a column of its own, so without a counterweight it
+  // drags the three metrics off the card's centre line.
+  it('counterweights the help button so the metrics stay centred', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+
+    const { container: bare } = render(<ConnectionMetrics />);
+    // No button, no spacer — the row must lay out exactly as it always did.
+    expect(bare.querySelector('[aria-hidden="true"]')?.className).toBe('');
+
+    cleanup();
+    render(<ConnectionMetrics renderHelpButton={() => <button aria-label="Help">?</button>} />);
+    expect(screen.getByLabelText('Connection metrics').firstElementChild?.className).toBe('w-6');
+  });
 });

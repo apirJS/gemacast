@@ -25,7 +25,7 @@ export function AppShell() {
       >
         <DeviceInfo />
 
-        {/* Self-hiding: absent unless there is a live session to report on. */}
+        {/* Hidden unless there is a live session to report on. */}
         <ConnectionReadout />
 
         <ManualConnect />

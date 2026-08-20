@@ -8,6 +8,7 @@ import type {
   DiscoveredSender,
   Metrics,
   NetworkLinkPairInfo,
+  NotificationPermission,
   ProcessInfo,
   SenderCapabilities,
 } from '../core/types';
@@ -41,6 +42,9 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     processList: [],
     networkLinkPair: null,
     exclusiveSupported: true,
+    // Optimistic, like `exclusiveSupported`: assume nothing is wrong until the
+    // startup probe answers, so the settings notice cannot flash on every launch.
+    notificationPermission: 'notRequired',
   };
 }
 
@@ -78,6 +82,7 @@ type AppActions = {
   setProcessList: (list: ProcessInfo[]) => void;
   setNetworkLinkPair: (pair: NetworkLinkPairInfo | null) => void;
   setExclusiveSupported: (supported: boolean) => void;
+  setNotificationPermission: (permission: NotificationPermission) => void;
 
   patch: (partial: Partial<AppState>) => void;
 };
@@ -224,6 +229,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setProcessList: (list) => set({ processList: list }),
   setNetworkLinkPair: (pair) => set({ networkLinkPair: pair }),
   setExclusiveSupported: (supported) => set({ exclusiveSupported: supported }),
+  setNotificationPermission: (permission) => set({ notificationPermission: permission }),
 
   patch: (partial) => set(partial),
 }));

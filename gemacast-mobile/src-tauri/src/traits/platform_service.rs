@@ -7,6 +7,41 @@ pub enum PlaybackState {
     Stopped,
 }
 
+/// Whether the app may post the streaming notification.
+///
+/// Denial does not stop playback — `startForeground` needs no permission — but it
+/// removes the only Pause and Disconnect controls that exist outside the app, so
+/// the UI surfaces it rather than failing silently.
+///
+/// Mirrors `NotificationPermissionState` in `NotificationPermissionPolicy.kt`,
+/// which is where the reasoning behind the [`Denied`](Self::Denied) /
+/// [`Blocked`](Self::Blocked) split lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationPermission {
+    /// Below Android 13, or not Android at all: nothing to request.
+    NotRequired,
+    Granted,
+    /// Refused, but the system will still show its dialog if asked again.
+    Denied,
+    /// Refused for good. Only [`PlatformService::open_notification_settings`]
+    /// can lead anywhere from here.
+    Blocked,
+}
+
+impl NotificationPermission {
+    /// Parse the wire value produced by `NotificationPermissionPolicy.wireValue`.
+    pub fn from_wire(value: &str) -> Result<Self, String> {
+        match value {
+            "NOT_REQUIRED" => Ok(Self::NotRequired),
+            "GRANTED" => Ok(Self::Granted),
+            "DENIED" => Ok(Self::Denied),
+            "BLOCKED" => Ok(Self::Blocked),
+            other => Err(format!("unknown notification permission state: {other}")),
+        }
+    }
+}
+
 /// Platform-specific operations (Android JNI, foreground service, file I/O).
 ///
 /// **Production**: [`crate::adapters::NativePlatformService`]
@@ -51,4 +86,13 @@ pub trait PlatformService: Send + Sync {
 
     /// Set or clear the streaming-active flag file in the app cache directory.
     fn set_streaming_flag(&self, active: bool);
+
+    /// Report whether the app may currently post the streaming notification.
+    fn notification_permission(&self) -> Result<NotificationPermission, String>;
+
+    /// Open this app's notification settings.
+    ///
+    /// The only recovery from [`NotificationPermission::Blocked`]: re-requesting
+    /// the permission at that point shows the user nothing at all.
+    fn open_notification_settings(&self) -> Result<(), String>;
 }

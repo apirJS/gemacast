@@ -106,6 +106,8 @@ pub fn run() {
             domains::discovery::commands::get_network_state,
             domains::discovery::commands::forget_pc_identity,
             domains::discovery::commands::get_paired_pc_ids,
+            domains::discovery::commands::get_notification_permission,
+            domains::discovery::commands::open_notification_settings,
             domains::audio::commands::connect_to_sender,
             domains::audio::commands::disconnect_from_sender,
             domains::audio::commands::start_audio_playback,
@@ -130,12 +132,29 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                // `handle.exit(0)` at the end re-enters this closure
+                static TEARDOWN_STARTED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if TEARDOWN_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+
                 api.prevent_exit();
                 let handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     use tauri::Manager;
                     if let Some(state) = handle.try_state::<state::AppState>() {
                         state.audio.session.stop_session().await;
+                    }
+                    // Drop the task record before the process dies, so the next
+                    // launch is unambiguously a cold start. Also fires
+                    // `GemaCastService.onTaskRemoved`, where the service's own
+                    // teardown lives. Best effort — the exit below is what matters.
+                    #[cfg(target_os = "android")]
+                    if let Err(error) =
+                        domains::discovery::native::call_native_finish_and_remove_task(&handle)
+                    {
+                        tracing::warn!("could not remove the app task on exit: {error}");
                     }
                     handle.exit(0);
                 });

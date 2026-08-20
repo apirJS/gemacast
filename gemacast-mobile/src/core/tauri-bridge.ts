@@ -5,6 +5,7 @@ import type {
   ConnectionMode,
   JitterConfig,
   NetworkLinkPairInfo,
+  NotificationPermission,
   ProcessInfo,
   SenderCapabilities,
 } from './types';
@@ -137,4 +138,8 @@ export const tauriBridge = {
   getNetworkLinkPair: () => invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),
 
   checkExclusiveSupport: () => invoke<boolean>('check_exclusive_support'),
+
+  getNotificationPermission: () => invoke<NotificationPermission>('get_notification_permission'),
+
+  openNotificationSettings: () => invoke('open_notification_settings'),
 };

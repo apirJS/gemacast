@@ -1,4 +1,5 @@
-#[cfg(target_os = "android")]
+#![cfg(target_os = "android")]
+
 /// Calls the Android Activity's `getTransportType()` method via JNI.
 ///
 /// Returns a pipe-delimited string like `"WIFI|ADB_ON"` indicating the
@@ -15,7 +16,6 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
 
     window
         .with_webview(move |webview| {
-            #[cfg(target_os = "android")]
             {
                 let transport_info_tx = transport_info_tx.clone();
                 webview.jni_handle().exec(move |env, context, _webview| {
@@ -53,7 +53,6 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
         .map_err(|e| format!("Failed to receive JNI result: {}", e))?
 }
 
-#[cfg(target_os = "android")]
 fn call_native_string_method(
     app: &tauri::AppHandle,
     method: &'static str,
@@ -106,12 +105,10 @@ fn call_native_string_method(
         .map_err(|error| format!("Failed to receive JNI result: {error}"))?
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_device_public_key(app: &tauri::AppHandle) -> Result<String, String> {
     call_native_string_method(app, "getDeviceAuthPublicKey", None)
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_sign_device_auth(
     app: &tauri::AppHandle,
     transcript_base64: &str,
@@ -123,7 +120,6 @@ pub fn call_native_sign_device_auth(
     )
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_trusted_pc_fingerprint(
     app: &tauri::AppHandle,
     pc_id: &str,
@@ -133,7 +129,6 @@ pub fn call_native_trusted_pc_fingerprint(
     Ok((!fingerprint.is_empty()).then_some(fingerprint))
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_paired_pc_ids(
     app: &tauri::AppHandle,
 ) -> Result<Vec<gemacast_core::domain::types::DeviceId>, String> {
@@ -141,7 +136,6 @@ pub fn call_native_paired_pc_ids(
     serde_json::from_str(&ids).map_err(|error| format!("invalid paired PC ID list: {error}"))
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_confirm_pc_identity(
     app: &tauri::AppHandle,
     pc_id: &str,
@@ -222,7 +216,6 @@ pub fn call_native_confirm_pc_identity(
     }
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_remember_pc_identity(
     app: &tauri::AppHandle,
     pc_id: &str,
@@ -243,7 +236,6 @@ pub fn call_native_remember_pc_identity(
     }
 }
 
-#[cfg(target_os = "android")]
 pub fn call_native_forget_pc_identity(app: &tauri::AppHandle, pc_id: &str) -> Result<(), String> {
     let result = call_native_string_method(app, "forgetPcIdentity", Some(pc_id.to_string()))?;
     if result == "OK" {
@@ -253,7 +245,57 @@ pub fn call_native_forget_pc_identity(app: &tauri::AppHandle, pc_id: &str) -> Re
     }
 }
 
-#[cfg(target_os = "android")]
+pub fn call_native_notification_permission_state(app: &tauri::AppHandle) -> Result<String, String> {
+    call_native_string_method(app, "notificationPermissionState", None)
+}
+
+pub fn call_native_open_notification_settings(app: &tauri::AppHandle) -> Result<(), String> {
+    let result = call_native_string_method(app, "openNotificationSettings", None)?;
+    if result == "OK" {
+        Ok(())
+    } else {
+        Err(format!("unexpected notification settings result: {result}"))
+    }
+}
+
+/// Ask Android to finish the activity and drop its task record, on the way out.
+///
+/// Bounded wait rather than [`call_native_string_method`]'s blocking `recv()`: this
+/// runs on the exit path, and a webview or main thread that never answers must not
+/// be able to keep the process alive. The Kotlin side does not kill the process —
+/// the caller's `AppHandle::exit` does — so timing out here only costs the task
+/// record cleanup, not the exit itself.
+pub fn call_native_finish_and_remove_task(app: &tauri::AppHandle) -> Result<(), String> {
+    use std::sync::mpsc;
+    use tauri::Manager;
+
+    const EXIT_JNI_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+    let (result_tx, result_rx) = mpsc::channel();
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Failed to find main webview window".to_string())?;
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, context, _webview| {
+                let result = env
+                    .call_method(
+                        context,
+                        "finishAndRemoveAppTask",
+                        "()Ljava/lang/String;",
+                        &[],
+                    )
+                    .map_err(|error| format!("Failed to call finishAndRemoveAppTask: {error}"))
+                    .map(|_| ());
+                let _ = result_tx.send(result);
+            });
+        })
+        .map_err(|error| format!("WebView JNI execution failed: {error}"))?;
+    result_rx
+        .recv_timeout(EXIT_JNI_TIMEOUT)
+        .map_err(|error| format!("Failed to receive JNI result: {error}"))?
+}
+
 /// Calls the Android Activity's `syncServiceState()` method via JNI.
 pub fn call_native_sync_service(
     app: &tauri::AppHandle,
@@ -270,7 +312,6 @@ pub fn call_native_sync_service(
 
     window
         .with_webview(move |webview| {
-            #[cfg(target_os = "android")]
             {
                 webview.jni_handle().exec(move |env, context, _webview| {
                     let action_jstr = env.new_string(&action_str).unwrap();

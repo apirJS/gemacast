@@ -7,6 +7,7 @@ use gemacast_core::domain::types::{ConnectionMode, DeviceId};
 use tauri::State;
 
 use crate::state::AppState;
+use crate::traits::NotificationPermission;
 
 use super::listener::spawn_discovery_listener;
 
@@ -98,4 +99,14 @@ pub fn forget_pc_identity(pc_id: DeviceId, state: State<'_, AppState>) -> Result
 #[tauri::command]
 pub fn get_paired_pc_ids(state: State<'_, AppState>) -> Result<Vec<DeviceId>, String> {
     super::service::paired_pc_ids(state.platform.as_ref())
+}
+
+#[tauri::command]
+pub fn get_notification_permission(state: State<'_, AppState>) -> NotificationPermission {
+    super::service::notification_permission(state.platform.as_ref())
+}
+
+#[tauri::command]
+pub fn open_notification_settings(state: State<'_, AppState>) -> Result<(), String> {
+    super::service::open_notification_settings(state.platform.as_ref())
 }
