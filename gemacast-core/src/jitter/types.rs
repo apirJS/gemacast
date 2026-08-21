@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::audio::MAX_OPUS_PACKET_SIZE;
 
 /// Maximum payload size for a single audio packet.
-/// Covers both Opus (typically <500 bytes) and raw uncompressed PCM (7680 bytes).
+/// Covers both Opus (typically <500 bytes) and raw uncompressed PCM (3840 bytes).
 pub const MAX_PACKET_PAYLOAD: usize = MAX_OPUS_PACKET_SIZE;
 
 /// A raw Opus packet received from the network, awaiting decode in the audio callback.

@@ -11,7 +11,7 @@ use crate::audio::{
 };
 use crate::domain::error::{AudioError, CodecDirection, GemaCastError, NetworkError};
 use crate::domain::types::{AudioBitrate, AudioSource, TargetId};
-use crate::ports::capture::{CaptureBackend, CaptureHandle};
+use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureHandle};
 
 #[derive(Debug)]
 pub enum StreamFailure {
@@ -83,9 +83,11 @@ impl AudioCaptureInstance {
 
         let failure_source = source.clone();
         let capture_failure_tx = failure_tx.clone();
+        let loop_source = source.clone();
         let join_handle = tokio::spawn(async move {
             if let Err(error) =
-                Self::run_capture_loop(capture, capture_shutdown_rx, pcm_tx_clone).await
+                Self::run_capture_loop(capture, capture_shutdown_rx, pcm_tx_clone, loop_source)
+                    .await
             {
                 let _ = capture_failure_tx.send(StreamFailure::Capture {
                     source: failure_source,
@@ -255,6 +257,7 @@ impl AudioCaptureInstance {
         mut capture: CaptureHandle<B>,
         mut capture_shutdown_rx: oneshot::Receiver<()>,
         pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
+        source: AudioSource,
     ) -> Result<(), GemaCastError> {
         use ringbuf::traits::*;
         let mut sample_buf = Vec::<f32>::with_capacity(OPUS_FRAME_SAMPLES * 2);
@@ -263,6 +266,16 @@ impl AudioCaptureInstance {
         // 22ms is slightly longer than the standard 20ms Opus frame duration.
         let mut silence_interval = tokio::time::interval(tokio::time::Duration::from_millis(22));
         silence_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        // The capture counters are reported from here and never from the capture
+        // callback: `snapshot()` allocates and `format!` is not something to run on a
+        // real-time audio thread, which is the whole reason the counters are atomics
+        // rather than log calls. A line is emitted only when a total actually moved,
+        // so a healthy stream stays quiet; the unconditional totals line at every
+        // exit path below is what proves the instrument was present at all.
+        let mut counter_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        counter_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_reported = capture.counters.snapshot();
 
         capture.backend.play()?;
 
@@ -292,6 +305,8 @@ impl AudioCaptureInstance {
                     let actually_read = capture.consumer.pop_slice(&mut sample_buf[prev_len..]);
                     sample_buf.truncate(prev_len + actually_read);
 
+                    note_ring_read_parity(actually_read, &source, &capture.counters);
+
                     while sample_buf.len() >= OPUS_FRAME_SAMPLES {
                         let frame = Arc::new(sample_buf[..OPUS_FRAME_SAMPLES].to_vec());
                         sample_buf.drain(..OPUS_FRAME_SAMPLES);
@@ -309,7 +324,19 @@ impl AudioCaptureInstance {
                         let _ = pcm_broadcast_tx.send(silent_frame);
                     }
                 },
+                _ = counter_interval.tick() => {
+                    let current = capture.counters.snapshot();
+                    if current != last_reported {
+                        tracing::info!(
+                            "[Capture] {:?} counters: {}",
+                            source,
+                            format_capture_counters(&current)
+                        );
+                        last_reported = current;
+                    }
+                },
                 Some(stream_error) = capture.stream_error_rx.recv() => {
+                    log_capture_counter_totals(&source, &capture.counters);
                     return Err(AudioError::StreamError(stream_error).into());
                 },
                 _ = &mut capture_shutdown_rx => {
@@ -320,8 +347,85 @@ impl AudioCaptureInstance {
             }
         }
 
+        log_capture_counter_totals(&source, &capture.counters);
         Ok(())
     }
+}
+
+/// Format a counter snapshot as one `key=value` line.
+///
+/// Allocates, so it belongs on the reporting path only — see the note in
+/// [`CaptureCounters`].
+fn format_capture_counters(snapshot: &[(&'static str, u64)]) -> String {
+    snapshot
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Check that a ring read carried whole stereo pairs, and record it if it did not.
+///
+/// This is the one seam where a broken [producer
+/// obligation 1](crate::ports::capture#producer-obligations) is still observable. The
+/// ring is a flat `f32` stream whose stereo pairing is implied by position, so an odd
+/// push shifts every later sample by one slot and swaps left and right for the rest of
+/// the session. Downstream there is nothing left to notice: the frame is still 960
+/// samples, the encoder still encodes it, and the phone still plays it.
+///
+/// **Deliberately not a `debug_assert!`,** though that is what the audit prescribed
+/// here. Two reasons, and the first is the decisive one:
+///
+/// 1. An odd read is a *platform observation*, not a local logic error. PipeWire can
+///    produce one today — `push_pw_audio_to_ringbuf` pushes `n_samples` verbatim, and
+///    nothing there enforces parity. A `debug_assert!` compiles out of release, which
+///    is the only build a field capture ever runs, so it would assert loudly in exactly
+///    the situation that cannot happen and stay silent in the one that does.
+/// 2. The assertions the audit named are tautologies at this site. `frame` is
+///    `sample_buf[..OPUS_FRAME_SAMPLES].to_vec()`, so `frame.len() ==
+///    OPUS_FRAME_SAMPLES` is guaranteed by the slicing expression, and 960 is even, so
+///    the parity assertion on it holds twice over. Neither can fail; both would read as
+///    coverage that does not exist.
+///
+/// The frame length handed to the encoder is checked instead where it is genuinely
+/// unproven — `encode_frame` returns [`AudioError::InvalidFrameLength`] for it, in
+/// release as well, and both call sites propagate that with `?`. A `debug_assert!`
+/// there would be strictly weaker than what is already in place.
+fn note_ring_read_parity(read: usize, source: &AudioSource, counters: &CaptureCounters) {
+    if read.is_multiple_of(2) {
+        return;
+    }
+
+    // `fetch_add` returns the previous value, so the first odd read on *this* stream
+    // gets the prose and the rest are counted. Keying off the counter rather than a
+    // `std::sync::Once` is what makes it per-stream: a `Once` is process-wide, so a
+    // second capture session in the same process would be silent.
+    let previously_seen = counters
+        .odd_ring_reads
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if previously_seen == 0 {
+        tracing::error!(
+            ?source,
+            read,
+            "[Capture] ring delivered an odd sample count; left and right are now \
+             swapped for the rest of this stream"
+        );
+    }
+}
+
+/// Emit the final counter totals for a capture stream, including when all are zero.
+///
+/// Unconditional on purpose. A run that logs nothing when nothing went wrong cannot
+/// be told apart from a run whose counters were never wired up, and that ambiguity
+/// has cost a session before: an earlier round had to infer which wire format a
+/// capture ran by reading the saturation behaviour of an unrelated heartbeat, because
+/// nothing recorded it directly.
+fn log_capture_counter_totals(source: &AudioSource, counters: &CaptureCounters) {
+    tracing::info!(
+        "[Capture] {:?} counter totals: {}",
+        source,
+        format_capture_counters(&counters.snapshot())
+    );
 }
 
 /// Per-target UDP encoder loop: receives raw PCM frames, encodes at the
@@ -778,7 +882,7 @@ impl<F: CaptureFactory> CapturePool<F> {
 mod tests {
     use super::*;
     use crate::domain::types::DeviceId;
-    use crate::ports::capture::CaptureBackend;
+    use crate::ports::capture::{CaptureBackend, CaptureCounters};
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
     use tokio::sync::Notify;
@@ -807,6 +911,7 @@ mod tests {
             consumer,
             notify: notify.clone(),
             stream_error_rx: err_rx,
+            counters: Arc::new(CaptureCounters::default()),
         };
 
         // 2. Create the AudioCaptureInstance
@@ -894,6 +999,7 @@ mod tests {
             consumer,
             notify: notify.clone(),
             stream_error_rx: err_rx,
+            counters: Arc::new(CaptureCounters::default()),
         };
 
         // 2. Create the AudioCaptureInstance
@@ -967,6 +1073,7 @@ mod tests {
             consumer,
             notify: notify.clone(),
             stream_error_rx: err_rx,
+            counters: Arc::new(CaptureCounters::default()),
         };
 
         let (failure_tx, _failure_rx) = mpsc::unbounded_channel();
@@ -1055,6 +1162,7 @@ mod tests {
                 consumer,
                 notify,
                 stream_error_rx: err_rx,
+                counters: Arc::new(CaptureCounters::default()),
             })
         }
 
@@ -1261,5 +1369,164 @@ mod tests {
 
         // Now it should teardown
         assert_eq!(pool.instances.len(), 0);
+    }
+
+    mod capture_counter_reporting {
+        use super::*;
+        use std::sync::atomic::Ordering;
+
+        #[test]
+        fn should_name_every_counter_in_the_reported_line() {
+            let counters = CaptureCounters::default();
+            let line = format_capture_counters(&counters.snapshot());
+
+            // A field capture is grepped by counter name, so every name has to be
+            // present even at zero — an absent key reads as "not instrumented".
+            for name in [
+                "dropped_samples",
+                "unaligned_prefix_bytes",
+                "truncated_samples",
+                "odd_ring_reads",
+                "corrupted_chunks",
+                "silent_buffers",
+                "unknown_format_buffers",
+                "dropped_stream_errors",
+            ] {
+                assert!(
+                    line.contains(&format!("{name}=0")),
+                    "counter `{name}` missing from `{line}`"
+                );
+            }
+        }
+
+        #[test]
+        fn should_change_the_snapshot_when_a_counter_moves() {
+            // The 1 Hz arm decides whether to log by comparing snapshots, so snapshot
+            // inequality is the change detector. If this ever held, a drop would be
+            // counted and still never reported.
+            let counters = CaptureCounters::default();
+            let before = counters.snapshot();
+            assert_eq!(before, counters.snapshot(), "a quiet stream must not log");
+
+            CaptureCounters::add(&counters.dropped_samples, 960);
+            let after = counters.snapshot();
+
+            assert_ne!(before, after, "a counted drop must produce a new line");
+            assert!(
+                format_capture_counters(&after).contains("dropped_samples=960"),
+                "the reported line must carry the new total"
+            );
+        }
+
+        #[tokio::test]
+        async fn should_hand_the_capture_loop_the_same_counters_the_backend_writes() {
+            // One `Arc`, two owners: the adapter's callback writes it and the loop
+            // reports it. A backend that constructed its own copy would count
+            // correctly and report zeros forever.
+            let ring_buffer = HeapRb::<f32>::new(48000 * 2);
+            let (_producer, consumer) = ring_buffer.split();
+            let notify = Arc::new(Notify::new());
+            let (_err_tx, err_rx) = mpsc::channel(1);
+            let counters = Arc::new(CaptureCounters::default());
+
+            let capture_handle = CaptureHandle {
+                backend: MockBackend,
+                consumer,
+                notify,
+                stream_error_rx: err_rx,
+                counters: counters.clone(),
+            };
+
+            CaptureCounters::add(&capture_handle.counters.corrupted_chunks, 3);
+
+            assert_eq!(
+                counters.corrupted_chunks.load(Ordering::Relaxed),
+                3,
+                "the handle must share the caller's counters, not clone the values"
+            );
+            assert!(!counters.all_clear());
+        }
+    }
+
+    /// The stereo-parity check at the ring pop.
+    ///
+    /// What makes these worth having is that the condition they detect is *silent by
+    /// construction* everywhere else: an odd ring read still produces 960-sample
+    /// frames, still encodes, and still plays. Only the sample count at this seam
+    /// carries the evidence, and only for the one read that broke it.
+    ///
+    /// Falsified by making the check inert (`if true || read.is_multiple_of(2) { return }`):
+    /// 3 of the 5 below fail — `should_count_a_read_that_ends_mid_stereo_pair`,
+    /// `should_count_every_odd_read_and_not_only_the_first` and
+    /// `should_not_confuse_an_odd_read_with_a_producer_holding_a_sample_back`. The
+    /// other two assert the *absence* of a count and pass under that revert by
+    /// construction; they are there to stop a future version counting clean reads,
+    /// which would bury the signal in noise, not to discriminate this change.
+    mod ring_read_parity {
+        use super::*;
+        use std::sync::atomic::Ordering;
+
+        #[test]
+        fn should_leave_the_counter_clear_for_a_read_of_whole_pairs() {
+            let counters = CaptureCounters::default();
+
+            note_ring_read_parity(OPUS_FRAME_SAMPLES, &AudioSource::Desktop, &counters);
+
+            assert!(
+                counters.all_clear(),
+                "a healthy stream must report nothing at all"
+            );
+        }
+
+        #[test]
+        fn should_count_a_read_that_ends_mid_stereo_pair() {
+            let counters = CaptureCounters::default();
+
+            note_ring_read_parity(OPUS_FRAME_SAMPLES - 1, &AudioSource::Desktop, &counters);
+
+            assert_eq!(counters.odd_ring_reads.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
+        fn should_count_every_odd_read_and_not_only_the_first() {
+            // The prose is emitted once per stream, the count is not. Conflating the
+            // two would make the tally useless for telling one glitch from a
+            // producer that is broken on every buffer.
+            let counters = CaptureCounters::default();
+
+            for _ in 0..3 {
+                note_ring_read_parity(7, &AudioSource::Desktop, &counters);
+            }
+
+            assert_eq!(counters.odd_ring_reads.load(Ordering::Relaxed), 3);
+        }
+
+        #[test]
+        fn should_not_confuse_an_odd_read_with_a_producer_holding_a_sample_back() {
+            // `truncated_samples` means a producer honoured the parity obligation;
+            // `odd_ring_reads` means one broke it. They are opposite readings and a
+            // field capture is graded on which of the two moved.
+            let counters = CaptureCounters::default();
+
+            note_ring_read_parity(1, &AudioSource::Desktop, &counters);
+
+            assert_eq!(counters.odd_ring_reads.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                counters.truncated_samples.load(Ordering::Relaxed),
+                0,
+                "the consumer-side observation must not be filed as a producer holdover"
+            );
+        }
+
+        #[test]
+        fn should_count_an_empty_read_as_clean() {
+            // Zero is even, and a zero-length read is the normal outcome of a wake
+            // with no data. Counting it would swamp the tally on every idle stream.
+            let counters = CaptureCounters::default();
+
+            note_ring_read_parity(0, &AudioSource::Desktop, &counters);
+
+            assert!(counters.all_clear());
+        }
     }
 }

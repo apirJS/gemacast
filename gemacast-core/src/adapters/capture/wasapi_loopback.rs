@@ -3,7 +3,7 @@
 use crate::{
     audio::{CaptureResampler, OPUS_FRAME_SAMPLES},
     domain::error::{AudioError, GemaCastError},
-    ports::capture::{CaptureBackend, CaptureHandle},
+    ports::capture::{CaptureBackend, CaptureCounters, CaptureHandle},
 };
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
@@ -102,6 +102,7 @@ pub fn create_wasapi_process_loopback(
         consumer,
         notify,
         stream_error_rx,
+        counters,
     } = create_wasapi_application_loopback(
         pid,
         PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
@@ -113,6 +114,7 @@ pub fn create_wasapi_process_loopback(
         consumer,
         notify,
         stream_error_rx,
+        counters,
     })
 }
 
@@ -138,6 +140,11 @@ pub(crate) fn create_wasapi_application_loopback(
         };
         let (command_tx, command_rx) = std::sync::mpsc::channel();
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
+        // One `Arc`, two owners: the capture thread writes it, the handle hands it to
+        // `capture_pool` to log. Desktop and process capture share this whole function
+        // (`wasapi_desktop.rs` is a type alias), so both modes are covered here.
+        let counters = Arc::new(CaptureCounters::default());
+        let counters_thread = counters.clone();
 
         let thread_handle = std::thread::spawn(move || {
             run_application_loopback_thread(
@@ -151,6 +158,7 @@ pub(crate) fn create_wasapi_application_loopback(
                 rb_producer,
                 notify_clone,
                 stream_error_tx,
+                counters_thread,
             );
         });
 
@@ -175,6 +183,7 @@ pub(crate) fn create_wasapi_application_loopback(
             consumer: rb_consumer,
             notify,
             stream_error_rx,
+            counters,
         })
     }
 }
@@ -191,6 +200,7 @@ fn run_application_loopback_thread(
     mut rb_producer: ringbuf::HeapProd<f32>,
     notify: Arc<Notify>,
     stream_error_tx: mpsc::Sender<cpal::StreamError>,
+    counters: Arc<CaptureCounters>,
 ) {
     let setup = unsafe { initialize_application_loopback(pid, mode, capture_kind, capture_event) };
     let (audio_client, capture_client, format, mut resampler) = match setup {
@@ -268,6 +278,7 @@ fn run_application_loopback_thread(
                     &mut rb_producer,
                     &mut decoded,
                     &mut stereo_buf,
+                    &counters,
                 )
             };
             if let Err(error) = result {
@@ -297,6 +308,49 @@ fn run_application_loopback_thread(
     notify.notify_waiters();
 }
 
+/// Buffer duration asked of `IAudioClient::Initialize`, in 100-nanosecond units.
+///
+/// 10 000 000 is one second. That is a *capacity* request and not a latency figure —
+/// the capture period is set by the event WASAPI signals, not by how much the ring can
+/// hold, so a generous capacity only decides how long a scheduler stall can run before
+/// the driver starts overwriting undelivered packets. The granted value is logged by
+/// [`log_granted_buffer`] because a shared-mode client does not always get what it asks
+/// for, and there is otherwise no way to tell from a field capture what it got.
+const REQUESTED_BUFFER_DURATION_100NS: i64 = 10_000_000;
+
+/// Log the buffer size WASAPI actually granted, next to what was asked for.
+///
+/// Never fails the caller. `GetBufferSize` is a diagnostic read here, and a capture that
+/// works is worth more than a log line that is complete — but a warn on the failing path
+/// keeps the absence visible rather than making it look like the call was never made.
+///
+/// The granted size is quoted in frames, so it goes through
+/// [`frames_to_ms`](crate::audio::frames_to_ms) against the *native* rate rather than
+/// 48 kHz: this is the device's own buffer, measured before any resampling.
+fn log_granted_buffer(audio_client: &IAudioClient, format: &WasapiFormat, capture_kind: &str) {
+    match unsafe { audio_client.GetBufferSize() } {
+        Ok(frames) => {
+            let granted_ms = crate::audio::frames_to_ms(frames, format.native_rate);
+            tracing::info!(
+                capture_kind,
+                granted_frames = frames,
+                "[WASAPI] Buffer: requested {:.1} ms, granted {} frames ({})",
+                REQUESTED_BUFFER_DURATION_100NS as f64 / 10_000.0,
+                frames,
+                match granted_ms {
+                    Some(ms) => format!("{ms:.1} ms"),
+                    None => "rate unknown".to_owned(),
+                }
+            );
+        }
+        Err(error) => tracing::warn!(
+            capture_kind,
+            "[WASAPI] Buffer: requested {:.1} ms, granted size unavailable ({error})",
+            REQUESTED_BUFFER_DURATION_100NS as f64 / 10_000.0,
+        ),
+    }
+}
+
 unsafe fn initialize_application_loopback(
     pid: u32,
     mode: PROCESS_LOOPBACK_MODE,
@@ -313,7 +367,18 @@ unsafe fn initialize_application_loopback(
 > {
     let audio_client = unsafe { activate_process_loopback(pid, mode)? };
     let mix_format_ptr = unsafe { get_default_mix_format()? };
-    let format = unsafe { parse_mix_format(mix_format_ptr) };
+    let format = match unsafe { parse_mix_format(mix_format_ptr) } {
+        Ok(format) => format,
+        Err(error) => {
+            // The pointer is CoTaskMem-allocated and owned by us from here, so it has
+            // to be freed on the rejection path too — the success path frees it after
+            // `Initialize` consumes it below.
+            unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(mix_format_ptr as _));
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(
         capture_kind,
@@ -330,7 +395,7 @@ unsafe fn initialize_application_loopback(
             windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED,
             windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_LOOPBACK
                 | windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            10_000_000,
+            REQUESTED_BUFFER_DURATION_100NS,
             0,
             mix_format_ptr,
             None,
@@ -340,6 +405,8 @@ unsafe fn initialize_application_loopback(
         windows::Win32::System::Com::CoTaskMemFree(Some(mix_format_ptr as _));
     }
     init_result.map_err(AudioError::WindowsApi)?;
+
+    log_granted_buffer(&audio_client, &format, capture_kind);
 
     unsafe {
         audio_client
@@ -363,6 +430,7 @@ unsafe fn drain_capture_packets(
     rb_producer: &mut ringbuf::HeapProd<f32>,
     decoded: &mut Vec<f32>,
     stereo_buf: &mut Vec<f32>,
+    counters: &CaptureCounters,
 ) -> Result<(), GemaCastError> {
     let mut packet_length = unsafe {
         capture_client
@@ -392,16 +460,23 @@ unsafe fn drain_capture_packets(
             if frames == 0 {
                 Ok(())
             } else if (flags & 2) != 0 || buffer_ptr.is_null() {
+                // AUDCLNT_BUFFERFLAGS_SILENT (0x2), or a null buffer, which WASAPI is
+                // permitted to hand back for a silent packet. Emitting zeros keeps the
+                // sample clock continuous; the count is what makes an idle desktop
+                // distinguishable from a capture that stopped delivering.
+                CaptureCounters::add(&counters.silent_buffers, 1);
                 let silent_samples = frames as usize * 2;
                 if rb_producer.vacant_len() >= silent_samples {
                     for _ in 0..silent_samples {
                         let _ = rb_producer.try_push(0.0);
                     }
+                } else {
+                    CaptureCounters::add(&counters.dropped_samples, silent_samples as u64);
                 }
                 Ok(())
             } else {
                 unsafe {
-                    decode_samples_to_f32(buffer_ptr, format, frames as usize, decoded);
+                    decode_samples_to_f32(buffer_ptr, format, frames as usize, decoded, counters);
                 }
                 let final_samples = if let Some(resampler) = resampler.as_mut() {
                     let stereo_input = if format.native_channels == 2 {
@@ -418,6 +493,11 @@ unsafe fn drain_capture_packets(
                 };
                 if rb_producer.vacant_len() >= final_samples.len() {
                     let _ = rb_producer.push_slice(final_samples);
+                } else {
+                    // Whole-packet drop, same policy as the PipeWire push. Counting it
+                    // is the point; whether a partial push would be better is a
+                    // decision for after a field capture shows how often this fires.
+                    CaptureCounters::add(&counters.dropped_samples, final_samples.len() as u64);
                 }
                 Ok(())
             }
@@ -490,54 +570,121 @@ const SYSTEM_PROCESS_FILTER: &[&str] = &[
     "crashpad_handler.exe",
 ];
 
-/// Enumerate all running processes, returning a map of PID → display name.
-/// System and infrastructure processes are filtered out.
+/// Decode a `PROCESSENTRY32`'s `szExeFile` into a `String`.
+///
+/// The field is a fixed 260-byte buffer holding a NUL-terminated ANSI name, so the
+/// terminator has to be found rather than assumed and the bytes are not necessarily
+/// valid UTF-8 — a name in a non-Latin ANSI code page decodes lossily here rather than
+/// failing. That is acceptable for a display name and for the lowercase comparisons
+/// against [`SYSTEM_PROCESS_FILTER`], which only ever match ASCII.
+fn entry_exe_name(entry: &PROCESSENTRY32) -> String {
+    let bytes: Vec<u8> = entry
+        .szExeFile
+        .iter()
+        .copied()
+        .take_while(|b| *b != 0)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Call `visit` once for every process in a fresh Toolhelp32 snapshot.
+///
+/// `Process32First` both validates the snapshot **and** fills in the first entry, so
+/// the correct shape is visit-then-advance. Using `Process32First` purely as a validity
+/// check and then `Process32Next` as the loop condition — the shape this replaces —
+/// silently drops whichever process the snapshot lists first. Enumeration order is not
+/// documented, so that is not reliably a process nobody cares about.
 ///
 /// # Safety
 ///
-/// Calls Win32 Toolhelp32 snapshot APIs (`CreateToolhelp32Snapshot`,
-/// `Process32First`, `Process32Next`, `CloseHandle`). Safe to call
-/// from any thread.
-pub unsafe fn get_process_list() -> Result<std::collections::HashMap<u32, String>, GemaCastError> {
-    let mut map = std::collections::HashMap::new();
-
+/// Calls `CreateToolhelp32Snapshot`, `Process32First`, `Process32Next` and
+/// `CloseHandle`. Safe to call from any thread. The snapshot is closed before this
+/// returns on every path, including if `visit` panics — the handle is owned locally and
+/// released by the guard below.
+unsafe fn for_each_process(mut visit: impl FnMut(&PROCESSENTRY32)) -> Result<(), GemaCastError> {
     unsafe {
         let snapshot =
             CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(AudioError::WindowsApi)?;
+
+        // Closes the snapshot on the way out whatever happens inside `visit`.
+        struct SnapshotGuard(windows::Win32::Foundation::HANDLE);
+        impl Drop for SnapshotGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
+            }
+        }
+        let _guard = SnapshotGuard(snapshot);
 
         let mut entry = PROCESSENTRY32 {
             dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
             ..Default::default()
         };
 
-        if Process32First(snapshot, &mut entry).is_ok() {
-            while Process32Next(snapshot, &mut entry).is_ok() {
-                let raw_name = String::from_utf8_lossy(
-                    &entry
-                        .szExeFile
-                        .iter()
-                        .copied()
-                        .take_while(|b| *b != 0)
-                        .collect::<Vec<u8>>(),
-                )
-                .into_owned();
-
-                let lower = raw_name.to_lowercase();
-                if SYSTEM_PROCESS_FILTER.contains(&lower.as_str()) {
-                    continue;
-                }
-
-                let display_name = raw_name
-                    .strip_suffix(".exe")
-                    .or_else(|| raw_name.strip_suffix(".EXE"))
-                    .unwrap_or(&raw_name)
-                    .to_string();
-
-                map.insert(entry.th32ProcessID, display_name);
-            }
+        if Process32First(snapshot, &mut entry).is_err() {
+            // An empty or unreadable snapshot. Not an error: the caller gets an empty
+            // result, which is what it would have got from the old code too.
+            return Ok(());
         }
 
-        CloseHandle(snapshot).map_err(AudioError::WindowsApi)?;
+        loop {
+            visit(&entry);
+            if Process32Next(snapshot, &mut entry).is_err() {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Enumerate all running processes, returning a map of PID → display name.
+/// System and infrastructure processes are filtered out.
+///
+/// # Safety
+///
+/// Calls Win32 Toolhelp32 snapshot APIs via [`for_each_process`]. Safe to call
+/// from any thread.
+pub unsafe fn get_process_list() -> Result<std::collections::HashMap<u32, String>, GemaCastError> {
+    let mut map = std::collections::HashMap::new();
+
+    unsafe {
+        for_each_process(|entry| {
+            // PID 0 is the Idle pseudo-process. It owns no image, cannot be opened, and
+            // cannot hold an audio session, so it is never a capture target — but
+            // Toolhelp32 reports it like any other entry, under the synthetic bracketed
+            // name `[System Process]`.
+            //
+            // Filtering it here by PID rather than by name is deliberate.
+            // [`SYSTEM_PROCESS_FILTER`] matches *executable* names, and `[System
+            // Process]` is not one — it is text the kernel supplies in place of a name,
+            // so no entry in that list was ever going to catch it.
+            //
+            // It did not appear in the picker before because the enumeration bug this
+            // code replaced dropped whichever process the snapshot listed first, and PID
+            // 0 is what Toolhelp32 lists first in practice. That made it an accidental
+            // filter for exactly one entry, and an unreliable one: the order is not
+            // documented, so on any snapshot that led with something else, a real process
+            // went missing from the picker instead. Fixing the enumeration exposed PID 0;
+            // this makes the exclusion explicit and independent of ordering.
+            if entry.th32ProcessID == 0 {
+                return;
+            }
+
+            let raw_name = entry_exe_name(entry);
+
+            let lower = raw_name.to_lowercase();
+            if SYSTEM_PROCESS_FILTER.contains(&lower.as_str()) {
+                return;
+            }
+
+            let display_name = raw_name
+                .strip_suffix(".exe")
+                .or_else(|| raw_name.strip_suffix(".EXE"))
+                .unwrap_or(&raw_name)
+                .to_string();
+
+            map.insert(entry.th32ProcessID, display_name);
+        })?;
     };
 
     Ok(map)
@@ -612,52 +759,27 @@ pub fn get_root_ancestor_pid(pid: u32, exe_lower: &str) -> u32 {
     // Build a mapping of pid -> (parent_pid, exe_name_lower) for all processes
     let mut parent_map = std::collections::HashMap::<u32, (u32, String)>::new();
 
-    unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return pid;
-        };
-
-        let mut entry = PROCESSENTRY32 {
-            dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
-            ..Default::default()
-        };
-
-        if Process32First(snapshot, &mut entry).is_ok() {
-            // Process32First already populates entry with the first process
-            let raw_name = String::from_utf8_lossy(
-                &entry
-                    .szExeFile
-                    .iter()
-                    .copied()
-                    .take_while(|b| *b != 0)
-                    .collect::<Vec<u8>>(),
-            )
-            .into_owned();
-
+    // A snapshot failure leaves the map empty, and an empty map means the walk below
+    // finds no parent and returns `pid` unchanged — the same fallback the explicit
+    // early return used to provide.
+    let walked = unsafe {
+        for_each_process(|entry| {
             parent_map.insert(
                 entry.th32ProcessID,
-                (entry.th32ParentProcessID, raw_name.to_lowercase()),
+                (
+                    entry.th32ParentProcessID,
+                    entry_exe_name(entry).to_lowercase(),
+                ),
             );
-
-            while Process32Next(snapshot, &mut entry).is_ok() {
-                let raw_name = String::from_utf8_lossy(
-                    &entry
-                        .szExeFile
-                        .iter()
-                        .copied()
-                        .take_while(|b| *b != 0)
-                        .collect::<Vec<u8>>(),
-                )
-                .into_owned();
-
-                parent_map.insert(
-                    entry.th32ProcessID,
-                    (entry.th32ParentProcessID, raw_name.to_lowercase()),
-                );
-            }
-        }
-
-        let _ = CloseHandle(snapshot);
+        })
+    };
+    if let Err(error) = walked {
+        tracing::warn!(
+            %error,
+            pid,
+            "[WASAPI] could not enumerate processes; capturing the target PID alone"
+        );
+        return pid;
     }
 
     // Walk upward from `pid` as long as the parent has the same exe name
@@ -680,4 +802,144 @@ pub fn get_root_ancestor_pid(pid: u32, exe_lower: &str) -> u32 {
     }
 
     current
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Process enumeration, which needs a live Windows box rather than mocked input.
+    ///
+    /// These run against the real machine, so they assert properties that hold on any
+    /// Windows system rather than exact counts: that the walk reaches this very test
+    /// process, and that it does not skip an entry.
+    ///
+    /// The coverage splits deliberately, and mistaking one for the other would leave a
+    /// gap: `should_visit_every_entry_including_the_first` pins the *Toolhelp32
+    /// semantics* that make the fix necessary — it walks a snapshot by hand and does not
+    /// call `for_each_process` at all, because only a single shared snapshot makes the
+    /// off-by-one deterministic. `should_reach_this_test_process` is the one that
+    /// exercises `for_each_process` itself.
+    mod process_enumeration {
+        use super::*;
+
+        #[test]
+        fn should_visit_every_entry_including_the_first() {
+            // The falsification, run inside one snapshot so both walks see an identical
+            // process list — taking two snapshots would let a process start or exit
+            // between them and turn the off-by-one into noise.
+            //
+            // Walk A is visit-then-advance, the shape `for_each_process` uses. Walk B is
+            // the shape it replaces: `Process32First` treated purely as a validity check,
+            // then `Process32Next` as the loop condition. `Process32First` rewinds the
+            // snapshot, so B enumerates the same list from the top and its deficit is
+            // exactly the entry A visits first.
+            unsafe {
+                let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).unwrap();
+                let mut entry = PROCESSENTRY32 {
+                    dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+                    ..Default::default()
+                };
+
+                assert!(
+                    Process32First(snapshot, &mut entry).is_ok(),
+                    "a Windows machine always has at least one process"
+                );
+                let mut visit_then_advance = vec![entry.th32ProcessID];
+                while Process32Next(snapshot, &mut entry).is_ok() {
+                    visit_then_advance.push(entry.th32ProcessID);
+                }
+
+                assert!(Process32First(snapshot, &mut entry).is_ok());
+                let mut advance_then_visit = Vec::new();
+                while Process32Next(snapshot, &mut entry).is_ok() {
+                    advance_then_visit.push(entry.th32ProcessID);
+                }
+
+                let _ = CloseHandle(snapshot);
+
+                assert_eq!(
+                    advance_then_visit.len() + 1,
+                    visit_then_advance.len(),
+                    "the old shape drops exactly one process"
+                );
+                assert_eq!(
+                    &visit_then_advance[1..],
+                    &advance_then_visit[..],
+                    "and it is the first one, not an arbitrary one"
+                );
+            }
+        }
+
+        #[test]
+        fn should_reach_this_test_process() {
+            // An end-to-end check that `for_each_process` and `entry_exe_name` agree with
+            // each other: the test binary is running, is not in `SYSTEM_PROCESS_FILTER`,
+            // and therefore must appear with a name.
+            let mut seen = Vec::new();
+            unsafe { for_each_process(|entry| seen.push(entry.th32ProcessID)) }.unwrap();
+
+            assert!(
+                seen.contains(&std::process::id()),
+                "the walk missed the process doing the walking"
+            );
+
+            let listed = unsafe { get_process_list() }.unwrap();
+            let own_name = listed
+                .get(&std::process::id())
+                .expect("the test binary must be listed");
+            assert!(
+                !own_name.is_empty() && !own_name.ends_with(".exe"),
+                "display names have the extension stripped, got {own_name:?}"
+            );
+        }
+
+        #[test]
+        fn should_close_the_snapshot_even_if_the_visitor_panics() {
+            // The guard exists because `visit` is caller-supplied. Without it a panicking
+            // visitor leaks a kernel handle per call, and the old code's explicit
+            // `CloseHandle` after the loop had exactly that hole.
+            let panicked = std::panic::catch_unwind(|| {
+                unsafe { for_each_process(|_| panic!("visitor blew up")) }.unwrap();
+            });
+            assert!(panicked.is_err(), "the panic must propagate to the caller");
+            // Nothing here can observe the handle count, so this pins the propagation
+            // path and leaves the release to `SnapshotGuard`'s `Drop`. A second walk
+            // succeeding at least shows the snapshot API is still usable.
+            assert!(unsafe { get_process_list() }.is_ok());
+        }
+
+        /// PID 0 must not reach the picker.
+        ///
+        /// This is a regression test in the literal sense: fixing the enumeration bug
+        /// above removed an *accidental* filter. The old code skipped whichever entry the
+        /// snapshot listed first, and Toolhelp32 lists PID 0 first, so `[System Process]`
+        /// was excluded by a coincidence of ordering rather than by any rule. With the
+        /// walk corrected it appeared in the process list, where it is not selectable —
+        /// the Idle pseudo-process owns no image and can never hold an audio session.
+        ///
+        /// The two halves are separate assertions on purpose. The first pins that the
+        /// exclusion happens in `get_process_list` and not by luck; the second pins that
+        /// `for_each_process` still *sees* PID 0, because the fix must not reintroduce a
+        /// skip in the walk — `get_root_ancestor_pid` walks parent links through the same
+        /// enumeration and a missing entry there would break the tree climb instead.
+        #[test]
+        fn should_not_offer_the_idle_pseudo_process_as_a_capture_source() {
+            let listed = unsafe { get_process_list() }.unwrap();
+
+            assert!(
+                !listed.contains_key(&0),
+                "PID 0 is the Idle pseudo-process and cannot be captured; got {:?}",
+                listed.get(&0)
+            );
+
+            let mut walked = Vec::new();
+            unsafe { for_each_process(|entry| walked.push(entry.th32ProcessID)) }.unwrap();
+            assert!(
+                walked.contains(&0),
+                "the exclusion belongs in `get_process_list`, not in the walk — \
+                 `get_root_ancestor_pid` needs every entry to climb parent links"
+            );
+        }
+    }
 }

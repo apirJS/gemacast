@@ -20,7 +20,7 @@ pub mod mocks {
 
     use crate::domain::error::GemaCastError;
     use crate::domain::types::{DeviceId, ProcessInfo};
-    use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
+    use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureFactory, CaptureHandle};
     use crate::ports::error_notifier::ErrorNotifier;
     use crate::ports::process_lister::ProcessLister;
     use crate::ports::transport::AudioPacketTransport;
@@ -110,6 +110,7 @@ pub mod mocks {
                 consumer,
                 notify,
                 stream_error_rx,
+                counters: Arc::new(CaptureCounters::default()),
             })
         }
 
@@ -134,6 +135,7 @@ pub mod mocks {
                 consumer,
                 notify,
                 stream_error_rx,
+                counters: Arc::new(CaptureCounters::default()),
             })
         }
     }
@@ -277,42 +279,65 @@ pub mod mocks {
         ///
         /// Generates `duration_ms` milliseconds of a sine wave at `frequency_hz`,
         /// using 48kHz stereo format (matching the Opus pipeline).
-        pub fn push_tone(&mut self, frequency_hz: f32, duration_ms: u32) {
-            use ringbuf::traits::Producer;
+        ///
+        /// Returns the number of samples that fitted, as [`Self::push_samples`] does.
+        pub fn push_tone(&mut self, frequency_hz: f32, duration_ms: u32) -> usize {
             let sample_rate = crate::audio::OPUS_SAMPLE_RATE as f32;
             let channels = crate::audio::OPUS_CHANNELS as usize;
             let num_frames = (sample_rate * duration_ms as f32 / 1000.0) as usize;
 
+            let mut samples = Vec::with_capacity(num_frames * channels);
             for i in 0..num_frames {
                 let t = i as f32 / sample_rate;
                 let sample = (2.0 * std::f32::consts::PI * frequency_hz * t).sin() * 0.5;
                 for _ in 0..channels {
-                    let _ = self.producer.try_push(sample);
+                    samples.push(sample);
                 }
             }
-            self.notify.notify_one();
+            self.push_samples(&samples)
         }
 
         /// Push silence (zero samples) into the ring buffer.
-        pub fn push_silence(&mut self, duration_ms: u32) {
-            use ringbuf::traits::Producer;
+        ///
+        /// Returns the number of samples that fitted, as [`Self::push_samples`] does.
+        pub fn push_silence(&mut self, duration_ms: u32) -> usize {
             let sample_rate = crate::audio::OPUS_SAMPLE_RATE as f32;
             let channels = crate::audio::OPUS_CHANNELS as usize;
             let num_samples = (sample_rate * duration_ms as f32 / 1000.0) as usize * channels;
 
-            for _ in 0..num_samples {
-                let _ = self.producer.try_push(0.0);
-            }
-            self.notify.notify_one();
+            self.push_samples(&vec![0.0f32; num_samples])
         }
 
-        /// Push arbitrary sample data into the ring buffer.
-        pub fn push_samples(&mut self, samples: &[f32]) {
-            use ringbuf::traits::Producer;
-            for &s in samples {
-                let _ = self.producer.try_push(s);
-            }
+        /// Push arbitrary sample data into the ring buffer, returning how many samples
+        /// fitted.
+        ///
+        /// Overflow is dropped silently, as it always was, but only in whole stereo
+        /// pairs. This is the single choke point for all three helpers, and the reason
+        /// it exists is [producer obligation
+        /// 1](crate::ports::capture#producer-obligations): the previous shape pushed
+        /// sample by sample with `try_push`, so a ring that filled mid-pair accepted the
+        /// left channel and dropped the right, shifting every later sample by one slot
+        /// and swapping the channels for the rest of the run. A mock is the worst
+        /// possible place for that — it would present as a real backend defect with
+        /// nothing in the backend to find.
+        pub fn push_samples(&mut self, samples: &[f32]) -> usize {
+            use ringbuf::traits::{Observer, Producer};
+
+            debug_assert_eq!(
+                samples.len() % 2,
+                0,
+                "a mock push must carry whole stereo pairs; {} samples is half a pair",
+                samples.len()
+            );
+
+            // Clamped to whole pairs *before* the push rather than checked after,
+            // because `push_slice` is bounded by `vacant_len()` and that can be odd
+            // whenever a test pops an odd count from the consumer side.
+            let room = self.producer.vacant_len().min(samples.len()) & !1;
+            let pushed = self.producer.push_slice(&samples[..room]);
+
             self.notify.notify_one();
+            pushed
         }
     }
 
@@ -335,10 +360,106 @@ pub mod mocks {
             consumer,
             notify: notify.clone(),
             stream_error_rx,
+            counters: Arc::new(CaptureCounters::default()),
         };
 
         let fake_producer = FakeAudioProducer { producer, notify };
 
         (handle, fake_producer)
+    }
+
+    /// Tests for the harness itself.
+    ///
+    /// Worth having because a parity bug in a mock producer presents as a backend
+    /// defect: the frames stay 960 samples long and every downstream assertion still
+    /// passes, so the search would start in the adapter, where there would be nothing
+    /// to find.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ringbuf::traits::{Consumer, Observer};
+
+        const RING_CAPACITY: usize = crate::audio::OPUS_FRAME_SAMPLES * 64;
+
+        #[test]
+        fn push_samples_should_report_what_fitted() {
+            let (_handle, mut producer) = create_fake_capture();
+
+            assert_eq!(producer.push_samples(&[0.1, 0.2, 0.3, 0.4]), 4);
+        }
+
+        #[test]
+        fn push_samples_should_drop_whole_pairs_when_the_ring_is_nearly_full() {
+            let (mut handle, mut producer) = create_fake_capture();
+
+            // Fill it, then take an odd number back out. Popping is the only way to
+            // leave an odd vacancy, because every push is even.
+            assert_eq!(
+                producer.push_samples(&vec![0.0f32; RING_CAPACITY]),
+                RING_CAPACITY
+            );
+            let mut scratch = [0.0f32; 3];
+            assert_eq!(handle.consumer.pop_slice(&mut scratch), 3);
+            assert_eq!(producer.producer.vacant_len(), 3);
+
+            // Three slots free, two samples' worth of room. The per-sample `try_push`
+            // loop this replaces would have taken all three and swapped the channels
+            // for the rest of the run.
+            let occupied_before = handle.consumer.occupied_len();
+            let pushed = producer.push_samples(&[0.1, 0.2, 0.3, 0.4]);
+
+            assert_eq!(pushed, 2, "a half pair must not be pushed to fill a gap");
+            // The delta, not the absolute parity: this test made occupancy odd itself
+            // by popping 3, and an odd pop is a thing only a test can do. What the
+            // producer owes is that it never *changes* the alignment.
+            assert_eq!(
+                (handle.consumer.occupied_len() - occupied_before) % 2,
+                0,
+                "a push must not shift the ring's stereo alignment"
+            );
+        }
+
+        #[test]
+        fn push_tone_should_push_whole_stereo_pairs() {
+            let (_handle, mut producer) = create_fake_capture();
+
+            // 10 ms at 48 kHz stereo is exactly one frame.
+            let pushed = producer.push_tone(440.0, 10);
+
+            assert_eq!(pushed, crate::audio::OPUS_FRAME_SAMPLES);
+        }
+
+        #[test]
+        fn push_tone_should_write_the_same_sample_to_both_channels() {
+            let (mut handle, mut producer) = create_fake_capture();
+
+            producer.push_tone(1_000.0, 10);
+
+            let mut frame = vec![0.0f32; crate::audio::OPUS_FRAME_SAMPLES];
+            assert_eq!(
+                handle.consumer.pop_slice(&mut frame),
+                crate::audio::OPUS_FRAME_SAMPLES
+            );
+
+            // Not a formality: this is the assertion that fails if the ring ever
+            // shifts by one slot, and it is the only place in the harness that can
+            // detect it. The tone is mono-sourced, so L and R are bit-identical.
+            for pair in frame.chunks_exact(2) {
+                assert_eq!(pair[0], pair[1], "left and right diverged");
+            }
+            // A non-trivial signal, so the check above is not passing on all zeros.
+            assert!(frame.iter().any(|s| s.abs() > 0.1));
+        }
+
+        #[test]
+        fn push_silence_should_push_whole_stereo_pairs() {
+            let (_handle, mut producer) = create_fake_capture();
+
+            assert_eq!(
+                producer.push_silence(10),
+                crate::audio::OPUS_FRAME_SAMPLES,
+                "10 ms of 48 kHz stereo is one frame"
+            );
+        }
     }
 }

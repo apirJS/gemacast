@@ -115,6 +115,29 @@ pub enum AudioError {
     #[error("audio resampling failed: {0}")]
     ResampleFailed(String),
 
+    /// A capture backend negotiated a format the pipeline cannot consume.
+    ///
+    /// The pipeline's contract is fixed at 48 kHz stereo interleaved `f32` (see
+    /// [`crate::ports::capture`]). Where a platform can be resampled or downmixed
+    /// into that shape, the adapter does so and this error never appears. It is
+    /// raised only when adaptation is impossible — a planar layout, a non-`f32`
+    /// sample type the decoder does not handle, or a degenerate descriptor such as
+    /// zero channels.
+    #[error(
+        "unsupported capture format: {rate} Hz, {channels} channel(s) — expected 48000 Hz stereo"
+    )]
+    UnsupportedCaptureFormat { rate: u32, channels: usize },
+
+    /// A frame handed to the encoder was not exactly one packet's worth of samples.
+    ///
+    /// 960 interleaved `f32` values is a wire-protocol invariant, not a preference:
+    /// the receiver decodes an uncompressed payload by dividing its byte count by 4,
+    /// and the jitter buffer's whole geometry assumes one packet is 10 ms. A short
+    /// frame would produce a packet the receiver silently mis-frames, so this is
+    /// rejected at the seam rather than transmitted.
+    #[error("invalid frame length: {got} samples, expected {expected}")]
+    InvalidFrameLength { got: usize, expected: usize },
+
     #[error("source is not actively subscribed")]
     SourceNotSubscribed,
 

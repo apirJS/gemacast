@@ -165,5 +165,6 @@ pub fn create_sck_process_loopback(
         consumer: resources.consumer,
         notify: resources.notify,
         stream_error_rx: resources.stream_error_rx,
+        counters: resources.counters,
     })
 }

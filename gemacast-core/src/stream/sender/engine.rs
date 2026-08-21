@@ -473,7 +473,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
+    use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureFactory, CaptureHandle};
     use ringbuf::HeapRb;
     use ringbuf::traits::*;
     use std::sync::Arc;
@@ -504,6 +504,7 @@ mod tests {
                 consumer,
                 notify,
                 stream_error_rx: err_rx,
+                counters: Arc::new(CaptureCounters::default()),
             })
         }
 

@@ -13,7 +13,7 @@
 //! stream to connect exclusively to that node.
 
 use crate::domain::error::{AudioError, GemaCastError};
-use crate::ports::capture::{CaptureBackend, CaptureHandle};
+use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -75,6 +75,8 @@ pub fn create_pipewire_process_loopback(
 
     let (mut producer, resources, stream_error_tx) = create_pw_ring_buffer();
     let notify_clone = resources.notify.clone();
+    // Same `Arc` the handle carries — see the equivalent comment in `pipewire_desktop`.
+    let counters_thread = resources.counters.clone();
 
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_thread = is_running.clone();
@@ -88,6 +90,7 @@ pub fn create_pipewire_process_loopback(
             &notify_clone,
             &is_running_thread,
             stream_error_tx,
+            counters_thread,
         );
 
         if let Err(e) = result {
@@ -105,6 +108,7 @@ pub fn create_pipewire_process_loopback(
         consumer: resources.consumer,
         notify: resources.notify,
         stream_error_rx: resources.stream_error_rx,
+        counters: resources.counters,
     })
 }
 
@@ -271,6 +275,7 @@ fn run_process_capture_loop(
     notify: &Arc<tokio::sync::Notify>,
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
+    counters: Arc<CaptureCounters>,
 ) -> Result<(), GemaCastError> {
     let mainloop =
         unsafe { pw::thread_loop::ThreadLoopBox::new(Some("gemacast-process-capture"), None) }
@@ -355,6 +360,7 @@ fn run_process_capture_loop(
                             n_samples,
                             producer,
                             notify,
+                            &counters,
                         );
                     }
                 }
@@ -363,8 +369,10 @@ fn run_process_capture_loop(
         .register()
         .map_err(|e| AudioError::PipeWireError(format!("Listener: {e}")))?;
 
-    // Build audio format params: 48kHz stereo F32LE interleaved
-    let values = pipewire_common::build_audio_params()?;
+    // Build audio format params: 48kHz stereo F32LE interleaved.
+    // Also emits the requested-format log line, labelled "process" to match the
+    // `capture_kind` field the WASAPI path uses.
+    let values = pipewire_common::build_audio_params("process")?;
     let mut params = [pw::spa::pod::Pod::from_bytes(&values)
         .ok_or_else(|| AudioError::PipeWireError("Invalid pod bytes".to_string()))?];
 

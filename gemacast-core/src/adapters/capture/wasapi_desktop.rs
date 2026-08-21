@@ -20,6 +20,7 @@ pub fn create_wasapi_desktop_loopback()
         consumer,
         notify,
         stream_error_rx,
+        counters,
     } = super::wasapi_loopback::create_wasapi_application_loopback(
         std::process::id(),
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
@@ -31,5 +32,6 @@ pub fn create_wasapi_desktop_loopback()
         consumer,
         notify,
         stream_error_rx,
+        counters,
     })
 }

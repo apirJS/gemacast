@@ -12,7 +12,7 @@
 //! (CapturePool) consumes from the ring buffer via the `Notify` primitive.
 
 use crate::domain::error::{AudioError, GemaCastError};
-use crate::ports::capture::{CaptureBackend, CaptureHandle};
+use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -72,6 +72,10 @@ pub fn create_pipewire_desktop_loopback()
 -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     let (mut producer, resources, stream_error_tx) = create_pw_ring_buffer();
     let notify_clone = resources.notify.clone();
+    // The same `Arc` the handle carries, so what the callback counts is what the pool
+    // logs. Cloning the `Arc` rather than passing a raw pointer like `producer` below:
+    // the callback holds an owned handle, so there is no lifetime to reason about.
+    let counters_thread = resources.counters.clone();
 
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_thread = is_running.clone();
@@ -85,6 +89,7 @@ pub fn create_pipewire_desktop_loopback()
             &notify_clone,
             &is_running_thread,
             stream_error_tx,
+            counters_thread,
         );
 
         if let Err(e) = result {
@@ -102,6 +107,7 @@ pub fn create_pipewire_desktop_loopback()
         consumer: resources.consumer,
         notify: resources.notify,
         stream_error_rx: resources.stream_error_rx,
+        counters: resources.counters,
     })
 }
 
@@ -118,6 +124,7 @@ fn run_desktop_capture_loop(
     notify: &Arc<tokio::sync::Notify>,
     is_running: &Arc<AtomicBool>,
     stream_error_tx: tokio::sync::mpsc::Sender<cpal::StreamError>,
+    counters: Arc<CaptureCounters>,
 ) -> Result<(), GemaCastError> {
     pw::init();
 
@@ -212,6 +219,7 @@ fn run_desktop_capture_loop(
                             n_samples,
                             producer,
                             notify,
+                            &counters,
                         );
                     }
                 }
@@ -220,8 +228,10 @@ fn run_desktop_capture_loop(
         .register()
         .map_err(|e| AudioError::PipeWireError(format!("Listener: {e}")))?;
 
-    // Build audio format params: 48kHz stereo F32LE interleaved
-    let values = pipewire_common::build_audio_params()?;
+    // Build audio format params: 48kHz stereo F32LE interleaved.
+    // Also emits the requested-format log line, labelled "desktop" to match the
+    // `capture_kind` field the WASAPI path uses.
+    let values = pipewire_common::build_audio_params("desktop")?;
     let mut params = [pw::spa::pod::Pod::from_bytes(&values)
         .ok_or_else(|| AudioError::PipeWireError("Invalid pod bytes".to_string()))?];
 
@@ -424,6 +434,7 @@ mod tests {
             mut consumer,
             notify: _notify,
             stream_error_rx: _stream_error_rx,
+            counters,
         } = result.unwrap();
 
         // Wait for audio samples to arrive in the consumer ring buffer.

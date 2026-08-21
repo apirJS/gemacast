@@ -32,6 +32,12 @@ pub struct SckCaptureResources {
     pub notify: Arc<Notify>,
     /// Receives fatal stream errors from the capture thread.
     pub stream_error_rx: mpsc::Receiver<cpal::StreamError>,
+    /// Diagnostic counters for the capture callback.
+    ///
+    /// Nothing writes these yet — the SCK handler is not wired to them, and this
+    /// backend is disabled pending the 14.2+ process-tap work. The field exists so the
+    /// port surface is the same shape on every platform.
+    pub counters: Arc<crate::ports::capture::CaptureCounters>,
 }
 
 /// Create the ring buffer and associated synchronization primitives
@@ -53,6 +59,7 @@ pub fn create_sck_ring_buffer() -> (
             consumer,
             notify,
             stream_error_rx,
+            counters: Arc::new(crate::ports::capture::CaptureCounters::default()),
         },
     )
 }
