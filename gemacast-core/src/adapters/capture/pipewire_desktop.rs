@@ -434,7 +434,7 @@ mod tests {
             mut consumer,
             notify: _notify,
             stream_error_rx: _stream_error_rx,
-            counters,
+            counters: _counters,
         } = result.unwrap();
 
         // Wait for audio samples to arrive in the consumer ring buffer.
