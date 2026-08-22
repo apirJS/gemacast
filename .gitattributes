@@ -1,0 +1,7 @@
+# Shell scripts should be end with LF
+*.sh text eol=lf
+
+# Same reason: these are read by Linux tooling, not by Windows editors.
+docker/entrypoint.sh text eol=lf
+linux/deb-postinst.sh text eol=lf
+linux/deb-postrm.sh text eol=lf
