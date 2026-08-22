@@ -424,6 +424,13 @@ impl EngineWithAdapters {
             }
         };
 
+        // On Linux, a default-blocking firewall (firewalld's restrictive zones,
+        // or an enabled ufw) silently drops inbound discovery/streaming. The
+        // deb/rpm handle this from their maintainer scripts; this best-effort,
+        // once-per-session hint covers the AppImage, which has no install hook.
+        #[cfg(target_os = "linux")]
+        crate::firewall::warn_if_firewall_may_block();
+
         // --- HTTPS control server state ---
         let control_state = ControlServerState {
             command_tx: self.http_command_tx,

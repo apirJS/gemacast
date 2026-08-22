@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  firewalld service for Gemacast (PC sender).
+
+  Opens the three ports that must accept inbound LAN traffic so a phone on the
+  same network (Wi-Fi or USB/RNDIS tether — both look like LAN) can discover and
+  stream from this PC.
+
+  ADB transports (TCP 55557/55558) are intentionally absent: they run over
+  loopback via `adb reverse` and need no firewall rule.
+-->
+<service>
+  <short>Gemacast</short>
+  <description>Gemacast PC audio streaming: LAN discovery (UDP 55555), audio (UDP 55556), and the TLS control channel (TCP 55559).</description>
+  <port protocol="udp" port="55555"/>
+  <port protocol="udp" port="55556"/>
+  <port protocol="tcp" port="55559"/>
+</service>

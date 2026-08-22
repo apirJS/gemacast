@@ -25,6 +25,7 @@ mod crash_log;
 mod device_auth;
 mod dialog;
 mod events;
+mod firewall;
 mod logging;
 mod pc_identity;
 mod state;

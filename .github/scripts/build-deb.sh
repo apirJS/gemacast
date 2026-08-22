@@ -12,6 +12,7 @@ PKG_NAME="gemacast-pc_${VERSION}_${ARCH}"
 mkdir -p "${PKG_NAME}/DEBIAN"
 mkdir -p "${PKG_NAME}/usr/bin"
 mkdir -p "${PKG_NAME}/usr/lib/gemacast"
+mkdir -p "${PKG_NAME}/usr/lib/firewalld/services"
 mkdir -p "${PKG_NAME}/usr/share/applications"
 mkdir -p "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps"
 
@@ -31,6 +32,19 @@ fi
 # Desktop entry & icon
 cp linux/gemacast-pc.desktop "${PKG_NAME}/usr/share/applications/"
 cp linux/gemacast-pc.png "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps/"
+
+# firewalld service definition (opens UDP 55555/55556 + TCP 55559 for LAN).
+# Fedora/RHEL ship firewalld blocking-by-default, so without this a fresh install
+# cannot be discovered. Named plainly `gemacast.xml` so `--add-service=gemacast`
+# in the maintainer scripts resolves it.
+cp linux/gemacast.firewalld.xml "${PKG_NAME}/usr/lib/firewalld/services/gemacast.xml"
+
+# Maintainer scripts: apply/remove the firewall rules on install/uninstall.
+# Best-effort (they never fail the transaction) — see the scripts. alien's
+# `--scripts` carries these into the .rpm, so Fedora gets them too.
+cp linux/deb-postinst.sh "${PKG_NAME}/DEBIAN/postinst"
+cp linux/deb-postrm.sh "${PKG_NAME}/DEBIAN/postrm"
+chmod 755 "${PKG_NAME}/DEBIAN/postinst" "${PKG_NAME}/DEBIAN/postrm"
 
 # Control file — written field-by-field to avoid heredoc whitespace issues
 {
