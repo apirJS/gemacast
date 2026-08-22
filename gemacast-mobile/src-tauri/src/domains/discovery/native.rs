@@ -16,35 +16,33 @@ pub fn call_native_transport_check(app: &tauri::AppHandle) -> Result<String, Str
 
     window
         .with_webview(move |webview| {
-            {
-                let transport_info_tx = transport_info_tx.clone();
-                webview.jni_handle().exec(move |env, context, _webview| {
-                    let result = (|| -> Result<String, String> {
-                        let _class = env
-                            .get_object_class(context)
-                            .map_err(|e| format!("Failed to get Activity class: {}", e))?;
+            let transport_info_tx = transport_info_tx.clone();
+            webview.jni_handle().exec(move |env, context, _webview| {
+                let result = (|| -> Result<String, String> {
+                    let _class = env
+                        .get_object_class(context)
+                        .map_err(|e| format!("Failed to get Activity class: {}", e))?;
 
-                        let transport_obj = env
-                            .call_method(context, "getTransportType", "()Ljava/lang/String;", &[])
-                            .map_err(|e| {
-                                format!("Failed to call getTransportType on Activity: {}", e)
-                            })?;
+                    let transport_obj = env
+                        .call_method(context, "getTransportType", "()Ljava/lang/String;", &[])
+                        .map_err(|e| {
+                            format!("Failed to call getTransportType on Activity: {}", e)
+                        })?;
 
-                        let transport_jstr = transport_obj
-                            .l()
-                            .map_err(|e| format!("Failed to get transport string object: {}", e))?;
+                    let transport_jstr = transport_obj
+                        .l()
+                        .map_err(|e| format!("Failed to get transport string object: {}", e))?;
 
-                        let transport: String = env
-                            .get_string(&transport_jstr.into())
-                            .map_err(|e| format!("Failed to extract string from JNI: {}", e))?
-                            .into();
+                    let transport: String = env
+                        .get_string(&transport_jstr.into())
+                        .map_err(|e| format!("Failed to extract string from JNI: {}", e))?
+                        .into();
 
-                        Ok(transport)
-                    })();
+                    Ok(transport)
+                })();
 
-                    let _ = transport_info_tx.send(result);
-                });
-            }
+                let _ = transport_info_tx.send(result);
+            });
         })
         .map_err(|e| format!("WebView JNI execution failed: {}", e))?;
 
@@ -312,20 +310,18 @@ pub fn call_native_sync_service(
 
     window
         .with_webview(move |webview| {
-            {
-                webview.jni_handle().exec(move |env, context, _webview| {
-                    let action_jstr = env.new_string(&action_str).unwrap();
-                    let _ = env.call_method(
-                        context,
-                        "syncServiceState",
-                        "(Ljava/lang/String;Z)V",
-                        &[
-                            jni::objects::JValue::from(&action_jstr),
-                            jni::objects::JValue::from(is_exclusive),
-                        ],
-                    );
-                });
-            }
+            webview.jni_handle().exec(move |env, context, _webview| {
+                let action_jstr = env.new_string(&action_str).unwrap();
+                let _ = env.call_method(
+                    context,
+                    "syncServiceState",
+                    "(Ljava/lang/String;Z)V",
+                    &[
+                        jni::objects::JValue::from(&action_jstr),
+                        jni::objects::JValue::from(is_exclusive),
+                    ],
+                );
+            });
         })
         .map_err(|e| format!("WebView JNI execution failed: {}", e))?;
 
