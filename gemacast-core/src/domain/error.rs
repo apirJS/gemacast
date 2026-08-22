@@ -163,12 +163,11 @@ pub enum AudioError {
     #[error("PipeWire connection failed: {0}")]
     PipeWireConnectionFailed(String),
 
-    // ScreenCaptureKit disabled — untested
-    #[cfg(false)]
+    #[cfg(target_os = "macos")]
     #[error("ScreenCaptureKit error: {0}")]
     ScreenCaptureKitError(String),
 
-    #[cfg(false)]
+    #[cfg(target_os = "macos")]
     #[error("ScreenCaptureKit permission denied — grant Screen Recording in System Settings")]
     ScreenCapturePermissionDenied,
 }

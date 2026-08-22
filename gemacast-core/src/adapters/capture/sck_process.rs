@@ -21,9 +21,13 @@ use crate::ports::capture::{CaptureBackend, CaptureHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use screencapturekit::dispatch_queue::DispatchQueue;
 use screencapturekit::prelude::*;
 
-use super::sck_common::{SckAudioHandler, create_sck_audio_config, create_sck_ring_buffer};
+use super::sck_common::{
+    SckAudioHandler, create_sck_audio_config, create_sck_capture_queue, create_sck_ring_buffer,
+    map_sck_error,
+};
 
 /// ScreenCaptureKit per-process audio capture backend.
 ///
@@ -33,14 +37,16 @@ use super::sck_common::{SckAudioHandler, create_sck_audio_config, create_sck_rin
 pub struct SckProcessCapture {
     stream: SCStream,
     is_running: Arc<AtomicBool>,
+    /// The serial dispatch queue SCK delivers callbacks on. Held here — declared after
+    /// `stream` so it drops after it — purely to guarantee it outlives the stream; the
+    /// callbacks reference it by raw pointer.
+    _queue: DispatchQueue,
 }
 
 impl CaptureBackend for SckProcessCapture {
     fn play(&mut self) -> Result<(), GemaCastError> {
         if !self.is_running.load(Ordering::Relaxed) {
-            self.stream
-                .start_capture()
-                .map_err(|e| AudioError::ScreenCaptureKitError(format!("start: {e}")))?;
+            self.stream.start_capture().map_err(map_sck_error)?;
             self.is_running.store(true, Ordering::Relaxed);
         }
         Ok(())
@@ -48,9 +54,7 @@ impl CaptureBackend for SckProcessCapture {
 
     fn pause(&mut self) -> Result<(), GemaCastError> {
         if self.is_running.load(Ordering::Relaxed) {
-            self.stream
-                .stop_capture()
-                .map_err(|e| AudioError::ScreenCaptureKitError(format!("stop: {e}")))?;
+            self.stream.stop_capture().map_err(map_sck_error)?;
             self.is_running.store(false, Ordering::Relaxed);
         }
         Ok(())
@@ -86,14 +90,7 @@ pub fn create_sck_process_loopback(
     pid: u32,
 ) -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     // Enumerate shareable content — this will fail if permission is denied.
-    let content = SCShareableContent::get().map_err(|e| {
-        let msg = format!("{e}");
-        if msg.contains("permission") || msg.contains("denied") || msg.contains("not authorized") {
-            GemaCastError::Audio(AudioError::ScreenCapturePermissionDenied)
-        } else {
-            GemaCastError::Audio(AudioError::ScreenCaptureKitError(msg))
-        }
-    })?;
+    let content = SCShareableContent::get().map_err(map_sck_error)?;
 
     // Find the target application by PID.
     let target_app = content
@@ -136,7 +133,12 @@ pub fn create_sck_process_loopback(
     let config = create_sck_audio_config();
 
     let (producer, stream_error_tx, resources) = create_sck_ring_buffer();
-    let handler = SckAudioHandler::new(producer, resources.notify.clone());
+    let handler = SckAudioHandler::new(
+        producer,
+        resources.notify.clone(),
+        resources.counters.clone(),
+        "sck-process",
+    );
 
     let delegate =
         screencapturekit::stream::delegate_trait::StreamCallbacks::new().on_error(move |e| {
@@ -144,12 +146,17 @@ pub fn create_sck_process_loopback(
             let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
         });
 
+    let queue = create_sck_capture_queue();
     let mut stream = SCStream::new_with_delegate(&filter, &config, delegate);
-    stream.add_output_handler(handler, SCStreamOutputType::Audio);
-
+    // See the desktop backend: a `None` handler id means SCK refused the output, so
+    // fail rather than run a handler-less stream that captures nothing.
     stream
-        .start_capture()
-        .map_err(|e| AudioError::ScreenCaptureKitError(format!("start: {e}")))?;
+        .add_output_handler_with_queue(handler, SCStreamOutputType::Audio, Some(&queue))
+        .ok_or_else(|| {
+            AudioError::ScreenCaptureKitError("SCK rejected the audio output handler".to_string())
+        })?;
+
+    stream.start_capture().map_err(map_sck_error)?;
 
     tracing::info!(
         "[SCK Process] Capture stream started for '{}' (PID {})",
@@ -161,6 +168,7 @@ pub fn create_sck_process_loopback(
         backend: super::PlatformCaptureBackend::SckProcess(SckProcessCapture {
             stream,
             is_running: Arc::new(AtomicBool::new(true)),
+            _queue: queue,
         }),
         consumer: resources.consumer,
         notify: resources.notify,

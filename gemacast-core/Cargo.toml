@@ -74,9 +74,16 @@ features = [
 [target.'cfg(target_os="linux")'.dependencies]
 pipewire = "0.10.0"
 
-# DEAD: ScreenCaptureKit disabled — untested
-# [target.'cfg(target_os="macos")'.dependencies]
-# screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
+[target.'cfg(target_os="macos")'.dependencies]
+# Pinned: 1.5.4 is docs-flagged outdated but every API call is verified against its
+# published source (sha256 99b732b2…dd149); do not bump blind — 8.x is a hard rewrite.
+# NOTE: `macos_13_0` does NOT gate the audio APIs — those are ungated, reachable via the
+# bundled Swift bridge's `platforms: [.macOS(.v13)]` deployment target. The feature only
+# gates `synchronization_clock()`, `advanced.rs` config and an SCWindow field, none of
+# which we call. It is enabled for forward-compat, not because audio needs it.
+# BUILD REQUIREMENT: this crate's build.rs runs `swift build` and *panics* if the Swift
+# toolchain is absent, so any macOS build host needs Xcode (CI's macos-15 has 16.4).
+screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
 
 [dev-dependencies]
 serial_test = "3"

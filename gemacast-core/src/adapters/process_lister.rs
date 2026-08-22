@@ -319,32 +319,36 @@ fn linux_enumerate_pipewire_nodes() -> Result<Vec<ProcessInfo>, crate::domain::e
 }
 
 // ---------------------------------------------------------------------------
-// macOS: ScreenCaptureKit disabled (untested) — returns empty list
+// macOS: ScreenCaptureKit per-process enumeration (CPAL has no per-process path)
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
 fn macos_list_processes() -> Vec<ProcessInfo> {
-    tracing::info!(
-        "[ProcessLister] ScreenCaptureKit disabled — per-process listing unavailable on macOS"
-    );
-    Vec::new()
+    match macos_enumerate_sck_apps() {
+        Ok(processes) => processes,
+        Err(e) => {
+            // Permission not yet granted, or SCK unavailable (< macOS 13). The picker
+            // shows an empty list rather than failing — same shape as a stock Mac with
+            // no capturable apps. Non-fatal by design.
+            tracing::info!(
+                "[ProcessLister] ScreenCaptureKit app enumeration unavailable ({e}); \
+                 per-process list is empty"
+            );
+            Vec::new()
+        }
+    }
 }
 
-#[cfg(false)]
 #[cfg(target_os = "macos")]
 fn macos_enumerate_sck_apps() -> Result<Vec<ProcessInfo>, crate::domain::error::GemaCastError> {
-    use crate::domain::error::AudioError;
+    use crate::adapters::capture::sck_common::map_sck_error;
     use screencapturekit::prelude::*;
     use std::collections::HashMap;
 
-    let content = SCShareableContent::get().map_err(|e| {
-        let msg = format!("{e}");
-        if msg.contains("permission") || msg.contains("denied") || msg.contains("not authorized") {
-            AudioError::ScreenCapturePermissionDenied
-        } else {
-            AudioError::ScreenCaptureKitError(msg)
-        }
-    })?;
+    // Shares the typed error mapping with the capture backends (defect 8): a denied
+    // permission becomes `ScreenCapturePermissionDenied`, everything else carries its
+    // `Display` text — no fragile `msg.contains("permission")` scan here either.
+    let content = SCShareableContent::get().map_err(map_sck_error)?;
 
     let current_pid = std::process::id() as i32;
     let mut seen = HashMap::<String, ProcessInfo>::new();
