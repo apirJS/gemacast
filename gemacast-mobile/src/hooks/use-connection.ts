@@ -174,18 +174,22 @@ export async function disconnect(
   isDisconnecting = true;
 
   const sender = state.connectedSender;
+  const retainedSender = sender ?? state.lastConnectedSender;
 
   if (forgetSender) saveLastSender(null);
 
-  // Optimistically update status to catch echoes during async IPC calls
-  store.getState().patch({ status: Status.Listening });
+  store.getState().patch({
+    status: Status.Listening,
+    lastConnectedSender: forgetSender ? null : retainedSender,
+    isSuspended: !forgetSender,
+  });
   store.getState().setLoading(true);
 
   try {
     if (!sender) {
       store.getState().patch({
         connectedSender: null,
-        lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
+        lastConnectedSender: forgetSender ? null : retainedSender,
         status: Status.Listening,
         connectionHealth: 'ok',
         reconnectAttempts: 0,
@@ -215,7 +219,7 @@ export async function disconnect(
 
     store.getState().patch({
       connectedSender: null,
-      lastConnectedSender: forgetSender ? null : sender,
+      lastConnectedSender: forgetSender ? null : retainedSender,
       status: Status.Listening,
       connectionHealth: 'ok',
       reconnectAttempts: 0,

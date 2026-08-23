@@ -186,6 +186,73 @@ describe('disconnect', () => {
     expect(metrics.networkRttMs).toBeNull();
     expect(metrics.jitterMs).toBeNull();
   });
+
+  function disconnectWithPresenceMidFlight(sender: ReturnType<typeof makeDiscoveredSender>) {
+    const seen: Array<unknown> = [];
+    setupInvokeMock({
+      disconnect_from_sender: () => {
+        seen.push(useAppStore.getState().updateDiscoveredSender(sender));
+        return undefined;
+      },
+      kill_playback: undefined,
+      notify_streaming_stopped: undefined,
+      get_audio_sources: [[], { supportsProcessCapture: false }],
+      get_process_list: [],
+    });
+    return seen;
+  }
+
+  it('does not auto-reconnect when a presence packet lands mid-disconnect', async () => {
+    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    useAppStore.getState().patch({
+      connectedSender: sender,
+      lastConnectedSender: sender,
+      status: Status.Connected,
+      isSuspended: false,
+    });
+
+    const targets = disconnectWithPresenceMidFlight(sender);
+    await disconnect(true);
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toBeNull();
+    expect(useAppStore.getState().lastConnectedSender).toBeNull();
+    expect(useAppStore.getState().status).toBe(Status.Listening);
+  });
+
+  it('does not auto-reconnect a suspended session when a presence packet lands mid-disconnect', async () => {
+    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    useAppStore.getState().patch({
+      connectedSender: sender,
+      lastConnectedSender: sender,
+      status: Status.Connected,
+      isSuspended: false,
+    });
+
+    const targets = disconnectWithPresenceMidFlight(sender);
+    // forgetSender=false keeps the sender on purpose, so `isSuspended` is the
+    // only thing holding the gate shut — it has to be set before the await too.
+    await disconnect(false);
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toBeNull();
+    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().isSuspended).toBe(true);
+  });
+
+  it('still auto-reconnects a genuine link drop, which the gate exists for', () => {
+    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    useAppStore.getState().patch({
+      connectedSender: null,
+      lastConnectedSender: sender,
+      status: Status.Listening,
+      isSuspended: false,
+    });
+
+    expect(useAppStore.getState().updateDiscoveredSender(sender)).toMatchObject({
+      deviceId: 'pc-1',
+    });
+  });
 });
 
 describe('handleSenderTimeout', () => {
