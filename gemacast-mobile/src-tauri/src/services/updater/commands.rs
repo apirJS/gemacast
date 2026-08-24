@@ -77,7 +77,7 @@ pub async fn cleanup_stale_updates(app: tauri::AppHandle) -> Result<(), String> 
 pub async fn install_apk(app: tauri::AppHandle, path: String) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        crate::domains::updater::install::install_apk_android(&app, &path)
+        crate::services::updater::install::install_apk_android(&app, &path)
     }
 
     #[cfg(not(target_os = "android"))]

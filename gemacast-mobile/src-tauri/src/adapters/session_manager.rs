@@ -63,7 +63,7 @@ impl SessionManager for TokioSessionManager {
             shutdown_tx,
             playback_task,
             exclusive_granted,
-        ) = crate::domains::audio::playback::spawn_session_receiver(
+        ) = crate::services::audio::playback::spawn_session_receiver(
             params.jitter_config.clone(),
             params.is_tcp,
             params.exclusive_mode,

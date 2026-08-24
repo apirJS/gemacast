@@ -19,7 +19,7 @@ impl PlatformService for NativePlatformService {
     fn get_transport_type(&self) -> Result<String, String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_transport_check(&self.app_handle)
+            crate::services::discovery::native::call_native_transport_check(&self.app_handle)
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -30,7 +30,7 @@ impl PlatformService for NativePlatformService {
     fn device_public_key(&self) -> Result<String, String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_device_public_key(&self.app_handle)
+            crate::services::discovery::native::call_native_device_public_key(&self.app_handle)
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -42,7 +42,7 @@ impl PlatformService for NativePlatformService {
         #[cfg(target_os = "android")]
         {
             let transcript = base64::engine::general_purpose::STANDARD.encode(transcript);
-            crate::domains::discovery::native::call_native_sign_device_auth(
+            crate::services::discovery::native::call_native_sign_device_auth(
                 &self.app_handle,
                 &transcript,
             )
@@ -60,7 +60,7 @@ impl PlatformService for NativePlatformService {
     ) -> Result<Option<String>, String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_trusted_pc_fingerprint(
+            crate::services::discovery::native::call_native_trusted_pc_fingerprint(
                 &self.app_handle,
                 pc_id.as_ref(),
             )
@@ -75,7 +75,7 @@ impl PlatformService for NativePlatformService {
     fn paired_pc_ids(&self) -> Result<Vec<gemacast_core::domain::types::DeviceId>, String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_paired_pc_ids(&self.app_handle)
+            crate::services::discovery::native::call_native_paired_pc_ids(&self.app_handle)
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -93,7 +93,7 @@ impl PlatformService for NativePlatformService {
     ) -> Result<bool, String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_confirm_pc_identity(
+            crate::services::discovery::native::call_native_confirm_pc_identity(
                 &self.app_handle,
                 pc_id.as_ref(),
                 pc_name,
@@ -116,7 +116,7 @@ impl PlatformService for NativePlatformService {
     ) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_remember_pc_identity(
+            crate::services::discovery::native::call_native_remember_pc_identity(
                 &self.app_handle,
                 pc_id.as_ref(),
                 fingerprint,
@@ -135,7 +135,7 @@ impl PlatformService for NativePlatformService {
     ) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_forget_pc_identity(
+            crate::services::discovery::native::call_native_forget_pc_identity(
                 &self.app_handle,
                 pc_id.as_ref(),
             )
@@ -156,7 +156,7 @@ impl PlatformService for NativePlatformService {
                 PlaybackState::Paused => "SYNC_PAUSED",
                 PlaybackState::Stopped => "SYNC_STOPPED",
             };
-            let _ = crate::domains::discovery::native::call_native_sync_service(
+            let _ = crate::services::discovery::native::call_native_sync_service(
                 &self.app_handle,
                 action,
                 is_exclusive,
@@ -181,7 +181,7 @@ impl PlatformService for NativePlatformService {
         #[cfg(target_os = "android")]
         {
             let wire =
-                crate::domains::discovery::native::call_native_notification_permission_state(
+                crate::services::discovery::native::call_native_notification_permission_state(
                     &self.app_handle,
                 )?;
             NotificationPermission::from_wire(&wire)
@@ -195,7 +195,7 @@ impl PlatformService for NativePlatformService {
     fn open_notification_settings(&self) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            crate::domains::discovery::native::call_native_open_notification_settings(
+            crate::services::discovery::native::call_native_open_notification_settings(
                 &self.app_handle,
             )
         }

@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::domains::audio::service::AudioService;
+use crate::services::audio::service::AudioService;
 use crate::traits::{FrontendNotifier, NetworkInfoProvider, PlatformService};
 
 pub struct AppState {

@@ -1,5 +1,5 @@
 mod adapters;
-mod domains;
+mod services;
 mod state;
 pub mod traits;
 
@@ -60,7 +60,7 @@ pub fn run() {
                 Arc::new(adapters::NativeNetworkInfoProvider);
 
             // -- Wire the AudioService -----------------------------------
-            let audio_service = Arc::new(domains::audio::service::AudioService {
+            let audio_service = Arc::new(services::audio::service::AudioService {
                 session: session_mgr,
                 client_factory,
                 notifier: notifier.clone(),
@@ -82,7 +82,7 @@ pub fn run() {
 
             // -- Spawn IPC listener ----------------------------------
             let cache_dir = handle.path().app_cache_dir().ok();
-            tauri::async_runtime::spawn(domains::ipc::server::run_service_command_listener(
+            tauri::async_runtime::spawn(services::ipc::server::run_service_command_listener(
                 notifier, cache_dir,
             ));
 
@@ -91,39 +91,39 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_device_info::init())
         .invoke_handler(tauri::generate_handler![
-            domains::updater::commands::check_for_update,
-            domains::updater::commands::download_update,
-            domains::updater::commands::install_apk,
-            domains::updater::commands::cleanup_stale_updates,
-            domains::discovery::commands::get_local_ip,
-            domains::discovery::commands::get_network_identifier,
-            domains::discovery::commands::get_connection_status,
-            domains::discovery::commands::start_listening_for_senders,
-            domains::discovery::commands::stop_listening_for_senders,
-            domains::discovery::commands::get_network_state,
-            domains::discovery::commands::forget_pc_identity,
-            domains::discovery::commands::get_paired_pc_ids,
-            domains::discovery::commands::get_notification_permission,
-            domains::discovery::commands::open_notification_settings,
-            domains::audio::commands::connect_to_sender,
-            domains::audio::commands::disconnect_from_sender,
-            domains::audio::commands::start_audio_playback,
-            domains::audio::commands::stop_audio_playback,
-            domains::audio::commands::notify_streaming_stopped,
-            domains::audio::commands::kill_playback,
-            domains::audio::commands::update_jitter_config,
-            domains::audio::commands::get_audio_sources,
-            domains::audio::commands::change_audio_source,
-            domains::audio::commands::change_audio_bitrate,
-            domains::audio::commands::get_process_list,
-            domains::audio::commands::establish_websocket,
-            domains::audio::commands::probe_sender,
-            domains::audio::commands::start_link_recovery,
-            domains::audio::commands::stop_link_recovery,
-            domains::audio::commands::set_audio_gain,
-            domains::audio::commands::get_network_link_pair,
-            domains::audio::commands::restart_session,
-            domains::audio::commands::check_exclusive_support,
+            services::updater::commands::check_for_update,
+            services::updater::commands::download_update,
+            services::updater::commands::install_apk,
+            services::updater::commands::cleanup_stale_updates,
+            services::discovery::commands::get_local_ip,
+            services::discovery::commands::get_network_identifier,
+            services::discovery::commands::get_connection_status,
+            services::discovery::commands::start_listening_for_senders,
+            services::discovery::commands::stop_listening_for_senders,
+            services::discovery::commands::get_network_state,
+            services::discovery::commands::forget_pc_identity,
+            services::discovery::commands::get_paired_pc_ids,
+            services::discovery::commands::get_notification_permission,
+            services::discovery::commands::open_notification_settings,
+            services::audio::commands::connect_to_sender,
+            services::audio::commands::disconnect_from_sender,
+            services::audio::commands::start_audio_playback,
+            services::audio::commands::stop_audio_playback,
+            services::audio::commands::notify_streaming_stopped,
+            services::audio::commands::kill_playback,
+            services::audio::commands::update_jitter_config,
+            services::audio::commands::get_audio_sources,
+            services::audio::commands::change_audio_source,
+            services::audio::commands::change_audio_bitrate,
+            services::audio::commands::get_process_list,
+            services::audio::commands::establish_websocket,
+            services::audio::commands::probe_sender,
+            services::audio::commands::start_link_recovery,
+            services::audio::commands::stop_link_recovery,
+            services::audio::commands::set_audio_gain,
+            services::audio::commands::get_network_link_pair,
+            services::audio::commands::restart_session,
+            services::audio::commands::check_exclusive_support,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -149,7 +149,7 @@ pub fn run() {
                     // teardown lives. Best effort — the exit below is what matters.
                     #[cfg(target_os = "android")]
                     if let Err(error) =
-                        domains::discovery::native::call_native_finish_and_remove_task(&handle)
+                        services::discovery::native::call_native_finish_and_remove_task(&handle)
                     {
                         tracing::warn!("could not remove the app task on exit: {error}");
                     }
