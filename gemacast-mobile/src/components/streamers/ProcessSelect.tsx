@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Monitor, Volume2, Settings, ChevronDown } from 'lucide-react';
-import type { AudioSource, ProcessInfo, DiscoveredSender } from '../../core/types';
+import type { AudioSource, ProcessInfo, DiscoveredStreamer } from '../../core/types';
 import { useConnection } from '../../hooks/use-connection';
 import { PULL_REFRESH_IGNORE_ATTR } from '../../hooks/use-pull-to-refresh';
 
@@ -9,7 +9,7 @@ type ProcessSelectProps = {
   processList: ProcessInfo[];
   currentSource: AudioSource;
   onSourceChange: (source: AudioSource) => void;
-  sender: DiscoveredSender;
+  streamer: DiscoveredStreamer;
   supportsProcessCapture: boolean;
 };
 
@@ -18,7 +18,7 @@ export function ProcessSelect({
   processList,
   currentSource,
   onSourceChange,
-  sender,
+  streamer,
   supportsProcessCapture,
 }: ProcessSelectProps) {
   const [open, setOpen] = useState(false);
@@ -104,7 +104,7 @@ export function ProcessSelect({
 
       {(open || closing) && (
         <div
-          // Scrolls its own process list; the sender list's pull-to-refresh must
+          // Scrolls its own process list; the streamer list's pull-to-refresh must
           // not claim drags that start in here.
           {...{ [PULL_REFRESH_IGNORE_ATTR]: '' }}
           className={`absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-default border border-border bg-popover shadow-[0_8px_24px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)] ${closing ? 'animate-[fade-out_150ms_ease-in_forwards]' : 'animate-[fade-in_150ms_ease-out]'}`}
@@ -133,7 +133,7 @@ export function ProcessSelect({
                 setIsRefreshing(true);
                 try {
                   await Promise.all([
-                    fetchProcessList(sender),
+                    fetchProcessList(streamer),
                     new Promise((r) => setTimeout(r, 600)),
                   ]);
                 } finally {

@@ -955,7 +955,7 @@ mod under_delivery {
     /// The reshaped under-delivery detector, against the worst window of a field
     /// 2.4GHz capture: 105 arrivals over a **3161ms** callback window.
     ///
-    /// Both receiver-side counters read healthy there — 105 arrivals against 86
+    /// Both player-side counters read healthy there — 105 arrivals against 86
     /// frames played is a ratio of 1.22, and the old `arrivals * 2 < played` test
     /// stayed silent through the entire collapse in two consecutive field rounds.
     /// Measured against wall clock the same window delivered 33% of nominal.
@@ -982,7 +982,7 @@ mod under_delivery {
     }
 
     /// The false-positive guard. `frames_played` must not reach this decision at
-    /// all: a slow playback rate is a receiver-side symptom with many causes, and
+    /// all: a slow playback rate is a player-side symptom with many causes, and
     /// only the arrival rate against wall clock says the *link* is at fault.
     ///
     /// 100 arrivals in a 1000ms window is nominal delivery. That the DAC consumed
@@ -2182,7 +2182,7 @@ mod rebuffer_resume {
     }
 }
 
-/// Crossing a hole: fast-forward, re-anchoring after a sender restart, the
+/// Crossing a hole: fast-forward, re-anchoring after a streamer restart, the
 /// reorder tolerance, and the fade-in on the far side.
 mod gap_recovery {
     use super::*;
@@ -2306,7 +2306,7 @@ mod gap_recovery {
     }
 
     #[test]
-    fn should_reanchor_playhead_on_sender_crash_restart() {
+    fn should_reanchor_playhead_on_streamer_crash_restart() {
         let (mut manager, mut encoder, mut prod, mut cons) = setup_env();
         let base_time = Instant::now();
         // 1. Initial network fill (e.g. sequence 1000..1005)

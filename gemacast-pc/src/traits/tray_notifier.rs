@@ -19,7 +19,7 @@ pub struct ConnectionApprovalRequest {
 /// **Tests**: [`crate::testing::mocks::MockTrayNotifier`] that records calls.
 #[async_trait]
 pub trait TrayNotifier: Send + Sync {
-    /// Ask the PC user to approve a first-time LAN receiver.
+    /// Ask the PC user to approve a first-time LAN player.
     async fn request_connection_approval(&self, request: ConnectionApprovalRequest) -> bool;
 
     /// A new device connected (or reconnected at a new address).

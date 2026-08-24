@@ -1,3 +1,3 @@
 pub mod echo;
-pub mod receiver;
-pub mod sender;
+pub mod player;
+pub mod streamer;

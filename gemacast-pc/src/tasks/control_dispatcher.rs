@@ -34,8 +34,8 @@ pub struct ControlDispatcher {
     pub tray: Arc<dyn TrayNotifier>,
     pub audio: Arc<dyn AudioController>,
     pub notifier: Arc<dyn DeviceNotifier>,
-    pub sender_id: DeviceId,
-    pub sender_name: String,
+    pub streamer_id: DeviceId,
+    pub streamer_name: String,
     pub pc_certificate_fingerprint: String,
     pub is_broadcasting: Arc<AtomicBool>,
     pub authorizer: SessionAuthorizer,
@@ -95,8 +95,8 @@ impl ControlDispatcher {
                     match self.authorizer.pending_status(&request_id, &device_id) {
                         Some(gemacast_core::control::PendingApprovalStatus::Pending) => {
                             let _ = response_tx.send(Ok(PresenceResponse {
-                                device_id: self.sender_id.clone(),
-                                sender_name: self.sender_name.clone(),
+                                device_id: self.streamer_id.clone(),
+                                streamer_name: self.streamer_name.clone(),
                                 is_offline: false,
                                 pc_network_link: None,
                                 device_registered: Some(false),
@@ -140,7 +140,7 @@ impl ControlDispatcher {
                             .is_trusted(&device_id, &auth.public_key);
                         let challenge = match self.device_auth.begin(
                             device_id.clone(),
-                            self.sender_id.clone(),
+                            self.streamer_id.clone(),
                             self.pc_certificate_fingerprint.clone(),
                             requires_approval,
                             auth.public_key,
@@ -153,8 +153,8 @@ impl ControlDispatcher {
                             }
                         };
                         let _ = response_tx.send(Ok(PresenceResponse {
-                            device_id: self.sender_id.clone(),
-                            sender_name: self.sender_name.clone(),
+                            device_id: self.streamer_id.clone(),
+                            streamer_name: self.streamer_name.clone(),
                             is_offline: false,
                             pc_network_link: None,
                             device_registered: Some(false),
@@ -170,7 +170,7 @@ impl ControlDispatcher {
                     }
                     let identity = match self.device_auth.verify(
                         &device_id,
-                        &self.sender_id,
+                        &self.streamer_id,
                         &self.pc_certificate_fingerprint,
                         &auth,
                     ) {
@@ -247,8 +247,8 @@ impl ControlDispatcher {
                             authorizer.resolve_pending(&approval_request_id, approved);
                         });
                         let _ = response_tx.send(Ok(PresenceResponse {
-                            device_id: self.sender_id.clone(),
-                            sender_name: self.sender_name.clone(),
+                            device_id: self.streamer_id.clone(),
+                            streamer_name: self.streamer_name.clone(),
                             is_offline: false,
                             pc_network_link: None,
                             device_registered: Some(false),
@@ -309,8 +309,8 @@ impl ControlDispatcher {
                         } else {
                             self.authorizer.commit(pending_session).map(
                                 |(session_token, session_generation)| PresenceResponse {
-                                    device_id: self.sender_id.clone(),
-                                    sender_name: self.sender_name.clone(),
+                                    device_id: self.streamer_id.clone(),
+                                    streamer_name: self.streamer_name.clone(),
                                     is_offline: false,
                                     pc_network_link: None,
                                     device_registered: Some(true),
@@ -401,8 +401,8 @@ impl ControlDispatcher {
                 let device_registered = device_id.map(|id| self.registry.update_last_seen(&id));
 
                 let _ = response_tx.send(PresenceResponse {
-                    device_id: self.sender_id.clone(),
-                    sender_name: self.sender_name.clone(),
+                    device_id: self.streamer_id.clone(),
+                    streamer_name: self.streamer_name.clone(),
                     is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
                     pc_network_link: None,
                     device_registered,
@@ -538,7 +538,7 @@ pub async fn unregister_device(
     audio.unsubscribe(&device_id).await
 }
 
-/// Returns the available audio sources and sender capabilities for the current platform.
+/// Returns the available audio sources and streamer capabilities for the current platform.
 ///
 /// - **Windows**: Always supports process capture (via WASAPI).
 /// - **Linux**: Supports process capture only if PipeWire is available.
@@ -546,7 +546,7 @@ pub async fn unregister_device(
 /// - **Other**: Desktop capture only.
 fn get_platform_sources() -> (
     Vec<gemacast_core::domain::types::AudioSource>,
-    gemacast_core::domain::types::SenderCapabilities,
+    gemacast_core::domain::types::StreamerCapabilities,
 ) {
     let supports_process = if cfg!(any(target_os = "windows", target_os = "macos")) {
         true
@@ -567,7 +567,7 @@ fn get_platform_sources() -> (
 
     (
         vec![gemacast_core::domain::types::AudioSource::Desktop],
-        gemacast_core::domain::types::SenderCapabilities {
+        gemacast_core::domain::types::StreamerCapabilities {
             supports_process_capture: supports_process,
         },
     )
@@ -788,8 +788,8 @@ mod tests {
             tray,
             audio: audio.clone(),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: authorizer.clone(),
@@ -870,8 +870,8 @@ mod tests {
             tray: tray.clone(),
             audio: audio.clone(),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: SessionAuthorizer::default(),
@@ -924,7 +924,7 @@ mod tests {
         assert!(!challenge.requires_approval);
         let transcript = build_device_auth_transcript(
             &device_id,
-            &dispatcher.sender_id,
+            &dispatcher.streamer_id,
             &dispatcher.pc_certificate_fingerprint,
             &public_key,
             &phone_nonce,
@@ -981,8 +981,8 @@ mod tests {
             tray: repair_tray.clone(),
             audio: repair_audio.clone(),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: repair_authorizer,
@@ -1019,7 +1019,7 @@ mod tests {
         assert!(!repair_challenge.requires_approval);
         let repair_transcript = build_device_auth_transcript(
             &device_id,
-            &repair_dispatcher.sender_id,
+            &repair_dispatcher.streamer_id,
             &repair_dispatcher.pc_certificate_fingerprint,
             &public_key,
             &repair_nonce,
@@ -1094,8 +1094,8 @@ mod tests {
             tray: tray.clone(),
             audio: audio.clone(),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: authorizer.clone(),
@@ -1153,7 +1153,7 @@ mod tests {
 
         let transcript = build_device_auth_transcript(
             &device_id,
-            &dispatcher.sender_id,
+            &dispatcher.streamer_id,
             &dispatcher.pc_certificate_fingerprint,
             &new_public_key,
             &phone_nonce,
@@ -1245,8 +1245,8 @@ mod tests {
             tray: Arc::new(MockTrayNotifier::new()),
             audio: Arc::new(MockAudioController::new()),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: SessionAuthorizer::default(),
@@ -1310,8 +1310,8 @@ mod tests {
             tray: tray.clone(),
             audio: Arc::new(MockAudioController::new()),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer: SessionAuthorizer::default(),
@@ -1365,8 +1365,8 @@ mod tests {
             tray: Arc::new(MockTrayNotifier::new()),
             audio: Arc::new(MockAudioController::new()),
             notifier: Arc::new(MockDeviceNotifier::new()),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             pc_certificate_fingerprint: "pc-certificate".into(),
             is_broadcasting: Arc::new(AtomicBool::new(true)),
             authorizer,
@@ -1398,8 +1398,8 @@ mod tests {
                 tray: Arc::new(MockTrayNotifier::new()),
                 audio: Arc::new(MockAudioController::new()),
                 notifier: Arc::new(MockDeviceNotifier::new()),
-                sender_id: DeviceId("test-sender".into()),
-                sender_name: "Test Sender".into(),
+                streamer_id: DeviceId("test-streamer".into()),
+                streamer_name: "Test Streamer".into(),
                 pc_certificate_fingerprint: "pc-certificate".into(),
                 is_broadcasting: Arc::new(AtomicBool::new(true)),
                 authorizer: SessionAuthorizer::default(),

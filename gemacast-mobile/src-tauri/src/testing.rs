@@ -11,12 +11,12 @@ pub mod mocks {
     use gemacast_core::control::types::{ConnectReq, PresenceResponse};
     use gemacast_core::domain::types::{
         AudioSource, ConnectionMode, DeviceId, DiscoveredDevice, JitterConfig, ProcessInfo,
-        SenderCapabilities,
+        StreamerCapabilities,
     };
 
     use crate::traits::{
-        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SenderControlClient,
-        SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
+        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SessionInfo,
+        SessionManager, SessionParams, StreamerControlClient, StreamerControlClientFactory,
     };
 
     // -------------------------------------------------------------------
@@ -26,15 +26,15 @@ pub mod mocks {
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
     pub enum FrontendEvent {
-        SenderDiscovered(DiscoveredDevice),
-        SenderTimeout(DeviceId),
+        StreamerDiscovered(DiscoveredDevice),
+        StreamerTimeout(DeviceId),
         ForceDisconnect,
         LinkLost,
         LinkRecovered {
             device_registered: Option<bool>,
         },
         LinkRecoveryGaveUp,
-        SenderConnected(String),
+        StreamerConnected(String),
         AudioTelemetry {
             latency: f32,
             is_active: bool,
@@ -65,18 +65,18 @@ pub mod mocks {
     }
 
     impl FrontendNotifier for MockFrontendNotifier {
-        fn emit_sender_discovered(&self, device: DiscoveredDevice) {
+        fn emit_streamer_discovered(&self, device: DiscoveredDevice) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderDiscovered(device));
+                .push(FrontendEvent::StreamerDiscovered(device));
         }
 
-        fn emit_sender_timeout(&self, sender_id: &DeviceId) {
+        fn emit_streamer_timeout(&self, streamer_id: &DeviceId) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderTimeout(sender_id.clone()));
+                .push(FrontendEvent::StreamerTimeout(streamer_id.clone()));
         }
 
         fn emit_force_disconnect(&self) {
@@ -104,11 +104,11 @@ pub mod mocks {
                 .push(FrontendEvent::LinkRecoveryGaveUp);
         }
 
-        fn emit_sender_connected(&self, ip: String) {
+        fn emit_streamer_connected(&self, ip: String) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderConnected(ip));
+                .push(FrontendEvent::StreamerConnected(ip));
         }
 
         fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32) {
@@ -283,7 +283,7 @@ pub mod mocks {
     }
 
     // -------------------------------------------------------------------
-    // ControlClientCall + MockSenderControlClient
+    // ControlClientCall + MockStreamerControlClient
     // -------------------------------------------------------------------
 
     #[allow(dead_code)]
@@ -311,7 +311,7 @@ pub mod mocks {
     }
 
     /// Records every HTTP control call for later assertion.
-    pub struct MockSenderControlClient {
+    pub struct MockStreamerControlClient {
         pub calls: Mutex<Vec<ControlClientCall>>,
         connect_result: Mutex<Result<(), String>>,
         disconnect_result: Mutex<Result<(), String>>,
@@ -322,7 +322,7 @@ pub mod mocks {
         probe_device_registered: Mutex<Option<bool>>,
     }
 
-    impl MockSenderControlClient {
+    impl MockStreamerControlClient {
         pub fn new() -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
@@ -369,7 +369,7 @@ pub mod mocks {
     }
 
     #[async_trait]
-    impl SenderControlClient for MockSenderControlClient {
+    impl StreamerControlClient for MockStreamerControlClient {
         async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
             self.calls.lock().unwrap().push(ControlClientCall::Connect {
                 device_id: req.device_id.clone(),
@@ -379,8 +379,8 @@ pub mod mocks {
                 .unwrap()
                 .clone()
                 .map(|_| PresenceResponse {
-                    device_id: DeviceId("test-sender".to_string()),
-                    sender_name: "Test Sender".to_string(),
+                    device_id: DeviceId("test-streamer".to_string()),
+                    streamer_name: "Test Streamer".to_string(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(true),
@@ -404,14 +404,14 @@ pub mod mocks {
 
         async fn get_audio_sources(
             &self,
-        ) -> Result<(Vec<AudioSource>, SenderCapabilities), String> {
+        ) -> Result<(Vec<AudioSource>, StreamerCapabilities), String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(ControlClientCall::GetAudioSources);
             Ok((
                 vec![],
-                SenderCapabilities {
+                StreamerCapabilities {
                     supports_process_capture: false,
                 },
             ))
@@ -434,8 +434,8 @@ pub mod mocks {
             }
 
             Ok(PresenceResponse {
-                device_id: DeviceId("test-sender".to_string()),
-                sender_name: "Test Sender".to_string(),
+                device_id: DeviceId("test-streamer".to_string()),
+                streamer_name: "Test Streamer".to_string(),
                 is_offline: false,
                 pc_network_link: None,
                 device_registered: *self.probe_device_registered.lock().unwrap(),
@@ -482,18 +482,18 @@ pub mod mocks {
 
     /// Factory that returns a shared mock client, so all calls are recorded
     /// in one place regardless of how many times `create()` is called.
-    pub struct MockSenderControlClientFactory {
-        pub client: Arc<MockSenderControlClient>,
+    pub struct MockStreamerControlClientFactory {
+        pub client: Arc<MockStreamerControlClient>,
     }
 
-    impl MockSenderControlClientFactory {
-        pub fn new(client: Arc<MockSenderControlClient>) -> Self {
+    impl MockStreamerControlClientFactory {
+        pub fn new(client: Arc<MockStreamerControlClient>) -> Self {
             Self { client }
         }
     }
 
-    impl SenderControlClientFactory for MockSenderControlClientFactory {
-        fn create(&self, _ip: IpAddr) -> Arc<dyn SenderControlClient> {
+    impl StreamerControlClientFactory for MockStreamerControlClientFactory {
+        fn create(&self, _ip: IpAddr) -> Arc<dyn StreamerControlClient> {
             self.client.clone()
         }
     }

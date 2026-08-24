@@ -1,4 +1,4 @@
-//! Audio capture backends and factory (sender-side).
+//! Audio capture backends and factory (streamer-side).
 //!
 //! Re-exports port traits from [`crate::ports::capture`] and provides the
 //! production [`DefaultCaptureFactory`] that selects platform-specific backends.
@@ -29,7 +29,7 @@ pub mod sck_desktop;
 pub mod sck_process;
 
 // Re-export port traits for backward compatibility.
-// Consumers that previously imported from `stream::sender::capture::CaptureBackend`
+// Consumers that previously imported from `stream::streamer::capture::CaptureBackend`
 // will continue to work.
 pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 
@@ -41,7 +41,7 @@ pub use crate::ports::capture::{CaptureBackend, CaptureFactory, CaptureHandle};
 /// - Compiler can inline `play()`/`pause()` through the match arms
 /// - Stack-allocated (no heap allocation per capture handle)
 ///
-/// Not available on Android — Android is a receiver-only platform.
+/// Not available on Android — Android is a player-only platform.
 #[cfg(not(target_os = "android"))]
 pub enum PlatformCaptureBackend {
     #[cfg(target_os = "windows")]
@@ -126,7 +126,7 @@ impl CaptureBackend for PlatformCaptureBackend {
 /// macOS needs a virtual output device (BlackHole/Soundflower) and captures nothing
 /// on a stock Mac, so the `< 13` branch logs how to get audio working.
 ///
-/// Not available on Android — Android is a receiver-only platform.
+/// Not available on Android — Android is a player-only platform.
 #[cfg(not(target_os = "android"))]
 pub struct DefaultCaptureFactory;
 

@@ -11,16 +11,16 @@ export function useSettings() {
   const update = (patch: Partial<AppSettings>): Promise<boolean> => {
     const state = useAppStore.getState();
     const nextSettings = { ...state.settings, ...patch };
-    const connectedSender =
+    const connectedStreamer =
       (state.status === Status.Connected ||
         state.status === Status.Playing ||
         state.status === Status.Paused) &&
-      state.connectedSender
-        ? state.connectedSender
+      state.connectedStreamer
+        ? state.connectedStreamer
         : null;
 
     const needsRemoteApply = Boolean(
-      connectedSender &&
+      connectedStreamer &&
       (patch.bufferPreset !== undefined ||
         patch.customJitterConfig !== undefined ||
         patch.bitratePreset !== undefined ||
@@ -51,9 +51,9 @@ export function useSettings() {
 
         if (
           (patch.bitratePreset !== undefined || patch.customBitrateKbps !== undefined) &&
-          connectedSender
+          connectedStreamer
         ) {
-          const ip = connectedSender.addr.split(':')[0];
+          const ip = connectedStreamer.addr.split(':')[0];
           const deviceId = state.deviceInfo.deviceId;
           const bitrate = resolveBitrate(
             nextSettings.bitratePreset,
@@ -62,7 +62,7 @@ export function useSettings() {
           await tauriBridge.changeAudioBitrate({ ip, deviceId, bitrate });
         }
 
-        if (patch.exclusiveMode !== undefined && connectedSender) {
+        if (patch.exclusiveMode !== undefined && connectedStreamer) {
           await tauriBridge.restartSession({ exclusiveMode: patch.exclusiveMode });
         }
 

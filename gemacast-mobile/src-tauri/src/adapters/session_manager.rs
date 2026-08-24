@@ -1,5 +1,5 @@
 use crate::traits::{
-    FrontendNotifier, SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
+    FrontendNotifier, SessionInfo, SessionManager, SessionParams, StreamerControlClientFactory,
 };
 use async_trait::async_trait;
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
@@ -30,7 +30,7 @@ struct ActiveSession {
 /// Manages playback sessions and WebSocket client tasks using Tokio primitives.
 pub struct TokioSessionManager {
     notifier: Arc<dyn FrontendNotifier>,
-    client_factory: Arc<dyn SenderControlClientFactory>,
+    client_factory: Arc<dyn StreamerControlClientFactory>,
     session: tokio::sync::Mutex<Option<ActiveSession>>,
     ws_client_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -38,7 +38,7 @@ pub struct TokioSessionManager {
 impl TokioSessionManager {
     pub fn new(
         notifier: Arc<dyn FrontendNotifier>,
-        client_factory: Arc<dyn SenderControlClientFactory>,
+        client_factory: Arc<dyn StreamerControlClientFactory>,
     ) -> Self {
         Self {
             notifier,
@@ -63,7 +63,7 @@ impl SessionManager for TokioSessionManager {
             shutdown_tx,
             playback_task,
             exclusive_granted,
-        ) = crate::services::audio::playback::spawn_session_receiver(
+        ) = crate::services::audio::playback::spawn_session_player(
             params.jitter_config.clone(),
             params.is_tcp,
             params.exclusive_mode,
@@ -208,18 +208,21 @@ impl SessionManager for TokioSessionManager {
 
 /// Run the HTTPS probe heartbeat loop until cancelled.
 ///
-/// Sends an HTTPS probe to the PC sender every 5 seconds so the PC's
+/// Sends an HTTPS probe to the PC streamer every 5 seconds so the PC's
 /// device watchdog keeps the connection alive. This replaces the old
 /// WebView `setInterval` timer which Android would throttle when the
 /// app was backgrounded or the screen was off.
 ///
 /// Errors are logged but never terminate the loop — probes are best-effort.
-async fn run_probe_loop(client: Arc<dyn crate::traits::SenderControlClient>, device_id: DeviceId) {
+async fn run_probe_loop(
+    client: Arc<dyn crate::traits::StreamerControlClient>,
+    device_id: DeviceId,
+) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         interval.tick().await;
         if let Err(e) = client.probe(Some(device_id.clone())).await {
-            tracing::warn!("[Probe] Failed to probe sender: {}", e);
+            tracing::warn!("[Probe] Failed to probe streamer: {}", e);
         }
     }
 }

@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-//! GemaCast PC Sender — streams desktop audio to mobile devices.
+//! GemaCast PC Streamer — streams desktop audio to mobile devices.
 //!
 //! This binary runs as a system tray application. The main thread owns the
 //! tray event loop ([`app`]), while a background thread runs all async tasks

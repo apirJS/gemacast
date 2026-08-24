@@ -7,7 +7,7 @@ import type {
   NetworkLinkPairInfo,
   NotificationPermission,
   ProcessInfo,
-  SenderCapabilities,
+  StreamerCapabilities,
 } from './types';
 
 export function resolveBitrate(preset: BitratePreset, customKbps: number): number | null {
@@ -55,8 +55,8 @@ export const tauriBridge = {
 
   cleanupStaleUpdates: () => invoke('cleanup_stale_updates'),
 
-  connectToSender: (args: ConnectArgs) =>
-    invoke('connect_to_sender', {
+  connectToStreamer: (args: ConnectArgs) =>
+    invoke('connect_to_streamer', {
       ip: args.ip,
       deviceId: args.deviceId,
       deviceName: args.deviceName,
@@ -67,7 +67,7 @@ export const tauriBridge = {
       transport: args.transport,
     }),
 
-  disconnectFromSender: (args: DisconnectArgs) => invoke('disconnect_from_sender', args),
+  disconnectFromStreamer: (args: DisconnectArgs) => invoke('disconnect_from_streamer', args),
 
   startAudioPlayback: (args: PlaybackArgs) => invoke('start_audio_playback', args),
 
@@ -78,10 +78,10 @@ export const tauriBridge = {
 
   notifyStreamingStopped: () => invoke('notify_streaming_stopped'),
 
-  startListeningForSenders: (args: { deviceId: string; mode: ConnectionMode }) =>
-    invoke('start_listening_for_senders', args),
+  startListeningForStreamers: (args: { deviceId: string; mode: ConnectionMode }) =>
+    invoke('start_listening_for_streamers', args),
 
-  stopListeningForSenders: () => invoke('stop_listening_for_senders'),
+  stopListeningForStreamers: () => invoke('stop_listening_for_streamers'),
 
   getNetworkState: () =>
     invoke<{
@@ -102,7 +102,7 @@ export const tauriBridge = {
     invoke<{ wifi: boolean; usb: boolean; adb: boolean }>('get_connection_status'),
 
   getAudioSources: (args: { ip: string }) =>
-    invoke<[AudioSource[], SenderCapabilities]>('get_audio_sources', args),
+    invoke<[AudioSource[], StreamerCapabilities]>('get_audio_sources', args),
 
   changeAudioSource: (args: { ip: string; deviceId: string; source: AudioSource }) =>
     invoke('change_audio_source', args),
@@ -115,14 +115,14 @@ export const tauriBridge = {
   changeAudioBitrate: (args: { ip: string; deviceId: string; bitrate: number | null }) =>
     invoke('change_audio_bitrate', args),
 
-  probeSender: (args: { ip: string; deviceId: string }) => invoke('probe_sender', args),
+  probeStreamer: (args: { ip: string; deviceId: string }) => invoke('probe_streamer', args),
 
   startLinkRecovery: (args: { ip: string; deviceId: string }) =>
     invoke('start_link_recovery', args),
 
   stopLinkRecovery: () => invoke('stop_link_recovery'),
 
-  establishWebsocket: (args: { senderIp: string; deviceId: string }) =>
+  establishWebsocket: (args: { streamerIp: string; deviceId: string }) =>
     invoke('establish_websocket', args),
 
   setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),

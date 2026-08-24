@@ -1,7 +1,7 @@
 //! Periodically evicts devices that stop sending probe heartbeats.
 //!
 //! Every connected device must send periodic probes to stay registered. This
-//! includes ADB/loopback receivers so a failed WebSocket or audio socket cannot
+//! includes ADB/loopback players so a failed WebSocket or audio socket cannot
 //! leave a permanent registry entry behind.
 
 use std::sync::Arc;

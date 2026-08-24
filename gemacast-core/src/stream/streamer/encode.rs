@@ -12,7 +12,7 @@ pub enum EncodeResult {
 /// payload.
 ///
 /// Unrelated to the jitter buffer's `SILENCE_RMS` (0.005), which decides whether the
-/// *receiver* may fast-forward through silence. This one is a send-side bandwidth
+/// *player* may fast-forward through silence. This one is a send-side bandwidth
 /// optimisation and is deliberately far lower: anything above it is real program
 /// material that must be encoded, and mistaking quiet music for silence here would
 /// drop it from the stream entirely.
@@ -243,7 +243,7 @@ mod tests {
         fn should_reject_a_short_frame_rather_than_transmit_a_misframed_packet() {
             // One sample-pair short. Without the guard the old code read
             // `OPUS_FRAME_SAMPLES * 4` bytes from a 958-element slice — 8 bytes past
-            // the end — and the receiver would have accepted the packet as valid.
+            // the end — and the player would have accepted the packet as valid.
             let result = encode_len(OPUS_FRAME_SAMPLES - 2, AudioBitrate::Uncompressed);
 
             match result {

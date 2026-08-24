@@ -26,10 +26,10 @@ pub(crate) struct BroadcasterState {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
-fn online_presence(sender_id: &DeviceId, sender_name: &str) -> ControlMessage {
+fn online_presence(streamer_id: &DeviceId, streamer_name: &str) -> ControlMessage {
     ControlMessage::Presence {
-        device_id: sender_id.clone(),
-        sender_name: sender_name.to_string(),
+        device_id: streamer_id.clone(),
+        streamer_name: streamer_name.to_string(),
         is_offline: false,
         transport: None,
     }
@@ -41,8 +41,8 @@ fn online_presence(sender_id: &DeviceId, sender_name: &str) -> ControlMessage {
 /// independently unit-testable with mock implementations.
 pub struct CommandHandler {
     pub is_broadcasting: Arc<AtomicBool>,
-    pub sender_id: DeviceId,
-    pub sender_name: String,
+    pub streamer_id: DeviceId,
+    pub streamer_name: String,
     pub registry: Arc<dyn DeviceRegistry>,
     pub tray: Arc<dyn TrayNotifier>,
     pub audio: Arc<dyn AudioController>,
@@ -96,12 +96,12 @@ impl CommandHandler {
         broadcaster.shutdown_tx = Some(stop_tx);
 
         let registry = self.registry.clone();
-        let sender_id = self.sender_id.clone();
-        let sender_name = self.sender_name.clone();
+        let streamer_id = self.streamer_id.clone();
+        let streamer_name = self.streamer_name.clone();
 
         tokio::spawn(async move {
-            let sid = sender_id;
-            let sname = sender_name;
+            let sid = streamer_id;
+            let sname = streamer_name;
             let factory = move || online_presence(&sid, &sname);
             let registry_ref = registry;
             let target_ips = move || {
@@ -292,8 +292,8 @@ mod tests {
     ) -> CommandHandler {
         CommandHandler {
             is_broadcasting: Arc::new(AtomicBool::new(true)),
-            sender_id: DeviceId("pc-1".into()),
-            sender_name: "Test PC".into(),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             registry,
             tray,
             audio,
@@ -336,15 +336,15 @@ mod tests {
             Arc::new(MockAudioController::new()),
             Arc::new(MockDeviceNotifier::new()),
         );
-        match online_presence(&handler.sender_id, &handler.sender_name) {
+        match online_presence(&handler.streamer_id, &handler.streamer_name) {
             ControlMessage::Presence {
                 device_id,
-                sender_name,
+                streamer_name,
                 is_offline,
                 transport,
             } => {
-                assert_eq!(device_id, handler.sender_id);
-                assert_eq!(sender_name, handler.sender_name);
+                assert_eq!(device_id, handler.streamer_id);
+                assert_eq!(streamer_name, handler.streamer_name);
                 assert!(!is_offline);
                 assert!(transport.is_none());
             }

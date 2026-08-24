@@ -1,4 +1,4 @@
-//! Sender-side audio capture, encoding, and streaming.
+//! Streamer-side audio capture, encoding, and streaming.
 
 pub mod capture_pool;
 pub mod encode;

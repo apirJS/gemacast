@@ -8,7 +8,7 @@ use gemacast_core::domain::types::JitterConfig;
 use crate::traits::FrontendNotifier;
 
 /// Channels `setup_event_forwarding` hands back to the receive loop: the
-/// sender-IP oneshot, the audio-telemetry tuple stream `(buffer_ms, rms,
+/// streamer-IP oneshot, the audio-telemetry tuple stream `(buffer_ms, rms,
 /// jitter_ms)`, and the wire-RTT stream.
 type EventForwardingChannels = (
     oneshot::Sender<String>,
@@ -17,15 +17,15 @@ type EventForwardingChannels = (
 );
 
 pub fn setup_event_forwarding(notifier: Arc<dyn FrontendNotifier>) -> EventForwardingChannels {
-    let (sender_ip_tx, sender_ip_rx) = oneshot::channel::<String>();
+    let (streamer_ip_tx, streamer_ip_rx) = oneshot::channel::<String>();
     let notifier_conn = notifier.clone();
     tokio::spawn(async move {
-        if let Ok(ip) = sender_ip_rx.await {
-            notifier_conn.emit_sender_connected(ip);
+        if let Ok(ip) = streamer_ip_rx.await {
+            notifier_conn.emit_streamer_connected(ip);
         }
     });
 
-    // Raw wire RTT from the UDP echo ping (receiver intercepts the reflected
+    // Raw wire RTT from the UDP echo ping (player intercepts the reflected
     // ping and sends the round-trip here, ~every 500 ms). ADB/loopback has no
     // UDP echo, so this channel simply stays quiet there and the UI shows `--`.
     let (rtt_tx, mut rtt_rx) = tokio::sync::mpsc::channel::<f32>(10);
@@ -48,10 +48,10 @@ pub fn setup_event_forwarding(notifier: Arc<dyn FrontendNotifier>) -> EventForwa
         }
     });
 
-    (sender_ip_tx, latency_tx, rtt_tx)
+    (streamer_ip_tx, latency_tx, rtt_tx)
 }
 
-pub type SessionReceiverResult = Result<
+pub type SessionPlayerResult = Result<
     (
         Arc<AtomicBool>,
         Arc<AtomicBool>,
@@ -65,7 +65,7 @@ pub type SessionReceiverResult = Result<
 >;
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_session_receiver(
+pub fn spawn_session_player(
     jitter_config: JitterConfig,
     is_tcp: bool,
     exclusive_mode: bool,
@@ -76,14 +76,14 @@ pub fn spawn_session_receiver(
     network_link: gemacast_core::domain::types::NetworkLink,
     session_token: Option<String>,
     session_generation: Option<gemacast_core::control::SessionGeneration>,
-) -> SessionReceiverResult {
+) -> SessionPlayerResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
     let is_playing = Arc::new(AtomicBool::new(true));
     let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let receiver = gemacast_core::stream::receiver::AudioStreamReceiver::new(
+    let player = gemacast_core::stream::player::AudioStreamPlayer::new(
         config_ref.clone(),
         is_tcp_mode.clone(),
         network_link,
@@ -94,25 +94,25 @@ pub fn spawn_session_receiver(
     )
     .map_err(|e| e.to_string())?;
 
-    let exclusive_granted = receiver.exclusive_granted;
+    let exclusive_granted = player.exclusive_granted;
 
-    let mut receiver = receiver;
-    let (sender_ip_tx, latency_tx, rtt_tx) = setup_event_forwarding(notifier.clone());
+    let mut player = player;
+    let (streamer_ip_tx, latency_tx, rtt_tx) = setup_event_forwarding(notifier.clone());
 
     let task = tokio::spawn(async move {
-        if let Err(e) = receiver.activate_playback_stream() {
+        if let Err(e) = player.activate_playback_stream() {
             notifier.emit_playback_error(e.to_string());
             return;
         }
 
-        if let Err(e) = receiver
+        if let Err(e) = player
             .run_audio_receive_loop(
-                Some(sender_ip_tx),
+                Some(streamer_ip_tx),
                 Some(latency_tx),
                 Some(rtt_tx),
                 target_ip,
                 mode,
-                gemacast_core::stream::receiver::AudioSessionCredentials {
+                gemacast_core::stream::player::AudioSessionCredentials {
                     device_id: gemacast_core::domain::types::DeviceId(device_id),
                     session_token,
                     session_generation,
@@ -126,7 +126,7 @@ pub fn spawn_session_receiver(
                     gemacast_core::domain::error::NetworkError::ConnectionLost
                 )
             ) {
-                // The receiver watchdog gave up on its own — nobody asked for
+                // The playback watchdog gave up on its own — nobody asked for
                 // this. Distinct from `force-disconnect` so the frontend can
                 // attempt probe-driven recovery instead of just going idle.
                 notifier.emit_link_lost();

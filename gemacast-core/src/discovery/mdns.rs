@@ -89,7 +89,7 @@ impl MdnsListener {
                         let addr = std::net::SocketAddr::new(addr_ip, info.get_port());
                         let msg = ControlMessage::Presence {
                             device_id: DeviceId(device_id_str),
-                            sender_name: device_name,
+                            streamer_name: device_name,
                             is_offline: false,
                             transport: Some(TransportType::Wifi),
                         };
@@ -114,7 +114,7 @@ impl MdnsListener {
 
                     let msg = ControlMessage::Presence {
                         device_id: DeviceId(device_id_str),
-                        sender_name: "Offline".to_string(), // Frontend doesn't care
+                        streamer_name: "Offline".to_string(), // Frontend doesn't care
                         is_offline: true,
                         transport: Some(TransportType::Wifi),
                     };

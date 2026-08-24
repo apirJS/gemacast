@@ -8,16 +8,16 @@ use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 /// **Production**: [`crate::adapters::TauriFrontendNotifier`]
 /// **Tests**: [`crate::testing::mocks::MockFrontendNotifier`]
 pub trait FrontendNotifier: Send + Sync {
-    /// A sender was discovered or updated on the network.
-    fn emit_sender_discovered(&self, device: DiscoveredDevice);
+    /// A streamer was discovered or updated on the network.
+    fn emit_streamer_discovered(&self, device: DiscoveredDevice);
 
-    /// A sender's heartbeat timed out.
-    fn emit_sender_timeout(&self, sender_id: &DeviceId);
+    /// A streamer's heartbeat timed out.
+    fn emit_streamer_timeout(&self, streamer_id: &DeviceId);
 
-    /// The sender forcibly disconnected us.
+    /// The streamer forcibly disconnected us.
     fn emit_force_disconnect(&self);
 
-    /// The audio link went silent and the receiver watchdog tore the session
+    /// The audio link went silent and the playback watchdog tore the session
     /// down on its own — nobody asked for this disconnect.
     ///
     /// Deliberately distinct from [`Self::emit_force_disconnect`], which is
@@ -30,7 +30,7 @@ pub trait FrontendNotifier: Send + Sync {
     ///
     /// `device_registered` is the PC's answer to "do you still have us in the
     /// registry?" — `Some(true)` means the PC never evicted us, `Some(false)`
-    /// means it did, `None` means an older sender that cannot say. It is
+    /// means it did, `None` means an older streamer that cannot say. It is
     /// carried for observability: today every answer takes the same full
     /// reconnect, and a field capture is what would justify a cheaper path.
     fn emit_link_recovered(&self, device_registered: Option<bool>);
@@ -42,8 +42,8 @@ pub trait FrontendNotifier: Send + Sync {
     /// looking like a prober that silently kept running.
     fn emit_link_recovery_gave_up(&self);
 
-    /// Successfully connected to a sender's audio stream.
-    fn emit_sender_connected(&self, ip: String);
+    /// Successfully connected to a streamer's audio stream.
+    fn emit_streamer_connected(&self, ip: String);
 
     /// Periodic audio telemetry update.
     ///
@@ -59,7 +59,7 @@ pub trait FrontendNotifier: Send + Sync {
     /// Raw wire round-trip time (ms) from the UDP echo ping.
     ///
     /// The phone piggybacks a timestamped ping on its keepalive heartbeat
-    /// (~every 500 ms); the PC reflects it and the receiver reports the
+    /// (~every 500 ms); the PC reflects it and the player reports the
     /// round-trip here. Measures the real UDP path latency, not a TLS
     /// handshake. UDP-only: ADB/loopback runs over TCP with no echo, so the
     /// frontend shows `--` there. Independent of

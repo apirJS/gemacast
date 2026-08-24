@@ -17,7 +17,7 @@ pub fn notify_streaming_stopped(state: State<'_, AppState>) -> Result<(), String
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub async fn connect_to_sender(
+pub async fn connect_to_streamer(
     ip: String,
     device_id: DeviceId,
     device_name: String,
@@ -29,7 +29,7 @@ pub async fn connect_to_sender(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     tracing::info!(
-        "[Cmd] connect_to_sender: ip={}, device={:?}, mode={:?}, exclusive={}",
+        "[Cmd] connect_to_streamer: ip={}, device={:?}, mode={:?}, exclusive={}",
         ip,
         device_id,
         mode,
@@ -49,7 +49,7 @@ pub async fn connect_to_sender(
 
     state
         .audio
-        .connect_to_sender(ConnectParams {
+        .connect_to_streamer(ConnectParams {
             ip,
             device_id,
             device_name,
@@ -63,20 +63,23 @@ pub async fn connect_to_sender(
 }
 
 #[tauri::command]
-pub async fn disconnect_from_sender(
+pub async fn disconnect_from_streamer(
     ip: String,
     device_id: DeviceId,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     tracing::info!(
-        "[Cmd] disconnect_from_sender: ip={}, device={:?}",
+        "[Cmd] disconnect_from_streamer: ip={}, device={:?}",
         ip,
         device_id
     );
     let ip_addr = ip
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
-    state.audio.disconnect_from_sender(ip_addr, device_id).await
+    state
+        .audio
+        .disconnect_from_streamer(ip_addr, device_id)
+        .await
 }
 
 #[tauri::command]
@@ -153,7 +156,7 @@ pub async fn get_audio_sources(
 ) -> Result<
     (
         Vec<gemacast_core::domain::types::AudioSource>,
-        gemacast_core::domain::types::SenderCapabilities,
+        gemacast_core::domain::types::StreamerCapabilities,
     ),
     String,
 > {
@@ -164,16 +167,16 @@ pub async fn get_audio_sources(
 }
 
 #[tauri::command]
-pub async fn probe_sender(
+pub async fn probe_streamer(
     ip: String,
     device_id: DeviceId,
     state: State<'_, AppState>,
 ) -> Result<gemacast_core::control::types::PresenceResponse, String> {
-    tracing::info!("[Cmd] probe_sender: ip={}, device={:?}", ip, device_id);
+    tracing::info!("[Cmd] probe_streamer: ip={}, device={:?}", ip, device_id);
     let ip_addr = ip
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
-    state.audio.probe_sender(ip_addr, device_id).await
+    state.audio.probe_streamer(ip_addr, device_id).await
 }
 
 #[tauri::command]
@@ -258,16 +261,16 @@ pub async fn get_process_list(
 
 #[tauri::command]
 pub async fn establish_websocket(
-    sender_ip: String,
+    streamer_ip: String,
     device_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     tracing::info!(
         "[Cmd] establish_websocket: ip={}, device={}",
-        sender_ip,
+        streamer_ip,
         device_id
     );
-    let ip_addr = sender_ip
+    let ip_addr = streamer_ip
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
     state.audio.establish_websocket(ip_addr, device_id).await
@@ -275,7 +278,7 @@ pub async fn establish_websocket(
 
 #[tauri::command]
 pub fn check_exclusive_support() -> bool {
-    gemacast_core::stream::receiver::stream::probe_exclusive_support()
+    gemacast_core::stream::player::stream::probe_exclusive_support()
 }
 
 #[tauri::command]

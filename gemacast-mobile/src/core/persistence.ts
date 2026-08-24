@@ -1,8 +1,8 @@
-import type { AppSettings, DiscoveredSender, JitterConfig, SavedPreset } from './types';
+import type { AppSettings, DiscoveredStreamer, JitterConfig, SavedPreset } from './types';
 import { ConnectionMode } from './types';
 import { JITTER_PRESETS } from './presets';
 
-const LS_LAST_SENDER = 'gemacast_last_sender';
+const LS_LAST_STREAMER = 'gemacast_last_streamer';
 const LS_SETTINGS = 'gemacast_settings';
 const LS_DEVICE_ID = 'gemacast_device_id';
 const LS_PC_NAMES = 'gemacast_pc_names';
@@ -68,20 +68,20 @@ function sanitizeSettings(value: unknown): AppSettings {
   };
 }
 
-export function loadLastSender(): DiscoveredSender | null {
+export function loadLastStreamer(): DiscoveredStreamer | null {
   try {
-    const raw = localStorage.getItem(LS_LAST_SENDER);
-    return raw ? (JSON.parse(raw) as DiscoveredSender) : null;
+    const raw = localStorage.getItem(LS_LAST_STREAMER);
+    return raw ? (JSON.parse(raw) as DiscoveredStreamer) : null;
   } catch {
     return null;
   }
 }
 
-export function saveLastSender(sender: DiscoveredSender | null) {
-  if (sender) {
-    localStorage.setItem(LS_LAST_SENDER, JSON.stringify(sender));
+export function saveLastStreamer(streamer: DiscoveredStreamer | null) {
+  if (streamer) {
+    localStorage.setItem(LS_LAST_STREAMER, JSON.stringify(streamer));
   } else {
-    localStorage.removeItem(LS_LAST_SENDER);
+    localStorage.removeItem(LS_LAST_STREAMER);
   }
 }
 
@@ -129,7 +129,7 @@ export function loadPcNames(): Record<string, string> {
 
 /**
  * Cache one PC's display name. No-ops when the name carries no information
- * (empty, or identical to the id we would fall back to anyway), so a sender
+ * (empty, or identical to the id we would fall back to anyway), so a streamer
  * discovered without a name cannot overwrite a good cached one.
  */
 export function rememberPcName(deviceId: string, deviceName: string) {

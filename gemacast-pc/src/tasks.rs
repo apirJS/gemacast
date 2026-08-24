@@ -1,4 +1,4 @@
-//! Background tasks that power the PC sender.
+//! Background tasks that power the PC streamer.
 //!
 //! Each module contains one async task (or a small group of related tasks)
 //! that runs in the background engine's `JoinSet`:

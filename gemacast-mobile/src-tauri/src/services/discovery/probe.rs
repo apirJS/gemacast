@@ -27,7 +27,7 @@ pub async fn run_probe_loop(
         interval.tick().await;
 
         // Skip subnet scan while streaming: the phone already knows the
-        // sender's IP, and the 254-packet burst floods the 2.4 GHz channel
+        // streamer's IP, and the 254-packet burst floods the 2.4 GHz channel
         // causing 200ms+ jitter spikes on audio packets.
         if is_streaming.load(Ordering::Relaxed) {
             continue;

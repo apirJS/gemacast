@@ -22,7 +22,7 @@ pub fn get_network_identifier(state: State<'_, AppState>) -> Result<String, Stri
 }
 
 #[tauri::command]
-pub async fn start_listening_for_senders(
+pub async fn start_listening_for_streamers(
     device_id: DeviceId,
     mode: ConnectionMode,
     state: State<'_, AppState>,
@@ -70,7 +70,7 @@ pub async fn start_listening_for_senders(
 }
 
 #[tauri::command]
-pub async fn stop_listening_for_senders(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_listening_for_streamers(state: State<'_, AppState>) -> Result<(), String> {
     if let Some(handle) = state.discovery_task.lock().await.take() {
         handle.abort();
     }

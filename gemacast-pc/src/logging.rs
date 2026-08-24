@@ -1,4 +1,4 @@
-//! Tracing/logging initialization for the PC sender.
+//! Tracing/logging initialization for the PC streamer.
 //!
 //! stderr only, and nothing is persisted. Diagnostics for a shipped build come
 //! from [`crate::crash_log`], which is the one artifact worth keeping; the

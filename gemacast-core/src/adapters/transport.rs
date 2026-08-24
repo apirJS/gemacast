@@ -56,7 +56,7 @@ impl AudioPacketTransport for TcpTransport {
 /// Static-dispatch audio transport using enum variants.
 ///
 /// The compiler devirtualizes match arms into direct calls, eliminating
-/// vtable pointer indirection on the receiver hot path (~4800 calls/sec).
+/// vtable pointer indirection on the player hot path (~4800 calls/sec).
 ///
 /// This replaces the previous `Box<dyn AudioPacketTransport>` approach.
 pub enum AudioTransport {

@@ -12,11 +12,11 @@ use gemacast_core::domain::types::DeviceId;
 
 use crate::traits::FrontendNotifier;
 
-/// Evict senders whose last heartbeat exceeds `timeout`.
+/// Evict streamers whose last heartbeat exceeds `timeout`.
 ///
-/// Notifies the frontend for each evicted sender and removes them
-/// from the tracker. Returns the IDs of evicted senders.
-pub fn evict_stale_senders(
+/// Notifies the frontend for each evicted streamer and removes them
+/// from the tracker. Returns the IDs of evicted streamers.
+pub fn evict_stale_streamers(
     notifier: &dyn FrontendNotifier,
     tracker: &Mutex<HashMap<DeviceId, Instant>>,
     timeout: Duration,
@@ -30,8 +30,8 @@ pub fn evict_stale_senders(
             .collect()
     };
 
-    for sender_id in &stale {
-        notifier.emit_sender_timeout(sender_id);
+    for streamer_id in &stale {
+        notifier.emit_streamer_timeout(streamer_id);
     }
 
     if !stale.is_empty() {
@@ -50,7 +50,7 @@ mod tests {
     use crate::testing::mocks::*;
 
     #[test]
-    fn should_evict_stale_senders() {
+    fn should_evict_stale_streamers() {
         let notifier = MockFrontendNotifier::new();
         let tracker = Mutex::new(HashMap::new());
         tracker.lock().unwrap().insert(
@@ -62,7 +62,7 @@ mod tests {
             .unwrap()
             .insert(DeviceId("fresh".into()), Instant::now());
 
-        let evicted = evict_stale_senders(&notifier, &tracker, Duration::from_secs(30));
+        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert_eq!(evicted.len(), 1);
         assert_eq!(evicted[0].0, "stale");
@@ -71,10 +71,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            FrontendEvent::SenderTimeout(id) if id.0 == "stale"
+            FrontendEvent::StreamerTimeout(id) if id.0 == "stale"
         ));
 
-        // Fresh sender remains in tracker
+        // Fresh streamer remains in tracker
         assert!(
             tracker
                 .lock()
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn should_not_evict_fresh_senders() {
+    fn should_not_evict_fresh_streamers() {
         let notifier = MockFrontendNotifier::new();
         let tracker = Mutex::new(HashMap::new());
         tracker
@@ -98,14 +98,14 @@ mod tests {
             .unwrap()
             .insert(DeviceId("fresh".into()), Instant::now());
 
-        let evicted = evict_stale_senders(&notifier, &tracker, Duration::from_secs(30));
+        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert!(evicted.is_empty());
         assert!(notifier.take_events().is_empty());
     }
 
     #[test]
-    fn should_evict_multiple_stale_senders() {
+    fn should_evict_multiple_stale_streamers() {
         let notifier = MockFrontendNotifier::new();
         let tracker = Mutex::new(HashMap::new());
         tracker.lock().unwrap().insert(
@@ -117,7 +117,7 @@ mod tests {
             Instant::now() - Duration::from_secs(45),
         );
 
-        let evicted = evict_stale_senders(&notifier, &tracker, Duration::from_secs(30));
+        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert_eq!(evicted.len(), 2);
         assert_eq!(notifier.take_events().len(), 2);

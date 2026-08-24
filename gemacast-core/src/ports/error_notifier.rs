@@ -1,7 +1,7 @@
 //! Port: Engine error notification.
 //!
-//! Decouples the [`AudioStreamEngine`](crate::stream::sender::engine::AudioStreamEngine)
-//! from WebSocket connection internals. The engine notifies connected receivers
+//! Decouples the [`AudioStreamEngine`](crate::stream::streamer::engine::AudioStreamEngine)
+//! from WebSocket connection internals. The engine notifies connected players
 //! about errors (capture failures, source changes) through this trait instead
 //! of directly manipulating `WsConnectionMap`.
 //!
@@ -14,7 +14,7 @@
 
 use crate::domain::types::DeviceId;
 
-/// Notifies a connected receiver about engine-side errors.
+/// Notifies a connected player about engine-side errors.
 ///
 /// # Production
 ///

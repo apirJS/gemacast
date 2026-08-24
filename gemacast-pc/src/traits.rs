@@ -1,4 +1,4 @@
-//! Trait abstractions for all I/O boundaries in the PC sender.
+//! Trait abstractions for all I/O boundaries in the PC streamer.
 //!
 //! These traits decouple business logic from concrete dependencies
 //! (`EventLoopProxy`, `mpsc::Sender`, `Arc<Mutex<HashMap>>`, HTTP clients),

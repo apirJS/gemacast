@@ -48,7 +48,7 @@ pub struct InterfaceInfo {
     pub is_usb: bool,
 }
 
-/// Parameters for connecting to a sender.
+/// Parameters for connecting to a streamer.
 #[derive(Debug, Clone)]
 pub struct ConnectParams {
     pub ip: String,

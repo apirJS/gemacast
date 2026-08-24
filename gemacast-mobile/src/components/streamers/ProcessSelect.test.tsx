@@ -26,7 +26,7 @@ describe('ProcessSelect', () => {
     ],
     currentSource: { type: 'desktop' as const },
     onSourceChange: mock(),
-    sender: { deviceId: '123', deviceName: 'PC', addr: '10.0.0.1:9000', isOffline: false },
+    streamer: { deviceId: '123', deviceName: 'PC', addr: '10.0.0.1:9000', isOffline: false },
     supportsProcessCapture: true,
   };
 
@@ -92,14 +92,14 @@ describe('ProcessSelect', () => {
     const refreshBtn = screen.getByLabelText('Refresh process list');
     fireEvent.click(refreshBtn);
 
-    expect(mockFetchProcessList).toHaveBeenCalledWith(defaultProps.sender);
+    expect(mockFetchProcessList).toHaveBeenCalledWith(defaultProps.streamer);
   });
 
-  it('marks the dropdown so the sender list pull-to-refresh ignores it', () => {
+  it('marks the dropdown so the streamer list pull-to-refresh ignores it', () => {
     render(<ProcessSelect {...defaultProps} />);
     fireEvent.click(screen.getByRole('button'));
 
-    // The dropdown renders inside the sender list's scroll container, so touch
+    // The dropdown renders inside the streamer list's scroll container, so touch
     // events from it bubble to the pull gesture. The marker is what stops a
     // process-list scroll from rubber-banding the list behind it — asserted on
     // the real markup because the hook-level guard is inert without it.

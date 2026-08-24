@@ -8,10 +8,10 @@ import { useToastStore } from '../../stores/toast-store';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 export function ForgetPcIdentity() {
-  const connectedSender = useAppStore((state) => state.connectedSender);
-  const connectedSenderId = connectedSender?.deviceId;
-  const lastConnectedSender = useAppStore((state) => state.lastConnectedSender);
-  const discoveredSenders = useAppStore((state) => state.discoveredSenders);
+  const connectedStreamer = useAppStore((state) => state.connectedStreamer);
+  const connectedStreamerId = connectedStreamer?.deviceId;
+  const lastConnectedStreamer = useAppStore((state) => state.lastConnectedStreamer);
+  const discoveredStreamers = useAppStore((state) => state.discoveredStreamers);
   const [pairedPcIds, setPairedPcIds] = useState<string[]>([]);
   const [rememberedNames, setRememberedNames] = useState<Record<string, string>>({});
   const [selectedPc, setSelectedPc] = useState<{ deviceId: string; deviceName: string } | null>(
@@ -20,7 +20,7 @@ export function ForgetPcIdentity() {
   const hasLoadedPairedPcs = useRef(false);
 
   useEffect(() => {
-    if (hasLoadedPairedPcs.current && !connectedSenderId) return;
+    if (hasLoadedPairedPcs.current && !connectedStreamerId) return;
     hasLoadedPairedPcs.current = true;
     let active = true;
     void tauriBridge
@@ -41,15 +41,15 @@ export function ForgetPcIdentity() {
     return () => {
       active = false;
     };
-  }, [connectedSenderId]);
+  }, [connectedStreamerId]);
 
-  const senders = (() => {
+  const streamers = (() => {
     // Cached names first, then live state on top: a PC that is currently
     // discovered or connected has the freshest name, but the cache is the only
     // source that survives Wi-Fi dropping or a switch through ADB.
     const byId = new Map<string, string>(Object.entries(rememberedNames));
-    for (const sender of [...discoveredSenders, lastConnectedSender, connectedSender]) {
-      if (sender?.deviceName) byId.set(sender.deviceId, sender.deviceName);
+    for (const streamer of [...discoveredStreamers, lastConnectedStreamer, connectedStreamer]) {
+      if (streamer?.deviceName) byId.set(streamer.deviceId, streamer.deviceName);
     }
     return pairedPcIds.map((deviceId) => ({
       deviceId,
@@ -62,7 +62,7 @@ export function ForgetPcIdentity() {
     const pc = selectedPc;
     setSelectedPc(null);
     try {
-      if (useAppStore.getState().connectedSender?.deviceId === pc.deviceId) {
+      if (useAppStore.getState().connectedStreamer?.deviceId === pc.deviceId) {
         const result = await disconnect(true);
         if (!result.ok) throw result.error;
       }
@@ -77,7 +77,7 @@ export function ForgetPcIdentity() {
 
   return (
     <div className="space-y-2">
-      {senders.length === 0 ? (
+      {streamers.length === 0 ? (
         <p className="text-xs text-muted-foreground/70">No paired PCs</p>
       ) : (
         <div
@@ -85,19 +85,19 @@ export function ForgetPcIdentity() {
           role="list"
           aria-label="Paired PCs"
         >
-          {senders.map((sender) => (
+          {streamers.map((streamer) => (
             <div
-              key={sender.deviceId}
+              key={streamer.deviceId}
               className="flex items-start justify-between gap-3 text-sm"
               role="listitem"
             >
-              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">{sender.deviceName}</span>
+              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">{streamer.deviceName}</span>
               <button
                 type="button"
                 className="shrink-0 rounded-default p-2 text-muted-foreground hover:bg-muted hover:text-status-lost"
-                title={`Forget ${sender.deviceName}`}
-                aria-label={`Forget ${sender.deviceName}`}
-                onClick={() => setSelectedPc(sender)}
+                title={`Forget ${streamer.deviceName}`}
+                aria-label={`Forget ${streamer.deviceName}`}
+                onClick={() => setSelectedPc(streamer)}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
@@ -109,7 +109,7 @@ export function ForgetPcIdentity() {
         open={selectedPc !== null}
         message={
           selectedPc
-            ? selectedPc.deviceId === connectedSenderId
+            ? selectedPc.deviceId === connectedStreamerId
               ? `Disconnect from and forget ${selectedPc.deviceName}?`
               : `Forget the saved identity for ${selectedPc.deviceName}?`
             : ''

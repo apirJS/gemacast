@@ -13,7 +13,7 @@ pub enum RegistrationOutcome {
     AlreadyRegistered,
 }
 
-/// Shared registry of connected receiver devices.
+/// Shared registry of connected player devices.
 ///
 /// Encapsulates all lock-and-mutate operations on the device map.
 ///

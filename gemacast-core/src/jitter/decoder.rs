@@ -143,7 +143,7 @@ impl FrameDecoder {
         };
 
         if pkt.is_silence {
-            // Silence is intentional (sender detected quiet audio), not a loss
+            // Silence is intentional (streamer detected quiet audio), not a loss
             // event. Don't feed PLC — it would poison the decoder's internal
             // state with hallucinated spectral data, causing a brief "warble"
             // artifact when real audio resumes.
@@ -154,7 +154,7 @@ impl FrameDecoder {
             self.codec_state = CodecState::Cold;
         } else if pkt.is_uncompressed {
             // Clamp to the buffer's capacity BEFORE copying, not after. A
-            // conformant sender emits exactly OPUS_FRAME_SAMPLES f32s, but
+            // conformant streamer emits exactly OPUS_FRAME_SAMPLES f32s, but
             // `payload_len` arrives here unclamped from `parse_packet`, and the
             // audio ports carry no authentication — so an oversized or malformed
             // uncompressed packet must be truncated to one frame rather than

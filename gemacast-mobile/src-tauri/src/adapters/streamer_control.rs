@@ -5,17 +5,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
-use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
+use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, StreamerCapabilities};
 
-use crate::traits::{SenderControlClient, SenderControlClientFactory};
+use crate::traits::{StreamerControlClient, StreamerControlClientFactory};
 
 /// Wraps `gemacast_core::control::HttpControlClient` behind the trait.
-pub struct HttpSenderControlClient {
+pub struct HttpStreamerControlClient {
     client: gemacast_core::control::HttpControlClient,
     signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
 }
 
-impl HttpSenderControlClient {
+impl HttpStreamerControlClient {
     pub fn new(
         ip: IpAddr,
         credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
@@ -49,7 +49,7 @@ impl HttpSenderControlClient {
 }
 
 #[async_trait]
-impl SenderControlClient for HttpSenderControlClient {
+impl StreamerControlClient for HttpStreamerControlClient {
     async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
         self.client
             .send_connect_request_with_signer(req, Some(self.signer.as_ref()))
@@ -65,7 +65,7 @@ impl SenderControlClient for HttpSenderControlClient {
         Ok(())
     }
 
-    async fn get_audio_sources(&self) -> Result<(Vec<AudioSource>, SenderCapabilities), String> {
+    async fn get_audio_sources(&self) -> Result<(Vec<AudioSource>, StreamerCapabilities), String> {
         self.client
             .request_audio_sources()
             .await
@@ -105,8 +105,8 @@ impl SenderControlClient for HttpSenderControlClient {
     }
 }
 
-/// Creates [`HttpSenderControlClient`] instances on demand.
-pub struct HttpSenderControlClientFactory {
+/// Creates [`HttpStreamerControlClient`] instances on demand.
+pub struct HttpStreamerControlClientFactory {
     credentials: Mutex<
         HashMap<
             IpAddr,
@@ -116,7 +116,7 @@ pub struct HttpSenderControlClientFactory {
     signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
 }
 
-impl HttpSenderControlClientFactory {
+impl HttpStreamerControlClientFactory {
     pub fn new(signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>) -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
@@ -140,17 +140,17 @@ impl HttpSenderControlClientFactory {
     }
 }
 
-impl SenderControlClientFactory for HttpSenderControlClientFactory {
-    fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient> {
-        Arc::new(HttpSenderControlClient::new(
+impl StreamerControlClientFactory for HttpStreamerControlClientFactory {
+    fn create(&self, ip: IpAddr) -> Arc<dyn StreamerControlClient> {
+        Arc::new(HttpStreamerControlClient::new(
             ip,
             self.credentials(ip),
             self.signer.clone(),
         ))
     }
 
-    fn create_with_timeout(&self, ip: IpAddr, timeout: Duration) -> Arc<dyn SenderControlClient> {
-        Arc::new(HttpSenderControlClient::with_timeout(
+    fn create_with_timeout(&self, ip: IpAddr, timeout: Duration) -> Arc<dyn StreamerControlClient> {
+        Arc::new(HttpStreamerControlClient::with_timeout(
             ip,
             timeout,
             self.credentials(ip),

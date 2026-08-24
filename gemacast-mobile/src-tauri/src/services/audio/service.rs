@@ -13,8 +13,8 @@ use gemacast_core::control::types::ConnectReq;
 use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, LinkPair};
 
 use crate::traits::{
-    ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams,
-    SenderControlClientFactory, SessionManager, SessionParams,
+    ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams, SessionManager,
+    SessionParams, StreamerControlClientFactory,
 };
 
 /// Handles all audio-related operations: connect, disconnect, playback
@@ -24,7 +24,7 @@ use crate::traits::{
 /// independently unit-testable with mock implementations.
 pub struct AudioService {
     pub session: Arc<dyn SessionManager>,
-    pub client_factory: Arc<dyn SenderControlClientFactory>,
+    pub client_factory: Arc<dyn StreamerControlClientFactory>,
     pub notifier: Arc<dyn FrontendNotifier>,
     pub platform: Arc<dyn PlatformService>,
     /// Shared flag read by the probe loop to skip subnet scans while streaming.
@@ -33,7 +33,7 @@ pub struct AudioService {
     ///
     /// Used to re-apply the network-aware Auto jitter config when the user
     /// toggles back to Auto mid-session (Auto → Balanced → Auto).
-    /// Set during [`connect_to_sender`], cleared on disconnect/kill.
+    /// Set during [`connect_to_streamer`], cleared on disconnect/kill.
     pub cached_link_pair: std::sync::Mutex<Option<LinkPair>>,
     /// The in-flight link-recovery prober, if one is running.
     ///
@@ -45,7 +45,7 @@ pub struct AudioService {
 
 /// How often link recovery asks the PC whether it is back.
 ///
-/// 2 s against the phone receiver's 10 s watchdog: five chances to catch the
+/// 2 s against the phone's 10 s playback watchdog: five chances to catch the
 /// PC inside the window where it still has us registered (`STALE_TIMEOUT` 15 s
 /// plus a `CHECK_INTERVAL` 2 s sweep, so eviction lands at 15-17 s).
 const RECOVERY_PROBE_INTERVAL: Duration = Duration::from_secs(2);
@@ -77,7 +77,7 @@ const RECOVERY_BUDGET: Duration = Duration::from_secs(60);
 /// or [`FrontendNotifier::emit_link_recovery_gave_up`] — or none at all if the
 /// task is aborted first.
 async fn run_link_recovery(
-    client: Arc<dyn crate::traits::SenderControlClient>,
+    client: Arc<dyn crate::traits::StreamerControlClient>,
     device_id: DeviceId,
     notifier: Arc<dyn FrontendNotifier>,
     interval: Duration,
@@ -89,7 +89,7 @@ async fn run_link_recovery(
 
     loop {
         // The first tick resolves immediately, which is what we want: the
-        // receiver watchdog already spent 10 s establishing that the link is
+        // playback watchdog already spent 10 s establishing that the link is
         // gone, so there is nothing left to wait for.
         ticker.tick().await;
 
@@ -107,9 +107,9 @@ async fn run_link_recovery(
         match client.probe(Some(device_id.clone())).await {
             Ok(presence) => {
                 tracing::info!(
-                    "[AudioService] Link recovered after {} attempts: sender={}, offline={}, registered={:?}",
+                    "[AudioService] Link recovered after {} attempts: streamer={}, offline={}, registered={:?}",
                     attempts,
-                    presence.sender_name,
+                    presence.streamer_name,
                     presence.is_offline,
                     presence.device_registered,
                 );
@@ -128,11 +128,11 @@ async fn run_link_recovery(
 }
 
 impl AudioService {
-    /// Connect to a sender: HTTPS handshake -> spawn audio receiver -> sync service.
+    /// Connect to a streamer: HTTPS handshake -> spawn audio player -> sync service.
     ///
     /// If the user selected "Auto" buffer preset, the jitter config is overridden
     /// with a network-aware profile based on the detected [`LinkPair`].
-    pub async fn connect_to_sender(&self, params: ConnectParams) -> Result<(), String> {
+    pub async fn connect_to_streamer(&self, params: ConnectParams) -> Result<(), String> {
         tracing::info!(
             "[AudioService] Connect: ip={}, device={:?}, mode={:?}, jitter_preset=min_{}ms/cap_{}ms",
             params.ip,
@@ -213,7 +213,7 @@ impl AudioService {
         {
             // The PC has already acknowledged and registered the stream. If
             // local playback cannot start, explicitly roll that subscription
-            // back instead of leaking a silent sender-side session until the
+            // back instead of leaking a silent streamer-side session until the
             // watchdog expires.
             let _ = client.disconnect(params.device_id.clone()).await;
             *self.cached_link_pair.lock().unwrap() = None;
@@ -228,8 +228,8 @@ impl AudioService {
         Ok(())
     }
 
-    /// Disconnect from a sender: HTTPS disconnect -> tear down session -> sync service.
-    pub async fn disconnect_from_sender(
+    /// Disconnect from a streamer: HTTPS disconnect -> tear down session -> sync service.
+    pub async fn disconnect_from_streamer(
         &self,
         ip: IpAddr,
         device_id: DeviceId,
@@ -310,9 +310,9 @@ impl AudioService {
 
     /// Notify that streaming has stopped (called by frontend).
     ///
-    /// The frontend reaches this on the no-sender branch of `disconnect()`, which
+    /// The frontend reaches this on the no-streamer branch of `disconnect()`, which
     /// is a real stop — so it must sync the foreground service like every other
-    /// stop path (`disconnect_from_sender`, `kill_playback`). Clearing only the
+    /// stop path (`disconnect_from_streamer`, `kill_playback`). Clearing only the
     /// flag file left the notification and the Media Session fully live.
     ///
     /// Also cancels link recovery: this is the branch a user reaches by tapping
@@ -385,7 +385,7 @@ impl AudioService {
     /// Restart the audio session with a new exclusive mode setting.
     ///
     /// Tears down the old Oboe/cpal stream and spawns a new one without
-    /// sending any HTTPS disconnect/connect; the PC sender doesn't care
+    /// sending any HTTPS disconnect/connect; the PC streamer doesn't care
     /// about the phone's audio sharing mode.
     pub async fn restart_session(&self, exclusive_mode: bool) -> Result<(), String> {
         let info = self
@@ -479,14 +479,14 @@ impl AudioService {
         *self.cached_link_pair.lock().unwrap()
     }
 
-    /// Request audio sources from the sender.
+    /// Request audio sources from the streamer.
     pub async fn get_audio_sources(
         &self,
         ip: IpAddr,
     ) -> Result<
         (
             Vec<AudioSource>,
-            gemacast_core::domain::types::SenderCapabilities,
+            gemacast_core::domain::types::StreamerCapabilities,
         ),
         String,
     > {
@@ -494,8 +494,8 @@ impl AudioService {
         client.get_audio_sources().await
     }
 
-    /// Probe a sender for its current state.
-    pub async fn probe_sender(
+    /// Probe a streamer for its current state.
+    pub async fn probe_streamer(
         &self,
         ip: IpAddr,
         device_id: DeviceId,
@@ -504,7 +504,7 @@ impl AudioService {
         client.probe(Some(device_id)).await
     }
 
-    /// Request the sender to change audio source.
+    /// Request the streamer to change audio source.
     pub async fn change_audio_source(
         &self,
         ip: IpAddr,
@@ -515,7 +515,7 @@ impl AudioService {
         client.change_source(device_id, source).await
     }
 
-    /// Request the sender to change encoding bitrate.
+    /// Request the streamer to change encoding bitrate.
     pub async fn change_audio_bitrate(
         &self,
         ip: IpAddr,
@@ -528,7 +528,7 @@ impl AudioService {
         Ok(())
     }
 
-    /// Request capturable process list from the sender.
+    /// Request capturable process list from the streamer.
     pub async fn get_process_list(
         &self,
         ip: IpAddr,
@@ -537,13 +537,13 @@ impl AudioService {
         client.get_process_list().await
     }
 
-    /// Establish a WebSocket control connection to the sender.
+    /// Establish a WebSocket control connection to the streamer.
     ///
     /// Spawns a read loop that forwards disconnect/error events to the frontend
     /// and tracks the task handle in the session manager.
     pub async fn establish_websocket(
         &self,
-        sender_ip: IpAddr,
+        streamer_ip: IpAddr,
         device_id: String,
     ) -> Result<(), String> {
         let client_factory = self.client_factory.clone();
@@ -565,9 +565,9 @@ impl AudioService {
                     return;
                 }
                 let credentials =
-                    client_factory.session_credentials(sender_ip, &DeviceId(device_id.clone()));
+                    client_factory.session_credentials(streamer_ip, &DeviceId(device_id.clone()));
                 let ws_client = match gemacast_core::control::WsControlClient::new_with_credentials(
-                    sender_ip,
+                    streamer_ip,
                     &device_id,
                     credentials
                         .as_ref()
@@ -623,7 +623,7 @@ mod tests {
 
     fn make_service(
         session: Arc<MockSessionManager>,
-        client: Arc<MockSenderControlClient>,
+        client: Arc<MockStreamerControlClient>,
         platform: Arc<MockPlatformService>,
     ) -> AudioService {
         make_service_with_notifier(
@@ -638,11 +638,11 @@ mod tests {
     /// the events the service emitted rather than on the calls it made.
     fn make_service_with_notifier(
         session: Arc<MockSessionManager>,
-        client: Arc<MockSenderControlClient>,
+        client: Arc<MockStreamerControlClient>,
         platform: Arc<MockPlatformService>,
         notifier: Arc<MockFrontendNotifier>,
     ) -> AudioService {
-        let factory = Arc::new(MockSenderControlClientFactory::new(client));
+        let factory = Arc::new(MockStreamerControlClientFactory::new(client));
         AudioService {
             session,
             client_factory: factory,
@@ -657,12 +657,12 @@ mod tests {
     #[tokio::test]
     async fn connect_should_send_http_then_start_session() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
         service
-            .connect_to_sender(ConnectParams {
+            .connect_to_streamer(ConnectParams {
                 ip: "192.168.1.5".to_string(),
                 device_id: DeviceId("phone-1".into()),
                 device_name: "My Phone".into(),
@@ -708,15 +708,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_should_disconnect_sender_when_local_playback_start_fails() {
+    async fn connect_should_disconnect_streamer_when_local_playback_start_fails() {
         let session =
             Arc::new(MockSessionManager::new().with_start_error("audio output failed".into()));
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session, client.clone(), platform);
 
         let result = service
-            .connect_to_sender(ConnectParams {
+            .connect_to_streamer(ConnectParams {
                 ip: "192.168.1.5".to_string(),
                 device_id: DeviceId("phone-1".into()),
                 device_name: "My Phone".into(),
@@ -739,12 +739,12 @@ mod tests {
     #[tokio::test]
     async fn disconnect_should_stop_session_and_sync() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
         service
-            .disconnect_from_sender("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
+            .disconnect_from_streamer("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
             .await
             .unwrap();
 
@@ -775,7 +775,7 @@ mod tests {
     #[tokio::test]
     async fn start_playback_should_call_resume_playback() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -803,7 +803,7 @@ mod tests {
             session_token: None,
             session_generation: None,
         }));
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -824,7 +824,7 @@ mod tests {
     #[tokio::test]
     async fn stop_playback_should_pause_not_stop_session() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -867,7 +867,7 @@ mod tests {
     #[tokio::test]
     async fn kill_playback_should_stop_everything() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -898,7 +898,7 @@ mod tests {
     #[tokio::test]
     async fn notify_streaming_stopped_should_sync_the_service_to_stopped() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -912,7 +912,7 @@ mod tests {
             "the streaming flag must still be cleared"
         );
         // Without this the foreground notification and the Media Session stay
-        // live after a disconnect that had no connected sender.
+        // live after a disconnect that had no connected streamer.
         assert!(
             platform_calls.iter().any(|c| matches!(
                 c,
@@ -944,27 +944,27 @@ mod tests {
             })
         }
 
-        // Path 1: disconnect with a known sender.
+        // Path 1: disconnect with a known streamer.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
-            Arc::new(MockSenderControlClient::new()),
+            Arc::new(MockStreamerControlClient::new()),
             platform.clone(),
         );
         service
-            .disconnect_from_sender("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
+            .disconnect_from_streamer("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
             .await
             .unwrap();
         assert!(
             synced_stopped(&platform.take_calls()),
-            "disconnect_from_sender must sync the service"
+            "disconnect_from_streamer must sync the service"
         );
 
-        // Path 2: forced teardown by the receiver watchdog.
+        // Path 2: forced teardown by the playback watchdog.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
-            Arc::new(MockSenderControlClient::new()),
+            Arc::new(MockStreamerControlClient::new()),
             platform.clone(),
         );
         service.kill_playback().await.unwrap();
@@ -973,11 +973,11 @@ mod tests {
             "kill_playback must sync the service"
         );
 
-        // Path 3: the frontend's no-sender branch.
+        // Path 3: the frontend's no-streamer branch.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
-            Arc::new(MockSenderControlClient::new()),
+            Arc::new(MockStreamerControlClient::new()),
             platform.clone(),
         );
         service.notify_streaming_stopped();
@@ -990,7 +990,7 @@ mod tests {
     #[tokio::test]
     async fn change_bitrate_should_update_session_and_send_http() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1025,7 +1025,7 @@ mod tests {
     async fn failed_bitrate_change_should_preserve_session_bitrate() {
         let session = Arc::new(MockSessionManager::new());
         let client =
-            Arc::new(MockSenderControlClient::new().with_change_bitrate_error("rejected".into()));
+            Arc::new(MockStreamerControlClient::new().with_change_bitrate_error("rejected".into()));
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client, platform);
 
@@ -1055,7 +1055,7 @@ mod tests {
         use gemacast_core::domain::types::NetworkLink;
 
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1095,7 +1095,7 @@ mod tests {
         use gemacast_core::domain::types::NetworkLink;
 
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1129,7 +1129,7 @@ mod tests {
     #[tokio::test]
     async fn update_jitter_config_should_passthrough_auto_when_no_cache() {
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1161,7 +1161,7 @@ mod tests {
         use gemacast_core::domain::types::NetworkLink;
 
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1172,7 +1172,7 @@ mod tests {
         });
 
         service
-            .disconnect_from_sender("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
+            .disconnect_from_streamer("192.168.1.5".parse().unwrap(), DeviceId("phone-1".into()))
             .await
             .unwrap();
 
@@ -1184,7 +1184,7 @@ mod tests {
         use gemacast_core::domain::types::NetworkLink;
 
         let session = Arc::new(MockSessionManager::new());
-        let client = Arc::new(MockSenderControlClient::new());
+        let client = Arc::new(MockStreamerControlClient::new());
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
@@ -1226,7 +1226,7 @@ mod tests {
         async fn link_recovery_should_report_the_pc_registration_once_it_answers() {
             let session = Arc::new(MockSessionManager::new());
             let client = Arc::new(
-                MockSenderControlClient::new()
+                MockStreamerControlClient::new()
                     .with_probe_failures(3)
                     .with_probe_registration(Some(true)),
             );
@@ -1257,7 +1257,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn a_recovery_probe_should_carry_our_device_id() {
             let session = Arc::new(MockSessionManager::new());
-            let client = Arc::new(MockSenderControlClient::new());
+            let client = Arc::new(MockStreamerControlClient::new());
             let platform = Arc::new(MockPlatformService::new());
             let service = make_service(session, client.clone(), platform);
 
@@ -1281,7 +1281,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn link_recovery_should_give_up_once_its_budget_is_spent() {
             let session = Arc::new(MockSessionManager::new());
-            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let client = Arc::new(MockStreamerControlClient::new().with_unreachable_probe());
             let platform = Arc::new(MockPlatformService::new());
             let notifier = Arc::new(MockFrontendNotifier::new());
             let service =
@@ -1307,7 +1307,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn a_forced_teardown_should_cancel_link_recovery() {
             let session = Arc::new(MockSessionManager::new());
-            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let client = Arc::new(MockStreamerControlClient::new().with_unreachable_probe());
             let platform = Arc::new(MockPlatformService::new());
             let notifier = Arc::new(MockFrontendNotifier::new());
             let service =
@@ -1343,7 +1343,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn a_second_link_loss_should_not_stack_a_second_prober() {
             let session = Arc::new(MockSessionManager::new());
-            let client = Arc::new(MockSenderControlClient::new().with_unreachable_probe());
+            let client = Arc::new(MockStreamerControlClient::new().with_unreachable_probe());
             let platform = Arc::new(MockPlatformService::new());
             let service = make_service(session, client.clone(), platform);
 

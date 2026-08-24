@@ -17,7 +17,7 @@ struct AdbAudioHandshake {
 }
 
 fn parse_adb_audio_handshake(bytes: &[u8]) -> Result<AdbAudioHandshake, &'static str> {
-    use crate::stream::receiver::transport::{
+    use crate::stream::player::transport::{
         ADB_HANDSHAKE_VERSION, MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH,
     };
 
@@ -72,7 +72,7 @@ fn parse_adb_audio_handshake(bytes: &[u8]) -> Result<AdbAudioHandshake, &'static
 async fn read_adb_audio_handshake(
     socket: &mut tokio::net::TcpStream,
 ) -> Result<AdbAudioHandshake, &'static str> {
-    use crate::stream::receiver::transport::{MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH};
+    use crate::stream::player::transport::{MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH};
     use tokio::io::AsyncReadExt;
 
     let mut prefix = [0u8; 2];
@@ -118,13 +118,15 @@ fn authorize_adb_audio_handshake(
 
 pub trait PresenceProvider: Send + Sync + 'static {
     fn is_broadcasting(&self) -> bool;
-    fn sender_id(&self) -> DeviceId;
-    fn sender_name(&self) -> String;
+    fn streamer_id(&self) -> DeviceId;
+    fn streamer_name(&self) -> String;
 }
 
 pub fn spawn_adb_audio_tcp_server(
     set: &mut JoinSet<()>,
-    engine_command_tx: tokio::sync::mpsc::Sender<crate::stream::sender::engine::AudioStreamCommand>,
+    engine_command_tx: tokio::sync::mpsc::Sender<
+        crate::stream::streamer::engine::AudioStreamCommand,
+    >,
     tcp_drop_tx_for_audio: tokio::sync::broadcast::Sender<()>,
     error_tx: tokio::sync::mpsc::Sender<String>,
     authorizer: SessionAuthorizer,
@@ -228,7 +230,7 @@ pub fn spawn_adb_audio_tcp_server(
 
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 if engine_command_tx
-                    .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                    .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
                         device_id: typed_device_id.clone(),
                         reply: reply_tx,
                     })
@@ -247,7 +249,7 @@ pub fn spawn_adb_audio_tcp_server(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         if engine_command_tx
-                            .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                            .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
                                 device_id: typed_device_id.clone(),
                                 reply: reply_tx,
                             })
@@ -304,7 +306,7 @@ pub fn spawn_adb_audio_tcp_server(
                                     // Try to fetch the new broadcaster from the engine.
                                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                                     if engine_command_tx
-                                        .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                        .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
                                             device_id: typed_device_id.clone(),
                                             reply: reply_tx,
                                         })
@@ -345,7 +347,7 @@ pub fn spawn_adb_audio_tcp_server(
                 if is_current {
                     let _ = engine_command_tx
                         .send(
-                            crate::stream::sender::engine::AudioStreamCommand::TransportClosed {
+                            crate::stream::streamer::engine::AudioStreamCommand::TransportClosed {
                                 device_id: typed_device_id,
                                 generation: session_generation,
                             },
@@ -414,15 +416,15 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
 
             let pp = presence_provider.clone();
             let is_brdcst = pp.is_broadcasting();
-            let sid = pp.sender_id();
-            let sname = pp.sender_name();
+            let sid = pp.streamer_id();
+            let sname = pp.streamer_name();
             let sid_task = sid.clone();
             let sname_task = sname.clone();
             let is_offline = !is_brdcst;
 
             let presence = ControlMessage::Presence {
                 device_id: sid,
-                sender_name: sname,
+                streamer_name: sname,
                 is_offline,
                 transport: None,
             };
@@ -471,7 +473,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
                             let is_brcst_now = pp_clone.is_broadcasting();
                             let presence_update = ControlMessage::Presence {
                                 device_id: sid_task.clone(),
-                                sender_name: sname_task.clone(),
+                                streamer_name: sname_task.clone(),
                                 is_offline: !is_brcst_now,
                                 transport: None,
                             };
@@ -525,7 +527,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::receiver::transport::encode_adb_audio_handshake;
+    use crate::stream::player::transport::encode_adb_audio_handshake;
 
     #[test]
     fn authenticated_handshake_round_trips_and_requires_current_credentials() {

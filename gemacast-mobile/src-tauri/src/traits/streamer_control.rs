@@ -1,45 +1,45 @@
 use async_trait::async_trait;
 use gemacast_core::control::types::{ConnectReq, PresenceResponse};
-use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
+use gemacast_core::domain::types::{AudioSource, DeviceId, ProcessInfo, StreamerCapabilities};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Sends control commands to a PC sender over certificate-pinned HTTPS.
+/// Sends control commands to a PC streamer over certificate-pinned HTTPS.
 ///
-/// **Production**: [`crate::adapters::HttpSenderControlClient`]
-/// **Tests**: [`crate::testing::mocks::MockSenderControlClient`]
+/// **Production**: [`crate::adapters::HttpStreamerControlClient`]
+/// **Tests**: [`crate::testing::mocks::MockStreamerControlClient`]
 #[async_trait]
-pub trait SenderControlClient: Send + Sync {
-    /// Send a connect request to the sender, returning the PC's presence response.
+pub trait StreamerControlClient: Send + Sync {
+    /// Send a connect request to the streamer, returning the PC's presence response.
     async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String>;
 
-    /// Send a disconnect request to the sender.
+    /// Send a disconnect request to the streamer.
     async fn disconnect(&self, device_id: DeviceId) -> Result<(), String>;
 
     /// Request the list of available audio sources.
-    async fn get_audio_sources(&self) -> Result<(Vec<AudioSource>, SenderCapabilities), String>;
+    async fn get_audio_sources(&self) -> Result<(Vec<AudioSource>, StreamerCapabilities), String>;
 
-    /// Probe the sender for its current state.
+    /// Probe the streamer for its current state.
     async fn probe(&self, device_id: Option<DeviceId>) -> Result<PresenceResponse, String>;
 
-    /// Request the sender to change the audio source for a device.
+    /// Request the streamer to change the audio source for a device.
     async fn change_source(&self, device_id: DeviceId, source: AudioSource) -> Result<(), String>;
 
-    /// Request the sender to change the encoding bitrate for a device.
+    /// Request the streamer to change the encoding bitrate for a device.
     async fn change_bitrate(&self, device_id: DeviceId, bitrate: Option<i32>)
     -> Result<(), String>;
 
-    /// Request the list of capturable processes from the sender.
+    /// Request the list of capturable processes from the streamer.
     async fn get_process_list(&self) -> Result<Vec<ProcessInfo>, String>;
 }
 
-/// Factory for creating [`SenderControlClient`] instances, one per IP address.
+/// Factory for creating [`StreamerControlClient`] instances, one per IP address.
 ///
-/// **Production**: [`crate::adapters::HttpSenderControlClientFactory`]
-/// **Tests**: [`crate::testing::mocks::MockSenderControlClientFactory`]
-pub trait SenderControlClientFactory: Send + Sync {
-    fn create(&self, ip: IpAddr) -> Arc<dyn SenderControlClient>;
+/// **Production**: [`crate::adapters::HttpStreamerControlClientFactory`]
+/// **Tests**: [`crate::testing::mocks::MockStreamerControlClientFactory`]
+pub trait StreamerControlClientFactory: Send + Sync {
+    fn create(&self, ip: IpAddr) -> Arc<dyn StreamerControlClient>;
 
     /// A client whose requests give up after `timeout`.
     ///
@@ -47,7 +47,11 @@ pub trait SenderControlClientFactory: Send + Sync {
     /// inside that interval; the default client waits 10 s, which would make
     /// the poll period meaningless. Defaults to [`Self::create`] so mocks —
     /// which do no I/O and cannot time out — need not implement it.
-    fn create_with_timeout(&self, ip: IpAddr, _timeout: Duration) -> Arc<dyn SenderControlClient> {
+    fn create_with_timeout(
+        &self,
+        ip: IpAddr,
+        _timeout: Duration,
+    ) -> Arc<dyn StreamerControlClient> {
         self.create(ip)
     }
 

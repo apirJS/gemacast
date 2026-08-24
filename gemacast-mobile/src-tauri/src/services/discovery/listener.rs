@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::HEARTBEAT_CHECK_INTERVAL_SECS;
-use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
+use crate::STREAMER_HEARTBEAT_TIMEOUT_SECS;
 use crate::traits::FrontendNotifier;
 
 use gemacast_core::domain::types::{ConnectionMode, DeviceId};
@@ -34,8 +34,8 @@ pub fn spawn_discovery_listener(
             }
         });
 
-        // Heartbeat watchdog — delegates tick logic to heartbeat::evict_stale_senders
-        let sender_heartbeat_tracker = ctx.sender_last_seen.clone();
+        // Heartbeat watchdog — delegates tick logic to heartbeat::evict_stale_streamers
+        let streamer_heartbeat_tracker = ctx.streamer_last_seen.clone();
         let notifier_for_watchdog = notifier.clone();
         set.spawn(async move {
             if mode == ConnectionMode::Adb {
@@ -46,10 +46,10 @@ pub fn spawn_discovery_listener(
             ));
             loop {
                 interval.tick().await;
-                super::heartbeat::evict_stale_senders(
+                super::heartbeat::evict_stale_streamers(
                     notifier_for_watchdog.as_ref(),
-                    &sender_heartbeat_tracker,
-                    Duration::from_secs(SENDER_HEARTBEAT_TIMEOUT_SECS),
+                    &streamer_heartbeat_tracker,
+                    Duration::from_secs(STREAMER_HEARTBEAT_TIMEOUT_SECS),
                 );
             }
         });

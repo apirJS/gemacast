@@ -6,10 +6,10 @@ pub mod traits;
 #[cfg(test)]
 mod testing;
 
-/// Seconds after which a sender with no heartbeat is considered offline.
-pub(crate) const SENDER_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
+/// Seconds after which a streamer with no heartbeat is considered offline.
+pub(crate) const STREAMER_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
 
-/// Interval between watchdog sweeps that check for stale senders.
+/// Interval between watchdog sweeps that check for stale streamers.
 pub(crate) const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 1;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,8 +49,8 @@ pub fn run() {
             let auth_signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner> =
                 Arc::new(adapters::PlatformDeviceAuthSigner::new(platform.clone()));
 
-            let client_factory: Arc<dyn traits::SenderControlClientFactory> =
-                Arc::new(adapters::HttpSenderControlClientFactory::new(auth_signer));
+            let client_factory: Arc<dyn traits::StreamerControlClientFactory> =
+                Arc::new(adapters::HttpStreamerControlClientFactory::new(auth_signer));
 
             let session_mgr: Arc<dyn traits::SessionManager> = Arc::new(
                 adapters::TokioSessionManager::new(notifier.clone(), client_factory.clone()),
@@ -98,15 +98,15 @@ pub fn run() {
             services::discovery::commands::get_local_ip,
             services::discovery::commands::get_network_identifier,
             services::discovery::commands::get_connection_status,
-            services::discovery::commands::start_listening_for_senders,
-            services::discovery::commands::stop_listening_for_senders,
+            services::discovery::commands::start_listening_for_streamers,
+            services::discovery::commands::stop_listening_for_streamers,
             services::discovery::commands::get_network_state,
             services::discovery::commands::forget_pc_identity,
             services::discovery::commands::get_paired_pc_ids,
             services::discovery::commands::get_notification_permission,
             services::discovery::commands::open_notification_settings,
-            services::audio::commands::connect_to_sender,
-            services::audio::commands::disconnect_from_sender,
+            services::audio::commands::connect_to_streamer,
+            services::audio::commands::disconnect_from_streamer,
             services::audio::commands::start_audio_playback,
             services::audio::commands::stop_audio_playback,
             services::audio::commands::notify_streaming_stopped,
@@ -117,7 +117,7 @@ pub fn run() {
             services::audio::commands::change_audio_bitrate,
             services::audio::commands::get_process_list,
             services::audio::commands::establish_websocket,
-            services::audio::commands::probe_sender,
+            services::audio::commands::probe_streamer,
             services::audio::commands::start_link_recovery,
             services::audio::commands::stop_link_recovery,
             services::audio::commands::set_audio_gain,

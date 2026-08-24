@@ -1,6 +1,6 @@
 import { DeviceInfo } from '../device/DeviceInfo';
-import { SenderList } from '../senders/SenderList';
-import { ManualConnect } from '../senders/ManualConnect';
+import { StreamerList } from '../streamers/StreamerList';
+import { ManualConnect } from '../streamers/ManualConnect';
 import { ConnectionReadout } from '../latency/ConnectionReadout';
 import { ToastContainer } from '../feedback/ToastContainer';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
@@ -29,7 +29,7 @@ export function AppShell() {
         <ConnectionReadout />
 
         <ManualConnect />
-        <SenderList />
+        <StreamerList />
       </main>
     </>
   );

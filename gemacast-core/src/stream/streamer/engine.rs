@@ -11,7 +11,7 @@ use super::capture_pool::{CapturePool, StreamFailure};
 
 pub struct AudioStreamEngine<F: CaptureFactory, N: ErrorNotifier> {
     pub pool: CapturePool<F>,
-    pub active_receiver_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource, Option<i32>)>,
+    pub active_player_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource, Option<i32>)>,
     session_generations: HashMap<DeviceId, u64>,
     error_notifier: N,
     session_failure_tx: Option<mpsc::UnboundedSender<StreamSessionFailure>>,
@@ -77,7 +77,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
     pub fn new(factory: F, supports_process_capture: bool, error_notifier: N) -> Self {
         Self {
             pool: CapturePool::new(factory, supports_process_capture),
-            active_receiver_sessions: HashMap::new(),
+            active_player_sessions: HashMap::new(),
             session_generations: HashMap::new(),
             error_notifier,
             session_failure_tx: None,
@@ -101,7 +101,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 command = audio_engine_command_rx.recv() => {
                     let Some(command) = command else {
                         self.pool.shutdown_all().await;
-                        self.active_receiver_sessions.clear();
+                        self.active_player_sessions.clear();
                         self.session_generations.clear();
                         break;
                     };
@@ -116,7 +116,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 } => {
                     let mut final_source = source.unwrap_or_default();
                     if let Some((_, existing_source, _)) =
-                        self.active_receiver_sessions.get(&device_id)
+                        self.active_player_sessions.get(&device_id)
                     {
                         final_source = existing_source.clone();
                     }
@@ -135,7 +135,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         TargetId::Tcp(device_id.clone())
                     };
 
-                    let old_session = self.active_receiver_sessions.get(&device_id).cloned();
+                    let old_session = self.active_player_sessions.get(&device_id).cloned();
                     let result = match self
                         .pool
                         .subscribe(final_source.clone(), target.clone(), bitrate)
@@ -150,7 +150,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                                     let _ = self.pool.unsubscribe(&old_source, old_target).await;
                                 }
                             }
-                            self.active_receiver_sessions.insert(
+                            self.active_player_sessions.insert(
                                 device_id.clone(),
                                 (target_addr, final_source, bitrate),
                             );
@@ -169,7 +169,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 AudioStreamCommand::Unsubscribe { device_id, reply } => {
                     tracing::info!("[Engine] Unsubscribe device={:?}", device_id);
                     if let Some((target_addr, source, _bitrate)) =
-                        self.active_receiver_sessions.remove(&device_id)
+                        self.active_player_sessions.remove(&device_id)
                     {
                         self.session_generations.remove(&device_id);
                         let target = if let Some(addr) = target_addr {
@@ -200,11 +200,11 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
 
                     tracing::info!(
                         "[Engine] Active sessions: {:?}",
-                        self.active_receiver_sessions.keys().collect::<Vec<_>>()
+                        self.active_player_sessions.keys().collect::<Vec<_>>()
                     );
 
                     if let Some((target_addr, old_source, bitrate)) =
-                        self.active_receiver_sessions.get(&device_id)
+                        self.active_player_sessions.get(&device_id)
                     {
                         let old_source = old_source.clone();
                         let target_addr = *target_addr;
@@ -228,7 +228,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         {
                             Ok(_broadcast_tx) => {
                                 tracing::info!("[Engine] Source changed successfully");
-                                self.active_receiver_sessions
+                                self.active_player_sessions
                                     .insert(device_id, (target_addr, source, bitrate));
                                 let _ = reply.send(Ok(()));
                             }
@@ -265,7 +265,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     );
 
                     if let Some((target_addr, source, old_bitrate)) =
-                        self.active_receiver_sessions.get(&device_id)
+                        self.active_player_sessions.get(&device_id)
                     {
                         if *old_bitrate == bitrate {
                             tracing::info!("[Engine] Bitrate unchanged, skipping.");
@@ -295,7 +295,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         {
                             Ok(_broadcast_tx) => {
                                 tracing::info!("[Engine] Bitrate changed successfully");
-                                self.active_receiver_sessions
+                                self.active_player_sessions
                                     .insert(device_id, (target_addr_clone, source_clone, bitrate));
                                 let _ = reply.send(Ok(()));
                             }
@@ -314,7 +314,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 AudioStreamCommand::GetTcpBroadcaster { device_id, reply } => {
                     tracing::info!("[Engine] GetTcpBroadcaster for device={:?}", device_id);
                     if let Some((target_addr, source, _bitrate)) =
-                        self.active_receiver_sessions.get(&device_id)
+                        self.active_player_sessions.get(&device_id)
                     {
                         if target_addr.is_some() {
                             tracing::warn!(
@@ -357,7 +357,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         continue;
                     }
                     if let Some((target_addr, source, _)) =
-                        self.active_receiver_sessions.remove(&device_id)
+                        self.active_player_sessions.remove(&device_id)
                     {
                         self.session_generations.remove(&device_id);
                         let target = target_addr
@@ -369,12 +369,12 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 }
                 #[cfg(test)]
                 AudioStreamCommand::InspectSession { device_id, reply } => {
-                    let _ = reply.send(self.active_receiver_sessions.get(&device_id).cloned());
+                    let _ = reply.send(self.active_player_sessions.get(&device_id).cloned());
                 }
                 AudioStreamCommand::Shutdown { reply } => {
                     tracing::info!("[Engine] Shutdown");
                     self.pool.shutdown_all().await;
-                    self.active_receiver_sessions.clear();
+                    self.active_player_sessions.clear();
                     self.session_generations.clear();
                     let _ = reply.send(Ok(()));
                     break;
@@ -403,14 +403,14 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     return;
                 }
                 let affected: Vec<_> = self
-                    .active_receiver_sessions
+                    .active_player_sessions
                     .iter()
                     .filter(|(_, (_, active_source, _))| active_source == &source)
                     .map(|(device_id, _)| device_id.clone())
                     .collect();
                 for device_id in affected {
                     let generation = self.session_generations.remove(&device_id);
-                    self.active_receiver_sessions.remove(&device_id);
+                    self.active_player_sessions.remove(&device_id);
                     self.error_notifier
                         .notify_error(&device_id, format!("Audio source failed: {message}"));
                     if let Some(generation) = generation {
@@ -427,13 +427,13 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     return;
                 }
                 let device_id = self
-                    .active_receiver_sessions
+                    .active_player_sessions
                     .iter()
                     .find(|(_, (addr, _, _))| *addr == Some(target))
                     .map(|(device_id, _)| device_id.clone());
                 if let Some(device_id) = device_id {
                     let generation = self.session_generations.remove(&device_id);
-                    self.active_receiver_sessions.remove(&device_id);
+                    self.active_player_sessions.remove(&device_id);
                     self.error_notifier
                         .notify_error(&device_id, format!("Audio encoder failed: {message}"));
                     if let Some(generation) = generation {
@@ -450,7 +450,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     return;
                 }
                 let generation = self.session_generations.remove(device_id);
-                self.active_receiver_sessions.remove(device_id);
+                self.active_player_sessions.remove(device_id);
                 self.error_notifier
                     .notify_error(device_id, format!("Audio encoder failed: {message}"));
                 if let Some(generation) = generation {
@@ -717,6 +717,6 @@ mod tests {
 
         engine.run_command_loop(rx).await.unwrap();
 
-        assert!(!engine.active_receiver_sessions.contains_key(&device_id));
+        assert!(!engine.active_player_sessions.contains_key(&device_id));
     }
 }

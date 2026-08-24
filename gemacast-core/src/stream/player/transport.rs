@@ -1,7 +1,7 @@
-//! Receiver-side transport orchestration.
+//! Player-side transport orchestration.
 //!
 //! Creates and configures audio transport connections (UDP/TCP) for the
-//! receiver. The `AudioTransport` enum adapter and underlying transport
+//! player. The `AudioTransport` enum adapter and underlying transport
 //! structs live in [`crate::adapters::transport`].
 
 use crate::adapters::transport::{AudioTransport, TcpTransport, UdpTransport};
@@ -35,7 +35,7 @@ fn write_len_prefixed(
 
 /// Encode the authenticated ADB audio handshake.
 ///
-/// The device ID identifies the sender-side session; the bearer token and
+/// The device ID identifies the streamer-side session; the bearer token and
 /// generation prove that this socket belongs to the currently authorized
 /// connection rather than merely to a local process that can reach the
 /// forwarded port.

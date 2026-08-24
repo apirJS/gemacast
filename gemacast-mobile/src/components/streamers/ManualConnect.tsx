@@ -5,7 +5,7 @@ import { useAppStore } from '../../stores/app-store';
 import { hasLiveSession } from '../../core/types';
 
 /**
- * Collapsible form for connecting to a sender by IP address.
+ * Collapsible form for connecting to a streamer by IP address.
  * Collapsed by default to keep the main screen clean when discovery works.
  *
  * Hidden outright once a session is live: it is a way to *reach* a PC that

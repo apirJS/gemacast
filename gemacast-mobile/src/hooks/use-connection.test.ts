@@ -3,15 +3,15 @@ import {
   setupInvokeMock,
   invokeCalls,
   makeDeviceInfo,
-  makeDiscoveredSender,
+  makeDiscoveredStreamer,
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
 import {
-  connectToSender,
+  connectToStreamer,
   disconnect,
   getPairingDecisionWarning,
-  handleSenderTimeout,
+  handleStreamerTimeout,
   handleForceDisconnect,
   handleLinkLost,
   handleLinkRecovered,
@@ -23,13 +23,13 @@ import { useToastStore } from '../stores/toast-store';
 
 beforeEach(() => {
   setupInvokeMock({
-    connect_to_sender: undefined,
-    disconnect_from_sender: undefined,
+    connect_to_streamer: undefined,
+    disconnect_from_streamer: undefined,
     kill_playback: undefined,
     notify_streaming_stopped: undefined,
     get_audio_sources: [[], { supportsProcessCapture: false }],
     get_process_list: [],
-    probe_sender: undefined,
+    probe_streamer: undefined,
     establish_websocket: undefined,
     change_audio_source: undefined,
     start_link_recovery: undefined,
@@ -40,14 +40,14 @@ beforeEach(() => {
   useToastStore.setState({ toasts: [] });
 });
 
-describe('connectToSender', () => {
+describe('connectToStreamer', () => {
   it('classifies pairing decisions as terminal', () => {
-    expect(isTerminalConnectError('sender rejected the request (pairing_rejected)')).toBe(true);
+    expect(isTerminalConnectError('streamer rejected the request (pairing_rejected)')).toBe(true);
     expect(isTerminalConnectError(new Error('HTTP request failed'))).toBe(false);
   });
 
   it('maps pairing decisions to concise warnings', () => {
-    expect(getPairingDecisionWarning('sender rejected the request (pairing_rejected)')).toBe(
+    expect(getPairingDecisionWarning('streamer rejected the request (pairing_rejected)')).toBe(
       'Pairing request rejected on the PC',
     );
     expect(getPairingDecisionWarning(new Error('pairing was cancelled on the phone'))).toBe(
@@ -57,34 +57,34 @@ describe('connectToSender', () => {
   });
 
   it('transitions through Connecting → Connected on success', async () => {
-    const sender = makeDiscoveredSender();
-    const result = await connectToSender(sender);
+    const streamer = makeDiscoveredStreamer();
+    const result = await connectToStreamer(streamer);
     expect(result.ok).toBe(true);
     expect(useAppStore.getState().status).toBe(Status.Connected);
-    expect(useAppStore.getState().connectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().connectedStreamer?.deviceId).toBe(streamer.deviceId);
     expect(useAppStore.getState().isLoading).toBe(false);
   });
 
-  it('invokes connect_to_sender with correct IP', async () => {
-    await connectToSender(makeDiscoveredSender({ addr: '10.0.0.1:9000' }));
-    const call = invokeCalls.find((c) => c.cmd === 'connect_to_sender');
+  it('invokes connect_to_streamer with correct IP', async () => {
+    await connectToStreamer(makeDiscoveredStreamer({ addr: '10.0.0.1:9000' }));
+    const call = invokeCalls.find((c) => c.cmd === 'connect_to_streamer');
     expect(call).toBeTruthy();
     expect((call?.args as Record<string, unknown>).ip).toBe('10.0.0.1');
   });
 
-  it('saves lastConnectedSender on connect', async () => {
-    const sender = makeDiscoveredSender();
-    await connectToSender(sender);
-    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+  it('saves lastConnectedStreamer on connect', async () => {
+    const streamer = makeDiscoveredStreamer();
+    await connectToStreamer(streamer);
+    expect(useAppStore.getState().lastConnectedStreamer?.deviceId).toBe(streamer.deviceId);
   });
 
   it('returns err and reverts to Listening on IPC failure', async () => {
     setupInvokeMock({
-      connect_to_sender: () => {
+      connect_to_streamer: () => {
         throw new Error('refused');
       },
     });
-    const result = await connectToSender(makeDiscoveredSender());
+    const result = await connectToStreamer(makeDiscoveredStreamer());
     expect(result.ok).toBe(false);
     expect(useAppStore.getState().status).toBe(Status.Listening);
     expect(useAppStore.getState().error).not.toBeNull();
@@ -93,25 +93,25 @@ describe('connectToSender', () => {
   it('does not retry a rejected LAN pairing', async () => {
     let attempts = 0;
     setupInvokeMock({
-      connect_to_sender: () => {
+      connect_to_streamer: () => {
         attempts += 1;
-        throw new Error('sender rejected the request (pairing_rejected)');
+        throw new Error('streamer rejected the request (pairing_rejected)');
       },
     });
 
-    await connectToSender(makeDiscoveredSender());
+    await connectToStreamer(makeDiscoveredStreamer());
 
     expect(attempts).toBe(1);
   });
 
   it('shows a warning instead of a playback error when the PC rejects pairing', async () => {
     setupInvokeMock({
-      connect_to_sender: () => {
-        throw new Error('sender rejected the request (pairing_rejected)');
+      connect_to_streamer: () => {
+        throw new Error('streamer rejected the request (pairing_rejected)');
       },
     });
 
-    const result = await connectToSender(makeDiscoveredSender());
+    const result = await connectToStreamer(makeDiscoveredStreamer());
 
     expect(result.ok).toBe(false);
     expect(useAppStore.getState().error).toBeNull();
@@ -124,12 +124,12 @@ describe('connectToSender', () => {
 
   it('shows a warning instead of a playback error when pairing is cancelled on the phone', async () => {
     setupInvokeMock({
-      connect_to_sender: () => {
+      connect_to_streamer: () => {
         throw new Error('PC identity confirmation was cancelled on the phone');
       },
     });
 
-    const result = await connectToSender(makeDiscoveredSender());
+    const result = await connectToStreamer(makeDiscoveredStreamer());
 
     expect(result.ok).toBe(false);
     expect(useAppStore.getState().error).toBeNull();
@@ -142,41 +142,41 @@ describe('connectToSender', () => {
 
   it('resets reconnectAttempts to 0 on connect', async () => {
     useAppStore.getState().patch({ reconnectAttempts: 3 });
-    await connectToSender(makeDiscoveredSender());
+    await connectToStreamer(makeDiscoveredStreamer());
     expect(useAppStore.getState().reconnectAttempts).toBe(0);
   });
 });
 
 describe('disconnect', () => {
-  it('transitions to Listening and clears connectedSender', async () => {
-    const sender = makeDiscoveredSender();
+  it('transitions to Listening and clears connectedStreamer', async () => {
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      connectedSender: sender,
+      connectedStreamer: streamer,
       status: Status.Connected,
     });
     const result = await disconnect();
     expect(result.ok).toBe(true);
-    expect(useAppStore.getState().connectedSender).toBeNull();
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Listening);
   });
 
-  it('invokes disconnect_from_sender IPC', async () => {
+  it('invokes disconnect_from_streamer IPC', async () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender({ addr: '10.0.0.2:9000' }),
+      connectedStreamer: makeDiscoveredStreamer({ addr: '10.0.0.2:9000' }),
       status: Status.Connected,
     });
     await disconnect();
-    expect(invokeCalls.some((c) => c.cmd === 'disconnect_from_sender')).toBe(true);
+    expect(invokeCalls.some((c) => c.cmd === 'disconnect_from_streamer')).toBe(true);
   });
 
-  it('still succeeds when no sender is connected', async () => {
+  it('still succeeds when no streamer is connected', async () => {
     const result = await disconnect();
     expect(result.ok).toBe(true);
   });
 
   it('resets metrics to all-null', async () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Connected,
     });
     useAppStore.getState().updateMetrics({ bufferMs: 10, networkRttMs: 12, jitterMs: 5 });
@@ -187,11 +187,11 @@ describe('disconnect', () => {
     expect(metrics.jitterMs).toBeNull();
   });
 
-  function disconnectWithPresenceMidFlight(sender: ReturnType<typeof makeDiscoveredSender>) {
+  function disconnectWithPresenceMidFlight(streamer: ReturnType<typeof makeDiscoveredStreamer>) {
     const seen: Array<unknown> = [];
     setupInvokeMock({
-      disconnect_from_sender: () => {
-        seen.push(useAppStore.getState().updateDiscoveredSender(sender));
+      disconnect_from_streamer: () => {
+        seen.push(useAppStore.getState().updateDiscoveredStreamer(streamer));
         return undefined;
       },
       kill_playback: undefined,
@@ -203,127 +203,127 @@ describe('disconnect', () => {
   }
 
   it('does not auto-reconnect when a presence packet lands mid-disconnect', async () => {
-    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
       status: Status.Connected,
       isSuspended: false,
     });
 
-    const targets = disconnectWithPresenceMidFlight(sender);
+    const targets = disconnectWithPresenceMidFlight(streamer);
     await disconnect(true);
 
     expect(targets).toHaveLength(1);
     expect(targets[0]).toBeNull();
-    expect(useAppStore.getState().lastConnectedSender).toBeNull();
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Listening);
   });
 
   it('does not auto-reconnect a suspended session when a presence packet lands mid-disconnect', async () => {
-    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
       status: Status.Connected,
       isSuspended: false,
     });
 
-    const targets = disconnectWithPresenceMidFlight(sender);
-    // forgetSender=false keeps the sender on purpose, so `isSuspended` is the
+    const targets = disconnectWithPresenceMidFlight(streamer);
+    // forgetStreamer=false keeps the streamer on purpose, so `isSuspended` is the
     // only thing holding the gate shut — it has to be set before the await too.
     await disconnect(false);
 
     expect(targets).toHaveLength(1);
     expect(targets[0]).toBeNull();
-    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().lastConnectedStreamer?.deviceId).toBe(streamer.deviceId);
     expect(useAppStore.getState().isSuspended).toBe(true);
   });
 
   it('still auto-reconnects a genuine link drop, which the gate exists for', () => {
-    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
     useAppStore.getState().patch({
-      connectedSender: null,
-      lastConnectedSender: sender,
+      connectedStreamer: null,
+      lastConnectedStreamer: streamer,
       status: Status.Listening,
       isSuspended: false,
     });
 
-    expect(useAppStore.getState().updateDiscoveredSender(sender)).toMatchObject({
+    expect(useAppStore.getState().updateDiscoveredStreamer(streamer)).toMatchObject({
       deviceId: 'pc-1',
     });
   });
 });
 
-describe('handleSenderTimeout', () => {
-  it('removes the timed-out sender from the list', () => {
-    const sender = makeDiscoveredSender({ deviceId: 'gone' });
-    useAppStore.getState().setDiscoveredSenders([sender]);
-    handleSenderTimeout('gone');
-    expect(useAppStore.getState().discoveredSenders).toHaveLength(0);
+describe('handleStreamerTimeout', () => {
+  it('removes the timed-out streamer from the list', () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'gone' });
+    useAppStore.getState().setDiscoveredStreamers([streamer]);
+    handleStreamerTimeout('gone');
+    expect(useAppStore.getState().discoveredStreamers).toHaveLength(0);
   });
 
-  it('enters Listening when connected sender times out', () => {
-    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+  it('enters Listening when connected streamer times out', () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
-      discoveredSenders: [sender],
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
+      discoveredStreamers: [streamer],
       status: Status.Connected,
     });
-    handleSenderTimeout('pc-1');
+    handleStreamerTimeout('pc-1');
     expect(useAppStore.getState().status).toBe(Status.Listening);
-    expect(useAppStore.getState().connectedSender).toBeNull();
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
   });
 
-  it('sets a senderTimeout error', () => {
-    const sender = makeDiscoveredSender({ deviceId: 'pc-1' });
+  it('sets a streamerTimeout error', () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
     useAppStore.getState().patch({
-      connectedSender: sender,
-      discoveredSenders: [sender],
+      connectedStreamer: streamer,
+      discoveredStreamers: [streamer],
     });
-    handleSenderTimeout('pc-1');
-    expect(useAppStore.getState().error?.code).toBe(ErrorCode.NETWORK_SENDER_TIMEOUT);
+    handleStreamerTimeout('pc-1');
+    expect(useAppStore.getState().error?.code).toBe(ErrorCode.NETWORK_STREAMER_TIMEOUT);
   });
 });
 
 describe('handleForceDisconnect', () => {
-  it('clears connectedSender and moves to Listening', () => {
+  it('clears connectedStreamer and moves to Listening', () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Playing,
     });
     handleForceDisconnect();
-    expect(useAppStore.getState().connectedSender).toBeNull();
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Listening);
   });
 
-  it('forgets lastConnectedSender when forgetSender=true', () => {
-    const sender = makeDiscoveredSender();
+  it('forgets lastConnectedStreamer when forgetStreamer=true', () => {
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      lastConnectedSender: sender,
+      lastConnectedStreamer: streamer,
       status: Status.Connected,
     });
     handleForceDisconnect(true);
-    expect(useAppStore.getState().lastConnectedSender).toBeNull();
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
   });
 
-  it('retains lastConnectedSender when forgetSender=false', () => {
-    const sender = makeDiscoveredSender();
+  it('retains lastConnectedStreamer when forgetStreamer=false', () => {
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
       status: Status.Connected,
     });
     handleForceDisconnect(false);
-    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().lastConnectedStreamer?.deviceId).toBe(streamer.deviceId);
   });
 });
 
 describe('handleLinkLost', () => {
-  it('starts link recovery for the sender that was lost', async () => {
-    const sender = makeDiscoveredSender({ addr: '10.0.0.7:9000' });
-    useAppStore.getState().patch({ connectedSender: sender, status: Status.Playing });
+  it('starts link recovery for the streamer that was lost', async () => {
+    const streamer = makeDiscoveredStreamer({ addr: '10.0.0.7:9000' });
+    useAppStore.getState().patch({ connectedStreamer: streamer, status: Status.Playing });
 
     await handleLinkLost();
 
@@ -332,18 +332,18 @@ describe('handleLinkLost', () => {
     expect((call?.args as Record<string, unknown>).ip).toBe('10.0.0.7');
   });
 
-  it('never forgets the sender — recovery has to have something to reconnect to', async () => {
-    const sender = makeDiscoveredSender();
+  it('never forgets the streamer — recovery has to have something to reconnect to', async () => {
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
       status: Status.Playing,
     });
 
     await handleLinkLost();
 
-    expect(useAppStore.getState().connectedSender).toBeNull();
-    expect(useAppStore.getState().lastConnectedSender?.deviceId).toBe(sender.deviceId);
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
+    expect(useAppStore.getState().lastConnectedStreamer?.deviceId).toBe(streamer.deviceId);
     expect(useAppStore.getState().status).toBe(Status.Listening);
     expect(useAppStore.getState().isSuspended).toBe(true);
   });
@@ -351,7 +351,7 @@ describe('handleLinkLost', () => {
   it('tears the session down before arming the prober', async () => {
     useAppStore
       .getState()
-      .patch({ connectedSender: makeDiscoveredSender(), status: Status.Playing });
+      .patch({ connectedStreamer: makeDiscoveredStreamer(), status: Status.Playing });
 
     await handleLinkLost();
 
@@ -364,7 +364,7 @@ describe('handleLinkLost', () => {
   });
 
   it('does nothing when there was no live session to lose', async () => {
-    useAppStore.getState().patch({ connectedSender: null, status: Status.Listening });
+    useAppStore.getState().patch({ connectedStreamer: null, status: Status.Listening });
 
     await handleLinkLost();
 
@@ -373,10 +373,10 @@ describe('handleLinkLost', () => {
 });
 
 describe('handleLinkRecovered', () => {
-  it('reconnects to the sender the link was lost from', async () => {
-    const sender = makeDiscoveredSender({ addr: '10.0.0.8:9000' });
+  it('reconnects to the streamer the link was lost from', async () => {
+    const streamer = makeDiscoveredStreamer({ addr: '10.0.0.8:9000' });
     useAppStore.getState().patch({
-      lastConnectedSender: sender,
+      lastConnectedStreamer: streamer,
       status: Status.Listening,
       isSuspended: true,
     });
@@ -384,36 +384,36 @@ describe('handleLinkRecovered', () => {
     await handleLinkRecovered(true);
 
     expect(useAppStore.getState().status).toBe(Status.Connected);
-    const call = invokeCalls.find((c) => c.cmd === 'connect_to_sender');
+    const call = invokeCalls.find((c) => c.cmd === 'connect_to_streamer');
     expect((call?.args as Record<string, unknown>).ip).toBe('10.0.0.8');
   });
 
   it('reconnects the same way whether or not the PC still had us registered', async () => {
-    const sender = makeDiscoveredSender();
-    useAppStore.getState().patch({ lastConnectedSender: sender, status: Status.Listening });
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().patch({ lastConnectedStreamer: streamer, status: Status.Listening });
     await handleLinkRecovered(false);
 
     // `deviceRegistered` is observability only today: both answers take the
     // full handshake, so neither can skip it.
-    expect(invokeCalls.filter((c) => c.cmd === 'connect_to_sender')).toHaveLength(1);
+    expect(invokeCalls.filter((c) => c.cmd === 'connect_to_streamer')).toHaveLength(1);
     expect(useAppStore.getState().status).toBe(Status.Connected);
   });
 
   it('does not reconnect on top of a session the user already restored', async () => {
     useAppStore.getState().patch({
-      lastConnectedSender: makeDiscoveredSender(),
-      connectedSender: makeDiscoveredSender(),
+      lastConnectedStreamer: makeDiscoveredStreamer(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Connected,
     });
 
     await handleLinkRecovered(true);
 
-    expect(invokeCalls.find((c) => c.cmd === 'connect_to_sender')).toBeUndefined();
+    expect(invokeCalls.find((c) => c.cmd === 'connect_to_streamer')).toBeUndefined();
   });
 });
 
 describe('changeAudioSource', () => {
-  it('returns err when no sender connected', async () => {
+  it('returns err when no streamer connected', async () => {
     const result = await changeAudioSource({ type: 'desktop' });
     expect(result.ok).toBe(false);
   });
@@ -421,7 +421,7 @@ describe('changeAudioSource', () => {
   it('invokes change_audio_source IPC on success', async () => {
     setupInvokeMock({ change_audio_source: undefined });
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender({ addr: '10.0.0.5:9000' }),
+      connectedStreamer: makeDiscoveredStreamer({ addr: '10.0.0.5:9000' }),
       status: Status.Connected,
     });
     const result = await changeAudioSource({ type: 'desktop' });
@@ -438,7 +438,7 @@ describe('changeAudioSource', () => {
       },
     });
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Connected,
     });
     const result = await changeAudioSource({ type: 'desktop' });

@@ -11,7 +11,7 @@ pub enum ControlMessage {
     },
     Presence {
         device_id: DeviceId,
-        sender_name: String,
+        streamer_name: String,
         #[serde(default)]
         is_offline: bool,
         #[serde(default)]
@@ -30,22 +30,31 @@ mod tests {
     fn presence_should_round_trip_through_json() {
         let msg = ControlMessage::Presence {
             device_id: DeviceId("PC_TEST".to_string()),
-            sender_name: "My PC".to_string(),
+            streamer_name: "My PC".to_string(),
             is_offline: false,
             transport: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
+
+        // The enum's `rename_all = "camelCase"` renames *variants*, not variant
+        // fields, so this ships snake_case. Pinned here because the key is a
+        // wire contract with the phone and destructuring below cannot see it.
+        assert!(
+            json.contains("\"streamer_name\""),
+            "presence must ship streamer_name on the wire, got {json}"
+        );
+
         let parsed: ControlMessage = serde_json::from_str(&json).unwrap();
 
         match parsed {
             ControlMessage::Presence {
                 device_id,
-                sender_name,
+                streamer_name,
                 is_offline,
                 transport,
             } => {
                 assert_eq!(device_id.0, "PC_TEST");
-                assert_eq!(sender_name, "My PC");
+                assert_eq!(streamer_name, "My PC");
                 assert!(!is_offline);
                 assert!(transport.is_none());
             }

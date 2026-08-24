@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 pub const MIN_OPUS_BITRATE_BPS: i32 = 6_000;
 pub const MAX_OPUS_BITRATE_BPS: i32 = 512_000;
 
-/// Validated sender-side encoding mode.
+/// Validated streamer-side encoding mode.
 ///
 /// The public control protocol intentionally keeps using `Option<i32>` for
 /// backwards compatibility (`None` means raw PCM). Production code converts to
@@ -109,7 +109,7 @@ pub enum AudioSource {
     },
 }
 
-/// A running process discovered on the PC sender, suitable for per-process audio capture.
+/// A running process discovered on the PC streamer, suitable for per-process audio capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessInfo {
@@ -120,7 +120,7 @@ pub struct ProcessInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SenderCapabilities {
+pub struct StreamerCapabilities {
     pub supports_process_capture: bool,
 }
 
@@ -138,15 +138,15 @@ pub struct DiscoveredDevice {
 
 impl DiscoveredDevice {
     pub fn from_presence(
-        sender_id: DeviceId,
-        sender_name: String,
+        streamer_id: DeviceId,
+        streamer_name: String,
         is_offline: bool,
         addr: std::net::SocketAddr,
         transport: Option<TransportType>,
     ) -> Self {
         Self {
-            device_id: sender_id,
-            device_name: sender_name,
+            device_id: streamer_id,
+            device_name: streamer_name,
             last_seen: std::time::Instant::now(),
             addr,
             is_offline,

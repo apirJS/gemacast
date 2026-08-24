@@ -1,25 +1,25 @@
 import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
-import type { AudioSource, DiscoveredSender } from '../../core/types';
-import { connectToSender, disconnect, changeAudioSource } from '../../hooks/use-connection';
-import { refreshSenders } from '../../hooks/use-discovery';
+import type { AudioSource, DiscoveredStreamer } from '../../core/types';
+import { connectToStreamer, disconnect, changeAudioSource } from '../../hooks/use-connection';
+import { refreshStreamers } from '../../hooks/use-discovery';
 import { startPlayback, stopPlayback } from '../../hooks/use-audio';
 import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
-import { SenderCard } from './SenderCard';
+import { StreamerCard } from './StreamerCard';
 import { EmptyState } from './EmptyState';
 import { PullToRefreshIndicator } from './PullToRefreshIndicator';
 
 const PULL_THRESHOLD = 64;
 
-export function SenderList() {
-  const senders = useAppStore((s) => s.discoveredSenders);
+export function StreamerList() {
+  const streamers = useAppStore((s) => s.discoveredStreamers);
   const status = useAppStore((s) => s.status);
-  const connectedSender = useAppStore((s) => s.connectedSender);
-  const connectingSenderId = useAppStore((s) => s.connectingSenderId);
+  const connectedStreamer = useAppStore((s) => s.connectedStreamer);
+  const connectingStreamerId = useAppStore((s) => s.connectingStreamerId);
   const isLoading = useAppStore((s) => s.isLoading);
   const audioSources = useAppStore((s) => s.audioSources);
   const processList = useAppStore((s) => s.processList);
-  const senderCapabilities = useAppStore((s) => s.senderCapabilities);
+  const streamerCapabilities = useAppStore((s) => s.streamerCapabilities);
   const currentAudioSource = useAppStore((s) => s.currentAudioSource);
 
   const isListening = [
@@ -31,20 +31,20 @@ export function SenderList() {
     Status.Paused,
   ].includes(status);
 
-  const isEmpty = senders.length === 0 && isListening;
+  const isEmpty = streamers.length === 0 && isListening;
 
-  const handleToggle = async (sender: DiscoveredSender, isConnected: boolean) => {
+  const handleToggle = async (streamer: DiscoveredStreamer, isConnected: boolean) => {
     if (isConnected) {
       await disconnect();
-      // Remove manual senders from list on disconnect
-      if (sender.deviceId.startsWith('manual-')) {
+      // Remove manual streamers from list on disconnect
+      if (streamer.deviceId.startsWith('manual-')) {
         const state = useAppStore.getState();
-        const newList = state.discoveredSenders.filter((s) => s.deviceId !== sender.deviceId);
-        state.setDiscoveredSenders(newList);
+        const newList = state.discoveredStreamers.filter((s) => s.deviceId !== streamer.deviceId);
+        state.setDiscoveredStreamers(newList);
       }
     } else {
-      if (connectedSender) await disconnect();
-      await connectToSender(sender);
+      if (connectedStreamer) await disconnect();
+      await connectToStreamer(streamer);
     }
   };
 
@@ -66,7 +66,7 @@ export function SenderList() {
     pull,
     refreshing,
   } = usePullToRefresh<HTMLDivElement>({
-    onRefresh: () => refreshSenders().then(() => {}),
+    onRefresh: () => refreshStreamers().then(() => {}),
     threshold: PULL_THRESHOLD,
   });
 
@@ -86,18 +86,18 @@ export function SenderList() {
         >
           {isEmpty && <EmptyState />}
 
-          <ul className="flex flex-col gap-2 pb-2 min-h-80" aria-label="Discovered senders">
-            {senders.map((sender) => {
-              const isConnected = connectedSender?.deviceId === sender.deviceId;
+          <ul className="flex flex-col gap-2 pb-2 min-h-80" aria-label="Discovered streamers">
+            {streamers.map((streamer) => {
+              const isConnected = connectedStreamer?.deviceId === streamer.deviceId;
               const isConnecting =
-                status === Status.Connecting && connectingSenderId === sender.deviceId;
+                status === Status.Connecting && connectingStreamerId === streamer.deviceId;
               const isPlaying =
                 isConnected && (status === Status.Playing || status === Status.Connected);
 
               return (
-                <SenderCard
-                  key={sender.deviceId}
-                  sender={sender}
+                <StreamerCard
+                  key={streamer.deviceId}
+                  streamer={streamer}
                   isConnected={isConnected}
                   isConnecting={isConnecting}
                   isPlaying={isPlaying}
@@ -105,9 +105,9 @@ export function SenderList() {
                   isDisabled={isLoading || status === Status.Connecting}
                   audioSources={isConnected ? audioSources : []}
                   processList={isConnected ? processList : []}
-                  senderCapabilities={isConnected ? senderCapabilities : null}
+                  streamerCapabilities={isConnected ? streamerCapabilities : null}
                   currentSource={isConnected ? currentAudioSource : { type: 'desktop' }}
-                  onToggle={() => handleToggle(sender, isConnected)}
+                  onToggle={() => handleToggle(streamer, isConnected)}
                   onPlayPause={handlePlayPause}
                   onSourceChange={handleSourceChange}
                 />

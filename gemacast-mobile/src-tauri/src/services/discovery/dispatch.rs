@@ -4,20 +4,20 @@ use std::time::Instant;
 
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, DiscoveredDevice, TransportType};
 
-use crate::SENDER_HEARTBEAT_TIMEOUT_SECS;
+use crate::STREAMER_HEARTBEAT_TIMEOUT_SECS;
 use crate::traits::FrontendNotifier;
 
 pub struct DispatchContext {
-    pub sender_last_seen: Arc<Mutex<HashMap<DeviceId, Instant>>>,
-    pub active_usb_senders: Arc<Mutex<HashMap<DeviceId, Instant>>>,
+    pub streamer_last_seen: Arc<Mutex<HashMap<DeviceId, Instant>>>,
+    pub active_usb_streamers: Arc<Mutex<HashMap<DeviceId, Instant>>>,
     pub notifier: Arc<dyn FrontendNotifier>,
 }
 
 impl Clone for DispatchContext {
     fn clone(&self) -> Self {
         Self {
-            sender_last_seen: self.sender_last_seen.clone(),
-            active_usb_senders: self.active_usb_senders.clone(),
+            streamer_last_seen: self.streamer_last_seen.clone(),
+            active_usb_streamers: self.active_usb_streamers.clone(),
             notifier: self.notifier.clone(),
         }
     }
@@ -26,8 +26,8 @@ impl Clone for DispatchContext {
 impl DispatchContext {
     pub fn new(notifier: Arc<dyn FrontendNotifier>) -> Self {
         Self {
-            sender_last_seen: Arc::new(Mutex::new(HashMap::new())),
-            active_usb_senders: Arc::new(Mutex::new(HashMap::new())),
+            streamer_last_seen: Arc::new(Mutex::new(HashMap::new())),
+            active_usb_streamers: Arc::new(Mutex::new(HashMap::new())),
             notifier,
         }
     }
@@ -41,11 +41,11 @@ impl DispatchContext {
         match message {
             gemacast_core::control::messages::ControlMessage::Presence {
                 device_id,
-                sender_name,
+                streamer_name,
                 is_offline,
                 transport,
             } => {
-                self.handle_presence(device_id, sender_name, is_offline, transport, addr, mode);
+                self.handle_presence(device_id, streamer_name, is_offline, transport, addr, mode);
             }
             gemacast_core::control::messages::ControlMessage::Disconnect { .. } => {
                 self.notifier.emit_force_disconnect();
@@ -57,17 +57,17 @@ impl DispatchContext {
     fn handle_presence(
         &self,
         device_id: DeviceId,
-        sender_name: String,
+        streamer_name: String,
         is_offline: bool,
         transport: Option<TransportType>,
         addr: std::net::SocketAddr,
         mode: ConnectionMode,
     ) {
         if is_offline {
-            self.sender_last_seen.lock().unwrap().remove(&device_id);
-            self.active_usb_senders.lock().unwrap().remove(&device_id);
+            self.streamer_last_seen.lock().unwrap().remove(&device_id);
+            self.active_usb_streamers.lock().unwrap().remove(&device_id);
         } else {
-            self.sender_last_seen
+            self.streamer_last_seen
                 .lock()
                 .unwrap()
                 .insert(device_id.clone(), Instant::now());
@@ -101,18 +101,19 @@ impl DispatchContext {
 
         if !is_offline {
             if is_usb {
-                self.active_usb_senders
+                self.active_usb_streamers
                     .lock()
                     .unwrap()
                     .insert(device_id.clone(), Instant::now());
             } else {
                 let has_recent_usb = self
-                    .active_usb_senders
+                    .active_usb_streamers
                     .lock()
                     .unwrap()
                     .get(&device_id)
                     .is_some_and(|ts| {
-                        Instant::now().duration_since(*ts).as_secs() < SENDER_HEARTBEAT_TIMEOUT_SECS
+                        Instant::now().duration_since(*ts).as_secs()
+                            < STREAMER_HEARTBEAT_TIMEOUT_SECS
                     });
                 if has_recent_usb {
                     return;
@@ -122,12 +123,12 @@ impl DispatchContext {
 
         let device = DiscoveredDevice::from_presence(
             device_id,
-            sender_name,
+            streamer_name,
             is_offline,
             audio_addr,
             transport,
         );
-        self.notifier.emit_sender_discovered(device);
+        self.notifier.emit_streamer_discovered(device);
     }
 }
 
@@ -143,11 +144,11 @@ mod tests {
     }
 
     #[test]
-    fn wifi_mode_should_emit_wifi_sender() {
+    fn wifi_mode_should_emit_wifi_streamer() {
         let (ctx, notifier) = make_ctx();
         let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
-            sender_name: "PC".into(),
+            streamer_name: "PC".into(),
             is_offline: false,
             transport: None,
         };
@@ -157,15 +158,15 @@ mod tests {
 
         let events = notifier.take_events();
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], FrontendEvent::SenderDiscovered(_)));
+        assert!(matches!(&events[0], FrontendEvent::StreamerDiscovered(_)));
     }
 
     #[test]
-    fn wifi_mode_should_ignore_usb_sender() {
+    fn wifi_mode_should_ignore_usb_streamer() {
         let (ctx, notifier) = make_ctx();
         let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
-            sender_name: "PC".into(),
+            streamer_name: "PC".into(),
             is_offline: false,
             transport: Some(TransportType::Usb),
         };
@@ -192,24 +193,24 @@ mod tests {
     #[test]
     fn offline_presence_should_clean_heartbeat_tracker() {
         let (ctx, notifier) = make_ctx();
-        // First, register the sender
-        ctx.sender_last_seen
+        // First, register the streamer
+        ctx.streamer_last_seen
             .lock()
             .unwrap()
             .insert(DeviceId("pc1".into()), Instant::now());
 
         let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
-            sender_name: "PC".into(),
+            streamer_name: "PC".into(),
             is_offline: true,
             transport: None,
         };
         let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
-        // Sender was removed from tracker
+        // Streamer was removed from tracker
         assert!(
-            !ctx.sender_last_seen
+            !ctx.streamer_last_seen
                 .lock()
                 .unwrap()
                 .contains_key(&DeviceId("pc1".into()))
@@ -225,7 +226,7 @@ mod tests {
         let (ctx, notifier) = make_ctx();
         let msg = gemacast_core::control::messages::ControlMessage::Presence {
             device_id: DeviceId("pc1".into()),
-            sender_name: "PC".into(),
+            streamer_name: "PC".into(),
             is_offline: false,
             transport: None,
         };

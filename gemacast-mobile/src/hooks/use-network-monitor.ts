@@ -5,7 +5,7 @@ import { disconnect, killPlayback } from './use-connection';
 import { startListening, stopListening } from './use-discovery';
 import { tauriBridge } from '../core/tauri-bridge';
 import { ConnectionMode, Status } from '../core/types';
-import { saveLastSender } from '../core/persistence';
+import { saveLastStreamer } from '../core/persistence';
 
 export function useNetworkMonitor() {
   const networkIdRef = useRef('');
@@ -42,14 +42,14 @@ export function useNetworkMonitor() {
           }
 
           killPlayback();
-          saveLastSender(null);
+          saveLastStreamer(null);
 
           store.getState().dismissError();
           store.getState().patch({
             deviceInfo: { ...currentState.deviceInfo, ip: localIp },
-            discoveredSenders: [],
-            connectedSender: null,
-            lastConnectedSender: null,
+            discoveredStreamers: [],
+            connectedStreamer: null,
+            lastConnectedStreamer: null,
             status: Status.Listening,
           });
 
@@ -104,23 +104,23 @@ export function useNetworkMonitor() {
       store.getState().patch({
         isNetworkAvailable: false,
         connectionHealth: 'lost',
-        discoveredSenders: [],
+        discoveredStreamers: [],
       });
       useToastStore.getState().show('warning', 'Network offline');
 
       if (
-        state.connectedSender ||
+        state.connectedStreamer ||
         state.status === Status.Playing ||
         state.status === Status.Paused
       ) {
         store.getState().patch({
           status: Status.Listening,
-          connectedSender: null,
-          lastConnectedSender: null,
+          connectedStreamer: null,
+          lastConnectedStreamer: null,
         });
         store.getState().resetMetrics();
         killPlayback();
-        saveLastSender(null);
+        saveLastStreamer(null);
       }
     };
 
@@ -197,7 +197,7 @@ export function useNetworkMonitor() {
 
           useAppStore.getState().dismissError();
           useAppStore.getState().patch({
-            discoveredSenders: [],
+            discoveredStreamers: [],
             status: Status.Listening,
           });
 

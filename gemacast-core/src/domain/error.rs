@@ -131,9 +131,9 @@ pub enum AudioError {
     /// A frame handed to the encoder was not exactly one packet's worth of samples.
     ///
     /// 960 interleaved `f32` values is a wire-protocol invariant, not a preference:
-    /// the receiver decodes an uncompressed payload by dividing its byte count by 4,
+    /// the player decodes an uncompressed payload by dividing its byte count by 4,
     /// and the jitter buffer's whole geometry assumes one packet is 10 ms. A short
-    /// frame would produce a packet the receiver silently mis-frames, so this is
+    /// frame would produce a packet the player silently mis-frames, so this is
     /// rejected at the seam rather than transmitted.
     #[error("invalid frame length: {got} samples, expected {expected}")]
     InvalidFrameLength { got: usize, expected: usize },
@@ -210,7 +210,7 @@ pub enum NetworkError {
         source: std::io::Error,
     },
 
-    #[error("connection lost or sender stopped transmitting")]
+    #[error("connection lost or streamer stopped transmitting")]
     ConnectionLost,
 
     #[error("no active connection for device {0}")]
@@ -235,10 +235,10 @@ pub enum ControlError {
     #[error("request timed out after {timeout_ms}ms")]
     Timeout { timeout_ms: u64 },
 
-    #[error("sender rejected the request: {reason}")]
+    #[error("streamer rejected the request: {reason}")]
     Rejected { reason: String },
 
-    #[error("sender rejected the request: {reason} ({code})")]
+    #[error("streamer rejected the request: {reason} ({code})")]
     RemoteRejected { code: String, reason: String },
 
     #[error("failed to start control server")]

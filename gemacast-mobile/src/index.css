@@ -242,7 +242,7 @@
 @layer components {
   /*
    * The one card surface for the main screen — connection readout, manual
-   * connect, sender cards. Matte and opaque by design (no backdrop-filter): a
+   * connect, streamer cards. Matte and opaque by design (no backdrop-filter): a
    * warm fill one step off the background, which is what makes a card read as a
    * card without a shadow doing the work.
    *
@@ -370,7 +370,7 @@
 
 @layer utilities {
   /*
-   * Scrollable, with no visible scrollbar. The sender list is a touch surface —
+   * Scrollable, with no visible scrollbar. The streamer list is a touch surface —
    * the bar was a pointer affordance that only ever appeared mid-fling, and it
    * reserved a gutter that pushed the cards out of alignment with the ones above.
    * `scrollbar-width` covers Firefox and Chromium 121+; the `::-webkit` rule

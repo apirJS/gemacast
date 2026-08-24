@@ -87,7 +87,7 @@ export function makeDeviceInfo(
   };
 }
 
-export function makeDiscoveredSender(
+export function makeDiscoveredStreamer(
   overrides: Partial<{
     deviceId: string;
     deviceName: string;
@@ -96,7 +96,7 @@ export function makeDiscoveredSender(
   }> = {},
 ) {
   return {
-    deviceId: 'pc-sender-1',
+    deviceId: 'pc-streamer-1',
     deviceName: 'Desktop PC',
     addr: '192.168.1.10:9000',
     isOffline: false,

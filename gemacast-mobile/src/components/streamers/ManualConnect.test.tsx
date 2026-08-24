@@ -50,7 +50,7 @@ describe('ManualConnect', () => {
   });
 
   it('disables input when loading a manual connection', () => {
-    useAppStore.getState().patch({ isLoading: true, connectingSenderId: 'manual-10.0.0.1' });
+    useAppStore.getState().patch({ isLoading: true, connectingStreamerId: 'manual-10.0.0.1' });
     expandAndRender();
     const input = screen.getByPlaceholderText('192.xx.xx.xx');
     expect(input.hasAttribute('disabled')).toBe(true);

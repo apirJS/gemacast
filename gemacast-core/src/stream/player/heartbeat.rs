@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 /// keeps the NAT mapping and socket alive exactly as the old 1-byte packet did.
 pub fn spawn_keepalive_heartbeat_thread(
     target: std::net::IpAddr,
-    sender_audio_port: Arc<AtomicU16>,
+    streamer_audio_port: Arc<AtomicU16>,
     active: Arc<AtomicBool>,
     socket: UdpSocket,
 ) -> std::thread::JoinHandle<()> {
@@ -22,7 +22,7 @@ pub fn spawn_keepalive_heartbeat_thread(
         }
 
         while active.load(Ordering::Relaxed) {
-            let p = sender_audio_port.load(Ordering::Relaxed);
+            let p = streamer_audio_port.load(Ordering::Relaxed);
             let target_addr = std::net::SocketAddr::new(target, p);
             let _ = socket.send_to(&crate::stream::echo::build_ping(), target_addr);
             std::thread::sleep(std::time::Duration::from_millis(500));

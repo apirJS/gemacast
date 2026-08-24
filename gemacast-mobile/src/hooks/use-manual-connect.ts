@@ -2,14 +2,14 @@ import { useState } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
-import { connectToSender } from './use-connection';
+import { connectToStreamer } from './use-connection';
 import { Ports } from '../core/constants';
 
 /**
  * Hook that encapsulates the "connect by IP address" business logic:
  * - IP validation
  * - Reachability probe
- * - Manual sender creation
+ * - Manual streamer creation
  * - Connect/disconnect orchestration
  * - Discovery list mutation
  *
@@ -19,9 +19,9 @@ export function useManualConnect() {
   const [ip, setIp] = useState('');
   const [isProbing, setIsProbing] = useState(false);
   const isLoading = useAppStore((s) => s.isLoading);
-  const connectingSenderId = useAppStore((s) => s.connectingSenderId);
+  const connectingStreamerId = useAppStore((s) => s.connectingStreamerId);
 
-  const isManualConnecting = isProbing || (isLoading && connectingSenderId?.startsWith('manual-'));
+  const isManualConnecting = isProbing || (isLoading && connectingStreamerId?.startsWith('manual-'));
 
   const handleConnect = async () => {
     const trimmed = ip.trim();
@@ -44,7 +44,7 @@ export function useManualConnect() {
     useAppStore.getState().patch({ isLoading: true });
 
     try {
-      await tauriBridge.probeSender({
+      await tauriBridge.probeStreamer({
         ip: trimmed,
         deviceId: useAppStore.getState().deviceInfo.deviceId,
       });
@@ -56,27 +56,27 @@ export function useManualConnect() {
       setIsProbing(false);
     }
 
-    const manualSender = {
+    const manualStreamer = {
       deviceId: `manual-${trimmed}`,
       deviceName: `Manual: ${trimmed}`,
       addr: `${trimmed}:${Ports.DISCOVERY}`,
       isOffline: false,
     };
 
-    const previousSender = useAppStore.getState().connectedSender;
-    const result = await connectToSender(manualSender);
+    const previousStreamer = useAppStore.getState().connectedStreamer;
+    const result = await connectToStreamer(manualStreamer);
     if (result.ok) {
       const state = useAppStore.getState();
-      const existsIndex = state.discoveredSenders.findIndex(
-        (s) => s.deviceId === manualSender.deviceId,
+      const existsIndex = state.discoveredStreamers.findIndex(
+        (s) => s.deviceId === manualStreamer.deviceId,
       );
-      const newList = [...state.discoveredSenders];
+      const newList = [...state.discoveredStreamers];
       if (existsIndex >= 0) newList.splice(existsIndex, 1);
-      newList.unshift(manualSender);
-      useAppStore.getState().setDiscoveredSenders(newList);
+      newList.unshift(manualStreamer);
+      useAppStore.getState().setDiscoveredStreamers(newList);
       setIp('');
-    } else if (previousSender) {
-      const restored = await connectToSender(previousSender);
+    } else if (previousStreamer) {
+      const restored = await connectToStreamer(previousStreamer);
       if (!restored.ok) {
         useToastStore.getState().show('warning', 'Could not restore the previous stream');
       }

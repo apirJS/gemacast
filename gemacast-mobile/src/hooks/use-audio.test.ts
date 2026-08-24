@@ -3,7 +3,7 @@ import {
   setupInvokeMock,
   invokeCalls,
   makeDeviceInfo,
-  makeDiscoveredSender,
+  makeDiscoveredStreamer,
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
@@ -19,9 +19,9 @@ beforeEach(() => {
 
 describe('startPlayback', () => {
   it('is a no-op when already Connected (echo prevention)', async () => {
-    const sender = makeDiscoveredSender();
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      connectedSender: sender,
+      connectedStreamer: streamer,
       status: Status.Connected,
     });
     const result = await startPlayback();
@@ -32,16 +32,16 @@ describe('startPlayback', () => {
   });
 
   it('resumes from Paused state', async () => {
-    const sender = makeDiscoveredSender();
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
-      connectedSender: sender,
+      connectedStreamer: streamer,
       status: Status.Paused,
     });
     const result = await startPlayback();
     expect(result.ok).toBe(true);
     expect(invokeCalls.some((c) => c.cmd === 'start_audio_playback')).toBe(true);
-    // connectedSender should remain set (no disconnect occurred)
-    expect(useAppStore.getState().connectedSender).not.toBeNull();
+    // connectedStreamer should remain set (no disconnect occurred)
+    expect(useAppStore.getState().connectedStreamer).not.toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Connected);
   });
 
@@ -60,28 +60,28 @@ describe('startPlayback', () => {
 describe('stopPlayback', () => {
   it('transitions to Paused (not Connected)', async () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Playing,
     });
     const result = await stopPlayback();
     expect(result.ok).toBe(true);
     expect(useAppStore.getState().status).toBe(Status.Paused);
-    // connectedSender should remain set
-    expect(useAppStore.getState().connectedSender).not.toBeNull();
+    // connectedStreamer should remain set
+    expect(useAppStore.getState().connectedStreamer).not.toBeNull();
   });
 
-  it('does not invoke disconnect_from_sender', async () => {
+  it('does not invoke disconnect_from_streamer', async () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Playing,
     });
     await stopPlayback();
-    expect(invokeCalls.some((c) => c.cmd === 'disconnect_from_sender')).toBe(false);
+    expect(invokeCalls.some((c) => c.cmd === 'disconnect_from_streamer')).toBe(false);
   });
 
   it('is a no-op when already Paused (echo prevention)', async () => {
     useAppStore.getState().patch({
-      connectedSender: makeDiscoveredSender(),
+      connectedStreamer: makeDiscoveredStreamer(),
       status: Status.Paused,
     });
     invokeCalls.length = 0;

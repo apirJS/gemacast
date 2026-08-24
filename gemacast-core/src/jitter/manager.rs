@@ -509,10 +509,10 @@ pub struct JitterBufferManager {
     /// Accumulator of processed PCM samples ready for cpal to consume.
     /// Decouples the Opus frame size (960 samples) from cpal's variable buffer size.
     playback_buf: VecDeque<f32>,
-    /// Stamping point for true NIC->DAC millisecond latency. Shared with receiver backend.
+    /// Stamping point for true NIC->DAC millisecond latency. Shared with player backend.
     latency_metric: Arc<AtomicU32>,
     /// Rolling jitter estimate (`stats.ema_jitter`) in whole milliseconds, mirrored
-    /// out to the receiver backend the same way as `latency_metric`. Distinct signal:
+    /// out to the player backend the same way as `latency_metric`. Distinct signal:
     /// `latency_metric` is per-frame buffer dwell time, this is network arrival jitter.
     jitter_metric: Arc<AtomicU32>,
     config: JitterConfig,
@@ -624,10 +624,10 @@ impl JitterBufferManager {
         ms_to_frames_ceil(self.config.min_depth_ms)
     }
 
-    /// Packets the sender should have produced over `window_ms` of wall clock.
+    /// Packets the streamer should have produced over `window_ms` of wall clock.
     ///
-    /// The sender emits one packet per frame at real time, so the nominal rate
-    /// is fixed by the frame size and independent of anything the receiver does
+    /// The streamer emits one packet per frame at real time, so the nominal rate
+    /// is fixed by the frame size and independent of anything the player does
     /// — which is exactly the property [`Self::is_under_delivering`] needs and
     /// `frames_played` lacks.
     fn expected_packets(window_ms: u32) -> u32 {
@@ -637,9 +637,9 @@ impl JitterBufferManager {
     /// Whether arrivals over a window fell far enough below the nominal packet
     /// rate to call the link unable to carry the stream.
     ///
-    /// Deliberately *not* a comparison against playback. The receiver's own
+    /// Deliberately *not* a comparison against playback. The player's own
     /// callback rate is a dependent variable — when delivery collapses the
-    /// callbacks stretch with it, so any ratio between two receiver-side
+    /// callbacks stretch with it, so any ratio between two player-side
     /// counters stays near 1.0 through the collapse it is supposed to detect.
     /// Wall clock is the one term in this decision the failure cannot move.
     fn is_under_delivering(arrivals: u32, expected: u32) -> bool {
@@ -1117,7 +1117,7 @@ impl JitterBufferManager {
     ///
     /// On the very first exit from prebuffering, the ring buffer may contain
     /// a burst of packets that accumulated in the OS socket buffer during
-    /// session setup (the sender starts streaming the moment it receives the
+    /// session setup (the streamer starts streaming the moment it receives the
     /// trigger, but the DAC callback hasn’t started consuming yet). Flush
     /// excess down to target depth with a clean crossfade so we start at
     /// optimal latency instead of draining slowly via WSOLA.

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import {
   invokeCalls,
   makeDeviceInfo,
-  makeDiscoveredSender,
+  makeDiscoveredStreamer,
   setupInvokeMock,
 } from '../../__tests__/setup';
 import { Status } from '../../core/types';
@@ -22,9 +22,9 @@ describe('ForgetPcIdentity', () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-2', 'missing-name'] });
     useAppStore
       .getState()
-      .setDiscoveredSenders([
-        makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
-        makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
+      .setDiscoveredStreamers([
+        makeDiscoveredStreamer({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
+        makeDiscoveredStreamer({ deviceId: 'pc-2', deviceName: 'Laptop' }),
       ]);
     render(<ForgetPcIdentity />);
 
@@ -38,7 +38,7 @@ describe('ForgetPcIdentity', () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-long'] });
     useAppStore
       .getState()
-      .setDiscoveredSenders([makeDiscoveredSender({ deviceId: 'pc-long', deviceName: longName })]);
+      .setDiscoveredStreamers([makeDiscoveredStreamer({ deviceId: 'pc-long', deviceName: longName })]);
     render(<ForgetPcIdentity />);
 
     const name = await screen.findByText(longName);
@@ -53,13 +53,13 @@ describe('ForgetPcIdentity', () => {
   it('refreshes the native trust store after a PC connects', async () => {
     let pairedPcIds: string[] = [];
     setupInvokeMock({ get_paired_pc_ids: () => pairedPcIds });
-    const sender = makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' });
-    useAppStore.getState().setDiscoveredSenders([sender]);
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-2', deviceName: 'Laptop' });
+    useAppStore.getState().setDiscoveredStreamers([streamer]);
     render(<ForgetPcIdentity />);
 
     expect(await screen.findByText('No paired PCs')).toBeTruthy();
     pairedPcIds = ['pc-2'];
-    useAppStore.getState().setConnectedSender(sender);
+    useAppStore.getState().setConnectedStreamer(streamer);
 
     expect(await screen.findByLabelText('Forget Laptop')).toBeTruthy();
   });
@@ -68,9 +68,9 @@ describe('ForgetPcIdentity', () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-1', 'pc-2'] });
     useAppStore
       .getState()
-      .setDiscoveredSenders([
-        makeDiscoveredSender({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
-        makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' }),
+      .setDiscoveredStreamers([
+        makeDiscoveredStreamer({ deviceId: 'pc-1', deviceName: 'Desktop PC' }),
+        makeDiscoveredStreamer({ deviceId: 'pc-2', deviceName: 'Laptop' }),
       ]);
     render(<ForgetPcIdentity />);
 
@@ -84,16 +84,16 @@ describe('ForgetPcIdentity', () => {
     await waitFor(() => expect(screen.queryByLabelText('Forget Laptop')).toBeNull());
     expect(screen.getByLabelText('Forget Desktop PC')).toBeTruthy();
     expect(invokeCalls).toContainEqual({ cmd: 'forget_pc_identity', args: { pcId: 'pc-2' } });
-    expect(invokeCalls.some((call) => call.cmd === 'disconnect_from_sender')).toBe(false);
+    expect(invokeCalls.some((call) => call.cmd === 'disconnect_from_streamer')).toBe(false);
   });
 
   it('disconnects the stream before forgetting the connected PC', async () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-2'] });
-    const sender = makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' });
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-2', deviceName: 'Laptop' });
     useAppStore.getState().patch({
-      connectedSender: sender,
-      lastConnectedSender: sender,
-      discoveredSenders: [sender],
+      connectedStreamer: streamer,
+      lastConnectedStreamer: streamer,
+      discoveredStreamers: [streamer],
       status: Status.Playing,
     });
     render(<ForgetPcIdentity />);
@@ -106,12 +106,12 @@ describe('ForgetPcIdentity', () => {
     await waitFor(() =>
       expect(invokeCalls).toContainEqual({ cmd: 'forget_pc_identity', args: { pcId: 'pc-2' } }),
     );
-    const disconnectIndex = invokeCalls.findIndex((call) => call.cmd === 'disconnect_from_sender');
+    const disconnectIndex = invokeCalls.findIndex((call) => call.cmd === 'disconnect_from_streamer');
     const forgetIndex = invokeCalls.findIndex((call) => call.cmd === 'forget_pc_identity');
     expect(disconnectIndex).toBeGreaterThan(-1);
     expect(disconnectIndex).toBeLessThan(forgetIndex);
-    expect(useAppStore.getState().connectedSender).toBeNull();
-    expect(useAppStore.getState().lastConnectedSender).toBeNull();
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Listening);
     await waitFor(() => expect(screen.queryByLabelText('Forget Laptop')).toBeNull());
   });
@@ -125,7 +125,7 @@ describe('ForgetPcIdentity', () => {
     });
     useAppStore
       .getState()
-      .setDiscoveredSenders([makeDiscoveredSender({ deviceId: 'pc-2', deviceName: 'Laptop' })]);
+      .setDiscoveredStreamers([makeDiscoveredStreamer({ deviceId: 'pc-2', deviceName: 'Laptop' })]);
     render(<ForgetPcIdentity />);
 
     await screen.findByLabelText('Forget Laptop');
@@ -144,17 +144,17 @@ describe('ForgetPcIdentity', () => {
   describe('name resolution when the PC is not live', () => {
     const PC_ID = 'PC_194bf7dbba0d04b999197dc6a6a9433fe22599b9417590b490c57b9845c603e3';
 
-    // The reported bug, both halves. Wi-Fi off empties discoveredSenders and
-    // nulls connectedSender/lastConnectedSender; switching to ADB and back
-    // empties discovery the same way. With no live sender the list used to fall
+    // The reported bug, both halves. Wi-Fi off empties discoveredStreamers and
+    // nulls connectedStreamer/lastConnectedStreamer; switching to ADB and back
+    // empties discovery the same way. With no live streamer the list used to fall
     // back to the raw PC_<hex> id.
-    it('shows the remembered name with no live sender at all', async () => {
+    it('shows the remembered name with no live streamer at all', async () => {
       rememberPcName(PC_ID, 'DESKTOP-KJCRNVV');
       setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
       useAppStore.getState().patch({
-        discoveredSenders: [],
-        connectedSender: null,
-        lastConnectedSender: null,
+        discoveredStreamers: [],
+        connectedStreamer: null,
+        lastConnectedStreamer: null,
       });
       render(<ForgetPcIdentity />);
 
@@ -169,13 +169,13 @@ describe('ForgetPcIdentity', () => {
       expect(await screen.findByText(PC_ID)).toBeTruthy();
     });
 
-    it('prefers a live sender name over a stale cached one', async () => {
+    it('prefers a live streamer name over a stale cached one', async () => {
       rememberPcName(PC_ID, 'OLD-NAME');
       setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
       useAppStore
         .getState()
-        .setDiscoveredSenders([
-          makeDiscoveredSender({ deviceId: PC_ID, deviceName: 'RENAMED-PC' }),
+        .setDiscoveredStreamers([
+          makeDiscoveredStreamer({ deviceId: PC_ID, deviceName: 'RENAMED-PC' }),
         ]);
       render(<ForgetPcIdentity />);
 
@@ -200,13 +200,13 @@ describe('ForgetPcIdentity', () => {
       // live is cleared, and the name has to come back from the cache.
       useAppStore
         .getState()
-        .updateDiscoveredSender(
-          makeDiscoveredSender({ deviceId: PC_ID, deviceName: 'DESKTOP-KJCRNVV' }),
+        .updateDiscoveredStreamer(
+          makeDiscoveredStreamer({ deviceId: PC_ID, deviceName: 'DESKTOP-KJCRNVV' }),
         );
       expect(loadPcNames()[PC_ID]).toBe('DESKTOP-KJCRNVV');
 
       setupInvokeMock({ get_paired_pc_ids: [PC_ID] });
-      useAppStore.getState().patch({ discoveredSenders: [], lastConnectedSender: null });
+      useAppStore.getState().patch({ discoveredStreamers: [], lastConnectedStreamer: null });
       render(<ForgetPcIdentity />);
 
       expect(await screen.findByText('DESKTOP-KJCRNVV')).toBeTruthy();

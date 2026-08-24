@@ -11,7 +11,7 @@ use crate::control::types::{
     ProcessListResponse, SourcesResponse,
 };
 use crate::domain::error::{ControlError, GemaCastError};
-use crate::domain::types::{AudioSource, DeviceId, ProcessInfo, SenderCapabilities};
+use crate::domain::types::{AudioSource, DeviceId, ProcessInfo, StreamerCapabilities};
 use crate::network::Ports;
 
 fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -48,7 +48,7 @@ pub struct ControlCredentials {
     pub pc_certificate_fingerprint: String,
 }
 
-/// Long-term receiver identity and persistent PC certificate pin storage.
+/// Long-term player identity and persistent PC certificate pin storage.
 ///
 /// Android keeps the private signing key in Android Keystore and stores only
 /// approved PC certificate fingerprints in app-private preferences.
@@ -178,11 +178,11 @@ impl HttpControlClient {
             .pc_certificate_fingerprint
             .as_deref()
             .ok_or_else(|| ControlError::Rejected {
-                reason: "sender did not provide its PC certificate fingerprint".into(),
+                reason: "streamer did not provide its PC certificate fingerprint".into(),
             })?;
         if !advertised.eq_ignore_ascii_case(observed_fingerprint) {
             return Err(ControlError::Rejected {
-                reason: "sender identity does not match the HTTPS certificate".into(),
+                reason: "streamer identity does not match the HTTPS certificate".into(),
             }
             .into());
         }
@@ -258,7 +258,7 @@ impl HttpControlClient {
                     .into());
                 }
                 let signer = signer.ok_or_else(|| ControlError::Rejected {
-                    reason: "sender requested device authentication, but no signer is available"
+                    reason: "streamer requested device authentication, but no signer is available"
                         .into(),
                 })?;
                 let auth =
@@ -266,7 +266,7 @@ impl HttpControlClient {
                         .device_auth
                         .as_mut()
                         .ok_or_else(|| ControlError::Rejected {
-                            reason: "sender requested device authentication, but the request identity is missing"
+                            reason: "streamer requested device authentication, but the request identity is missing"
                                 .into(),
                         })?;
                 let transcript = build_device_auth_transcript(
@@ -281,7 +281,7 @@ impl HttpControlClient {
                 let expected_code = pairing_code(&transcript);
                 if challenge.pairing_code != expected_code {
                     return Err(ControlError::Rejected {
-                        reason: "sender returned an invalid pairing comparison code".into(),
+                        reason: "streamer returned an invalid pairing comparison code".into(),
                     }
                     .into());
                 }
@@ -304,7 +304,7 @@ impl HttpControlClient {
                     if !signer
                         .confirm_pc_identity(
                             &presence.device_id,
-                            &presence.sender_name,
+                            &presence.streamer_name,
                             &pc_fingerprint,
                             &expected_code,
                             challenge.requires_approval,
@@ -398,7 +398,7 @@ impl HttpControlClient {
 
     pub async fn request_audio_sources(
         &self,
-    ) -> Result<(Vec<AudioSource>, SenderCapabilities), GemaCastError> {
+    ) -> Result<(Vec<AudioSource>, StreamerCapabilities), GemaCastError> {
         let credential = self.credential_for(None);
         let client = self.client_for(credential.as_ref())?;
         let response = Self::authorize(

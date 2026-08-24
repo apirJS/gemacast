@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
  * Touch events bubble, so a listener on the scroll container also sees drags
  * that started in any descendant — including a popover that merely *renders*
  * inside the list but scrolls independently of it. Without this, scrolling the
- * process picker rubber-banded the sender list behind it and kicked off a
+ * process picker rubber-banded the streamer list behind it and kicked off a
  * discovery refresh.
  *
  * Exported so the marker and this check cannot drift apart.

@@ -1,6 +1,6 @@
 //! Background engine — spawns and wires together all background tasks.
 //!
-//! Creates the Tokio runtime, constructs all channels, wraps senders in
+//! Creates the Tokio runtime, constructs all channels, wraps streamers in
 //! production adapters ([`crate::adapters`]), and spawns the task set:
 //!
 //! - **UDP Listener**: Receives presence/probe messages from mobile devices
@@ -41,8 +41,8 @@ use gemacast_core::network::adb::{
     PresenceProvider, spawn_adb_audio_tcp_server, spawn_adb_discovery_tcp_server,
     spawn_adb_port_forwarding_watchdog,
 };
-use gemacast_core::stream::sender::engine::AudioStreamEngine;
-use gemacast_core::stream::sender::engine::StreamSessionFailure;
+use gemacast_core::stream::streamer::engine::AudioStreamEngine;
+use gemacast_core::stream::streamer::engine::StreamSessionFailure;
 
 use crate::adapters::device::WsConnectionMap;
 use crate::adapters::{
@@ -62,8 +62,8 @@ use crate::trusted_devices::TrustedDeviceStore;
 
 struct PcPresenceProvider {
     is_broadcasting: Arc<AtomicBool>,
-    sender_id: DeviceId,
-    sender_name: String,
+    streamer_id: DeviceId,
+    streamer_name: String,
 }
 
 impl PresenceProvider for PcPresenceProvider {
@@ -72,12 +72,12 @@ impl PresenceProvider for PcPresenceProvider {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn sender_id(&self) -> DeviceId {
-        self.sender_id.clone()
+    fn streamer_id(&self) -> DeviceId {
+        self.streamer_id.clone()
     }
 
-    fn sender_name(&self) -> String {
-        self.sender_name.clone()
+    fn streamer_name(&self) -> String {
+        self.streamer_name.clone()
     }
 }
 
@@ -232,7 +232,7 @@ impl BackgroundEngine {
         let (inbound_control_tx, inbound_control_rx) = mpsc::channel(32);
         let (http_command_tx, http_command_rx) = mpsc::channel::<ControlCommand>(32);
         let (audio_command_tx, audio_command_rx) =
-            mpsc::channel::<gemacast_core::stream::sender::AudioStreamCommand>(32);
+            mpsc::channel::<gemacast_core::stream::streamer::AudioStreamCommand>(32);
         let (adb_shutdown_tx, _) = broadcast::channel::<()>(16);
         let (adb_outbound_control_tx, _) = broadcast::channel::<ControlMessage>(16);
         let (fatal_error_tx, fatal_error_rx) = mpsc::channel::<String>(8);
@@ -283,8 +283,8 @@ struct EngineWithChannels {
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     http_command_tx: mpsc::Sender<ControlCommand>,
     http_command_rx: mpsc::Receiver<ControlCommand>,
-    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
-    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
     adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
     fatal_error_tx: mpsc::Sender<String>,
@@ -355,8 +355,8 @@ struct EngineWithAdapters {
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     http_command_tx: mpsc::Sender<ControlCommand>,
     http_command_rx: mpsc::Receiver<ControlCommand>,
-    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
-    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
     adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
     fatal_error_tx: mpsc::Sender<String>,
@@ -391,7 +391,7 @@ impl EngineWithAdapters {
                 return None;
             }
         };
-        let sender_id = pc_identity.device_id();
+        let streamer_id = pc_identity.device_id();
         let pc_certificate_fingerprint = pc_identity.fingerprint().to_string();
         if let Err(error) = self
             .trusted_devices
@@ -435,8 +435,8 @@ impl EngineWithAdapters {
         let control_state = ControlServerState {
             command_tx: self.http_command_tx,
             is_broadcasting: self.is_broadcasting.clone(),
-            sender_id: sender_id.clone(),
-            sender_name: device_name.clone(),
+            streamer_id: streamer_id.clone(),
+            streamer_name: device_name.clone(),
             ws_connections: self.ws_connections.clone(),
             process_lister: DefaultProcessLister,
             authorizer: self.authorizer.clone(),
@@ -445,7 +445,7 @@ impl EngineWithAdapters {
 
         // --- mDNS broadcaster ---
         let _mdns_broadcaster = match gemacast_core::discovery::MdnsBroadcaster::new(
-            sender_id.clone(),
+            streamer_id.clone(),
             device_name.clone(),
             gemacast_core::network::Ports::CONTROL,
         ) {
@@ -462,8 +462,8 @@ impl EngineWithAdapters {
         // --- ADB presence provider ---
         let presence_provider = Arc::new(PcPresenceProvider {
             is_broadcasting: self.is_broadcasting.clone(),
-            sender_id: sender_id.clone(),
-            sender_name: device_name.clone(),
+            streamer_id: streamer_id.clone(),
+            streamer_name: device_name.clone(),
         });
 
         Some(EngineReady {
@@ -491,7 +491,7 @@ impl EngineWithAdapters {
             control_state,
             _mdns_broadcaster,
             presence_provider,
-            sender_id,
+            streamer_id,
             device_name,
             pc_certificate_fingerprint,
             tls_config,
@@ -520,8 +520,8 @@ struct EngineReady {
     inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     http_command_rx: mpsc::Receiver<ControlCommand>,
-    audio_command_tx: mpsc::Sender<gemacast_core::stream::sender::AudioStreamCommand>,
-    audio_command_rx: mpsc::Receiver<gemacast_core::stream::sender::AudioStreamCommand>,
+    audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
+    audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
     adb_outbound_control_tx: broadcast::Sender<ControlMessage>,
     fatal_error_tx: mpsc::Sender<String>,
@@ -538,7 +538,7 @@ struct EngineReady {
     #[allow(dead_code)]
     _mdns_broadcaster: Option<gemacast_core::discovery::MdnsBroadcaster>,
     presence_provider: Arc<PcPresenceProvider>,
-    sender_id: DeviceId,
+    streamer_id: DeviceId,
     device_name: String,
     pc_certificate_fingerprint: String,
     tls_config: Arc<rustls::ServerConfig>,
@@ -656,16 +656,16 @@ impl EngineReady {
         );
 
         // -- Control dispatcher --
-        let sender_id = self.sender_id;
-        let sender_name = self.device_name;
+        let streamer_id = self.streamer_id;
+        let streamer_name = self.device_name;
         let device_auth = crate::device_auth::DeviceAuthManager::default();
         let dispatcher = Arc::new(control_dispatcher::ControlDispatcher {
             registry: self.registry.clone(),
             tray: self.tray.clone(),
             audio: self.audio.clone(),
             notifier: self.notifier.clone(),
-            sender_id: sender_id.clone(),
-            sender_name: sender_name.clone(),
+            streamer_id: streamer_id.clone(),
+            streamer_name: streamer_name.clone(),
             pc_certificate_fingerprint: self.pc_certificate_fingerprint,
             is_broadcasting: self.is_broadcasting.clone(),
             authorizer: self.authorizer.clone(),
@@ -684,8 +684,8 @@ impl EngineReady {
         // -- Command handler --
         let handler = Arc::new(command_handler::CommandHandler {
             is_broadcasting: self.is_broadcasting,
-            sender_id,
-            sender_name,
+            streamer_id,
+            streamer_name,
             registry: self.registry,
             tray: self.tray.clone(),
             audio: self.audio,

@@ -17,7 +17,7 @@ pub const MAX_PACKET_PAYLOAD: usize = MAX_OPUS_PACKET_SIZE;
 /// The SPSC ring buffer pre-allocates all slots at startup, so the total memory
 /// cost is fixed and paid once.
 pub struct RawPacket {
-    /// Sender's monotonic sequence number (u64, big-endian over the wire).
+    /// Streamer's monotonic sequence number (u64, big-endian over the wire).
     pub seq_num: u64,
     /// Payload bytes (Opus encoded or raw PCM). Fixed-size inline buffer.
     pub payload_data: [u8; MAX_PACKET_PAYLOAD],

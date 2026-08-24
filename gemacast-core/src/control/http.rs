@@ -20,7 +20,7 @@ use crate::control::types::{
     PresenceResponse, ProbeReq, ProcessListResponse, SourcesResponse, WsEvent,
 };
 use crate::domain::error::{ControlError, GemaCastError, NetworkError};
-use crate::domain::types::{AudioSource, DeviceId, SenderCapabilities};
+use crate::domain::types::{AudioSource, DeviceId, StreamerCapabilities};
 use crate::network::Ports;
 use crate::ports::process_lister::ProcessLister;
 
@@ -127,8 +127,8 @@ async fn await_mutation(
 pub struct ControlServerState<P: ProcessLister + 'static> {
     pub command_tx: mpsc::Sender<ControlCommand>,
     pub is_broadcasting: Arc<AtomicBool>,
-    pub sender_id: DeviceId,
-    pub sender_name: String,
+    pub streamer_id: DeviceId,
+    pub streamer_name: String,
     pub ws_connections: Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>,
     pub process_lister: P,
     pub authorizer: crate::control::SessionAuthorizer,
@@ -168,8 +168,8 @@ fn unauthorized() -> axum::response::Response {
 impl<P: ProcessLister + 'static> ControlServerState<P> {
     fn build_presence(&self) -> PresenceResponse {
         PresenceResponse {
-            device_id: self.sender_id.clone(),
-            sender_name: self.sender_name.clone(),
+            device_id: self.streamer_id.clone(),
+            streamer_name: self.streamer_name.clone(),
             is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
             pc_network_link: None,
             // This is the fallback used when the dispatcher never answered, so
@@ -355,8 +355,8 @@ async fn handle_connect<P: ProcessLister + 'static>(
     if !state.is_broadcasting.load(Ordering::Relaxed) {
         return control_error(
             StatusCode::FORBIDDEN,
-            "sender_offline",
-            format!("sender {} is offline", state.sender_name),
+            "streamer_offline",
+            format!("streamer {} is offline", state.streamer_name),
         );
     }
 
@@ -471,7 +471,7 @@ async fn handle_get_sources<P: ProcessLister + 'static>(
         Ok(r) => r,
         Err(_) => SourcesResponse {
             sources: vec![AudioSource::Desktop],
-            capabilities: SenderCapabilities {
+            capabilities: StreamerCapabilities {
                 supports_process_capture: false,
             },
         },
@@ -585,12 +585,12 @@ pub async fn send_ws_event(
     device_id: &DeviceId,
     event: WsEvent,
 ) -> Result<(), GemaCastError> {
-    let sender = {
+    let ws_tx = {
         let connections = ws_connections.lock().unwrap();
         connections.get(device_id).cloned()
     };
 
-    if let Some(tx) = sender {
+    if let Some(tx) = ws_tx {
         tx.send(event)
             .await
             .map_err(|_| NetworkError::DeviceNotConnected(device_id.0.clone()))?;
@@ -665,8 +665,8 @@ mod tests {
         let state = ControlServerState {
             command_tx,
             is_broadcasting: Arc::new(AtomicBool::new(broadcasting)),
-            sender_id: DeviceId("test-sender".to_string()),
-            sender_name: "Test Sender".to_string(),
+            streamer_id: DeviceId("test-streamer".to_string()),
+            streamer_name: "Test Streamer".to_string(),
             ws_connections: Arc::new(Mutex::new(HashMap::new())),
             process_lister: MockProcessLister,
             authorizer: authorizer.clone(),
@@ -731,7 +731,7 @@ mod tests {
                 assert!(bitrate.is_none());
                 let _ = response_tx.send(Ok(PresenceResponse {
                     device_id,
-                    sender_name: "Test".to_string(),
+                    streamer_name: "Test".to_string(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(true),
@@ -777,8 +777,8 @@ mod tests {
         match command_rx.recv().await.unwrap() {
             ControlCommand::Connect { response_tx, .. } => {
                 let _ = response_tx.send(Ok(PresenceResponse {
-                    device_id: DeviceId("test-sender".into()),
-                    sender_name: "Test Sender".into(),
+                    device_id: DeviceId("test-streamer".into()),
+                    streamer_name: "Test Streamer".into(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(false),
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
 
         let body: ControlErrorResponse = res.json().await.unwrap();
-        assert_eq!(body.code, "sender_offline");
+        assert_eq!(body.code, "streamer_offline");
     }
 
     #[tokio::test]
@@ -930,8 +930,8 @@ mod tests {
             } => {
                 assert!(device_id.is_none());
                 let _ = response_tx.send(PresenceResponse {
-                    device_id: DeviceId("test-sender".to_string()),
-                    sender_name: "Test Sender".to_string(),
+                    device_id: DeviceId("test-streamer".to_string()),
+                    streamer_name: "Test Streamer".to_string(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: None,
@@ -949,7 +949,7 @@ mod tests {
         assert!(res.status().is_success());
 
         let body: PresenceResponse = res.json().await.unwrap();
-        assert_eq!(body.device_id.0, "test-sender");
+        assert_eq!(body.device_id.0, "test-streamer");
         assert!(!body.is_offline);
     }
 }

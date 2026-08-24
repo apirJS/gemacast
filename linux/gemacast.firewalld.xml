@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  firewalld service for Gemacast (PC sender).
+  firewalld service for Gemacast (PC streamer).
 
   Opens the three ports that must accept inbound LAN traffic so a phone on the
   same network (Wi-Fi or USB/RNDIS tether — both look like LAN) can discover and

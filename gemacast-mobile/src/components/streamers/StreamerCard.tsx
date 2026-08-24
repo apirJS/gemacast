@@ -1,14 +1,14 @@
 import { Monitor, Usb, Play, Pause } from 'lucide-react';
 import type {
   AudioSource,
-  DiscoveredSender,
+  DiscoveredStreamer,
   ProcessInfo,
-  SenderCapabilities,
+  StreamerCapabilities,
 } from '../../core/types';
 import { ProcessSelect } from './ProcessSelect';
 
-type SenderCardProps = {
-  sender: DiscoveredSender;
+type StreamerCardProps = {
+  streamer: DiscoveredStreamer;
   isConnected: boolean;
   isConnecting: boolean;
   isPlaying: boolean;
@@ -16,7 +16,7 @@ type SenderCardProps = {
   isDisabled: boolean;
   audioSources: AudioSource[];
   processList: ProcessInfo[];
-  senderCapabilities: SenderCapabilities | null;
+  streamerCapabilities: StreamerCapabilities | null;
   currentSource: AudioSource;
   onToggle: () => void;
   onPlayPause: () => void;
@@ -24,12 +24,12 @@ type SenderCardProps = {
 };
 
 /**
- * Pure presentational component for a single sender entry.
+ * Pure presentational component for a single streamer entry.
  * All business logic (connect/disconnect, play/pause, source changes) is
  * driven by callback props from the parent.
  */
-export function SenderCard({
-  sender,
+export function StreamerCard({
+  streamer,
   isConnected,
   isConnecting,
   isPlaying,
@@ -37,13 +37,13 @@ export function SenderCard({
   isDisabled,
   audioSources,
   processList,
-  senderCapabilities,
+  streamerCapabilities,
   currentSource,
   onToggle,
   onPlayPause,
   onSourceChange,
-}: SenderCardProps) {
-  const isAdb = sender.addr.startsWith('127.0.0.1');
+}: StreamerCardProps) {
+  const isAdb = streamer.addr.startsWith('127.0.0.1');
   const showLoading = isLoading && (isConnected || isConnecting);
   const hasSource = isConnected && (audioSources.length > 0 || processList.length > 0);
 
@@ -64,9 +64,9 @@ export function SenderCard({
         </div>
 
         <div className="flex min-w-0 flex-col gap-0.5">
-          <p className="truncate text-sm font-medium text-card-foreground">{sender.deviceName}</p>
+          <p className="truncate text-sm font-medium text-card-foreground">{streamer.deviceName}</p>
           <p className="truncate text-xs text-muted-foreground">
-            {isAdb ? 'ADB (USB Debug)' : sender.addr.split(':')[0]}
+            {isAdb ? 'ADB (USB Debug)' : streamer.addr.split(':')[0]}
           </p>
         </div>
       </div>
@@ -86,7 +86,7 @@ export function SenderCard({
             }
           `}
           onClick={onToggle}
-          aria-label={`${isConnected ? 'Disconnect from' : 'Connect to'} ${sender.deviceName}`}
+          aria-label={`${isConnected ? 'Disconnect from' : 'Connect to'} ${streamer.deviceName}`}
         >
           <span
             className={`transition-opacity duration-150 ${showLoading ? 'opacity-0' : 'opacity-100'}`}
@@ -104,7 +104,7 @@ export function SenderCard({
             disabled={isDisabled}
             className="inline-flex shrink-0 items-center justify-center rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background p-1.5 text-foreground transition-all duration-150 hover:bg-primary hover:text-primary-foreground"
             onClick={onPlayPause}
-            aria-label={isPlaying ? `Pause ${sender.deviceName}` : `Resume ${sender.deviceName}`}
+            aria-label={isPlaying ? `Pause ${streamer.deviceName}` : `Resume ${streamer.deviceName}`}
           >
             {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           </button>
@@ -117,8 +117,8 @@ export function SenderCard({
           processList={processList}
           currentSource={currentSource}
           onSourceChange={onSourceChange}
-          sender={sender}
-          supportsProcessCapture={senderCapabilities?.supportsProcessCapture ?? true}
+          streamer={streamer}
+          supportsProcessCapture={streamerCapabilities?.supportsProcessCapture ?? true}
         />
       )}
     </li>

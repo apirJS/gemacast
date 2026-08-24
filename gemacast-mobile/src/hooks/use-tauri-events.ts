@@ -3,8 +3,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import {
-  connectToSender,
-  handleSenderTimeout,
+  connectToStreamer,
+  handleStreamerTimeout,
   handleForceDisconnect,
   handleLinkLost,
   handleLinkRecovered,
@@ -13,7 +13,7 @@ import {
 } from './use-connection';
 import { updateAudioActive, startPlayback, stopPlayback } from './use-audio';
 import { GemaCastError } from '../core/error';
-import type { DiscoveredSender } from '../core/types';
+import type { DiscoveredStreamer } from '../core/types';
 
 export function useTauriEvents() {
   useEffect(() => {
@@ -48,17 +48,17 @@ export function useTauriEvents() {
     );
 
     unlisteners.push(
-      listen<DiscoveredSender>('sender-discovered', (event) => {
-        const autoReconnectTarget = useAppStore.getState().updateDiscoveredSender(event.payload);
+      listen<DiscoveredStreamer>('streamer-discovered', (event) => {
+        const autoReconnectTarget = useAppStore.getState().updateDiscoveredStreamer(event.payload);
         if (autoReconnectTarget) {
-          connectToSender(autoReconnectTarget);
+          connectToStreamer(autoReconnectTarget);
         }
       }),
     );
 
     unlisteners.push(
-      listen<string>('sender-timeout', (event) => {
-        handleSenderTimeout(event.payload);
+      listen<string>('streamer-timeout', (event) => {
+        handleStreamerTimeout(event.payload);
       }),
     );
 
@@ -69,8 +69,8 @@ export function useTauriEvents() {
       }),
     );
 
-    // The receiver watchdog gave up on its own. Unlike `force-disconnect`,
-    // nobody asked for this, so it keeps the sender and probes for its return.
+    // The playback watchdog gave up on its own. Unlike `force-disconnect`,
+    // nobody asked for this, so it keeps the streamer and probes for its return.
     unlisteners.push(
       listen('link-lost', () => {
         handleLinkLost();

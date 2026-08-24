@@ -343,7 +343,7 @@ mod tests {
         buf.insert(make_packet(1000));
         buf.pop_next(); // next_play_seq = 1001
 
-        // A sender crash causes sequence to restart at 0 — more than BUFFER_CAPACITY behind
+        // A streamer crash causes sequence to restart at 0 — more than BUFFER_CAPACITY behind
         let result = buf.insert(make_packet(0));
         assert_eq!(result, InsertResult::StreamRestarted);
         assert_eq!(buf.next_play_seq(), 0);

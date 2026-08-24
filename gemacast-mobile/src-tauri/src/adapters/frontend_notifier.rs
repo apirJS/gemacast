@@ -14,12 +14,14 @@ impl TauriFrontendNotifier {
 }
 
 impl FrontendNotifier for TauriFrontendNotifier {
-    fn emit_sender_discovered(&self, device: DiscoveredDevice) {
-        let _ = self.app_handle.emit("sender-discovered", device);
+    fn emit_streamer_discovered(&self, device: DiscoveredDevice) {
+        let _ = self.app_handle.emit("streamer-discovered", device);
     }
 
-    fn emit_sender_timeout(&self, sender_id: &DeviceId) {
-        let _ = self.app_handle.emit("sender-timeout", sender_id.0.clone());
+    fn emit_streamer_timeout(&self, streamer_id: &DeviceId) {
+        let _ = self
+            .app_handle
+            .emit("streamer-timeout", streamer_id.0.clone());
     }
 
     fn emit_force_disconnect(&self) {
@@ -45,8 +47,8 @@ impl FrontendNotifier for TauriFrontendNotifier {
         let _ = self.app_handle.emit("link-recovery-gave-up", ());
     }
 
-    fn emit_sender_connected(&self, ip: String) {
-        let _ = self.app_handle.emit("sender-connected", ip);
+    fn emit_streamer_connected(&self, ip: String) {
+        let _ = self.app_handle.emit("streamer-connected", ip);
     }
 
     fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32) {

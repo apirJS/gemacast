@@ -25,7 +25,7 @@ export type DeviceInfo = {
   ip: string;
 };
 
-export type DiscoveredSender = {
+export type DiscoveredStreamer = {
   deviceId: string;
   deviceName: string;
   addr: string;
@@ -129,7 +129,7 @@ export type AppSettings = {
 export type AudioSource =
   { type: 'desktop' } | { type: 'process'; pid: number; name: string; hasAudioSession?: boolean };
 
-export type SenderCapabilities = {
+export type StreamerCapabilities = {
   supportsProcessCapture: boolean;
 };
 
@@ -156,10 +156,10 @@ export type NotificationPermission = 'notRequired' | 'granted' | 'denied' | 'blo
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
-  discoveredSenders: DiscoveredSender[];
-  connectedSender: DiscoveredSender | null;
-  connectingSenderId: string | null;
-  lastConnectedSender: DiscoveredSender | null;
+  discoveredStreamers: DiscoveredStreamer[];
+  connectedStreamer: DiscoveredStreamer | null;
+  connectingStreamerId: string | null;
+  lastConnectedStreamer: DiscoveredStreamer | null;
   error: GemaCastError | null;
   connectionHealth: ConnectionHealth;
   isNetworkAvailable: boolean;
@@ -171,7 +171,7 @@ export type AppState = {
   availableModes: { wifi: boolean; usb: boolean; adb: boolean };
   audioSources: AudioSource[];
   currentAudioSource: AudioSource;
-  senderCapabilities: SenderCapabilities | null;
+  streamerCapabilities: StreamerCapabilities | null;
   processList: ProcessInfo[];
   /** Detected network link pair from the active connection. */
   networkLinkPair: NetworkLinkPairInfo | null;

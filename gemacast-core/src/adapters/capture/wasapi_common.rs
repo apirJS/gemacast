@@ -320,7 +320,7 @@ use windows::{
 /// to the calling thread via a `std::sync::mpsc` channel.
 #[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
 pub(crate) struct AudioActivator {
-    pub sender: std::sync::mpsc::Sender<Result<IAudioClient, GemaCastError>>,
+    pub tx: std::sync::mpsc::Sender<Result<IAudioClient, GemaCastError>>,
 }
 
 impl IAgileObject_Impl for AudioActivator {}
@@ -350,7 +350,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for AudioActivator {
         };
 
         let payload = get_client().map_err(|e| AudioError::WindowsApi(e).into());
-        let _ = self.sender.send(payload);
+        let _ = self.tx.send(payload);
 
         Ok(())
     }
@@ -427,8 +427,8 @@ pub unsafe fn activate_process_loopback(
         (*prop_variant.Anonymous.Anonymous).Anonymous.blob.pBlobData = activation_params as *mut u8;
     };
 
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let activator: IActivateAudioInterfaceCompletionHandler = AudioActivator { sender }.into();
+    let (tx, receiver) = std::sync::mpsc::channel();
+    let activator: IActivateAudioInterfaceCompletionHandler = AudioActivator { tx }.into();
 
     let request = unsafe {
         ActivateAudioInterfaceAsync(

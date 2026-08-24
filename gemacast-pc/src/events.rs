@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 /// These drive the system tray menu: adding/removing device entries
 /// and displaying fatal error dialogs.
 pub enum TrayEvent {
-    /// A first-time LAN receiver is waiting for local approval.
+    /// A first-time LAN player is waiting for local approval.
     ConnectionApproval {
         request_id: String,
         name: String,

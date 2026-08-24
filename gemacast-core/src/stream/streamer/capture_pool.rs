@@ -36,7 +36,7 @@ pub enum StreamFailure {
     },
 }
 
-/// Tracks one per-target encoder task. Each connected receiver gets its own encoder
+/// Tracks one per-target encoder task. Each connected player gets its own encoder
 /// at its requested bitrate, running in a dedicated tokio task.
 struct PerTargetEncoder {
     bitrate: AudioBitrate,
@@ -1009,8 +1009,8 @@ mod tests {
                 .expect("Failed to create AudioCaptureInstance");
 
         // Bind a local UDP socket to receive the encoded packets
-        let receiver_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let target_addr = receiver_socket.local_addr().unwrap();
+        let player_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = player_socket.local_addr().unwrap();
 
         // 3. Spawn UDP target encoder
         instance
@@ -1034,7 +1034,7 @@ mod tests {
             producer.push_slice(&fake_audio);
             notify.notify_one();
 
-            let recv_future = receiver_socket.recv_from(&mut buf);
+            let recv_future = player_socket.recv_from(&mut buf);
             let (recv_len, _) =
                 tokio::time::timeout(std::time::Duration::from_millis(500), recv_future)
                     .await

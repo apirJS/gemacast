@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
-  saveLastSender,
-  loadLastSender,
+  saveLastStreamer,
+  loadLastStreamer,
   saveSettings,
   loadSettings,
   getOrCreateDeviceId,
@@ -16,33 +16,33 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('lastSender persistence', () => {
-  const sender = {
+describe('lastStreamer persistence', () => {
+  const streamer = {
     deviceId: 'pc-1',
     deviceName: 'Desktop',
     addr: '192.168.1.10:9000',
     isOffline: false,
   };
 
-  it('saveLastSender writes and loadLastSender reads back', () => {
-    saveLastSender(sender);
-    const loaded = loadLastSender();
-    expect(loaded).toEqual(sender);
+  it('saveLastStreamer writes and loadLastStreamer reads back', () => {
+    saveLastStreamer(streamer);
+    const loaded = loadLastStreamer();
+    expect(loaded).toEqual(streamer);
   });
 
-  it('saveLastSender(null) removes the key', () => {
-    saveLastSender(sender);
-    saveLastSender(null);
-    expect(loadLastSender()).toBeNull();
+  it('saveLastStreamer(null) removes the key', () => {
+    saveLastStreamer(streamer);
+    saveLastStreamer(null);
+    expect(loadLastStreamer()).toBeNull();
   });
 
-  it('loadLastSender returns null when empty', () => {
-    expect(loadLastSender()).toBeNull();
+  it('loadLastStreamer returns null when empty', () => {
+    expect(loadLastStreamer()).toBeNull();
   });
 
-  it('loadLastSender returns null on corrupt JSON', () => {
-    localStorage.setItem('gemacast_last_sender', '{broken');
-    expect(loadLastSender()).toBeNull();
+  it('loadLastStreamer returns null on corrupt JSON', () => {
+    localStorage.setItem('gemacast_last_streamer', '{broken');
+    expect(loadLastStreamer()).toBeNull();
   });
 });
 
@@ -123,7 +123,7 @@ describe('paired PC name cache', () => {
   });
 
   it('ignores names that carry no information', () => {
-    // A sender can arrive with an empty name, and the id is what we would fall
+    // A streamer can arrive with an empty name, and the id is what we would fall
     // back to anyway — neither may evict a good cached name.
     rememberPcName('PC_abc', 'Good name');
     rememberPcName('PC_abc', '');
