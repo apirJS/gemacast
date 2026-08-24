@@ -17,20 +17,14 @@ categories = ["multimedia"]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = "symbols"
+strip = "debuginfo"
 
-# Optimize dependencies (opus, rubato, cpal, oboe) at -O3 even in debug builds so
-# real-time audio does not underrun/glitch during development. Own crates stay at
-# the default dev opt-level, so iteration compile speed is unaffected. Does not
-# touch the shipped release binary.
 [profile.dev.package."*"]
 opt-level = 3
 
-# The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
 lto = "thin"
 
 [patch.crates-io]
 audiopus_sys = { path = "vendor/audiopus_sys" }
- 

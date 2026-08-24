@@ -41,20 +41,10 @@ use crate::dialog as rfd;
 pub mod testing;
 
 fn main() {
-    // Install the crash-log panic hook as early as possible so even
-    // initialization panics are captured to disk.
     crash_log::install_panic_hook();
-
-    // Attach to a parent console (Windows GUI-subsystem) + install an
-    // EnvFilter-backed subscriber that honors RUST_LOG (default: info).
     logging::init();
 
-    // Purge old crash logs (best-effort, never fails).
-    crash_log::cleanup_old_crash_logs();
-
     // Enforce single instance via file lock.
-    // If another gemacast-pc process already holds the lock, show a
-    // user-friendly dialog and exit immediately — before any ports are bound.
     let lock_dir = std::env::temp_dir().join("gemacast");
     let _ = std::fs::create_dir_all(&lock_dir);
     let lock_path = lock_dir.join("gemacast-pc.lock");

@@ -130,6 +130,10 @@ mod platform {
                 std::fs::create_dir_all(parent)?;
             }
             let exe = std::env::current_exe()?;
+
+            // No StandardOutPath/StandardErrorPath: launchd discarding stdio is
+            // fine, since nothing is persisted there deliberately. A panic under a
+            // LaunchAgent start still lands in the crash log.
             let contents = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -147,7 +151,7 @@ mod platform {
     <false/>
 </dict>
 </plist>"#,
-                exe.display()
+                exe.display(),
             );
             std::fs::write(&path, contents)?;
         } else {

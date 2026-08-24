@@ -19,16 +19,13 @@ pub fn run() {
             // Bridges the `log` facade (which our `tracing::*` calls feed via the
             // `tracing/log` feature — see Cargo.toml) to the platform log sink.
             // On Android `TargetKind::Stdout` is routed to logcat by the plugin,
-            // so `adb logcat` shows every gemacast-core `tracing` event. A LogDir
-            // target also persists them to a file for post-hoc capture.
+            // so `adb logcat` shows every gemacast-core `tracing` event in a debug
+            // build. Stdout is the only target: nothing is persisted to a file.
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 // Opus/decoder internals are noisy at debug; keep them at info.
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Stdout,
-                ))
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
                 ))
                 .build(),
         )

@@ -28,7 +28,11 @@ rfd = "0.17.2"
 whoami = "2.1.1"
 thread-priority = "3.0.0"
 async-trait = "0.1"
-tracing = "0.1"
+# `release_max_level_off` compiles every `tracing::*` call in this crate and its
+# dependencies out of release/dist builds — no log output in a shipped artifact.
+# Dev builds (`cargo run`, `cargo test`) are unaffected: the feature only applies
+# under `not(debug_assertions)`. Crash reporting does not go through `tracing`.
+tracing = { version = "0.1", features = ["release_max_level_off"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 image = "0.25.10"
 fs2 = "0.4"
