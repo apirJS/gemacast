@@ -17,14 +17,12 @@ pub async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo
 /// Emits `update-progress` events to the frontend with the download percentage.
 /// Returns the absolute path to the downloaded APK file.
 ///
-/// If the manifest included a SHA-256 digest, the download is verified against
-/// it before returning. A mismatch causes an error (and the corrupt file is
-/// removed automatically by the core downloader).
+/// `sha256` is required.
 #[tauri::command]
 pub async fn download_update(
     app: tauri::AppHandle,
     url: String,
-    sha256: Option<String>,
+    sha256: String,
 ) -> Result<String, String> {
     let cache_dir = app
         .path()
@@ -46,8 +44,7 @@ pub async fn download_update(
         }
     });
 
-    gemacast_core::updater::download_update(&url, &file_path, Some(progress_tx), sha256.as_deref())
-        .await?;
+    gemacast_core::updater::download_update(&url, &file_path, Some(progress_tx), &sha256).await?;
 
     file_path
         .to_str()

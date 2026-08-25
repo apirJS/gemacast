@@ -21,7 +21,8 @@ export function useManualConnect() {
   const isLoading = useAppStore((s) => s.isLoading);
   const connectingStreamerId = useAppStore((s) => s.connectingStreamerId);
 
-  const isManualConnecting = isProbing || (isLoading && connectingStreamerId?.startsWith('manual-'));
+  const isManualConnecting =
+    isProbing || (isLoading && connectingStreamerId?.startsWith('manual-'));
 
   const handleConnect = async () => {
     const trimmed = ip.trim();

@@ -38,7 +38,9 @@ describe('ForgetPcIdentity', () => {
     setupInvokeMock({ get_paired_pc_ids: ['pc-long'] });
     useAppStore
       .getState()
-      .setDiscoveredStreamers([makeDiscoveredStreamer({ deviceId: 'pc-long', deviceName: longName })]);
+      .setDiscoveredStreamers([
+        makeDiscoveredStreamer({ deviceId: 'pc-long', deviceName: longName }),
+      ]);
     render(<ForgetPcIdentity />);
 
     const name = await screen.findByText(longName);
@@ -106,7 +108,9 @@ describe('ForgetPcIdentity', () => {
     await waitFor(() =>
       expect(invokeCalls).toContainEqual({ cmd: 'forget_pc_identity', args: { pcId: 'pc-2' } }),
     );
-    const disconnectIndex = invokeCalls.findIndex((call) => call.cmd === 'disconnect_from_streamer');
+    const disconnectIndex = invokeCalls.findIndex(
+      (call) => call.cmd === 'disconnect_from_streamer',
+    );
     const forgetIndex = invokeCalls.findIndex((call) => call.cmd === 'forget_pc_identity');
     expect(disconnectIndex).toBeGreaterThan(-1);
     expect(disconnectIndex).toBeLessThan(forgetIndex);

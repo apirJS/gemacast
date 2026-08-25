@@ -32,58 +32,57 @@ declare -A SIGS=(
   ["android"]="gemacast-mobile.apk.sig"
 )
 
-# Download each artifact and compute its SHA-256 hash.
-declare -A HASHES
+# Download each artifact, hash it, and add it to the platform map.
+#
+# A platform whose artifact cannot be fetched is OMITTED rather than published
+# with an empty sha256. The digest is the only integrity check the client
+# performs on a downloaded update, so a digest-less entry is refused there — and
+# omitting the platform fails closed more gracefully than shipping one: the
+# client reports "no entry for platform" and simply does not offer an update,
+# instead of downloading an artifact and then rejecting it.
+PLATFORMS_JSON="{}"
+MISSING=()
+
 for platform in "${!FILES[@]}"; do
   file="${FILES[$platform]}"
-  if gh release download "$TAG" --pattern "$file" --dir dl --repo "$REPO" 2>/dev/null; then
-    HASHES[$platform]=$(sha256sum "dl/$file" | cut -d' ' -f1)
-    echo "SHA-256 for $platform ($file): ${HASHES[$platform]}"
-  else
-    echo "WARNING: Could not download $file for $platform — omitting sha256"
-    HASHES[$platform]=""
+  sig="${SIGS[$platform]}"
+
+  if ! gh release download "$TAG" --pattern "$file" --dir dl --repo "$REPO" 2>/dev/null; then
+    echo "WARNING: could not download $file — omitting platform '$platform'" >&2
+    MISSING+=("$platform")
+    continue
   fi
+
+  hash=$(sha256sum "dl/$file" | cut -d' ' -f1)
+  echo "SHA-256 for $platform ($file): $hash"
+
+  PLATFORMS_JSON=$(jq -n \
+    --argjson acc "$PLATFORMS_JSON" \
+    --arg key "$platform" \
+    --arg url "${BASE_URL}/${file}" \
+    --arg sig "${BASE_URL}/${sig}" \
+    --arg hash "$hash" \
+    '$acc + { ($key): { url: $url, signature: $sig, sha256: $hash } }')
 done
 
-# Build the JSON using jq for proper escaping
+# A manifest with no platforms would make every client report "no entry for
+# platform" — indistinguishable from a deliberate drop, and silent. Fail instead.
+if [[ "$(jq -r 'length' <<<"$PLATFORMS_JSON")" -eq 0 ]]; then
+  echo "ERROR: no release artifact could be downloaded and hashed; refusing to" >&2
+  echo "generate an empty updater.json." >&2
+  exit 1
+fi
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "NOTE: ${#MISSING[@]} platform(s) omitted from updater.json: ${MISSING[*]}" >&2
+  echo "Users on those platforms will not be offered this release." >&2
+fi
+
 jq -n \
   --arg version "$VERSION" \
   --arg pub_date "$PUB_DATE" \
-  --arg base_url "$BASE_URL" \
-  --arg win_file "${FILES[windows-x86_64]}" \
-  --arg win_sig "${SIGS[windows-x86_64]}" \
-  --arg win_hash "${HASHES[windows-x86_64]}" \
-  --arg dar_x64_file "${FILES[darwin-x86_64]}" \
-  --arg dar_x64_sig "${SIGS[darwin-x86_64]}" \
-  --arg dar_x64_hash "${HASHES[darwin-x86_64]}" \
-  --arg dar_arm_file "${FILES[darwin-aarch64]}" \
-  --arg dar_arm_sig "${SIGS[darwin-aarch64]}" \
-  --arg dar_arm_hash "${HASHES[darwin-aarch64]}" \
-  --arg dar_uni_file "${FILES[darwin-universal]}" \
-  --arg dar_uni_sig "${SIGS[darwin-universal]}" \
-  --arg dar_uni_hash "${HASHES[darwin-universal]}" \
-  --arg lin_x64_file "${FILES[linux-x86_64]}" \
-  --arg lin_x64_sig "${SIGS[linux-x86_64]}" \
-  --arg lin_x64_hash "${HASHES[linux-x86_64]}" \
-  --arg lin_arm_file "${FILES[linux-aarch64]}" \
-  --arg lin_arm_sig "${SIGS[linux-aarch64]}" \
-  --arg lin_arm_hash "${HASHES[linux-aarch64]}" \
-  --arg android_file "${FILES[android]}" \
-  --arg android_sig "${SIGS[android]}" \
-  --arg android_hash "${HASHES[android]}" \
-  '{
-    version: $version,
-    pub_date: $pub_date,
-    platforms: {
-      "windows-x86_64": { url: "\($base_url)/\($win_file)", signature: "\($base_url)/\($win_sig)", sha256: $win_hash },
-      "darwin-x86_64":  { url: "\($base_url)/\($dar_x64_file)", signature: "\($base_url)/\($dar_x64_sig)", sha256: $dar_x64_hash },
-      "darwin-aarch64": { url: "\($base_url)/\($dar_arm_file)", signature: "\($base_url)/\($dar_arm_sig)", sha256: $dar_arm_hash },
-      "darwin-universal": { url: "\($base_url)/\($dar_uni_file)", signature: "\($base_url)/\($dar_uni_sig)", sha256: $dar_uni_hash },
-      "linux-x86_64":   { url: "\($base_url)/\($lin_x64_file)", signature: "\($base_url)/\($lin_x64_sig)", sha256: $lin_x64_hash },
-      "linux-aarch64":  { url: "\($base_url)/\($lin_arm_file)", signature: "\($base_url)/\($lin_arm_sig)", sha256: $lin_arm_hash },
-      "android":        { url: "\($base_url)/\($android_file)", signature: "\($base_url)/\($android_sig)", sha256: $android_hash }
-    }
-  }' > updater.json
+  --argjson platforms "$PLATFORMS_JSON" \
+  '{ version: $version, pub_date: $pub_date, platforms: $platforms }' > updater.json
 
 echo "Generated updater.json:"
 cat updater.json

@@ -3,6 +3,7 @@ name = "gemacast-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -18,7 +19,9 @@ dynamic-dispatch = []
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
-tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.29.0", features = [
+  "rustls-tls-native-roots",
+] }
 mdns-sd = "0.19.1"
 netdev = "0.43.0"
 opus = "0.3.1"
@@ -46,8 +49,15 @@ hex = "0.4"
 getrandom = "0.4"
 base64 = "0.22"
 ring = "0.17"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "ring",
+  "tls12",
+] }
 
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -75,14 +85,6 @@ features = [
 pipewire = "0.10.0"
 
 [target.'cfg(target_os="macos")'.dependencies]
-# Pinned: 1.5.4 is docs-flagged outdated but every API call is verified against its
-# published source (sha256 99b732b2…dd149); do not bump blind — 8.x is a hard rewrite.
-# NOTE: `macos_13_0` does NOT gate the audio APIs — those are ungated, reachable via the
-# bundled Swift bridge's `platforms: [.macOS(.v13)]` deployment target. The feature only
-# gates `synchronization_clock()`, `advanced.rs` config and an SCWindow field, none of
-# which we call. It is enabled for forward-compat, not because audio needs it.
-# BUILD REQUIREMENT: this crate's build.rs runs `swift build` and *panics* if the Swift
-# toolchain is absent, so any macOS build host needs Xcode (CI's macos-15 has 16.4).
 screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }
 
 [dev-dependencies]

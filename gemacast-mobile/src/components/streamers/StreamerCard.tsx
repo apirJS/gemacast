@@ -104,7 +104,9 @@ export function StreamerCard({
             disabled={isDisabled}
             className="inline-flex shrink-0 items-center justify-center rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background p-1.5 text-foreground transition-all duration-150 hover:bg-primary hover:text-primary-foreground"
             onClick={onPlayPause}
-            aria-label={isPlaying ? `Pause ${streamer.deviceName}` : `Resume ${streamer.deviceName}`}
+            aria-label={
+              isPlaying ? `Pause ${streamer.deviceName}` : `Resume ${streamer.deviceName}`
+            }
           >
             {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           </button>

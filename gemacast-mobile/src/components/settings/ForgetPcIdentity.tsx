@@ -91,7 +91,9 @@ export function ForgetPcIdentity() {
               className="flex items-start justify-between gap-3 text-sm"
               role="listitem"
             >
-              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">{streamer.deviceName}</span>
+              <span className="min-w-0 flex-1 wrap-anywhere leading-snug">
+                {streamer.deviceName}
+              </span>
               <button
                 type="button"
                 className="shrink-0 rounded-default p-2 text-muted-foreground hover:bg-muted hover:text-status-lost"

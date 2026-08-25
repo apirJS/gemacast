@@ -237,7 +237,7 @@ impl CommandHandler {
                 &info.download_url,
                 &file_path,
                 None,
-                info.sha256.as_deref(),
+                &info.sha256,
             )
             .await
             {

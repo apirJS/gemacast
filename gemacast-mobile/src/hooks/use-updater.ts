@@ -35,9 +35,7 @@ export function useUpdater() {
     try {
       const result = await tauriBridge.checkForUpdate();
       if (result) {
-        useUpdateStore
-          .getState()
-          .setAvailable(result.version, result.downloadUrl, result.sha256 ?? null);
+        useUpdateStore.getState().setAvailable(result.version, result.downloadUrl, result.sha256);
       } else {
         useUpdateStore.getState().setUpToDate();
       }
@@ -69,7 +67,8 @@ export function useUpdater() {
 
   const startDownload = async () => {
     const { status, downloadUrl, sha256, version } = useUpdateStore.getState();
-    if (status !== 'available' || !downloadUrl || !version) return;
+
+    if (status !== 'available' || !downloadUrl || !version || !sha256) return;
 
     // Register the progress listener BEFORE starting the download
     // to avoid losing early progress events.
@@ -85,7 +84,7 @@ export function useUpdater() {
     try {
       const apkPath = await tauriBridge.downloadUpdate({
         url: downloadUrl,
-        sha256: sha256,
+        sha256,
       });
       useUpdateStore.getState().setReady(version, apkPath);
     } catch (e) {

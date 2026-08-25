@@ -3,14 +3,13 @@ name = "gemacast-mobile"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 publish = false
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -51,8 +50,4 @@ base64 = "0.22"
 jni = "0.21.1"
 
 [dev-dependencies]
-# `test-util` gives `#[tokio::test(start_paused = true)]`. The link-recovery
-# tests span a 60 s budget; on the virtual clock they finish instantly and
-# deterministically, instead of either sleeping for a minute or asserting
-# against a shortened interval that isn't the shipped one.
 tokio = { version = "1.50.0", features = ["full", "test-util"] }
