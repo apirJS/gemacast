@@ -9,7 +9,7 @@ impl Ports {
     /// Carries only `Presence` and `Probe` messages.
     pub const DISCOVERY: u16 = 55555;
 
-    /// HTTP port for control handshakes (mobile ↔ PC via Axum REST).
+    /// HTTPS/WSS port for control handshakes (mobile to PC via Axum REST).
     /// Carries `Connect`, `Disconnect`, `GetSources`, `SourceList`,
     /// `ChangeSource`, and `Probe` requests/responses.
     pub const CONTROL: u16 = 55559;

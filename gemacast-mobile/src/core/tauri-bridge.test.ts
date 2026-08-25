@@ -10,8 +10,8 @@ beforeEach(() => {
 });
 
 describe('tauriBridge', () => {
-  it('connectToSender parses raw bitrate preset to null', async () => {
-    await tauriBridge.connectToSender({
+  it('connectToStreamer parses raw bitrate preset to null', async () => {
+    await tauriBridge.connectToStreamer({
       ip: '10.0.0.1',
       deviceId: 'dev1',
       deviceName: 'Device',
@@ -29,12 +29,12 @@ describe('tauriBridge', () => {
     });
 
     expect(invokeCalls).toHaveLength(1);
-    expect(invokeCalls[0].cmd).toBe('connect_to_sender');
+    expect(invokeCalls[0].cmd).toBe('connect_to_streamer');
     expect((invokeCalls[0].args as Record<string, unknown>).bitrate).toBeNull();
   });
 
-  it('connectToSender parses custom bitrate preset', async () => {
-    await tauriBridge.connectToSender({
+  it('connectToStreamer parses custom bitrate preset', async () => {
+    await tauriBridge.connectToStreamer({
       ip: '10.0.0.1',
       deviceId: 'dev1',
       deviceName: 'Device',
@@ -51,13 +51,13 @@ describe('tauriBridge', () => {
       transport: null,
     });
 
-    expect(invokeCalls[0].cmd).toBe('connect_to_sender');
+    expect(invokeCalls[0].cmd).toBe('connect_to_streamer');
     expect((invokeCalls[0].args as Record<string, unknown>).bitrate).toBe(128000); // 128 kbps -> 128000 bps
   });
 
-  it('disconnectFromSender passes correct args', async () => {
-    await tauriBridge.disconnectFromSender({ ip: '10.0.0.1', deviceId: 'dev1' });
-    expect(invokeCalls[0].cmd).toBe('disconnect_from_sender');
+  it('disconnectFromStreamer passes correct args', async () => {
+    await tauriBridge.disconnectFromStreamer({ ip: '10.0.0.1', deviceId: 'dev1' });
+    expect(invokeCalls[0].cmd).toBe('disconnect_from_streamer');
     expect((invokeCalls[0].args as Record<string, unknown>).deviceId).toBe('dev1');
   });
 
@@ -66,9 +66,20 @@ describe('tauriBridge', () => {
     expect(invokeCalls[0].cmd).toBe('get_network_state');
   });
 
-  it('startListeningForSenders passes correct args', async () => {
-    await tauriBridge.startListeningForSenders({ deviceId: 'dev1', mode: ConnectionMode.Wifi });
-    expect(invokeCalls[0].cmd).toBe('start_listening_for_senders');
+  it('forgetPcIdentity passes the selected PC id', async () => {
+    await tauriBridge.forgetPcIdentity('pc-1');
+    expect(invokeCalls[0].cmd).toBe('forget_pc_identity');
+    expect((invokeCalls[0].args as Record<string, unknown>).pcId).toBe('pc-1');
+  });
+
+  it('getPairedPcIds invokes the native paired-PC list command', async () => {
+    await tauriBridge.getPairedPcIds();
+    expect(invokeCalls[0]).toEqual({ cmd: 'get_paired_pc_ids', args: undefined });
+  });
+
+  it('startListeningForStreamers passes correct args', async () => {
+    await tauriBridge.startListeningForStreamers({ deviceId: 'dev1', mode: ConnectionMode.Wifi });
+    expect(invokeCalls[0].cmd).toBe('start_listening_for_streamers');
     expect((invokeCalls[0].args as Record<string, unknown>).deviceId).toBe('dev1');
     expect((invokeCalls[0].args as Record<string, unknown>).mode).toBe(ConnectionMode.Wifi);
   });

@@ -1,0 +1,44 @@
+# cargo-audit configuration. Read by `cargo audit` and by the `audit` CI job
+# (.github/workflows/ci.yml), which runs rustsec/audit-check in the repo root.
+#
+# Every entry below is an advisory we cannot act on because an upstream crate
+# pins the vulnerable version with a caret/tilde requirement — `cargo update
+# --precise` is rejected outright. Each was checked for reachability before
+# being listed, and the check is recorded so the next person can re-run it
+# instead of re-deriving it. Re-audit an entry whenever its upstream moves.
+#
+# Do NOT add an entry here to quiet a fixable advisory. h2 (RUSTSEC-2026-0258)
+# was fixed by `cargo update -p h2` and event-listener (RUSTSEC-2026-0221) by
+# `cargo update -p event-listener`; that is the expected remediation path.
+
+[advisories]
+ignore = [
+  # ------------------------------------------------------------------------
+  # nix 0.19.1 — out-of-bounds write in nix::unistd::getgrouplist
+  # Pinned by `battery 0.7.8` at `nix = "~0.19"` (via tauri-plugin-device-info).
+  # Unreachable on three independent counts:
+  #   1. Not in any shipped artifact. gemacast-mobile ships only as an Android
+  #      APK, and `cargo tree -i nix --target aarch64-linux-android` prints
+  #      nothing; so does the x86_64-pc-windows-msvc tree. gemacast-pc does not
+  #      depend on `battery` at all.
+  #   2. The vulnerable function is never called — `getgrouplist` and
+  #      `nix::unistd` have zero occurrences in the battery 0.7.8 source. It
+  #      uses nix solely for `impl From<nix::Error>` plus some FreeBSD ioctls.
+  #   3. nix 0.19 is unix-only, so it cannot compile on the Windows build.
+  "RUSTSEC-2021-0119",
+
+  # ------------------------------------------------------------------------
+  # quick-xml 0.39.4 — two 7.5-high denial-of-service advisories:
+  #   RUSTSEC-2026-0194 quadratic run time on duplicate start-tag attributes
+  #   RUSTSEC-2026-0195 unbounded namespace allocation in NsReader
+  # Pinned by `wayland-scanner 0.31.10` at `quick-xml = "^0.39"`, reached via
+  # wayland-client -> rfd -> gemacast-pc, i.e. Linux only.
+  # wayland-scanner is a **proc-macro**: it parses the Wayland protocol XML
+  # vendored inside wayland-protocols at build time and emits Rust. So the
+  # input is fixed and trusted, and proc-macro code is not linked into the
+  # shipped binary — neither advisory has a runtime surface here. The XML
+  # parser that *does* run at runtime is quick-xml 0.41.0 (via plist -> tauri
+  # and netdev), already past the fixed version.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

@@ -1,13 +1,18 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { setupInvokeMock, invokeCalls, makeDeviceInfo } from '../__tests__/setup';
+import {
+  setupInvokeMock,
+  invokeCalls,
+  makeDeviceInfo,
+  makeDiscoveredStreamer,
+} from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status, ConnectionMode } from '../core/types';
-import { startListening, stopListening } from './use-discovery';
+import { startListening, stopListening, refreshStreamers } from './use-discovery';
 
 beforeEach(() => {
   setupInvokeMock({
-    start_listening_for_senders: undefined,
-    stop_listening_for_senders: undefined,
+    start_listening_for_streamers: undefined,
+    stop_listening_for_streamers: undefined,
   });
   useAppStore.getState().init(makeDeviceInfo());
 });
@@ -20,9 +25,9 @@ describe('startListening', () => {
     expect(useAppStore.getState().isLoading).toBe(false);
   });
 
-  it('invokes start_listening_for_senders with deviceId and mode', async () => {
+  it('invokes start_listening_for_streamers with deviceId and mode', async () => {
     await startListening(ConnectionMode.Wifi);
-    const call = invokeCalls.find((c) => c.cmd === 'start_listening_for_senders');
+    const call = invokeCalls.find((c) => c.cmd === 'start_listening_for_streamers');
     expect(call).toBeTruthy();
     const args = call?.args as Record<string, unknown>;
     expect(args.deviceId).toBe('test-device-id');
@@ -31,7 +36,7 @@ describe('startListening', () => {
 
   it('returns err on IPC failure and stores error', async () => {
     setupInvokeMock({
-      start_listening_for_senders: () => {
+      start_listening_for_streamers: () => {
         throw new Error('bind failed');
       },
     });
@@ -49,8 +54,67 @@ describe('stopListening', () => {
     expect(useAppStore.getState().status).toBe(Status.Idle);
   });
 
-  it('invokes stop_listening_for_senders IPC', async () => {
+  it('invokes stop_listening_for_streamers IPC', async () => {
     await stopListening();
-    expect(invokeCalls.some((c) => c.cmd === 'stop_listening_for_senders')).toBe(true);
+    expect(invokeCalls.some((c) => c.cmd === 'stop_listening_for_streamers')).toBe(true);
+  });
+});
+
+describe('refreshStreamers', () => {
+  it('drops network-discovered streamers but keeps manual and connected ones', async () => {
+    const connected = makeDiscoveredStreamer({ deviceId: 'pc-connected', deviceName: 'Studio' });
+    const discovered = makeDiscoveredStreamer({ deviceId: 'pc-other', deviceName: 'Laptop' });
+    const manual = makeDiscoveredStreamer({
+      deviceId: 'manual-192.168.1.5',
+      deviceName: '192.168.1.5',
+    });
+    useAppStore.getState().setConnectedStreamer(connected);
+    useAppStore.getState().setDiscoveredStreamers([discovered, connected, manual]);
+
+    const result = await refreshStreamers();
+
+    expect(result.ok).toBe(true);
+    expect(useAppStore.getState().discoveredStreamers.map((s) => s.deviceId)).toEqual([
+      'pc-connected',
+      'manual-192.168.1.5',
+    ]);
+  });
+
+  it('re-arms discovery by stopping before starting the listeners', async () => {
+    await refreshStreamers();
+
+    const stopIndex = invokeCalls.findIndex((c) => c.cmd === 'stop_listening_for_streamers');
+    const startIndex = invokeCalls.findIndex((c) => c.cmd === 'start_listening_for_streamers');
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
+
+    const startCall = invokeCalls.find((c) => c.cmd === 'start_listening_for_streamers');
+    const args = startCall?.args as Record<string, unknown>;
+    expect(args.deviceId).toBe('test-device-id');
+    expect(args.mode).toBe('wifi');
+  });
+
+  it('moves an idle session to Listening', async () => {
+    useAppStore.getState().setStatus(Status.Idle);
+    await refreshStreamers();
+    expect(useAppStore.getState().status).toBe(Status.Listening);
+  });
+
+  it('leaves an active stream untouched', async () => {
+    useAppStore.getState().setStatus(Status.Playing);
+    await refreshStreamers();
+    expect(useAppStore.getState().status).toBe(Status.Playing);
+  });
+
+  it('returns err and stores the error when re-arming fails', async () => {
+    setupInvokeMock({
+      stop_listening_for_streamers: undefined,
+      start_listening_for_streamers: () => {
+        throw new Error('bind failed');
+      },
+    });
+    const result = await refreshStreamers();
+    expect(result.ok).toBe(false);
+    expect(useAppStore.getState().error).not.toBeNull();
   });
 });

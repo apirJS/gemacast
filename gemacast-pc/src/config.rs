@@ -50,6 +50,21 @@ pub fn config_path() -> PathBuf {
         .join("config.json")
 }
 
+/// Returns the persistent LAN allowlist path beside `config.json`.
+pub fn trusted_devices_path() -> PathBuf {
+    config_path().with_file_name("trusted-devices.json")
+}
+
+/// Returns the persistent PC TLS private-key path beside `config.json`.
+pub fn pc_identity_key_path() -> PathBuf {
+    config_path().with_file_name("pc-identity-key.der")
+}
+
+/// Returns the persistent PC TLS certificate path beside `config.json`.
+pub fn pc_identity_cert_path() -> PathBuf {
+    config_path().with_file_name("pc-identity-cert.der")
+}
+
 /// Load config from disk, falling back to defaults on any error.
 pub fn load_config() -> UserConfig {
     let path = config_path();

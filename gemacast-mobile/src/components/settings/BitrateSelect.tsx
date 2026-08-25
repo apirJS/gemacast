@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useSettings } from '../../hooks/use-settings';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import type { BitratePreset } from '../../core/types';
@@ -30,23 +30,21 @@ export function BitrateSelect() {
   };
 
   const applyCustom = () => {
-    const val = parseInt(customKbps, 10);
-    if (val >= 6 && val <= 512) {
+    const val = Number(customKbps);
+    if (Number.isInteger(val) && val >= 6 && val <= 512) {
       update({ customBitrateKbps: val, bitratePreset: 'custom' });
     }
   };
 
-  const options = React.useMemo(() => {
-    return BITRATE_OPTIONS.map((opt) => {
-      if (opt.value === 'custom' && settings.bitratePreset === 'custom') {
-        return {
-          ...opt,
-          label: `Custom - ${settings.customBitrateKbps} Kbps`,
-        };
-      }
-      return opt;
-    });
-  }, [settings.bitratePreset, settings.customBitrateKbps]);
+  const options = BITRATE_OPTIONS.map((opt) => {
+    if (opt.value === 'custom' && settings.bitratePreset === 'custom') {
+      return {
+        ...opt,
+        label: `Custom - ${settings.customBitrateKbps} Kbps`,
+      };
+    }
+    return opt;
+  });
 
   return (
     <div>
@@ -73,7 +71,12 @@ export function BitrateSelect() {
             type="button"
             className="rounded-md bg-primary px-[0.9rem] py-[0.45rem] text-[0.85rem] font-semibold text-primary-foreground transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
             onClick={applyCustom}
-            disabled={!customKbps || parseInt(customKbps, 10) < 6 || parseInt(customKbps, 10) > 512}
+            disabled={
+              !customKbps ||
+              !Number.isInteger(Number(customKbps)) ||
+              Number(customKbps) < 6 ||
+              Number(customKbps) > 512
+            }
           >
             Apply
           </button>

@@ -2,14 +2,14 @@ import { describe, it, expect } from 'bun:test';
 import { GemaCastError, ErrorCode, ERROR_MESSAGES } from './error';
 
 describe('GemaCastError factory methods', () => {
-  it('senderTimeout sets code NETWORK_SENDER_TIMEOUT', () => {
-    const err = GemaCastError.senderTimeout();
-    expect(err.code).toBe(ErrorCode.NETWORK_SENDER_TIMEOUT);
+  it('streamerTimeout sets code NETWORK_STREAMER_TIMEOUT', () => {
+    const err = GemaCastError.streamerTimeout();
+    expect(err.code).toBe(ErrorCode.NETWORK_STREAMER_TIMEOUT);
   });
 
-  it('senderTimeout uses default message from ERROR_MESSAGES', () => {
-    const err = GemaCastError.senderTimeout();
-    expect(err.userMessage).toBe(ERROR_MESSAGES[ErrorCode.NETWORK_SENDER_TIMEOUT]);
+  it('streamerTimeout uses default message from ERROR_MESSAGES', () => {
+    const err = GemaCastError.streamerTimeout();
+    expect(err.userMessage).toBe(ERROR_MESSAGES[ErrorCode.NETWORK_STREAMER_TIMEOUT]);
   });
 
   it('failedToStartDiscovery preserves "already in use" message', () => {
@@ -60,7 +60,7 @@ describe('GemaCastError factory methods', () => {
 
 describe('GemaCastError.from', () => {
   it('returns same instance for GemaCastError input', () => {
-    const original = GemaCastError.senderTimeout();
+    const original = GemaCastError.streamerTimeout();
     const result = GemaCastError.from(original);
     expect(result).toBe(original);
   });

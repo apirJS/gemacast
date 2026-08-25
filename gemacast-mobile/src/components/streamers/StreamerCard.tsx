@@ -1,0 +1,128 @@
+import { Monitor, Usb, Play, Pause } from 'lucide-react';
+import type {
+  AudioSource,
+  DiscoveredStreamer,
+  ProcessInfo,
+  StreamerCapabilities,
+} from '../../core/types';
+import { ProcessSelect } from './ProcessSelect';
+
+type StreamerCardProps = {
+  streamer: DiscoveredStreamer;
+  isConnected: boolean;
+  isConnecting: boolean;
+  isPlaying: boolean;
+  isLoading: boolean;
+  isDisabled: boolean;
+  audioSources: AudioSource[];
+  processList: ProcessInfo[];
+  streamerCapabilities: StreamerCapabilities | null;
+  currentSource: AudioSource;
+  onToggle: () => void;
+  onPlayPause: () => void;
+  onSourceChange: (source: AudioSource) => void;
+};
+
+/**
+ * Pure presentational component for a single streamer entry.
+ * All business logic (connect/disconnect, play/pause, source changes) is
+ * driven by callback props from the parent.
+ */
+export function StreamerCard({
+  streamer,
+  isConnected,
+  isConnecting,
+  isPlaying,
+  isLoading,
+  isDisabled,
+  audioSources,
+  processList,
+  streamerCapabilities,
+  currentSource,
+  onToggle,
+  onPlayPause,
+  onSourceChange,
+}: StreamerCardProps) {
+  const isAdb = streamer.addr.startsWith('127.0.0.1');
+  const showLoading = isLoading && (isConnected || isConnecting);
+  const hasSource = isConnected && (audioSources.length > 0 || processList.length > 0);
+
+  return (
+    <li
+      className={`
+        surface-card relative flex items-center justify-between gap-4 rounded-lg
+        px-5 py-4 transition-all duration-200 animate-[fade-in_200ms_ease-out]
+        ${hasSource ? 'flex-wrap' : ''}
+        ${isConnected ? 'border-primary shadow-[0_0_0_1px_var(--color-primary)]' : 'border-border hover:border-primary'}
+      `}
+    >
+      <div
+        className={`flex items-center gap-3 overflow-hidden ${hasSource ? 'min-w-0 flex-1' : 'min-w-0'}`}
+      >
+        <div className={`flex shrink-0 ${isConnected ? 'text-primary' : 'text-muted-foreground'}`}>
+          {isAdb ? <Usb className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <p className="truncate text-sm font-medium text-card-foreground">{streamer.deviceName}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {isAdb ? 'ADB (USB Debug)' : streamer.addr.split(':')[0]}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button
+          type="button"
+          disabled={isDisabled}
+          className={`
+            relative inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-[calc(var(--radius-default)-0.2rem)] border border-transparent px-3 py-1.5 text-xs font-semibold transition-all duration-150
+            ${showLoading ? 'pointer-events-none' : ''}
+            ${isDisabled && !showLoading ? 'opacity-50 pointer-events-none' : ''}
+            ${
+              isConnected
+                ? 'border-destructive text-destructive bg-transparent hover:bg-destructive hover:text-destructive-foreground'
+                : 'border-border bg-background text-foreground hover:bg-primary hover:text-primary-foreground'
+            }
+          `}
+          onClick={onToggle}
+          aria-label={`${isConnected ? 'Disconnect from' : 'Connect to'} ${streamer.deviceName}`}
+        >
+          <span
+            className={`transition-opacity duration-150 ${showLoading ? 'opacity-0' : 'opacity-100'}`}
+          >
+            {isConnected ? 'Disconnect' : 'Connect'}
+          </span>
+          {showLoading && (
+            <span className="absolute left-1/2 top-1/2 inline-block h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+          )}
+        </button>
+
+        {isConnected && (
+          <button
+            type="button"
+            disabled={isDisabled}
+            className="inline-flex shrink-0 items-center justify-center rounded-[calc(var(--radius-default)-0.2rem)] border border-border bg-background p-1.5 text-foreground transition-all duration-150 hover:bg-primary hover:text-primary-foreground"
+            onClick={onPlayPause}
+            aria-label={
+              isPlaying ? `Pause ${streamer.deviceName}` : `Resume ${streamer.deviceName}`
+            }
+          >
+            {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+          </button>
+        )}
+      </div>
+
+      {hasSource && (
+        <ProcessSelect
+          audioSources={audioSources}
+          processList={processList}
+          currentSource={currentSource}
+          onSourceChange={onSourceChange}
+          streamer={streamer}
+          supportsProcessCapture={streamerCapabilities?.supportsProcessCapture ?? true}
+        />
+      )}
+    </li>
+  );
+}

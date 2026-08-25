@@ -3,26 +3,56 @@ import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
 import { GemaCastError } from '../core/error';
 import { getPresetConfig } from '../core/presets';
-import { saveLastSender } from '../core/persistence';
+import { rememberPcName, saveLastStreamer } from '../core/persistence';
 import { Status } from '../core/types';
-import type { AudioSource, DiscoveredSender, Result } from '../core/types';
+import type { AudioSource, DiscoveredStreamer, Result } from '../core/types';
 import { ok, err } from '../core/types';
 
 const store = useAppStore;
 const toast = useToastStore;
 
+const TERMINAL_CONNECT_ERROR_CODES = [
+  'pairing_cancelled',
+  'pairing_rejected',
+  'pairing_expired',
+  'authentication_failed',
+  'pairing_capacity_exhausted',
+  'pairing_persistence_failed',
+  'unauthorized',
+  'streamer_offline',
+];
+
+export function isTerminalConnectError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return TERMINAL_CONNECT_ERROR_CODES.some((code) => normalized.includes(code));
+}
+
+export function getPairingDecisionWarning(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes('pairing_cancelled') || normalized.includes('cancelled on the phone')) {
+    return 'Pairing cancelled';
+  }
+  if (normalized.includes('pairing_rejected') || normalized.includes('rejected on the pc')) {
+    return 'Pairing request rejected on the PC';
+  }
+  return null;
+}
+
 async function connectWithRetry(
-  args: Parameters<typeof tauriBridge.connectToSender>[0],
+  args: Parameters<typeof tauriBridge.connectToStreamer>[0],
   maxRetries: number,
   delayMs: number,
 ): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      await tauriBridge.connectToSender(args);
+      await tauriBridge.connectToStreamer(args);
       return;
     } catch (e) {
       lastError = e;
+      if (isTerminalConnectError(e)) throw e;
       if (attempt < maxRetries) {
         console.warn(`Connection attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`, e);
         await new Promise((r) => setTimeout(r, delayMs));
@@ -32,23 +62,23 @@ async function connectWithRetry(
   throw lastError;
 }
 
-export async function connectToSender(
-  sender: DiscoveredSender,
+export async function connectToStreamer(
+  streamer: DiscoveredStreamer,
 ): Promise<Result<true, GemaCastError>> {
   store.getState().patch({
     isLoading: true,
     status: Status.Connecting,
     isSuspended: false,
-    connectingSenderId: sender.deviceId,
+    connectingStreamerId: streamer.deviceId,
   });
 
   try {
     const state = store.getState();
-    const ip = sender.addr.split(':')[0];
+    const ip = streamer.addr.split(':')[0];
     const settings = state.settings;
     const config = getPresetConfig(settings.bufferPreset, settings.customJitterConfig);
 
-    const isManual = sender.deviceId.startsWith('manual-');
+    const isManual = streamer.deviceId.startsWith('manual-');
     const connectionMode = isManual ? 'wifi' : settings.mode;
     const transport = connectionMode === 'usb' ? 'usb' : connectionMode === 'wifi' ? 'wifi' : null;
 
@@ -66,27 +96,35 @@ export async function connectToSender(
 
     // ADB mode uses TCP transport which takes longer to initialize
     const isAdbMode = connectionMode === 'adb';
-    await connectWithRetry(args, isAdbMode ? 4 : 2, isAdbMode ? 500 : 300);
+    // LAN pairing can legitimately wait for a PC dialog. The native request
+    // already has a 70-second budget, so repeating it here can duplicate a
+    // server-side success after a lost response. ADB keeps bounded retries for
+    // local tunnel startup, where reconnects atomically replace the session.
+    await connectWithRetry(args, isAdbMode ? 4 : 0, isAdbMode ? 500 : 300);
 
     tauriBridge
-      .establishWebsocket({ senderIp: ip, deviceId: state.deviceInfo.deviceId })
+      .establishWebsocket({ streamerIp: ip, deviceId: state.deviceInfo.deviceId })
       .catch((e) => console.warn('WebSocket setup failed (non-fatal):', e));
 
-    saveLastSender(sender);
+    saveLastStreamer(streamer);
+    // A completed connect is what puts this PC in the native trust store, so it
+    // is also where its name must be cached for the Paired PCs list. Covers the
+    // paths discovery never sees, e.g. connecting by address.
+    rememberPcName(streamer.deviceId, streamer.deviceName);
 
     store.getState().dismissError();
     store.getState().patch({
-      connectedSender: sender,
-      connectingSenderId: null,
-      lastConnectedSender: sender,
+      connectedStreamer: streamer,
+      connectingStreamerId: null,
+      lastConnectedStreamer: streamer,
       status: Status.Connected,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
       isLoading: false,
     });
 
-    fetchAudioSources(sender);
-    fetchProcessList(sender);
+    fetchAudioSources(streamer);
+    fetchProcessList(streamer);
 
     // Fetch the detected network link pair for UI display
     tauriBridge
@@ -104,12 +142,18 @@ export async function connectToSender(
 
     return ok(true);
   } catch (e) {
-    const error = GemaCastError.failedToStartPlayback(e);
-    store.getState().displayError(error);
+    const pairingWarning = getPairingDecisionWarning(e);
+    const error = pairingWarning ? GemaCastError.from(e) : GemaCastError.failedToStartPlayback(e);
+    if (pairingWarning) {
+      store.getState().dismissError();
+      toast.getState().show('warning', pairingWarning);
+    } else {
+      store.getState().displayError(error);
+    }
     store.getState().patch({
       isLoading: false,
       status: Status.Listening,
-      connectingSenderId: null,
+      connectingStreamerId: null,
     });
     return err(error);
   }
@@ -118,7 +162,7 @@ export async function connectToSender(
 let isDisconnecting = false;
 
 export async function disconnect(
-  forgetSender: boolean = true,
+  forgetStreamer: boolean = true,
 ): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
 
@@ -129,86 +173,90 @@ export async function disconnect(
 
   isDisconnecting = true;
 
-  const sender = state.connectedSender;
+  const streamer = state.connectedStreamer;
+  const retainedStreamer = streamer ?? state.lastConnectedStreamer;
 
-  if (forgetSender) saveLastSender(null);
+  if (forgetStreamer) saveLastStreamer(null);
 
-  // Optimistically update status to catch echoes during async IPC calls
-  store.getState().patch({ status: Status.Listening });
+  store.getState().patch({
+    status: Status.Listening,
+    lastConnectedStreamer: forgetStreamer ? null : retainedStreamer,
+    isSuspended: !forgetStreamer,
+  });
   store.getState().setLoading(true);
 
   try {
-    if (!sender) {
+    if (!streamer) {
       store.getState().patch({
-        connectedSender: null,
-        lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
+        connectedStreamer: null,
+        lastConnectedStreamer: forgetStreamer ? null : retainedStreamer,
         status: Status.Listening,
         connectionHealth: 'ok',
         reconnectAttempts: 0,
         isLoading: false,
-        isSuspended: !forgetSender,
+        isSuspended: !forgetStreamer,
         networkLinkPair: null,
       });
-      store.getState().resetLatency();
+      store.getState().resetMetrics();
       tauriBridge.notifyStreamingStopped().catch(console.warn);
-      if (forgetSender) toast.getState().show('info', 'Disconnected');
+      if (forgetStreamer) toast.getState().show('info', 'Disconnected');
       return ok(true);
     }
 
     try {
-      const ip = sender.addr.split(':')[0];
-      await tauriBridge.disconnectFromSender({
+      const ip = streamer.addr.split(':')[0];
+      await tauriBridge.disconnectFromStreamer({
         ip,
         deviceId: state.deviceInfo.deviceId,
       });
       await new Promise((r) => setTimeout(r, 150));
       tauriBridge.killPlayback().catch(console.warn);
     } catch (e) {
-      console.warn('disconnect_from_sender IPC failed:', e);
+      console.warn('disconnect_from_streamer IPC failed:', e);
       await new Promise((r) => setTimeout(r, 150));
       tauriBridge.killPlayback().catch(console.warn);
     }
 
     store.getState().patch({
-      connectedSender: null,
-      lastConnectedSender: forgetSender ? null : sender,
+      connectedStreamer: null,
+      lastConnectedStreamer: forgetStreamer ? null : retainedStreamer,
       status: Status.Listening,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
       isLoading: false,
-      isSuspended: !forgetSender,
+      isSuspended: !forgetStreamer,
       audioSources: [],
       currentAudioSource: { type: 'desktop' },
-      senderCapabilities: null,
+      streamerCapabilities: null,
       processList: [],
       networkLinkPair: null,
     });
-    store.getState().resetLatency();
-    if (forgetSender) toast.getState().show('info', 'Disconnected');
+    store.getState().resetMetrics();
+    if (forgetStreamer) toast.getState().show('info', 'Disconnected');
     return ok(true);
   } finally {
     isDisconnecting = false;
   }
 }
 
-export function handleSenderTimeout(deviceId: string) {
+export function handleStreamerTimeout(deviceId: string) {
   const state = store.getState();
-  const list = state.discoveredSenders.filter((s) => s.deviceId !== deviceId);
-  store.getState().setDiscoveredSenders(list);
+  const list = state.discoveredStreamers.filter((s) => s.deviceId !== deviceId);
+  store.getState().setDiscoveredStreamers(list);
 
-  if (state.connectedSender?.deviceId === deviceId) {
-    store.getState().displayError(GemaCastError.senderTimeout());
+  if (state.connectedStreamer?.deviceId === deviceId) {
+    store.getState().displayError(GemaCastError.streamerTimeout());
     store.getState().patch({
       connectionHealth: 'lost',
       status: Status.Listening,
-      connectedSender: null,
+      connectedStreamer: null,
     });
-    store.getState().resetLatency();
+    store.getState().resetMetrics();
     tauriBridge.killPlayback().catch(console.warn);
   }
 }
 
-export function handleForceDisconnect(forgetSender: boolean = true) {
+export function handleForceDisconnect(forgetStreamer: boolean = true) {
   const state = store.getState();
   if (
     state.status === Status.Listening ||
@@ -218,25 +266,25 @@ export function handleForceDisconnect(forgetSender: boolean = true) {
     return;
   }
 
-  if (forgetSender) saveLastSender(null);
+  if (forgetStreamer) saveLastStreamer(null);
   store.getState().patch({
-    connectedSender: null,
-    lastConnectedSender: forgetSender ? null : state.lastConnectedSender,
+    connectedStreamer: null,
+    lastConnectedStreamer: forgetStreamer ? null : state.lastConnectedStreamer,
     status: Status.Listening,
     connectionHealth: 'ok',
     reconnectAttempts: 0,
-    isSuspended: !forgetSender,
+    isSuspended: !forgetStreamer,
   });
-  store.getState().resetLatency();
+  store.getState().resetMetrics();
   tauriBridge.notifyStreamingStopped().catch(console.warn);
   tauriBridge.killPlayback().catch(console.warn);
 }
 
 /**
- * The receiver watchdog tore the session down on its own — nobody asked for it.
+ * The playback watchdog tore the session down on its own — nobody asked for it.
  *
  * Distinct from {@link handleForceDisconnect}, which also serves the *user*
- * teardown path: this one never forgets the sender, because the whole point is
+ * teardown path: this one never forgets the streamer, because the whole point is
  * to reconnect to it. It leaves the UI in the same suspended state a link loss
  * produces today and hands off to the Rust-side prober.
  */
@@ -250,17 +298,17 @@ export async function handleLinkLost() {
     return;
   }
 
-  const sender = state.connectedSender ?? state.lastConnectedSender;
+  const streamer = state.connectedStreamer ?? state.lastConnectedStreamer;
 
   store.getState().patch({
-    connectedSender: null,
-    lastConnectedSender: sender,
+    connectedStreamer: null,
+    lastConnectedStreamer: streamer,
     status: Status.Listening,
     connectionHealth: 'lost',
     reconnectAttempts: 0,
     isSuspended: true,
   });
-  store.getState().resetLatency();
+  store.getState().resetMetrics();
 
   // Both of these cancel link recovery on the Rust side, so the prober has to
   // start strictly *after* them — firing all three concurrently would let a
@@ -268,9 +316,9 @@ export async function handleLinkLost() {
   await tauriBridge.notifyStreamingStopped().catch(console.warn);
   await tauriBridge.killPlayback().catch(console.warn);
 
-  if (!sender) return;
+  if (!streamer) return;
 
-  const ip = sender.addr.split(':')[0];
+  const ip = streamer.addr.split(':')[0];
   await tauriBridge
     .startLinkRecovery({ ip, deviceId: state.deviceInfo.deviceId })
     .catch((e) => console.warn('Failed to start link recovery:', e));
@@ -287,12 +335,12 @@ export async function handleLinkRecovered(deviceRegistered: boolean | null) {
   const state = store.getState();
   if (state.status === Status.Connected || state.status === Status.Connecting) return;
 
-  const sender = state.lastConnectedSender;
-  if (!sender) return;
+  const streamer = state.lastConnectedStreamer;
+  if (!streamer) return;
 
   console.info(`Link recovered (PC still had us registered: ${deviceRegistered})`);
   toast.getState().show('info', 'Connection restored — reconnecting');
-  await connectToSender(sender);
+  await connectToStreamer(streamer);
 }
 
 /** Link recovery spent its budget without reaching the PC. */
@@ -303,11 +351,11 @@ export function handleLinkRecoveryGaveUp() {
 
 export async function changeAudioSource(source: AudioSource): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
-  const sender = state.connectedSender;
-  if (!sender) return err(GemaCastError.from('No sender connected'));
+  const streamer = state.connectedStreamer;
+  if (!streamer) return err(GemaCastError.from('No streamer connected'));
 
   try {
-    const ip = sender.addr.split(':')[0];
+    const ip = streamer.addr.split(':')[0];
     await tauriBridge.changeAudioSource({
       ip,
       deviceId: state.deviceInfo.deviceId,
@@ -328,9 +376,9 @@ export function killPlayback() {
 
 export function useConnection() {
   return {
-    connectToSender,
+    connectToStreamer,
     disconnect,
-    handleSenderTimeout,
+    handleStreamerTimeout,
     handleForceDisconnect,
     handleLinkLost,
     handleLinkRecovered,
@@ -340,26 +388,26 @@ export function useConnection() {
   };
 }
 
-async function fetchAudioSources(sender: DiscoveredSender) {
+async function fetchAudioSources(streamer: DiscoveredStreamer) {
   try {
-    const ip = sender.addr.split(':')[0];
+    const ip = streamer.addr.split(':')[0];
     const result = await tauriBridge.getAudioSources({ ip });
     store.getState().patch({
       audioSources: result[0],
-      senderCapabilities: result[1],
+      streamerCapabilities: result[1],
     });
   } catch (e) {
     console.warn('Failed to fetch audio sources:', e);
     store.getState().patch({
       audioSources: [{ type: 'desktop' }],
-      senderCapabilities: { supportsProcessCapture: false },
+      streamerCapabilities: { supportsProcessCapture: false },
     });
   }
 }
 
-export async function fetchProcessList(sender: DiscoveredSender) {
+export async function fetchProcessList(streamer: DiscoveredStreamer) {
   try {
-    const ip = sender.addr.split(':')[0];
+    const ip = streamer.addr.split(':')[0];
     const processes = await tauriBridge.getProcessList({ ip });
     store.getState().setProcessList(processes);
   } catch (e) {

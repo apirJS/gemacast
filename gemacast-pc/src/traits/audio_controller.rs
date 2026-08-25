@@ -14,20 +14,22 @@ pub trait AudioController: Send + Sync {
     async fn subscribe(
         &self,
         device_id: DeviceId,
+        generation: u64,
         target_addr: Option<SocketAddr>,
         source: Option<AudioSource>,
         bitrate: Option<i32>,
-    );
+    ) -> Result<(), String>;
 
     /// Stop streaming audio to a device.
-    async fn unsubscribe(&self, device_id: &DeviceId);
+    async fn unsubscribe(&self, device_id: &DeviceId) -> Result<(), String>;
 
     /// Switch the audio source for a device.
-    async fn change_source(&self, device_id: DeviceId, source: AudioSource);
+    async fn change_source(&self, device_id: DeviceId, source: AudioSource) -> Result<(), String>;
 
     /// Change the encoding bitrate for a device.
-    async fn change_bitrate(&self, device_id: DeviceId, bitrate: Option<i32>);
+    async fn change_bitrate(&self, device_id: DeviceId, bitrate: Option<i32>)
+    -> Result<(), String>;
 
     /// Shut down the audio engine entirely.
-    async fn shutdown(&self);
+    async fn shutdown(&self) -> Result<(), String>;
 }

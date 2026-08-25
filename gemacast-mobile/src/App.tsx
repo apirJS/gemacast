@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getDeviceInfo, type DeviceInfoResponse } from 'tauri-plugin-device-info-api';
 import { useAppStore } from './stores/app-store';
+import { useToastStore } from './stores/toast-store';
 import { tauriBridge } from './core/tauri-bridge';
 import { getOrCreateDeviceId } from './core/persistence';
 import { useTauriEvents } from './hooks/use-tauri-events';
@@ -17,7 +18,7 @@ function AppInner() {
     startListening(mode);
 
     // Hardware back button double-press to exit logic
-    window.history.pushState({ root: true }, '', '#root');
+    window.history.pushState(null, '', '#root');
     let lastBackPressed = 0;
 
     const handlePopState = () => {
@@ -29,11 +30,8 @@ function AppInner() {
             .catch(console.warn);
         } else {
           lastBackPressed = now;
-          // useToastStore.getState().show is required, need to import it
-          import('./stores/toast-store').then((m) =>
-            m.useToastStore.getState().show('info', 'Press back again to exit'),
-          );
-          window.history.pushState({ root: true }, '', '#root');
+          useToastStore.getState().show('info', 'Press back again to exit');
+          window.history.pushState(null, '', '#root');
         }
       }
     };
@@ -92,6 +90,13 @@ export function App() {
         }
       } catch (e) {
         console.warn('Failed to probe exclusive mode support:', e);
+      }
+
+      try {
+        const permission = await tauriBridge.getNotificationPermission();
+        useAppStore.getState().setNotificationPermission(permission);
+      } catch (e) {
+        console.warn('Failed to probe notification permission:', e);
       }
 
       const theme = useAppStore.getState().settings.theme;

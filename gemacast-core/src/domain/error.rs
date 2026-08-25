@@ -86,6 +86,9 @@ pub enum AudioError {
         source: opus::Error,
     },
 
+    #[error("invalid audio bitrate {value} bps (expected {min}..={max}, or null for uncompressed)")]
+    InvalidBitrate { value: i32, min: i32, max: i32 },
+
     #[error("Opus {direction} failed")]
     OpusCodecFailed {
         direction: CodecDirection,
@@ -112,6 +115,29 @@ pub enum AudioError {
     #[error("audio resampling failed: {0}")]
     ResampleFailed(String),
 
+    /// A capture backend negotiated a format the pipeline cannot consume.
+    ///
+    /// The pipeline's contract is fixed at 48 kHz stereo interleaved `f32` (see
+    /// [`crate::ports::capture`]). Where a platform can be resampled or downmixed
+    /// into that shape, the adapter does so and this error never appears. It is
+    /// raised only when adaptation is impossible — a planar layout, a non-`f32`
+    /// sample type the decoder does not handle, or a degenerate descriptor such as
+    /// zero channels.
+    #[error(
+        "unsupported capture format: {rate} Hz, {channels} channel(s) — expected 48000 Hz stereo"
+    )]
+    UnsupportedCaptureFormat { rate: u32, channels: usize },
+
+    /// A frame handed to the encoder was not exactly one packet's worth of samples.
+    ///
+    /// 960 interleaved `f32` values is a wire-protocol invariant, not a preference:
+    /// the player decodes an uncompressed payload by dividing its byte count by 4,
+    /// and the jitter buffer's whole geometry assumes one packet is 10 ms. A short
+    /// frame would produce a packet the player silently mis-frames, so this is
+    /// rejected at the seam rather than transmitted.
+    #[error("invalid frame length: {got} samples, expected {expected}")]
+    InvalidFrameLength { got: usize, expected: usize },
+
     #[error("source is not actively subscribed")]
     SourceNotSubscribed,
 
@@ -137,12 +163,11 @@ pub enum AudioError {
     #[error("PipeWire connection failed: {0}")]
     PipeWireConnectionFailed(String),
 
-    // ScreenCaptureKit disabled — untested
-    #[cfg(false)]
+    #[cfg(target_os = "macos")]
     #[error("ScreenCaptureKit error: {0}")]
     ScreenCaptureKitError(String),
 
-    #[cfg(false)]
+    #[cfg(target_os = "macos")]
     #[error("ScreenCaptureKit permission denied — grant Screen Recording in System Settings")]
     ScreenCapturePermissionDenied,
 }
@@ -185,7 +210,7 @@ pub enum NetworkError {
         source: std::io::Error,
     },
 
-    #[error("connection lost or sender stopped transmitting")]
+    #[error("connection lost or streamer stopped transmitting")]
     ConnectionLost,
 
     #[error("no active connection for device {0}")]
@@ -210,8 +235,11 @@ pub enum ControlError {
     #[error("request timed out after {timeout_ms}ms")]
     Timeout { timeout_ms: u64 },
 
-    #[error("sender rejected the request: {reason}")]
+    #[error("streamer rejected the request: {reason}")]
     Rejected { reason: String },
+
+    #[error("streamer rejected the request: {reason} ({code})")]
+    RemoteRejected { code: String, reason: String },
 
     #[error("failed to start control server")]
     ServerStartFailed(#[source] std::io::Error),

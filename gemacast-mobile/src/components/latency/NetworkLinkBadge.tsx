@@ -1,7 +1,7 @@
 import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
 import type { NetworkLink } from '../../core/types';
-import { Usb, Wifi, Globe, Cable, HelpCircle, Smartphone, Monitor } from 'lucide-react';
+import { Usb, Wifi, Globe, Cable, HelpCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 type LinkMeta = {
@@ -29,7 +29,16 @@ function getLinkMeta(link: NetworkLink): LinkMeta {
   }
 }
 
-export function NetworkLinkBadge() {
+type NetworkLinkBadgeProps = {
+  /**
+   * Render a leading `|` rule. Opt-in because the badge is self-hiding — the
+   * caller cannot know whether it will render, so it has to own the separator or
+   * a stray divider is left behind when there is no link to show.
+   */
+  withLeadingSeparator?: boolean;
+};
+
+export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBadgeProps = {}) {
   const linkPair = useAppStore((s) => s.networkLinkPair);
   const status = useAppStore((s) => s.status);
 
@@ -39,30 +48,32 @@ export function NetworkLinkBadge() {
 
   if (!visible) return null;
 
+  const effective = getLinkMeta(linkPair.effective);
+  const EffectiveIcon = effective.icon;
+
+  // Named per side rather than as "effective vs the other one", so the tooltip
+  // stays correct when `effective` is neither side (rule 4, above).
+  const isSymmetric = linkPair.phone === linkPair.pc;
   const phone = getLinkMeta(linkPair.phone);
   const pc = getLinkMeta(linkPair.pc);
-  const PhoneIcon = phone.icon;
-  const PcIcon = pc.icon;
 
   return (
     <div
       id="network-link-badge"
-      className="flex items-center gap-3 text-[10px] uppercase tracking-wider animate-[fade-in_300ms_ease-out]"
+      className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-medium"
+      title={
+        isSymmetric
+          ? `Link: ${effective.label}`
+          : `Phone ${phone.label}, PC ${pc.label} — buffer tuned for ${effective.label}`
+      }
     >
-      <span className={`inline-flex items-center gap-1 ${phone.color}`}>
-        <Smartphone size={10} className="text-muted-foreground/60 shrink-0" />
-        <PhoneIcon size={11} className="shrink-0" />
-        <span className="font-medium">{phone.label}</span>
-      </span>
-
-      <span className="text-muted-foreground/30 text-[8px]">⟷</span>
-
-      {/* PC side */}
-      <span className={`inline-flex items-center gap-1 ${pc.color}`}>
-        <Monitor size={10} className="text-muted-foreground/60 shrink-0" />
-        <PcIcon size={11} className="shrink-0" />
-        <span className="font-medium">{pc.label}</span>
-      </span>
+      {withLeadingSeparator && (
+        <span aria-hidden="true" className="text-muted-foreground/40">
+          |
+        </span>
+      )}
+      <EffectiveIcon size={12} className={`shrink-0 ${effective.color}`} aria-hidden="true" />
+      <span className={`truncate ${effective.color}`}>{effective.label}</span>
     </div>
   );
 }

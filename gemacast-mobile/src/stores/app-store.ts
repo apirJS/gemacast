@@ -5,42 +5,46 @@ import type {
   AudioSource,
   ConnectionHealth,
   DeviceInfo,
-  DiscoveredSender,
-  LatencyStats,
+  DiscoveredStreamer,
+  Metrics,
   NetworkLinkPairInfo,
+  NotificationPermission,
   ProcessInfo,
-  SenderCapabilities,
+  StreamerCapabilities,
 } from '../core/types';
 import { Status, ConnectionMode } from '../core/types';
 import { GemaCastError } from '../core/error';
-import { loadLastSender, loadSettings, saveSettings } from '../core/persistence';
+import { loadLastStreamer, loadSettings, rememberPcName, saveSettings } from '../core/persistence';
 import { useToastStore } from './toast-store';
 
-const EMPTY_LATENCY: LatencyStats = { current: null, avg: null, max: null, min: null };
+const EMPTY_METRICS: Metrics = { bufferMs: null, networkRttMs: null, jitterMs: null };
 
 function createInitialState(deviceInfo: DeviceInfo): AppState {
   return {
     deviceInfo,
     status: Status.Idle,
-    discoveredSenders: [],
-    connectedSender: null,
-    connectingSenderId: null,
-    lastConnectedSender: loadLastSender(),
+    discoveredStreamers: [],
+    connectedStreamer: null,
+    connectingStreamerId: null,
+    lastConnectedStreamer: loadLastStreamer(),
     error: null,
     connectionHealth: 'ok',
     isNetworkAvailable: typeof navigator !== 'undefined' ? navigator.onLine : true,
     isLoading: false,
     isSuspended: false,
     reconnectAttempts: 0,
-    latency: EMPTY_LATENCY,
+    metrics: EMPTY_METRICS,
     settings: loadSettings(),
     availableModes: { wifi: true, usb: false, adb: false },
     audioSources: [],
     currentAudioSource: { type: 'desktop' } as AudioSource,
-    senderCapabilities: null,
+    streamerCapabilities: null,
     processList: [],
     networkLinkPair: null,
     exclusiveSupported: true,
+    // Optimistic, like `exclusiveSupported`: assume nothing is wrong until the
+    // startup probe answers, so the settings notice cannot flash on every launch.
+    notificationPermission: 'notRequired',
   };
 }
 
@@ -52,20 +56,20 @@ type AppActions = {
   setSuspended: (isSuspended: boolean) => void;
   setNetworkAvailable: (available: boolean) => void;
 
-  setDiscoveredSenders: (senders: DiscoveredSender[]) => void;
-  updateDiscoveredSender: (sender: DiscoveredSender) => DiscoveredSender | null;
+  setDiscoveredStreamers: (streamers: DiscoveredStreamer[]) => void;
+  updateDiscoveredStreamer: (streamer: DiscoveredStreamer) => DiscoveredStreamer | null;
 
-  setConnectedSender: (sender: DiscoveredSender | null) => void;
-  setConnectingSenderId: (id: string | null) => void;
-  setLastConnectedSender: (sender: DiscoveredSender | null) => void;
+  setConnectedStreamer: (streamer: DiscoveredStreamer | null) => void;
+  setConnectingStreamerId: (id: string | null) => void;
+  setLastConnectedStreamer: (streamer: DiscoveredStreamer | null) => void;
   setConnectionHealth: (health: ConnectionHealth) => void;
   setReconnectAttempts: (attempts: number) => void;
 
   displayError: (error: string | GemaCastError) => void;
   dismissError: () => void;
 
-  updateLatency: (stats: LatencyStats) => void;
-  resetLatency: () => void;
+  updateMetrics: (patch: Partial<Metrics>) => void;
+  resetMetrics: () => void;
 
   updateSettings: (patch: Partial<AppSettings>) => void;
   setAvailableModes: (modes: { wifi: boolean; usb: boolean; adb: boolean }) => void;
@@ -74,10 +78,11 @@ type AppActions = {
 
   setAudioSources: (sources: AudioSource[]) => void;
   setCurrentAudioSource: (source: AudioSource) => void;
-  setSenderCapabilities: (caps: SenderCapabilities | null) => void;
+  setStreamerCapabilities: (caps: StreamerCapabilities | null) => void;
   setProcessList: (list: ProcessInfo[]) => void;
   setNetworkLinkPair: (pair: NetworkLinkPairInfo | null) => void;
   setExclusiveSupported: (supported: boolean) => void;
+  setNotificationPermission: (permission: NotificationPermission) => void;
 
   patch: (partial: Partial<AppState>) => void;
 };
@@ -100,57 +105,61 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSuspended: (isSuspended) => set({ isSuspended }),
   setNetworkAvailable: (available) => set({ isNetworkAvailable: available }),
 
-  setDiscoveredSenders: (senders) => set({ discoveredSenders: senders }),
+  setDiscoveredStreamers: (streamers) => set({ discoveredStreamers: streamers }),
 
-  updateDiscoveredSender: (sender) => {
+  updateDiscoveredStreamer: (streamer) => {
     const state = get();
-    const list = [...state.discoveredSenders];
-    const index = list.findIndex((s) => s.deviceId === sender.deviceId);
+    const list = [...state.discoveredStreamers];
+    const index = list.findIndex((s) => s.deviceId === streamer.deviceId);
 
-    let connectedSender = state.connectedSender;
+    let connectedStreamer = state.connectedStreamer;
 
-    if (sender.isOffline) {
+    if (streamer.isOffline) {
       if (index >= 0) list.splice(index, 1);
 
-      if (state.connectedSender?.deviceId === sender.deviceId) {
+      if (state.connectedStreamer?.deviceId === streamer.deviceId) {
         set({
-          discoveredSenders: list,
-          connectedSender: null,
+          discoveredStreamers: list,
+          connectedStreamer: null,
           status: Status.Listening,
           connectionHealth: 'ok',
           reconnectAttempts: 0,
-          latency: EMPTY_LATENCY,
+          metrics: EMPTY_METRICS,
         });
         return null;
       }
     } else {
+      // Cache the name while we have it: this packet is the only place a PC's
+      // display name enters the app, and it outlives the discovery list.
+      rememberPcName(streamer.deviceId, streamer.deviceName);
+
       if (index >= 0) {
-        list[index] = sender;
+        list[index] = streamer;
       } else {
-        list.push(sender);
+        list.push(streamer);
       }
-      if (connectedSender?.deviceId === sender.deviceId) {
-        connectedSender = sender;
+      if (connectedStreamer?.deviceId === streamer.deviceId) {
+        connectedStreamer = streamer;
       }
     }
 
-    set({ discoveredSenders: list, connectedSender });
+    set({ discoveredStreamers: list, connectedStreamer });
 
     if (
-      !sender.isOffline &&
+      !streamer.isOffline &&
       state.status === Status.Listening &&
-      state.lastConnectedSender?.deviceId === sender.deviceId &&
+      state.lastConnectedStreamer?.deviceId === streamer.deviceId &&
       !state.isSuspended
     ) {
-      return sender;
+      return streamer;
     }
 
     return null;
   },
 
-  setConnectedSender: (sender) => set({ connectedSender: sender }),
-  setConnectingSenderId: (id) => set({ connectingSenderId: id }),
-  setLastConnectedSender: (sender) => set({ lastConnectedSender: sender }),
+  setConnectedStreamer: (streamer) => set({ connectedStreamer: streamer }),
+  setConnectingStreamerId: (id) => set({ connectingStreamerId: id }),
+  setLastConnectedStreamer: (streamer) => set({ lastConnectedStreamer: streamer }),
   setConnectionHealth: (health) => set({ connectionHealth: health }),
   setReconnectAttempts: (attempts) => set({ reconnectAttempts: attempts }),
 
@@ -171,8 +180,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     useToastStore.getState().clearError();
   },
 
-  updateLatency: (stats) => set({ latency: stats }),
-  resetLatency: () => set({ latency: EMPTY_LATENCY }),
+  updateMetrics: (patch) => set((state) => ({ metrics: { ...state.metrics, ...patch } })),
+  resetMetrics: () => set({ metrics: EMPTY_METRICS }),
 
   updateSettings: (patch) => {
     const current = get().settings;
@@ -183,7 +192,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setAvailableModes: (modes) => {
     const { settings, availableModes: prev } = get();
-    set({ availableModes: modes });
+    // The network monitor calls this every 3s with a fresh object from IPC.
+    // Only publish a new reference when a value actually changed, or every
+    // `availableModes` subscriber (e.g. ModeSelector) re-renders each tick.
+    if (prev.wifi !== modes.wifi || prev.usb !== modes.usb || prev.adb !== modes.adb) {
+      set({ availableModes: modes });
+    }
 
     const modeAvailable = (m: ConnectionMode) =>
       m === ConnectionMode.Wifi ? modes.wifi : m === ConnectionMode.Usb ? modes.usb : modes.adb;
@@ -211,10 +225,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setAudioSources: (sources) => set({ audioSources: sources }),
   setCurrentAudioSource: (source) => set({ currentAudioSource: source }),
-  setSenderCapabilities: (caps) => set({ senderCapabilities: caps }),
+  setStreamerCapabilities: (caps) => set({ streamerCapabilities: caps }),
   setProcessList: (list) => set({ processList: list }),
   setNetworkLinkPair: (pair) => set({ networkLinkPair: pair }),
   setExclusiveSupported: (supported) => set({ exclusiveSupported: supported }),
+  setNotificationPermission: (permission) => set({ notificationPermission: permission }),
 
   patch: (partial) => set(partial),
 }));

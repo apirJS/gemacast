@@ -55,7 +55,7 @@ impl PresenceBroadcaster {
     pub async fn run_broadcast_loop<F, T>(
         mut self,
         mut presence_payload_factory: F,
-        mut known_receiver_addresses: T,
+        mut known_player_addresses: T,
     ) -> Result<(), NetworkError>
     where
         F: FnMut() -> ControlMessage + Send,
@@ -67,7 +67,7 @@ impl PresenceBroadcaster {
                 .into_iter()
                 .map(|ip| SocketAddrV4::new(ip, Ports::DISCOVERY))
                 .collect();
-            let unicast_addrs = known_receiver_addresses();
+            let unicast_addrs = known_player_addresses();
             let broadcast_addr_global =
                 SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), Ports::DISCOVERY);
             let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 124), Ports::DISCOVERY);
@@ -75,12 +75,12 @@ impl PresenceBroadcaster {
             let mut payload = presence_payload_factory();
             let json_bytes = serde_json::to_vec(&payload)?;
 
-            // Adaptive rate: when a receiver is connected, reduce broadcast
+            // Adaptive rate: when a player is connected, reduce broadcast
             // frequency to avoid flooding 2.4 GHz channels with presence
             // packets that compete with audio for airtime.
-            let has_receivers = !unicast_addrs.is_empty();
-            let retry_count = if has_receivers { 1 } else { 3 };
-            let remainder_sleep_ms = if has_receivers { 4900 } else { 950 };
+            let has_players = !unicast_addrs.is_empty();
+            let retry_count = if has_players { 1 } else { 3 };
+            let remainder_sleep_ms = if has_players { 4900 } else { 950 };
 
             for _ in 0..retry_count {
                 for addr in &broadcast_addrs {
@@ -95,7 +95,7 @@ impl PresenceBroadcaster {
                     .await;
                 let _ = self.socket.send_to(&json_bytes, multicast_addr).await;
 
-                if !has_receivers {
+                if !has_players {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
             }

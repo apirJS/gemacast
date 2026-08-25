@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 const DRAWER_ANIMATION_MS = 350;
 
@@ -8,7 +8,11 @@ export function useDrawer(hashId: string) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(null);
 
-  const startClose = useCallback(() => {
+  // Stabilized by the React Compiler; exhaustive-deps (line 51) isn't
+  // compiler-aware and flags this as a changing dep. Re-subscribing the
+  // popstate listener would be harmless regardless (cleanup runs each time).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const startClose = () => {
     if (timer.current) return;
     setClosing(true);
     timer.current = setTimeout(() => {
@@ -17,9 +21,9 @@ export function useDrawer(hashId: string) {
       setClosing(false);
       dialogRef.current?.close();
     }, DRAWER_ANIMATION_MS);
-  }, []);
+  };
 
-  const handleOpen = useCallback(() => {
+  const handleOpen = () => {
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
@@ -30,15 +34,15 @@ export function useDrawer(hashId: string) {
     }
     setOpen(true);
     window.history.pushState({ drawer: hashId }, '', `#${hashId}`);
-  }, [hashId]);
+  };
 
-  const handleClose = useCallback(() => {
+  const handleClose = () => {
     if (window.location.hash === `#${hashId}`) {
       window.history.back();
     } else {
       startClose();
     }
-  }, [hashId, startClose]);
+  };
 
   useEffect(() => {
     const handlePopState = () => {

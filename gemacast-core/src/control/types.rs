@@ -21,6 +21,54 @@ pub struct ConnectReq {
     /// the effective link pair for Auto preset selection.
     #[serde(default)]
     pub network_link: Option<NetworkLink>,
+
+    /// Returned by the streamer while a first LAN connection awaits PC approval.
+    /// The player repeats the same request with this ID until it is approved
+    /// or rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request_id: Option<String>,
+
+    /// Long-term device identity proof used for LAN pairing and trusted
+    /// reconnects. Loopback ADB connections intentionally omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_auth: Option<DeviceAuthRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthRequest {
+    /// Base64-encoded SEC1 uncompressed point for a P-256 public key.
+    pub public_key: String,
+    /// Random player nonce, Base64 encoded, generated once per handshake.
+    pub phone_nonce: String,
+    /// Set after the PC returns a challenge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge_id: Option<String>,
+    /// Base64-encoded ASN.1 DER ECDSA signature over the auth transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// The phone user confirmed the comparison code. `None` means the
+    /// confirmation dialog has not completed yet; `Some(false)` cancels the
+    /// pending pairing on the PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_confirmation: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthChallenge {
+    pub challenge_id: String,
+    /// Random 256-bit challenge, Base64 encoded.
+    pub challenge: String,
+    /// SHA-256 fingerprint of the certificate used by this HTTPS connection.
+    pub pc_certificate_fingerprint: String,
+    /// Six decimal digits independently derived from the signed transcript.
+    pub pairing_code: String,
+    /// True when the PC no longer trusts this phone key and will show a fresh
+    /// local approval prompt. A previously pinned phone must show the code
+    /// again so the two users still have something to compare after a kick.
+    pub requires_approval: bool,
+    pub expires_in_seconds: u64,
 }
 
 fn default_bitrate() -> Option<i32> {
@@ -58,14 +106,14 @@ pub struct ChangeBitrateReq {
 #[serde(rename_all = "camelCase")]
 pub struct SourcesResponse {
     pub sources: Vec<AudioSource>,
-    pub capabilities: crate::domain::types::SenderCapabilities,
+    pub capabilities: crate::domain::types::StreamerCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceResponse {
     pub device_id: DeviceId,
-    pub sender_name: String,
+    pub streamer_name: String,
     pub is_offline: bool,
 
     /// The PC's detected network link type.
@@ -73,25 +121,54 @@ pub struct PresenceResponse {
     #[serde(default)]
     pub pc_network_link: Option<NetworkLink>,
 
-    /// Whether the probing `device_id` is still in the sender's device registry.
+    /// Whether the probing `device_id` is still in the streamer's device registry.
     ///
-    /// `is_offline` is a *global* sender flag, so a successful probe proves only
+    /// `is_offline` is a *global* streamer flag, so a successful probe proves only
     /// that the PC process is up — not that this device's subscription survived.
     /// The two watchdogs make that distinction matter: the phone tears down at
     /// 10 s while the PC evicts at 15-17 s, so there is a window where the PC is
     /// still sending to a device that has already given up, and a resume is
     /// cheaper than a full `/connect`.
     ///
-    /// `None` from a sender predating this field — callers must treat unknown
+    /// `None` from a streamer predating this field — callers must treat unknown
     /// conservatively and do a full reconnect.
     #[serde(default)]
     pub device_registered: Option<bool>,
+
+    /// Rotated bearer token for authenticated control requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+
+    /// Generation assigned to this connection. Delayed cleanup from an older
+    /// generation cannot remove a newer session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<crate::control::auth::SessionGeneration>,
+
+    /// Identifier shown in the PC approval prompt for a first LAN connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request_id: Option<String>,
+
+    /// One-time proof-of-possession challenge for a LAN device identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_auth_challenge: Option<DeviceAuthChallenge>,
+
+    /// SHA-256 fingerprint of the PC's persistent TLS certificate. LAN
+    /// clients compare this with the certificate observed on the connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc_certificate_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessListResponse {
     pub processes: Vec<crate::domain::types::ProcessInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlErrorResponse {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +188,7 @@ pub enum WsCommand {
 mod tests {
     use super::*;
     use crate::domain::types::{
-        AudioSource, ConnectionMode, DeviceId, JitterConfig, SenderCapabilities,
+        AudioSource, ConnectionMode, DeviceId, JitterConfig, StreamerCapabilities,
     };
 
     mod connect_req {
@@ -151,6 +228,8 @@ mod tests {
                     name: "spotify.exe".to_string(),
                 }),
                 network_link: None,
+                pending_request_id: None,
+                device_auth: None,
             };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: ConnectReq = serde_json::from_str(&json).unwrap();
@@ -176,7 +255,7 @@ mod tests {
                         name: "app.exe".to_string(),
                     },
                 ],
-                capabilities: SenderCapabilities {
+                capabilities: StreamerCapabilities {
                     supports_process_capture: true,
                 },
             };

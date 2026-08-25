@@ -50,6 +50,24 @@ else
   echo "FAIL: Application icon not found"; ERRORS=$((ERRORS+1))
 fi
 
+# firewalld service definition
+if [ -f /usr/lib/firewalld/services/gemacast.xml ]; then
+  echo "PASS: firewalld service definition installed"
+else
+  echo "FAIL: firewalld service definition not found"; ERRORS=$((ERRORS+1))
+fi
+
+# Maintainer scripts present in the package (they run during install, so they are
+# not left on disk — inspect the .deb's control archive instead).
+CTRL_FILES=$(dpkg-deb --ctrl-tarfile "$DEB_FILE" | tar -tf - 2>/dev/null || true)
+for script in postinst postrm; do
+  if echo "$CTRL_FILES" | grep -qE "(^|/)${script}\$"; then
+    echo "PASS: DEBIAN/${script} present in package"
+  else
+    echo "FAIL: DEBIAN/${script} missing from package"; ERRORS=$((ERRORS+1))
+  fi
+done
+
 # Smoke test: run with xvfb (provides virtual display for the tray app)
 echo ""
 echo "Smoke test: starting gemacast-pc under xvfb..."
@@ -99,6 +117,12 @@ if [ -f /usr/share/applications/gemacast-pc.desktop ]; then
   echo "FAIL: Desktop entry still exists"; ERRORS=$((ERRORS+1))
 else
   echo "PASS: Desktop entry removed"
+fi
+
+if [ -f /usr/lib/firewalld/services/gemacast.xml ]; then
+  echo "FAIL: firewalld service definition still exists"; ERRORS=$((ERRORS+1))
+else
+  echo "PASS: firewalld service definition removed"
 fi
 
 if [ $ERRORS -gt 0 ]; then

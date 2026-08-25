@@ -12,15 +12,61 @@ const MAX_RETRIES: u32 = 3;
 /// Initial backoff duration in milliseconds (doubles each retry).
 const INITIAL_BACKOFF_MS: u64 = 1_000;
 
+/// Length of a SHA-256 digest written as hex.
+const SHA256_HEX_LEN: usize = 64;
+
 /// A single platform entry in `updater.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlatformEntry {
     pub url: String,
+    /// URL of the detached GPG signature for the artifact, produced by
+    /// `.github/scripts/sign-release-assets.sh`.
+    ///
+    /// **Not verified in-app**, deliberately — there is no pinned public key in
+    /// the binary to verify it against. It is published so a user can check a
+    /// download out of band. In-app integrity rests entirely on [`Self::sha256`]
+    /// plus the fact that the manifest itself is fetched over HTTPS, so do not
+    /// read the presence of this field as an integrity guarantee.
     pub signature: String,
-    /// SHA-256 hex digest of the downloadable artifact (optional for backwards
-    /// compatibility with older manifests that pre-date this field).
+    /// SHA-256 hex digest of the downloadable artifact.
+    ///
+    /// `Option` only so that a legacy or malformed manifest fails with a clear
+    /// message from [`Self::verified_sha256`] instead of an opaque serde error.
+    /// The digest is **required**: an entry without a well-formed one is refused
+    /// rather than installed unverified.
     #[serde(default)]
     pub sha256: Option<String>,
+}
+
+impl PlatformEntry {
+    /// Return the artifact's digest, rejecting any entry that lacks a usable one.
+    ///
+    /// This digest is the only integrity check the app performs on a downloaded
+    /// update, so a missing, empty, or malformed value must fail the update
+    /// instead of skipping verification. Both degenerate shapes are real pipeline
+    /// outcomes rather than hand-edited manifests: entries predating the field
+    /// omit it entirely, and `generate-updater.sh` used to emit `sha256: ""` when
+    /// it could not fetch an artifact.
+    fn verified_sha256(&self, platform_key: &str) -> Result<String, String> {
+        let digest = self.sha256.as_deref().unwrap_or_default().trim();
+
+        if digest.is_empty() {
+            return Err(format!(
+                "Updater manifest entry for '{platform_key}' carries no sha256 digest; \
+                 refusing to install an unverified update"
+            ));
+        }
+
+        if digest.len() != SHA256_HEX_LEN || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "Updater manifest entry for '{platform_key}' has a malformed sha256 digest \
+                 ({} chars, expected {SHA256_HEX_LEN} hex digits); refusing to install",
+                digest.len()
+            ));
+        }
+
+        Ok(digest.to_ascii_lowercase())
+    }
 }
 
 /// The top-level structure of the `updater.json` file produced by the release
@@ -39,9 +85,7 @@ pub struct UpdateManifest {
 pub struct UpdateInfo {
     pub version: String,
     pub download_url: String,
-    /// SHA-256 hex digest of the artifact (if provided by the manifest).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
+    pub sha256: String,
 }
 
 /// The URL that always resolves to the latest release's updater manifest.
@@ -102,15 +146,18 @@ pub async fn check_for_update(
     Ok(Some(UpdateInfo {
         version: manifest.version,
         download_url: entry.url.clone(),
-        sha256: entry.sha256.clone(),
+        sha256: entry.verified_sha256(platform_key)?,
     }))
 }
 
 /// Download an update to the given file path, optionally reporting progress (0-100)
 /// via the provided `progress_tx` channel.
 ///
-/// If `expected_sha256` is provided, the downloaded file is verified against it
-/// and an error is returned on mismatch.
+/// The download is always verified against `expected_sha256`, and a mismatch both
+/// errors and deletes the file. The digest is not optional: taking `&str` rather
+/// than `Option<&str>` is what makes "install without verifying" impossible to
+/// express at this call site, including from the Tauri command surface, where the
+/// digest would otherwise round-trip through JavaScript as a nullable value.
 ///
 /// Retries the initial HTTP request up to [`MAX_RETRIES`] times with exponential
 /// backoff. Once the stream starts, individual chunk errors are not retried (the
@@ -119,7 +166,7 @@ pub async fn download_update(
     url: &str,
     file_path: &Path,
     progress_tx: Option<mpsc::Sender<u8>>,
-    expected_sha256: Option<&str>,
+    expected_sha256: &str,
 ) -> Result<(), String> {
     let response = retry_async(MAX_RETRIES, INITIAL_BACKOFF_MS, || {
         let url = url.to_string();
@@ -175,19 +222,18 @@ pub async fn download_update(
         let _ = tx.try_send(100);
     }
 
-    // Verify SHA-256 checksum if the manifest provided one.
-    if let Some(expected) = expected_sha256 {
-        let actual = hex::encode(hasher.finalize());
-        if !actual.eq_ignore_ascii_case(expected) {
-            // Remove the corrupt file so it doesn't linger.
-            let _ = std::fs::remove_file(file_path);
-            return Err(format!(
-                "SHA-256 mismatch: expected {expected}, got {actual}. \
-                 The download may be corrupted."
-            ));
-        }
-        tracing::info!("SHA-256 checksum verified for {}", file_path.display());
+    // Verify the SHA-256 digest before anyone is handed this path to install.
+    let actual = hex::encode(hasher.finalize());
+    if !actual.eq_ignore_ascii_case(expected_sha256) {
+        // Remove the file so a failed verification cannot leave an installable
+        // artifact behind for a later code path to pick up.
+        let _ = std::fs::remove_file(file_path);
+        return Err(format!(
+            "SHA-256 mismatch: expected {expected_sha256}, got {actual}. \
+             The download may be corrupted or tampered with."
+        ));
     }
+    tracing::info!("SHA-256 checksum verified for {}", file_path.display());
 
     tracing::info!(
         "Downloaded update to {} ({} bytes)",
@@ -270,45 +316,94 @@ where
 mod tests {
     use super::*;
 
+    /// Build a manifest with the given raw `sha256` JSON fragment for the one
+    /// platform entry. Pass an empty string to omit the field entirely.
+    fn manifest_with_sha256(fragment: &str) -> UpdateManifest {
+        let json = format!(
+            r#"{{
+                "version": "0.3.0",
+                "pub_date": "2026-06-28T00:00:00Z",
+                "platforms": {{
+                    "windows-x86_64": {{
+                        "url": "https://example.com/installer.msi",
+                        "signature": "https://example.com/installer.msi.sig"
+                        {fragment}
+                    }}
+                }}
+            }}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    const VALID_DIGEST: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
     #[test]
     fn parse_updater_json() {
-        let json = r#"{
-            "version": "0.2.0",
-            "pub_date": "2026-06-26T00:00:00Z",
-            "platforms": {
-                "windows-x86_64": {
-                    "url": "https://example.com/installer.msi",
-                    "signature": "https://example.com/installer.msi.sig"
-                }
-            }
-        }"#;
-
-        let manifest: UpdateManifest = serde_json::from_str(json).unwrap();
-        assert_eq!(manifest.version, "0.2.0");
+        let manifest = manifest_with_sha256(&format!(r#", "sha256": "{VALID_DIGEST}""#));
+        assert_eq!(manifest.version, "0.3.0");
         assert!(manifest.platforms.contains_key("windows-x86_64"));
-        // sha256 is optional and should default to None
-        assert!(manifest.platforms["windows-x86_64"].sha256.is_none());
+        assert_eq!(
+            manifest.platforms["windows-x86_64"]
+                .verified_sha256("windows-x86_64")
+                .unwrap(),
+            VALID_DIGEST
+        );
     }
 
     #[test]
-    fn parse_updater_json_with_sha256() {
-        let json = r#"{
-            "version": "0.3.0",
-            "pub_date": "2026-06-28T00:00:00Z",
-            "platforms": {
-                "windows-x86_64": {
-                    "url": "https://example.com/installer.msi",
-                    "signature": "https://example.com/installer.msi.sig",
-                    "sha256": "abc123def456"
-                }
-            }
-        }"#;
-
-        let manifest: UpdateManifest = serde_json::from_str(json).unwrap();
+    fn a_digest_is_normalized_to_lowercase_so_it_compares_consistently() {
+        let manifest =
+            manifest_with_sha256(&format!(r#", "sha256": "{}""#, VALID_DIGEST.to_uppercase()));
         assert_eq!(
-            manifest.platforms["windows-x86_64"].sha256.as_deref(),
-            Some("abc123def456")
+            manifest.platforms["windows-x86_64"]
+                .verified_sha256("windows-x86_64")
+                .unwrap(),
+            VALID_DIGEST
         );
+    }
+
+    // The three ways a manifest can fail to carry a usable digest. Each must be
+    // refused: the digest is the only integrity check on a downloaded update, so
+    // skipping verification when it is absent would let a manifest disable the
+    // very check that is meant to constrain it.
+
+    #[test]
+    fn an_entry_without_a_digest_is_refused_rather_than_installed_unverified() {
+        // Legacy manifests predating the sha256 field deserialize to None.
+        let manifest = manifest_with_sha256("");
+        let err = manifest.platforms["windows-x86_64"]
+            .verified_sha256("windows-x86_64")
+            .unwrap_err();
+        assert!(err.contains("no sha256 digest"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn an_empty_digest_is_refused_rather_than_treated_as_a_mismatch() {
+        // generate-updater.sh used to emit "" when it could not fetch an artifact.
+        // Left to reach download_update, this produced a confusing "SHA-256
+        // mismatch: expected , got <hash>" instead of naming the real problem.
+        let manifest = manifest_with_sha256(r#", "sha256": "  ""#);
+        let err = manifest.platforms["windows-x86_64"]
+            .verified_sha256("windows-x86_64")
+            .unwrap_err();
+        assert!(err.contains("no sha256 digest"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn a_malformed_digest_is_refused_before_any_download_starts() {
+        for bad in [
+            "abc123def456",
+            "zz86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a0",
+        ] {
+            let manifest = manifest_with_sha256(&format!(r#", "sha256": "{bad}""#));
+            let err = manifest.platforms["windows-x86_64"]
+                .verified_sha256("windows-x86_64")
+                .unwrap_err();
+            assert!(
+                err.contains("malformed sha256 digest"),
+                "expected {bad:?} to be rejected as malformed, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]

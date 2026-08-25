@@ -3,6 +3,44 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::net::SocketAddr;
 
+pub const MIN_OPUS_BITRATE_BPS: i32 = 6_000;
+pub const MAX_OPUS_BITRATE_BPS: i32 = 512_000;
+
+/// Validated streamer-side encoding mode.
+///
+/// The public control protocol intentionally keeps using `Option<i32>` for
+/// backwards compatibility (`None` means raw PCM). Production code converts to
+/// this type at the boundary so an invalid bitrate can never reach Opus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioBitrate {
+    Uncompressed,
+    Opus(i32),
+}
+
+impl AudioBitrate {
+    pub fn from_wire(value: Option<i32>) -> Result<Self, crate::domain::error::GemaCastError> {
+        match value {
+            None => Ok(Self::Uncompressed),
+            Some(bps) if (MIN_OPUS_BITRATE_BPS..=MAX_OPUS_BITRATE_BPS).contains(&bps) => {
+                Ok(Self::Opus(bps))
+            }
+            Some(bps) => Err(crate::domain::error::AudioError::InvalidBitrate {
+                value: bps,
+                min: MIN_OPUS_BITRATE_BPS,
+                max: MAX_OPUS_BITRATE_BPS,
+            }
+            .into()),
+        }
+    }
+
+    pub fn to_wire(self) -> Option<i32> {
+        match self {
+            Self::Uncompressed => None,
+            Self::Opus(bps) => Some(bps),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DeviceId(pub String);
@@ -71,7 +109,7 @@ pub enum AudioSource {
     },
 }
 
-/// A running process discovered on the PC sender, suitable for per-process audio capture.
+/// A running process discovered on the PC streamer, suitable for per-process audio capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessInfo {
@@ -82,7 +120,7 @@ pub struct ProcessInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SenderCapabilities {
+pub struct StreamerCapabilities {
     pub supports_process_capture: bool,
 }
 
@@ -100,15 +138,15 @@ pub struct DiscoveredDevice {
 
 impl DiscoveredDevice {
     pub fn from_presence(
-        sender_id: DeviceId,
-        sender_name: String,
+        streamer_id: DeviceId,
+        streamer_name: String,
         is_offline: bool,
         addr: std::net::SocketAddr,
         transport: Option<TransportType>,
     ) -> Self {
         Self {
-            device_id: sender_id,
-            device_name: sender_name,
+            device_id: streamer_id,
+            device_name: streamer_name,
             last_seen: std::time::Instant::now(),
             addr,
             is_offline,

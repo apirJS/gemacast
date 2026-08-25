@@ -28,8 +28,13 @@ export function validateJitterConfig(config: JitterConfig): ValidationResult {
 
   // Custom presets are always static — validate the buffer depth.
   if (config.staticTargetMs != null) {
-    if (!isValidNumber(config.staticTargetMs) || config.staticTargetMs < 0) {
-      errors.push({ field: 'staticTargetMs', message: 'Must be ≥ 0' });
+    if (
+      !isValidNumber(config.staticTargetMs) ||
+      !Number.isInteger(config.staticTargetMs) ||
+      config.staticTargetMs < 0 ||
+      config.staticTargetMs > 5000
+    ) {
+      errors.push({ field: 'staticTargetMs', message: 'Must be a whole number from 0 to 5000' });
     }
   } else {
     // staticTargetMs is required for custom presets

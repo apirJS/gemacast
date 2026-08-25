@@ -27,5 +27,5 @@ pub use crate::audio;
 pub use crate::jitter;
 
 /// Audio frame encoding (pure function, no I/O).
-/// Re-exports from `src/stream/sender/encode`.
-pub use crate::stream::sender::encode as encoding;
+/// Re-exports from `src/stream/streamer/encode`.
+pub use crate::stream::streamer::encode as encoding;

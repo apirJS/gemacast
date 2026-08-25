@@ -1,12 +1,13 @@
 //! Periodically evicts devices that stop sending probe heartbeats.
 //!
-//! Devices connected over WiFi must send periodic probes to stay registered.
-//! ADB (loopback) devices are exempt because their connection is managed
-//! by the USB/ADB port-forwarding watchdog in `gemacast-core`.
+//! Every connected device must send periodic probes to stay registered. This
+//! includes ADB/loopback players so a failed WebSocket or audio socket cannot
+//! leave a permanent registry entry behind.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use gemacast_core::control::SessionAuthorizer;
 use tokio::task::JoinSet;
 
 use crate::traits::{AudioController, DeviceRegistry, TrayNotifier};
@@ -28,13 +29,15 @@ pub async fn evict_stale_devices(
     registry: &dyn DeviceRegistry,
     tray: &dyn TrayNotifier,
     audio: &dyn AudioController,
+    authorizer: &SessionAuthorizer,
     timeout: Duration,
 ) {
     let stale = registry.evict_stale(timeout);
     for (device_id, addr) in stale {
         tracing::warn!("Evicting stale device: {:?} at {}", device_id, addr);
         tray.notify_device_lost(device_id.clone(), addr);
-        audio.unsubscribe(&device_id).await;
+        let _ = audio.unsubscribe(&device_id).await;
+        authorizer.revoke(&device_id, None);
     }
 }
 
@@ -44,6 +47,7 @@ pub fn spawn_device_watchdog(
     registry: Arc<dyn DeviceRegistry>,
     tray: Arc<dyn TrayNotifier>,
     audio: Arc<dyn AudioController>,
+    authorizer: SessionAuthorizer,
 ) {
     set.spawn(async move {
         let mut interval = tokio::time::interval(CHECK_INTERVAL);
@@ -53,6 +57,7 @@ pub fn spawn_device_watchdog(
                 registry.as_ref(),
                 tray.as_ref(),
                 audio.as_ref(),
+                &authorizer,
                 STALE_TIMEOUT,
             )
             .await;
@@ -81,7 +86,14 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        evict_stale_devices(&registry, &tray, &audio, Duration::from_secs(10)).await;
+        evict_stale_devices(
+            &registry,
+            &tray,
+            &audio,
+            &SessionAuthorizer::default(),
+            Duration::from_secs(10),
+        )
+        .await;
 
         let tray_calls = tray.take_calls();
         assert_eq!(tray_calls.len(), 1);
@@ -107,7 +119,14 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        evict_stale_devices(&registry, &tray, &audio, Duration::from_secs(10)).await;
+        evict_stale_devices(
+            &registry,
+            &tray,
+            &audio,
+            &SessionAuthorizer::default(),
+            Duration::from_secs(10),
+        )
+        .await;
 
         assert!(tray.take_calls().is_empty());
         assert!(audio.take_calls().is_empty());
@@ -115,7 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_not_evict_stale_loopback_device() {
+    async fn should_evict_stale_loopback_device() {
         let registry = MockDeviceRegistry::new();
         registry.add_device_with_last_seen(
             "adb-dev",
@@ -126,10 +145,17 @@ mod tests {
         let tray = MockTrayNotifier::new();
         let audio = MockAudioController::new();
 
-        evict_stale_devices(&registry, &tray, &audio, Duration::from_secs(10)).await;
+        evict_stale_devices(
+            &registry,
+            &tray,
+            &audio,
+            &SessionAuthorizer::default(),
+            Duration::from_secs(10),
+        )
+        .await;
 
-        assert!(tray.take_calls().is_empty());
-        assert!(audio.take_calls().is_empty());
-        assert!(registry.contains("adb-dev"));
+        assert_eq!(tray.take_calls().len(), 1);
+        assert_eq!(audio.take_calls().len(), 1);
+        assert!(!registry.contains("adb-dev"));
     }
 }

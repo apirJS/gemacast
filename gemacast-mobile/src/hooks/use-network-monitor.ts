@@ -5,7 +5,7 @@ import { disconnect, killPlayback } from './use-connection';
 import { startListening, stopListening } from './use-discovery';
 import { tauriBridge } from '../core/tauri-bridge';
 import { ConnectionMode, Status } from '../core/types';
-import { saveLastSender } from '../core/persistence';
+import { saveLastStreamer } from '../core/persistence';
 
 export function useNetworkMonitor() {
   const networkIdRef = useRef('');
@@ -42,14 +42,14 @@ export function useNetworkMonitor() {
           }
 
           killPlayback();
-          saveLastSender(null);
+          saveLastStreamer(null);
 
           store.getState().dismissError();
           store.getState().patch({
             deviceInfo: { ...currentState.deviceInfo, ip: localIp },
-            discoveredSenders: [],
-            connectedSender: null,
-            lastConnectedSender: null,
+            discoveredStreamers: [],
+            connectedStreamer: null,
+            lastConnectedStreamer: null,
             status: Status.Listening,
           });
 
@@ -64,14 +64,18 @@ export function useNetworkMonitor() {
         if (
           currentMode === ConnectionMode.Usb &&
           !modes.usb &&
-          (currentState.status === Status.Playing || currentState.status === Status.Paused)
+          (currentState.status === Status.Connected ||
+            currentState.status === Status.Playing ||
+            currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
         } else if (
           currentMode === ConnectionMode.Wifi &&
           !modes.wifi &&
-          (currentState.status === Status.Playing || currentState.status === Status.Paused)
+          (currentState.status === Status.Connected ||
+            currentState.status === Status.Playing ||
+            currentState.status === Status.Paused)
         ) {
           disconnect(true);
           killPlayback();
@@ -100,30 +104,58 @@ export function useNetworkMonitor() {
       store.getState().patch({
         isNetworkAvailable: false,
         connectionHealth: 'lost',
-        discoveredSenders: [],
+        discoveredStreamers: [],
       });
       useToastStore.getState().show('warning', 'Network offline');
 
       if (
-        state.connectedSender ||
+        state.connectedStreamer ||
         state.status === Status.Playing ||
         state.status === Status.Paused
       ) {
         store.getState().patch({
           status: Status.Listening,
-          connectedSender: null,
-          lastConnectedSender: null,
+          connectedStreamer: null,
+          lastConnectedStreamer: null,
         });
-        store.getState().resetLatency();
+        store.getState().resetMetrics();
         killPlayback();
-        saveLastSender(null);
+        saveLastStreamer(null);
       }
     };
 
     checkNetwork();
-    const interval = setInterval(checkNetwork, 3000);
+
+    // Poll only while the app is visible. Android throttles WebView timers with
+    // the screen off anyway, and a live session is kept alive independently by the
+    // Rust probe loop — so pausing here removes wasted wakeups with no loss of
+    // liveness. On becoming visible we refresh immediately rather than waiting for
+    // the next tick.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      interval ??= setInterval(checkNetwork, 3000);
+    };
+    const stopPolling = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkNetwork();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    if (document.visibilityState === 'visible') {
+      startPolling();
+    }
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const nav = navigator as any;
@@ -133,9 +165,10 @@ export function useNetworkMonitor() {
     }
 
     return () => {
-      clearInterval(interval);
+      stopPolling();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisibility);
       if (connection) {
         connection.removeEventListener('change', checkNetwork);
       }
@@ -164,7 +197,7 @@ export function useNetworkMonitor() {
 
           useAppStore.getState().dismissError();
           useAppStore.getState().patch({
-            discoveredSenders: [],
+            discoveredStreamers: [],
             status: Status.Listening,
           });
 

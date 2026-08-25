@@ -3,6 +3,7 @@
 //! Runs the `tao` event loop on the main thread, processing [`TrayEvent`]s
 //! from background tasks and [`MenuEvent`]s from user clicks on the system tray.
 
+use crate::dialog as rfd;
 use crate::events::{AppCommand, TrayEvent};
 use crate::tray::TrayManager;
 use std::path::PathBuf;
@@ -174,6 +175,51 @@ fn handle_tray_event(
     pending_installer: &mut Option<PathBuf>,
 ) {
     match event {
+        TrayEvent::ConnectionApproval {
+            request_id,
+            name,
+            addr,
+            key_fingerprint,
+            pairing_code,
+            replaces_existing_identity,
+            response_tx,
+        } => {
+            let title = if replaces_existing_identity {
+                "Gemacast Device Identity Changed"
+            } else {
+                "Gemacast Connection Request"
+            };
+            let identity_warning = if replaces_existing_identity {
+                "\n\nThe saved key for this device changed, usually after reinstalling or resetting the phone. Approving will replace the old key."
+            } else {
+                ""
+            };
+            let description = format!(
+                "Allow {name} ({}) to receive and control this PC's audio?{identity_warning}\n\nConfirm that the phone shows this same code:\n\n{pairing_code}\n\nDevice key: {}\nRequest: {request_id}",
+                addr.ip(),
+                &key_fingerprint[..key_fingerprint.len().min(16)]
+            );
+            let proxy = proxy.clone();
+            std::thread::spawn(move || {
+                let approved = rfd::MessageDialog::new()
+                    .set_title(title)
+                    .set_description(description)
+                    .set_level(rfd::MessageLevel::Info)
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show()
+                    == rfd::MessageDialogResult::Yes;
+                let _ = proxy.send_event(TrayEvent::ConnectionApprovalResult {
+                    response_tx,
+                    approved,
+                });
+            });
+        }
+        TrayEvent::ConnectionApprovalResult {
+            response_tx,
+            approved,
+        } => {
+            let _ = response_tx.send(approved);
+        }
         TrayEvent::UpdateReady {
             version,
             installer_path,
@@ -258,9 +304,6 @@ fn handle_menu_event(
                 .show();
 
             if confirmed == rfd::MessageDialogResult::Ok {
-                // Kill ADB before launching installer so the MSI can
-                // replace adb.exe without a "Files in Use" conflict.
-                kill_adb_sync();
                 match crate::updater::install_update(installer_path) {
                     Ok(must_exit_now) => {
                         if must_exit_now {
@@ -358,33 +401,6 @@ fn handle_menu_event(
 
     // --- Quit ---
     if *menu_event == tray.quit_menu_item.id() {
-        kill_adb_sync();
         let _ = command_tx.try_send(AppCommand::ExitApp);
-    }
-}
-
-/// Synchronously kill the bundled ADB server and any lingering `adb.exe`
-/// processes. Called before launching the MSI installer and on quit so
-/// that the installer can replace `adb.exe` without a "Files in Use" error.
-fn kill_adb_sync() {
-    let adb_path = crate::background::local_adb_path();
-    let _ = std::process::Command::new(&adb_path)
-        .args(["kill-server"])
-        .output();
-
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("taskkill");
-        cmd.args(["/F", "/IM", "adb.exe"]);
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        let _ = cmd.output();
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = std::process::Command::new("pkill");
-        cmd.args(["-9", "adb"]);
-        let _ = cmd.output();
     }
 }

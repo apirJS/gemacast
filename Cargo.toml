@@ -3,11 +3,12 @@ resolver = "2"
 members = ["gemacast-core", "gemacast-pc", "gemacast-mobile/src-tauri"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.0.0"
 edition = "2024"
 authors = ["Echa Apriliyanto <echa.apriliyanto.dev@gmail.com>"]
+license = "GPL-3.0-or-later"
 homepage = "https://github.com/apirJS/gemacast"
-description = "Low-latency real-time audio streaming from PC to Android over a local network."
+description = "Low-latency real-time audio streaming from PC to Android over a local network and ADB."
 repository = "https://github.com/apirJS/gemacast"
 keywords = ["audio", "streaming"]
 categories = ["multimedia"]
@@ -17,13 +18,14 @@ categories = ["multimedia"]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = "symbols"
+strip = "debuginfo"
 
-# The profile that 'dist' will build with
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.dist]
 inherits = "release"
 lto = "thin"
 
 [patch.crates-io]
 audiopus_sys = { path = "vendor/audiopus_sys" }
- 

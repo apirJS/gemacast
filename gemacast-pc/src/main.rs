@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-//! GemaCast PC Sender — streams desktop audio to mobile devices.
+//! GemaCast PC Streamer — streams desktop audio to mobile devices.
 //!
 //! This binary runs as a system tray application. The main thread owns the
 //! tray event loop ([`app`]), while a background thread runs all async tasks
@@ -22,32 +22,29 @@ mod autostart;
 mod background;
 mod config;
 mod crash_log;
+mod device_auth;
+mod dialog;
 mod events;
+mod firewall;
 mod logging;
+mod pc_identity;
 mod state;
 pub mod tasks;
 pub mod traits;
 mod tray;
+mod trusted_devices;
 mod updater;
+
+use crate::dialog as rfd;
 
 #[cfg(test)]
 pub mod testing;
 
 fn main() {
-    // Install the crash-log panic hook as early as possible so even
-    // initialization panics are captured to disk.
     crash_log::install_panic_hook();
-
-    // Attach to a parent console (Windows GUI-subsystem) + install an
-    // EnvFilter-backed subscriber that honors RUST_LOG (default: info).
     logging::init();
 
-    // Purge old crash logs (best-effort, never fails).
-    crash_log::cleanup_old_crash_logs();
-
     // Enforce single instance via file lock.
-    // If another gemacast-pc process already holds the lock, show a
-    // user-friendly dialog and exit immediately — before any ports are bound.
     let lock_dir = std::env::temp_dir().join("gemacast");
     let _ = std::fs::create_dir_all(&lock_dir);
     let lock_path = lock_dir.join("gemacast-pc.lock");

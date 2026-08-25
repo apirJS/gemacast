@@ -14,12 +14,14 @@ impl TauriFrontendNotifier {
 }
 
 impl FrontendNotifier for TauriFrontendNotifier {
-    fn emit_sender_discovered(&self, device: DiscoveredDevice) {
-        let _ = self.app_handle.emit("sender-discovered", device);
+    fn emit_streamer_discovered(&self, device: DiscoveredDevice) {
+        let _ = self.app_handle.emit("streamer-discovered", device);
     }
 
-    fn emit_sender_timeout(&self, sender_id: &DeviceId) {
-        let _ = self.app_handle.emit("sender-timeout", sender_id.0.clone());
+    fn emit_streamer_timeout(&self, streamer_id: &DeviceId) {
+        let _ = self
+            .app_handle
+            .emit("streamer-timeout", streamer_id.0.clone());
     }
 
     fn emit_force_disconnect(&self) {
@@ -45,24 +47,34 @@ impl FrontendNotifier for TauriFrontendNotifier {
         let _ = self.app_handle.emit("link-recovery-gave-up", ());
     }
 
-    fn emit_sender_connected(&self, ip: String) {
-        let _ = self.app_handle.emit("sender-connected", ip);
+    fn emit_streamer_connected(&self, ip: String) {
+        let _ = self.app_handle.emit("streamer-connected", ip);
     }
 
-    fn emit_audio_telemetry(&self, latency: f32, is_active: bool) {
+    fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32) {
         #[derive(serde::Serialize, Clone)]
         #[serde(rename_all = "camelCase")]
         struct AudioTelemetry {
             latency: f32,
             is_active: bool,
+            jitter: f32,
         }
-        let _ = self
-            .app_handle
-            .emit("audio-telemetry", AudioTelemetry { latency, is_active });
+        let _ = self.app_handle.emit(
+            "audio-telemetry",
+            AudioTelemetry {
+                latency,
+                is_active,
+                jitter: jitter_ms,
+            },
+        );
     }
 
     fn emit_playback_error(&self, error: String) {
         let _ = self.app_handle.emit("playback-error", error);
+    }
+
+    fn emit_network_rtt(&self, rtt_ms: f32) {
+        let _ = self.app_handle.emit("network-rtt", rtt_ms);
     }
 
     fn emit_ws_disconnect(&self) {

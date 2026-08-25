@@ -1,15 +1,15 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
-import { connectToSender, disconnect } from './use-connection';
+import { connectToStreamer } from './use-connection';
 import { Ports } from '../core/constants';
 
 /**
  * Hook that encapsulates the "connect by IP address" business logic:
  * - IP validation
  * - Reachability probe
- * - Manual sender creation
+ * - Manual streamer creation
  * - Connect/disconnect orchestration
  * - Discovery list mutation
  *
@@ -19,16 +19,24 @@ export function useManualConnect() {
   const [ip, setIp] = useState('');
   const [isProbing, setIsProbing] = useState(false);
   const isLoading = useAppStore((s) => s.isLoading);
-  const connectingSenderId = useAppStore((s) => s.connectingSenderId);
+  const connectingStreamerId = useAppStore((s) => s.connectingStreamerId);
 
-  const isManualConnecting = isProbing || (isLoading && connectingSenderId?.startsWith('manual-'));
+  const isManualConnecting =
+    isProbing || (isLoading && connectingStreamerId?.startsWith('manual-'));
 
-  const handleConnect = useCallback(async () => {
+  const handleConnect = async () => {
     const trimmed = ip.trim();
     if (!trimmed) return;
 
-    const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
-    if (!ipRegex.test(trimmed)) {
+    const octets = trimmed.split('.');
+    const validIpv4 =
+      octets.length === 4 &&
+      octets.every((octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+    const first = Number(octets[0]);
+    const last = Number(octets[3]);
+    const forbidden =
+      first === 0 || first === 127 || first >= 224 || (first === 255 && last === 255);
+    if (!validIpv4 || forbidden) {
       useToastStore.getState().show('warning', 'Invalid IP address');
       return;
     }
@@ -37,40 +45,44 @@ export function useManualConnect() {
     useAppStore.getState().patch({ isLoading: true });
 
     try {
-      await tauriBridge.getAudioSources({ ip: trimmed });
+      await tauriBridge.probeStreamer({
+        ip: trimmed,
+        deviceId: useAppStore.getState().deviceInfo.deviceId,
+      });
     } catch {
       useToastStore.getState().show('warning', 'This IP is unreachable');
       useAppStore.getState().patch({ isLoading: false });
-      setIsProbing(false);
       return;
+    } finally {
+      setIsProbing(false);
     }
-    setIsProbing(false);
 
-    const manualSender = {
+    const manualStreamer = {
       deviceId: `manual-${trimmed}`,
       deviceName: `Manual: ${trimmed}`,
       addr: `${trimmed}:${Ports.DISCOVERY}`,
       isOffline: false,
     };
 
-    const connectedSender = useAppStore.getState().connectedSender;
-    if (connectedSender) {
-      await disconnect();
-    }
-
-    const result = await connectToSender(manualSender);
+    const previousStreamer = useAppStore.getState().connectedStreamer;
+    const result = await connectToStreamer(manualStreamer);
     if (result.ok) {
       const state = useAppStore.getState();
-      const existsIndex = state.discoveredSenders.findIndex(
-        (s) => s.deviceId === manualSender.deviceId,
+      const existsIndex = state.discoveredStreamers.findIndex(
+        (s) => s.deviceId === manualStreamer.deviceId,
       );
-      const newList = [...state.discoveredSenders];
+      const newList = [...state.discoveredStreamers];
       if (existsIndex >= 0) newList.splice(existsIndex, 1);
-      newList.unshift(manualSender);
-      useAppStore.getState().setDiscoveredSenders(newList);
+      newList.unshift(manualStreamer);
+      useAppStore.getState().setDiscoveredStreamers(newList);
       setIp('');
+    } else if (previousStreamer) {
+      const restored = await connectToStreamer(previousStreamer);
+      if (!restored.ok) {
+        useToastStore.getState().show('warning', 'Could not restore the previous stream');
+      }
     }
-  }, [ip]);
+  };
 
   return {
     ip,

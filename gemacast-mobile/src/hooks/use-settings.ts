@@ -1,75 +1,84 @@
-import { useCallback } from 'react';
 import { useAppStore } from '../stores/app-store';
 import { tauriBridge, resolveBitrate } from '../core/tauri-bridge';
 import { getPresetConfig } from '../core/presets';
 import { Status, type AppSettings } from '../core/types';
+import { useToastStore } from '../stores/toast-store';
 
 export function useSettings() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
-  const update = useCallback(
-    (patch: Partial<AppSettings>) => {
+  const update = (patch: Partial<AppSettings>): Promise<boolean> => {
+    const state = useAppStore.getState();
+    const nextSettings = { ...state.settings, ...patch };
+    const connectedStreamer =
+      (state.status === Status.Connected ||
+        state.status === Status.Playing ||
+        state.status === Status.Paused) &&
+      state.connectedStreamer
+        ? state.connectedStreamer
+        : null;
+
+    const needsRemoteApply = Boolean(
+      connectedStreamer &&
+      (patch.bufferPreset !== undefined ||
+        patch.customJitterConfig !== undefined ||
+        patch.bitratePreset !== undefined ||
+        patch.customBitrateKbps !== undefined ||
+        patch.exclusiveMode !== undefined ||
+        patch.gainDb !== undefined),
+    );
+
+    // No stream is active, so there is nothing to acknowledge. Keep this
+    // synchronous for ordinary settings/preset editing and persist directly.
+    if (!needsRemoteApply) {
       updateSettings(patch);
+      return Promise.resolve(true);
+    }
 
-      // If buffer settings changed, notify the backend live
-      if (patch.bufferPreset !== undefined || patch.customJitterConfig !== undefined) {
-        const nextSettings = { ...useAppStore.getState().settings, ...patch };
-        const activeConfig = getPresetConfig(
-          nextSettings.bufferPreset,
-          nextSettings.customJitterConfig,
-        );
-        tauriBridge.updateJitterConfig({ jitterConfig: activeConfig }).catch((e) => {
-          console.warn('Failed to update live jitter config', e);
-        });
-      }
+    return (async () => {
+      try {
+        // Apply live settings first. Persistence follows only after the backend
+        // acknowledges the operation, so a failed change leaves the previous
+        // known-good setting intact.
+        if (patch.bufferPreset !== undefined || patch.customJitterConfig !== undefined) {
+          const activeConfig = getPresetConfig(
+            nextSettings.bufferPreset,
+            nextSettings.customJitterConfig,
+          );
+          await tauriBridge.updateJitterConfig({ jitterConfig: activeConfig });
+        }
 
-      // If bitrate settings changed, notify the backend live
-      if (patch.bitratePreset !== undefined || patch.customBitrateKbps !== undefined) {
-        const state = useAppStore.getState();
-        const nextSettings = { ...state.settings, ...patch };
         if (
-          (state.status === Status.Connected ||
-            state.status === Status.Playing ||
-            state.status === Status.Paused) &&
-          state.connectedSender
+          (patch.bitratePreset !== undefined || patch.customBitrateKbps !== undefined) &&
+          connectedStreamer
         ) {
-          const ip = state.connectedSender.addr.split(':')[0];
+          const ip = connectedStreamer.addr.split(':')[0];
           const deviceId = state.deviceInfo.deviceId;
           const bitrate = resolveBitrate(
             nextSettings.bitratePreset,
             nextSettings.customBitrateKbps,
           );
-          tauriBridge.changeAudioBitrate({ ip, deviceId, bitrate }).catch((e) => {
-            console.warn('Failed to change audio bitrate', e);
-          });
+          await tauriBridge.changeAudioBitrate({ ip, deviceId, bitrate });
         }
-      }
 
-      // If exclusive mode changed while connected, restart the audio session
-      if (patch.exclusiveMode !== undefined) {
-        const state = useAppStore.getState();
-        if (
-          (state.status === Status.Connected ||
-            state.status === Status.Playing ||
-            state.status === Status.Paused) &&
-          state.connectedSender
-        ) {
-          tauriBridge.restartSession({ exclusiveMode: patch.exclusiveMode }).catch((e) => {
-            console.warn('Failed to restart session after exclusive mode change', e);
-          });
+        if (patch.exclusiveMode !== undefined && connectedStreamer) {
+          await tauriBridge.restartSession({ exclusiveMode: patch.exclusiveMode });
         }
-      }
 
-      // If gain changed, apply it live to the audio pipeline
-      if (patch.gainDb !== undefined) {
-        tauriBridge.setAudioGain({ gainDb: patch.gainDb }).catch((e) => {
-          console.warn('Failed to update audio gain', e);
-        });
+        if (patch.gainDb !== undefined) {
+          await tauriBridge.setAudioGain({ gainDb: patch.gainDb });
+        }
+
+        updateSettings(patch);
+        return true;
+      } catch (error) {
+        console.warn('Failed to apply settings', error);
+        useToastStore.getState().show('warning', 'Setting was not applied');
+        return false;
       }
-    },
-    [updateSettings],
-  );
+    })();
+  };
 
   return { settings, update };
 }

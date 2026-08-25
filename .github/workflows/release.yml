@@ -27,7 +27,12 @@ on:
 # Initialize the placeholder here so IDE knows it exists
 # Value will filled later
 env:
-  MSI_PATH: "" 
+  MSI_PATH: ""
+  # Fingerprint of the release signing key, published at keys.openpgp.org (where
+  # the fingerprint *is* the lookup key, so it cannot be substituted). Defined at
+  # workflow level because two jobs need the same literal: `sign-release` pins the
+  # imported secret against it, and `announce` prints it in the release notes.
+  SIGNING_KEY_FINGERPRINT: 39CC5E917268B9C8BCDF8808CD07F0895F742E6F
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════
@@ -533,9 +538,15 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "BUILD_TOOLS_VERSION=34.0.0" >> $GITHUB_ENV
 
+      - name: Resolve pinned Rust version
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/version=\1/p' rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
       - name: Setup Rust Mobile Targets
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.version }}
           targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
 
       - name: Cache Rust
@@ -897,6 +908,19 @@ jobs:
           fi
           echo "GPG key imported successfully ($KEY_COUNT secret key(s))"
 
+          # pubkey.asc is exported from GPG_PRIVATE_KEY below, so without this pin
+          # rotating that secret would publish a matching pubkey for the new key
+          # and every verifier would accept it — precisely the substitution a
+          # published fingerprint exists to detect.
+          if ! gpg --list-secret-keys --with-colons \
+            | awk -F: '$1 == "fpr" { print $10 }' \
+            | grep -qx "$SIGNING_KEY_FINGERPRINT"; then
+            echo "::error::imported key does not match SIGNING_KEY_FINGERPRINT ($SIGNING_KEY_FINGERPRINT)"
+            gpg --list-secret-keys --keyid-format LONG
+            exit 1
+          fi
+          echo "Signing key matches the published fingerprint"
+
       - name: Download all release assets
         run: |
           mkdir -p assets
@@ -907,8 +931,17 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: bash .github/scripts/sign-release-assets.sh
 
-      - name: Upload signatures
-        run: gh release upload "$TAG" assets/*.sig --clobber --repo ${{ github.repository }}
+      - name: Export public key
+        run: |
+          gpg --armor --export "$SIGNING_KEY_FINGERPRINT" > assets/pubkey.asc
+          # `gpg --export` with a pattern that matches nothing exits 0 and writes
+          # an empty file, so assert the armor is actually present rather than
+          # shipping a zero-byte key.
+          grep -q 'BEGIN PGP PUBLIC KEY BLOCK' assets/pubkey.asc
+          echo "Exported public key ($(wc -c < assets/pubkey.asc) bytes)"
+
+      - name: Upload signatures and public key
+        run: gh release upload "$TAG" assets/*.sig assets/pubkey.asc --clobber --repo ${{ github.repository }}
 
   # ── Generate updater.json ────────────────────────────────────────────────
   generate-updater:

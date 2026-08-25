@@ -1,0 +1,41 @@
+# Local Linux test environment — see docker/README.md
+#
+#   docker compose -f docker/compose.yaml run --rm test           # all CI gates
+#   docker compose -f docker/compose.yaml run --rm test ci.sh -k frontend
+#   docker compose -f docker/compose.yaml run --rm test cargo test --workspace
+#
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.linux-test
+    image: gemacast-linux-test
+    # Mount the repo read-write (cargo needs to update Cargo.lock) but keep all
+    # build output in the named volumes below, out of the host tree.
+    volumes:
+      - ..:/work
+      - cargo-target:/target
+      - cargo-registry:/usr/local/cargo/registry
+      # Shadow the host's node_modules. A Windows `bun install` writes .exe
+      # shims (esbuild.exe, eslint.exe) that cannot execute in the container, so
+      # without this volume every frontend gate dies on a bad interpreter — and
+      # conversely, a Linux install here would corrupt the host's tree. Same
+      # reasoning as /target above, different toolchain.
+      - node-modules:/work/gemacast-mobile/node_modules
+    working_dir: /work
+    # PipeWire wants a decent shm segment; the 64 MB default is tight enough to
+    # cause spurious buffer-allocation failures under load.
+    shm_size: "512m"
+    # No privileged mode, no host devices, no host audio: the daemons run
+    # entirely inside the container and the suite is hardware-free.
+    environment:
+      # Match CI's quiet daemon logging; raise to 4 to debug PipeWire itself.
+      PIPEWIRE_LOG_LEVEL: "2"
+      # Uncomment to filter, e.g. RUST_LOG=debug for the app's own tracing.
+      # RUST_LOG: "info"
+    init: true
+
+volumes:
+  cargo-target:
+  cargo-registry:
+  node-modules:

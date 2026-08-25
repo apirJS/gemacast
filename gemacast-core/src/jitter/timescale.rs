@@ -18,6 +18,27 @@ use std::collections::VecDeque;
 /// Total interleaved capacity of the accelerate staging window.
 const ACCEL_WINDOW_SAMPLES: usize = ACCEL_WINDOW_FRAMES * OPUS_FRAME_SAMPLES;
 
+/// Where [`TimeScaler::find_pitch_period`] is allowed to look, in sample-frames.
+///
+/// Named rather than three positional `usize` parameters because all three are
+/// the same type and any permutation of them compiles. The canonical values are
+/// `n = 480`, `anchor = 352`, `search_limit = 224`; transposing `anchor` and
+/// `search_limit` would move the correlation reference off the window tail and
+/// still run, so the mistake would be a wrong pitch period rather than a build
+/// failure. Constructed with field-init shorthand at every call site, so a
+/// transposition shows up as a field/local name mismatch.
+#[derive(Clone, Copy)]
+struct SearchGeometry {
+    /// Sample-frames staged in the window.
+    n: usize,
+    /// Start of the `OLA_LEN`-tap correlation reference, `n - OLA_LEN`. The
+    /// reference is glued to the window tail; the pitch period is
+    /// `anchor - best_d`.
+    anchor: usize,
+    /// Largest lag the search may consider, `SEARCH_RANGE.min(anchor - OLA_LEN)`.
+    search_limit: usize,
+}
+
 /// WSOLA time-scaler: crossfade ramp + scratch buffer for allocation-free splicing.
 pub(super) struct TimeScaler {
     /// Pre-computed crossfade ramp for OLA splicing (OLA_LEN entries).
@@ -60,15 +81,14 @@ pub(super) struct TimeScaler {
     /// Entry-seam quality of the most recent [`Self::conceal_frame`], in the same
     /// units and taken the same way as [`Self::last_splice_step`].
     ///
-    /// **Deliberately a separate field, against the letter of the v21 plan.**
-    /// `splice_step` has one property that makes it useful: a monotonic ramp
-    /// cannot read above 1.00, so any reading above it means the fade shape
-    /// regressed — v19 measured max exactly 1.000 across 204 splices and CLAUDE.md
-    /// pins that as the standing tripwire. A concealment entry is a hard join, not
-    /// a crossfade, so it legitimately reads *above* 1.00 whenever the material's
-    /// level moved across the repeated period. Folding the two together would
-    /// leave a future capture unable to tell a real fade regression from
-    /// concealment landing on a decaying note.
+    /// **Deliberately a separate field.** `splice_step` has one property that
+    /// makes it useful: a monotonic ramp cannot read above 1.00, so any reading
+    /// above it means the fade shape regressed — the field measured max exactly
+    /// 1.000 across 204 splices, and that is the standing tripwire. A concealment
+    /// entry is a hard join, not a crossfade, so it legitimately reads *above*
+    /// 1.00 whenever the material's level moved across the repeated period.
+    /// Folding the two together would leave a future capture unable to tell a real
+    /// fade regression from concealment landing on a decaying note.
     last_conceal_step: std::cell::Cell<Option<f32>>,
     /// Count of successful accelerate/expand splices. Test-only observability: lets
     /// artifact-regression tests assert that loud audio is NOT time-stretched.
@@ -242,7 +262,7 @@ impl TimeScaler {
         self.op_count.set(self.op_count.get() + 1);
     }
 
-    /// v18: the fade must be a *monotonic* ramp, not a full Hann bell.
+    /// The fade must be a *monotonic* ramp, not a full Hann bell.
     ///
     /// The old `0.5 * (1 - cos(2π i / N))` runs 0 → 1 → 0, so the crossfade
     /// ended back on the **outgoing** signal while the tail continues from the
@@ -279,15 +299,19 @@ impl TimeScaler {
     /// splice deletes samples, and samples already handed to `fill_output` are
     /// gone. So the window is rebuilt per drain decision from the freshly decoded
     /// frame, then optionally extended with the next contiguous frame.
-    pub fn window_begin(&mut self, pcm: &[f32]) {
+    ///
+    /// Returns the [`StagedWindow`] handle the rest of the protocol hangs off;
+    /// the steps below are private so that handle is the only way in.
+    pub fn window_begin(&mut self, pcm: &[f32]) -> StagedWindow<'_> {
         let len = pcm.len().min(ACCEL_WINDOW_SAMPLES);
         self.accel_window[..len].copy_from_slice(&pcm[..len]);
         self.accel_len = len;
+        StagedWindow { ts: self }
     }
 
     /// Append one more decoded frame to the accelerate window.
     /// Returns `false` (and stages nothing) if the frame would not fit.
-    pub fn window_extend(&mut self, pcm: &[f32]) -> bool {
+    fn window_extend(&mut self, pcm: &[f32]) -> bool {
         if self.accel_len + pcm.len() > ACCEL_WINDOW_SAMPLES {
             return false;
         }
@@ -297,18 +321,18 @@ impl TimeScaler {
     }
 
     /// How many more interleaved samples the accelerate window can still take.
-    pub fn window_headroom(&self) -> usize {
+    fn window_headroom(&self) -> usize {
         ACCEL_WINDOW_SAMPLES - self.accel_len
     }
 
     /// The staged accelerate window.
-    pub fn window(&self) -> &[f32] {
+    fn window(&self) -> &[f32] {
         &self.accel_window[..self.accel_len]
     }
 
     /// Emit the staged window verbatim — the no-splice path. Every staged frame
     /// must reach the playback buffer exactly once, whether or not the splice fired.
-    pub fn emit_window(&self, playback_buf: &mut VecDeque<f32>) {
+    fn emit_window(&self, playback_buf: &mut VecDeque<f32>) {
         playback_buf.extend(&self.accel_window[..self.accel_len]);
     }
 
@@ -446,7 +470,7 @@ impl TimeScaler {
 
     /// Conceal one frame by repeating the last played frame's pitch period, for
     /// the case the codec cannot: no decoder state to extrapolate from
-    /// (`FrameDecoder::plc_is_valid`).
+    /// (`FrameDecoder::plc_ready`).
     ///
     /// This is NetEQ's `Expand` reaching a place ours could not. `expand_conceal`
     /// needs a *current* frame to splice into, so it is structurally unreachable at
@@ -469,7 +493,7 @@ impl TimeScaler {
     /// n        = 480 sample-frames                       the last played frame
     /// anchor   = n - OLA_LEN                    = 352
     /// limit    = min(SEARCH_RANGE 720, anchor - OLA_LEN 224) = 224
-    /// search   find_pitch_period(480, 352, 224) -> best_d in [0, 224)
+    /// search   find_pitch_period { n: 480, anchor: 352, search_limit: 224 }
     /// P        = anchor - best_d in [129, 352]           = 136-375 Hz
     /// ```
     ///
@@ -511,7 +535,11 @@ impl TimeScaler {
         // either (`expand.cc:438-455` scores candidates and always emits one),
         // because what a concealed frame displaces is raw underrun. A badly
         // correlated period beats the hole it replaces.
-        let (best_d, _) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, _) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
         let period = anchor - best_d;
         // Guaranteed by the search bound (`best_d <= 223` at `n = 480`); kept so
         // the invariant is local to the splice rather than inferred from a caller.
@@ -555,7 +583,7 @@ impl TimeScaler {
     /// Stretches audio by exactly one pitch period (up to 15ms) to slow down
     /// playback and prevent an imminent starvation gap.
     ///
-    /// v16 repair — two coupled changes to the search geometry:
+    /// Two coupled changes to the search geometry:
     ///
     /// * **The window is `[history | pcm]`**, porting upstream's input contract:
     ///   `PreemptiveExpand::Process` takes `[old_data | new_data]` and requires
@@ -569,16 +597,16 @@ impl TimeScaler {
     ///   at 48 kHz (`time_stretch.cc:74-75`), plus the `pitch_period < OLA_LEN`
     ///   post-guard `accelerate` already carried.
     ///
-    /// v15's one-frame window with a 16-sample-frame floor admitted periods in
+    /// The old one-frame window with a 16-sample-frame floor admitted periods in
     /// `[17, 352]`, and on lowpass-dominant material the NCC argmax landed on the
-    /// shortest admissible lag: **50.0% of measured v15 expand splices had a
-    /// period shorter than the crossfade (min 19 sample-frames = 0.4 ms), against
+    /// shortest admissible lag: **50.0% of measured expand splices had a period
+    /// shorter than the crossfade (min 19 sample-frames = 0.4 ms), against
     /// `accelerate`'s 0.0%** over the same captures. Such a splice overlaps its
     /// own reference region — a comb filter with its first notch at `48000/(2P)`,
     /// plus a replayed tail. That is the "buzzing / fast-clicks on buffer
-    /// increase" in the v15 field reports. The same geometry refused 75-93% of
-    /// attempts, which is why growth authority measured 0.059-0.434 frames/s
-    /// against the 2.6-5.6 frames/s the target step-ups needed.
+    /// increase" the field reported. The same geometry refused 75-93% of attempts,
+    /// which is why growth authority measured 0.059-0.434 frames/s against the
+    /// 2.6-5.6 frames/s the target step-ups needed.
     ///
     /// Returns `Some(n)` where `n` is the number of **interleaved samples
     /// inserted** (so the orchestrator can immediately correct the filtered
@@ -601,25 +629,25 @@ impl TimeScaler {
     /// Identical geometry to [`Self::expand`] and **no correlation gate**, because
     /// upstream's `Expand` has none: it picks the best of `kNumCorrelationCandidates`
     /// lags by a correlation/distortion *ratio*
-    /// ([expand.cc:438-455](TEMP/webrtc-neteq/expand.cc#L438)) and always emits.
+    /// ([expand.cc:438-455](expand.cc#L438)) and always emits.
     /// There is no path through `expand.cc` that returns "no output" — concealment
     /// is not allowed to decline, because the alternative is not "slightly worse
     /// audio", it is a hole.
     ///
-    /// **These are two upstream operations, and v19 had them merged into one.**
+    /// **These are two upstream operations, and they were once merged into one.**
     /// `PreemptiveExpand` grows the buffer while a packet is still in hand and can
     /// afford to wait for a good seam; `Expand` runs at `occupied <= 1` where
-    /// waiting means silence. v19 applied `PreemptiveExpand`'s 0.9 NCC gate to
-    /// both, so the underrun tier refused **83 of 90 attempts (7.8% accept) on
-    /// 2.4GHz uncompressed** and emitted 830ms of raw underrun instead of spliced
+    /// waiting means silence. Applying `PreemptiveExpand`'s 0.9 NCC gate to both
+    /// made the underrun tier refuse **83 of 90 attempts (7.8% accept) on 2.4GHz
+    /// uncompressed** and emit 830ms of raw underrun instead of spliced
     /// concealment. Those declines predict the damage they cause: windows carrying
     /// a `declined_underrun_ncc` average **2.556 starvations against 0.216**
-    /// without (Spearman r=+0.323, p=5.6e-14, n=514). See `TEMP/v20-plan.md`.
+    /// without (Spearman r=+0.323, p=5.6e-14, n=514).
     ///
     /// The trade this takes is deliberate and bounded: a poorly correlated splice
     /// at `occupied <= 1` replaces **raw underrun**, which is the worst artifact
     /// this module can produce. `splice_step` is the tripwire — it must stay
-    /// <= 1.00, as it measured in v19 (n=204, max 1.000).
+    /// <= 1.00, as it measured in the field (n=204, max 1.000).
     ///
     /// Every other refusal path is geometric and unreachable at our frame size:
     /// `n >= 272` sample-frames is satisfied by a bare 480-frame packet with no
@@ -685,7 +713,11 @@ impl TimeScaler {
 
         // Find the pitch period via the same coarse-then-refine search `accelerate`
         // uses. Sharing the search guarantees identical geometry and identical cost.
-        let (best_d, best_corr) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, best_corr) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
 
         // Upstream's disjunction, not a bare threshold (`accelerate.cc:58`):
         //
@@ -698,19 +730,19 @@ impl TimeScaler {
         // to zero and admits the splice anyway. There is nothing periodic in a
         // near-silent window for a seam to warble against.
         //
-        // We ported the threshold in v14 and left the escape behind. The v14
-        // field census priced that omission: `declined_ncc` took **78% of drain
-        // attempts on ADB (405 against 90 splices) and 79% on 5 GHz (740
-        // against 94)**, on the very links whose targets are small enough that
-        // the drain is the only thing standing between a correct target and a
-        // buffer parked above it.
+        // We ported the threshold and left the escape behind. A field census
+        // priced that omission: `declined_ncc` took **78% of drain attempts on
+        // ADB (405 against 90 splices) and 79% on 5 GHz (740 against 94)**, on
+        // the very links whose targets are small enough that the drain is the
+        // only thing standing between a correct target and a buffer parked
+        // above it.
         //
         // `SILENCE_RMS` is the activity threshold, reused rather than tuned
         // fresh: it is the same -46dBFS line the silence fast-forward shed and
         // free silence growth already treat as "nothing here to damage", and
-        // both have been live for four rounds without an artifact report. This
-        // adds a third behavioural path at the same threshold, which is why the
-        // constant's doc comment now names all three.
+        // both have been live without an artifact report. This adds a third
+        // behavioural path at the same threshold, which is why the constant's
+        // doc comment names all three.
         //
         // `conceal` skips the gate entirely — see [`Self::expand_conceal`]. That
         // is not a relaxation of this threshold, it is the recognition that the
@@ -718,12 +750,13 @@ impl TimeScaler {
         // carries no correlation gate at all.
         //
         // The threshold is [`EXPAND_NCC_THRESHOLD`] = 0.85, not `accelerate`'s
-        // 0.9. Upstream runs both at 0.9; we split them because v19 measured
-        // growth admitted on **11.9% / 7.1%** of attempts while the buffer sat
-        // below its own low limit, with every other decline reason reading zero.
-        // The constant carries the acceptance and artifact curves that priced the
-        // move, including the −5.72dB knee at 0.80 that bounds it from below. The
-        // drain keeps 0.9 because it is not the actuator that was starving.
+        // 0.9. Upstream runs both at 0.9; we split them because the field
+        // measured growth admitted on **11.9% / 7.1%** of attempts while the
+        // buffer sat below its own low limit, with every other decline reason
+        // reading zero. The constant carries the acceptance and artifact curves
+        // that priced the move, including the −5.72dB knee at 0.80 that bounds
+        // it from below. The drain keeps 0.9 because it is not the actuator that
+        // was starving.
         let active_speech = rms >= SILENCE_RMS;
         if !conceal && best_corr < EXPAND_NCC_THRESHOLD && active_speech {
             return None;
@@ -787,10 +820,12 @@ impl TimeScaler {
     /// (so the orchestrator can immediately correct the filtered buffer level, as
     /// NetEQ's `BufferLevelFilter` does), or `None` if no stretch was performed.
     ///
-    /// The window must have been staged with `window_begin` (+ `window_extend`),
-    /// and on every outcome the caller must emit the window exactly once — via
-    /// `window()` for the returned splice, or `emit_window` when `None`.
-    pub fn accelerate(
+    /// The window must have been staged: the caller holds a [`StagedWindow`], and
+    /// outside this file that handle is the only way to reach this method. The
+    /// other half of the contract is not expressible in the type — on every
+    /// outcome the window must be emitted exactly once, by the splice this
+    /// returns, or by `emit_window` when it returns `None`.
+    fn accelerate(
         &mut self,
         fast_mode: bool,
         rms: f32,
@@ -820,7 +855,11 @@ impl TimeScaler {
         }
 
         // --- Step 1: Autocorrelation to find the pitch period ---
-        let (best_d, best_corr) = self.find_pitch_period(n, anchor, search_limit);
+        let (best_d, best_corr) = self.find_pitch_period(SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        });
 
         // NetEQ thresholds: 0.9 for normal, 0.5 for fast mode (kFastAccelerate).
         // Fast mode activates when buffer is extremely overfull — trades
@@ -897,10 +936,15 @@ impl TimeScaler {
     /// NetEQ correlates in the same 4kHz domain (`time_stretch.cc:56-60`).
     ///
     /// Shared rather than duplicated so the two operations cannot drift apart
-    /// again: v15 shipped `expand` with a 16-sample-frame lag floor over a
-    /// single frame against `accelerate`'s `OLA_LEN` floor over two, and the
-    /// field measured a 50% degenerate-splice rate on one and 0% on the other.
-    fn find_pitch_period(&mut self, n: usize, anchor: usize, search_limit: usize) -> (usize, f32) {
+    /// again: `expand` once ran a 16-sample-frame lag floor over a single frame
+    /// against `accelerate`'s `OLA_LEN` floor over two, and the field measured a
+    /// 50% degenerate-splice rate on one and 0% on the other.
+    fn find_pitch_period(&mut self, geom: SearchGeometry) -> (usize, f32) {
+        let SearchGeometry {
+            n,
+            anchor,
+            search_limit,
+        } = geom;
         let ch = OPUS_CHANNELS as usize;
         {
             let (mono, win) = (&mut self.mono_buf, &self.accel_window);
@@ -1011,6 +1055,58 @@ impl TimeScaler {
     }
 }
 
+/// A staged accelerate window, borrowed from the [`TimeScaler`] that owns it.
+///
+/// `window_headroom`, `window`, `emit_window` and `accelerate` all read
+/// `accel_len`, and `accel_window` is shared scratch — `expand_inner` and the
+/// concealment path stage into it too. So calling one of those four before a
+/// window is staged does not fail; it reads whatever the last operation left
+/// there, which nothing in the types said. They are module-private now and
+/// reachable from outside this file only through the value
+/// [`TimeScaler::window_begin`] returns, which turns the ordering into a
+/// compile-time fact at every call site.
+///
+/// Borrowed rather than consuming: the manager owns its `TimeScaler` for the
+/// process lifetime and calls in from the audio callback, so a handle that moved
+/// the value could not be threaded through `fill_output(&mut self, …)`. A `&mut`
+/// reborrow costs nothing at runtime — no move, no allocation, no dispatch.
+pub(super) struct StagedWindow<'a> {
+    ts: &'a mut TimeScaler,
+}
+
+impl StagedWindow<'_> {
+    /// Append one more decoded frame to the window.
+    /// Returns `false` (and stages nothing) if the frame would not fit.
+    pub fn extend(&mut self, pcm: &[f32]) -> bool {
+        self.ts.window_extend(pcm)
+    }
+
+    /// How many more interleaved samples the window can still take.
+    pub fn headroom(&self) -> usize {
+        self.ts.window_headroom()
+    }
+
+    /// The staged samples.
+    pub fn staged(&self) -> &[f32] {
+        self.ts.window()
+    }
+
+    /// Emit the staged window verbatim — the no-splice path.
+    pub fn emit(&self, playback_buf: &mut VecDeque<f32>) {
+        self.ts.emit_window(playback_buf)
+    }
+
+    /// Attempt the drain splice; see `TimeScaler::accelerate` for the contract.
+    pub fn accelerate(
+        &mut self,
+        fast_mode: bool,
+        rms: f32,
+        playback_buf: &mut VecDeque<f32>,
+    ) -> Option<usize> {
+        self.ts.accelerate(fast_mode, rms, playback_buf)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,9 +1140,9 @@ mod tests {
     mod window_geometry {
         use super::*;
 
-        /// The defect this round exists to fix. A 100 Hz tone has a 480-sample
-        /// period — exactly one frame, and therefore unreachable by the old
-        /// single-frame search, whose splicesable periods stopped at 352 samples
+        /// The defect two-frame staging exists to fix. A 100 Hz tone has a
+        /// 480-sample period — exactly one frame, and therefore unreachable by the
+        /// old single-frame search, whose splicesable periods stopped at 352 samples
         /// (136 Hz). Two staged frames must find and remove it.
         #[test]
         fn should_find_a_pitch_period_below_136hz_that_the_single_frame_search_missed() {
@@ -1055,18 +1151,18 @@ mod tests {
 
             // One frame only: the old geometry. 480 samples cannot hold a 480-sample
             // period plus an OLA_LEN crossfade, so this must decline.
-            ts.window_begin(&tone_frame(100.0, 0.05, 0));
+            let mut w = ts.window_begin(&tone_frame(100.0, 0.05, 0));
             assert!(
-                ts.accelerate(false, 0.05, &mut out).is_none(),
+                w.accelerate(false, 0.05, &mut out).is_none(),
                 "a single 480-frame window cannot splice a 480-sample period — \
                  if this passes, the test no longer proves the widening did anything",
             );
 
             // Two frames: the period is now splicesable.
             out.clear();
-            ts.window_begin(&tone_frame(100.0, 0.05, 0));
-            assert!(ts.window_extend(&tone_frame(100.0, 0.05, 1)));
-            let removed = ts
+            let mut w = ts.window_begin(&tone_frame(100.0, 0.05, 0));
+            assert!(w.extend(&tone_frame(100.0, 0.05, 1)));
+            let removed = w
                 .accelerate(false, 0.05, &mut out)
                 .expect("100 Hz must be reachable in a two-frame window");
 
@@ -1091,8 +1187,8 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             // 200 Hz = 240 sample-frames, splicesable inside one frame (as before).
-            ts.window_begin(&tone_frame(200.0, 0.05, 0));
-            let removed = ts
+            let mut w = ts.window_begin(&tone_frame(200.0, 0.05, 0));
+            let removed = w
                 .accelerate(false, 0.05, &mut out)
                 .expect("200 Hz was reachable before this change and must stay so");
             assert_eq!(out.len(), OPUS_FRAME_SAMPLES - removed);
@@ -1107,22 +1203,22 @@ mod tests {
             // escape is standing and the correlation gate is fully bypassed.
             // These windows must therefore be refused on geometry alone — which
             // is the bounds check this test exists to guard.
-            ts.window_begin(&[]);
-            assert!(ts.accelerate(false, 0.0, &mut out).is_none());
+            let mut w = ts.window_begin(&[]);
+            assert!(w.accelerate(false, 0.0, &mut out).is_none());
             assert!(out.is_empty());
 
-            ts.window_begin(&vec![0.0f32; 64]);
-            assert!(ts.accelerate(true, 0.0, &mut out).is_none());
+            let mut w = ts.window_begin(&vec![0.0f32; 64]);
+            assert!(w.accelerate(true, 0.0, &mut out).is_none());
         }
 
-        /// v16: no `expand` splice may ever have a period shorter than the
-        /// crossfade window. Such a splice overlaps its own reference region — a
-        /// comb filter with its first notch at `48000/(2P)`, plus a replayed
-        /// tail. v15's one-frame window with a 16-sample-frame lag floor admitted
+        /// No `expand` splice may ever have a period shorter than the crossfade
+        /// window. Such a splice overlaps its own reference region — a comb
+        /// filter with its first notch at `48000/(2P)`, plus a replayed tail. The
+        /// old one-frame window with a 16-sample-frame lag floor admitted
         /// [17, 352] and **50.0% of measured splices landed shorter than
         /// `OLA_LEN`** (min 19 sample-frames = 0.4 ms), against `accelerate`'s
         /// 0.0% over the same captures. That is the "buzzing / fast-clicks on
-        /// buffer increase" in the v15 field reports.
+        /// buffer increase" the field reported.
         ///
         /// The floor does not *refuse* high-frequency content — a 2500 Hz tone is
         /// periodic at every multiple of its 19.2-sample period, so the search
@@ -1162,10 +1258,10 @@ mod tests {
             );
         }
 
-        /// v16: the widened window must let `expand` reach the same low-frequency
+        /// The widened window must let `expand` reach the same low-frequency
         /// periods `accelerate` already could. A 100 Hz tone is exactly one frame
-        /// (480 samples), unreachable by v15's single-frame `expand` but reachable
-        /// by its two-frame `accelerate`.
+        /// (480 samples), unreachable by a single-frame `expand` but reachable by
+        /// its two-frame `accelerate`.
         #[test]
         fn expand_should_reach_the_same_period_range_as_accelerate() {
             let mut ts = TimeScaler::new();
@@ -1191,9 +1287,9 @@ mod tests {
             );
         }
 
-        /// v16: when expand and accelerate share the same search (`find_pitch_period`),
+        /// When expand and accelerate share the same search (`find_pitch_period`),
         /// they must agree on the pitch period for the same audio. Guards against
-        /// the geometry drift that produced v15's 50% vs 0% degenerate rates.
+        /// the geometry drift that produced the 50% vs 0% degenerate rates.
         #[test]
         fn expand_and_accelerate_should_agree_on_the_pitch_period_for_the_same_window() {
             for hz in [100.0f32, 150.0, 220.0] {
@@ -1208,9 +1304,9 @@ mod tests {
 
                 let mut ts_acc = TimeScaler::new();
                 let mut out_acc = VecDeque::new();
-                ts_acc.window_begin(&a);
-                assert!(ts_acc.window_extend(&b));
-                let removed = ts_acc
+                let mut w = ts_acc.window_begin(&a);
+                assert!(w.extend(&b));
+                let removed = w
                     .accelerate(false, 0.05, &mut out_acc)
                     .unwrap_or_else(|| panic!("{hz} Hz must be reachable by accelerate"));
 
@@ -1234,9 +1330,9 @@ mod tests {
             let mut out = VecDeque::new();
             let f0 = tone_frame(440.0, 0.2, 0);
             let f1 = tone_frame(440.0, 0.2, 1);
-            ts.window_begin(&f0);
-            assert!(ts.window_extend(&f1));
-            ts.emit_window(&mut out);
+            let mut w = ts.window_begin(&f0);
+            assert!(w.extend(&f1));
+            w.emit(&mut out);
 
             let expected: Vec<f32> = f0.iter().chain(f1.iter()).copied().collect();
             assert_eq!(out.len(), expected.len());
@@ -1247,11 +1343,11 @@ mod tests {
         #[test]
         fn window_extend_should_refuse_a_frame_that_does_not_fit() {
             let mut ts = TimeScaler::new();
-            ts.window_begin(&tone_frame(440.0, 0.2, 0));
-            assert!(ts.window_extend(&tone_frame(440.0, 0.2, 1)));
-            assert_eq!(ts.window_headroom(), 0);
-            assert!(!ts.window_extend(&tone_frame(440.0, 0.2, 2)));
-            assert_eq!(ts.window().len(), ACCEL_WINDOW_SAMPLES);
+            let mut w = ts.window_begin(&tone_frame(440.0, 0.2, 0));
+            assert!(w.extend(&tone_frame(440.0, 0.2, 1)));
+            assert_eq!(w.headroom(), 0);
+            assert!(!w.extend(&tone_frame(440.0, 0.2, 2)));
+            assert_eq!(w.staged().len(), ACCEL_WINDOW_SAMPLES);
         }
     }
 
@@ -1296,12 +1392,12 @@ mod tests {
             pcm
         }
 
-        /// The v18 defect, pinned at the source. `make_hann_window` built a full
+        /// The defect, pinned at the source. `make_hann_window` built a full
         /// Hann *bell* (0 -> 1 -> 0), so `fade_in` came back to ~0 by the end of
         /// the fade: the crossfade closed on the **outgoing** signal while the
         /// verbatim tail resumed from the **incoming** one. A monotonic ramp is
         /// the only shape that hands over, and it is upstream's own — a linear
-        /// alpha ramp in `TEMP/webrtc-neteq/audio_vector.cc:247-267`.
+        /// alpha ramp in `audio_vector.cc:247-267`.
         #[test]
         fn the_crossfade_ramp_must_run_monotonically_from_zero_to_one() {
             let ts = TimeScaler::new();
@@ -1379,9 +1475,9 @@ mod tests {
             let win = tapered_tone_window();
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
-            ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
-            assert!(ts.window_extend(&win[OPUS_FRAME_SAMPLES..]));
-            let removed = ts
+            let mut w = ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
+            assert!(w.extend(&win[OPUS_FRAME_SAMPLES..]));
+            let removed = w
                 .accelerate(false, 0.09, &mut out)
                 .expect("a gain-tapered 200 Hz tone must still clear the NCC gate");
             assert_eq!(out.len(), ACCEL_WINDOW_SAMPLES - removed);
@@ -1437,7 +1533,7 @@ mod tests {
                 );
             }
         }
-        /// v19's splice-quality metric, pinned to the property that makes a field
+        /// The splice-quality metric, pinned to the property that makes a field
         /// reading interpretable. `splice_step` is the terminal seam of a splice,
         /// in units of the incoming signal's own steepest step across the
         /// crossfade region:
@@ -1453,7 +1549,7 @@ mod tests {
         /// which cannot exceed 1.00: the numerator is one of the steps the
         /// denominator maximises over. **1.00 is the ceiling a correct fade
         /// cannot cross**, so a field reading above it says the handover is
-        /// leaving a step the signal never had. The v17 bell closed at ~0.0006
+        /// leaving a step the signal never had. The old bell closed at ~0.0006
         /// instead, which puts nearly the whole gap between the two sections into
         /// the residual and drives the ratio well past 1.
         ///
@@ -1485,10 +1581,10 @@ mod tests {
                 // the fade's last sample *is* the window's last output sample.
                 let mut ts = TimeScaler::new();
                 let mut out = VecDeque::new();
-                ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
-                assert!(ts.window_extend(&win[OPUS_FRAME_SAMPLES..]));
+                let mut w = ts.window_begin(&win[..OPUS_FRAME_SAMPLES]);
+                assert!(w.extend(&win[OPUS_FRAME_SAMPLES..]));
                 assert!(
-                    ts.accelerate(false, 0.09, &mut out).is_some(),
+                    w.accelerate(false, 0.09, &mut out).is_some(),
                     "{label}: a gain-tapered 200 Hz tone must clear the NCC gate — \
                      a declined splice reports nothing and proves nothing",
                 );
@@ -1554,7 +1650,7 @@ mod tests {
     mod correlation_gate {
         use super::*;
 
-        /// The NCC veto is the whole artifact defence and this round does not
+        /// The NCC veto is the whole artifact defence and the wider search does not
         /// touch it: widening *where* a good splice may be found grants no
         /// permission to make a worse one. Loud broadband noise has no pitch
         /// period and must still be refused.
@@ -1563,15 +1659,15 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
             // RMS 0.3 is 35x `SILENCE_RMS`, so `active_speech` is true and the
             // NCC gate is live. Passing a quiet RMS here would satisfy the
             // assertion's *letter* via the VAD escape while proving nothing
             // about the veto — see `an_active_speech_window_should_still_require_correlation`
             // for the escape's own coverage.
             assert!(
-                ts.accelerate(false, 0.3, &mut out).is_none(),
+                w.accelerate(false, 0.3, &mut out).is_none(),
                 "white noise cleared the 0.9 NCC gate — the artifact veto is broken",
             );
             assert_eq!(ts.op_count(), 0);
@@ -1594,12 +1690,12 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
 
-            let removed = ts.accelerate(false, SILENCE_RMS * 0.5, &mut out).expect(
+            let removed = w.accelerate(false, SILENCE_RMS * 0.5, &mut out).expect(
                 "a below-SILENCE_RMS window must bypass the NCC gate — this is \
-                     the 78-79% of ADB/5GHz drain attempts v14 refused",
+                     the 78-79% of ADB/5GHz drain attempts the gate refused",
             );
             assert!(removed > 0, "an admitted splice must remove real audio");
             assert_eq!(
@@ -1622,11 +1718,11 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0x1234_5678u32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
 
             assert!(
-                ts.accelerate(false, SILENCE_RMS, &mut out).is_none(),
+                w.accelerate(false, SILENCE_RMS, &mut out).is_none(),
                 "RMS exactly at SILENCE_RMS is active speech — the NCC gate must \
                  still veto unsplicable content",
             );
@@ -1643,18 +1739,18 @@ mod tests {
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
             let mut seed = 0xfeed_beefu32;
-            ts.window_begin(&noise_frame(0.3, &mut seed));
-            assert!(ts.window_extend(&noise_frame(0.3, &mut seed)));
+            let mut w = ts.window_begin(&noise_frame(0.3, &mut seed));
+            assert!(w.extend(&noise_frame(0.3, &mut seed)));
             assert!(
-                ts.accelerate(true, SILENCE_RMS * 0.5, &mut out).is_some(),
+                w.accelerate(true, SILENCE_RMS * 0.5, &mut out).is_some(),
                 "the VAD escape must be tier-independent",
             );
         }
 
         /// `expand` carries the same gate and must carry the same escape. It is
-        /// the growth actuator commit 2 just put on the `filtered < low_limit`
-        /// path, so a gate that vetoes 79% of attempts there costs occupancy on
-        /// the links that are already below target.
+        /// the growth actuator on the `filtered < low_limit` path, so a gate that
+        /// vetoes 79% of attempts there costs occupancy on the links that are
+        /// already below target.
         #[test]
         fn expand_should_take_the_same_escape_as_accelerate() {
             let mut seed = 0x0bad_c0deu32;
@@ -1714,7 +1810,7 @@ mod tests {
             );
         }
 
-        /// The other half of commit 1's split: relaxing concealment must not
+        /// The other half of the split: relaxing concealment must not
         /// relax growth. `expand` is still `PreemptiveExpand` and still applies
         /// [`EXPAND_NCC_THRESHOLD`], because a packet is in hand and the splice
         /// can afford to wait for a good seam.
@@ -1769,9 +1865,9 @@ mod tests {
             ts.remember(&a);
             let inserted = ts.expand(&b, 0.3, &mut out).expect(
                 "growth must admit a splice the drain still refuses — this is the \
-                 11.9% / 7.1% field acceptance (2.4GHz uncompressed / 128kbps) that \
-                 v20 raises, worth +5777 / +4738ms against 6607 / 1138ms of \
-                 measured starvation",
+                 11.9% / 7.1% field acceptance (2.4GHz uncompressed / 128kbps) the \
+                 lower threshold raises, worth +5777 / +4738ms against 6607 / \
+                 1138ms of measured starvation",
             );
             assert!(inserted > 0, "an admitted splice must insert real audio");
             // Measured *after* the call: the staging window is built inside
@@ -1779,7 +1875,11 @@ mod tests {
             let n = ts.accel_len / OPUS_CHANNELS as usize;
             let anchor = n - OLA_LEN;
             let lim = SEARCH_RANGE.min(anchor.saturating_sub(OLA_LEN));
-            let (_, corr) = ts.find_pitch_period(n, anchor, lim);
+            let (_, corr) = ts.find_pitch_period(SearchGeometry {
+                n,
+                anchor,
+                search_limit: lim,
+            });
             assert!(
                 corr > EXPAND_NCC_THRESHOLD && corr < 0.9,
                 "test material must land strictly between the two thresholds, or \
@@ -1790,7 +1890,7 @@ mod tests {
 
         /// The other half of the split: the drain keeps 0.9 even though growth
         /// no longer does. It is not the actuator that was starving — 128kbps
-        /// discard was already falling through v19 — and it has the silence
+        /// discard was already falling through — and it has the silence
         /// fast-forward shed as its artifact-free escape on quiet material, so
         /// there is no starvation in the field that this threshold is in the way
         /// of.
@@ -1810,13 +1910,21 @@ mod tests {
 
             let mut ts = TimeScaler::new();
             let mut out = VecDeque::new();
+            // Staged through the module-private steps rather than the handle:
+            // this test reads `accel_len` and drives `find_pitch_period` between
+            // staging and the splice, which a live `StagedWindow` would hold `ts`
+            // borrowed across.
             ts.window_begin(&a);
             assert!(ts.window_extend(&b));
             let (_, corr) = {
                 let n = ts.accel_len / OPUS_CHANNELS as usize;
                 let anchor = n - OLA_LEN;
                 let lim = SEARCH_RANGE.min(anchor.saturating_sub(OLA_LEN));
-                ts.find_pitch_period(n, anchor, lim)
+                ts.find_pitch_period(SearchGeometry {
+                    n,
+                    anchor,
+                    search_limit: lim,
+                })
             };
             assert!(
                 corr > EXPAND_NCC_THRESHOLD && corr < 0.9,
@@ -1843,9 +1951,9 @@ mod tests {
             for hz in [100.0f32, 150.0, 220.0, 330.0] {
                 let mut ts = TimeScaler::new();
                 let mut out = VecDeque::new();
-                ts.window_begin(&tone_frame(hz, 0.05, 0));
-                assert!(ts.window_extend(&tone_frame(hz, 0.05, 1)));
-                let removed = ts
+                let mut w = ts.window_begin(&tone_frame(hz, 0.05, 0));
+                assert!(w.extend(&tone_frame(hz, 0.05, 1)));
+                let removed = w
                     .accelerate(false, 0.05, &mut out)
                     .unwrap_or_else(|| panic!("{hz} Hz must be reachable"));
 
@@ -1892,8 +2000,8 @@ mod tests {
         }
     }
 
-    /// v21: concealment from the played history, for the case the codec cannot
-    /// extrapolate (`FrameDecoder::plc_is_valid == false`).
+    /// Concealment from the played history, for the case the codec cannot
+    /// extrapolate (`FrameDecoder::plc_ready() == false`).
     mod pitch_concealment {
         use super::*;
 
@@ -1943,11 +2051,15 @@ mod tests {
         fn period_used(ts: &mut TimeScaler) -> usize {
             let n = OPUS_FRAME_SAMPLES / OPUS_CHANNELS as usize;
             let anchor = n - OLA_LEN;
-            let (best_d, _) = ts.find_pitch_period(n, anchor, SEARCH_RANGE.min(anchor - OLA_LEN));
+            let (best_d, _) = ts.find_pitch_period(SearchGeometry {
+                n,
+                anchor,
+                search_limit: SEARCH_RANGE.min(anchor - OLA_LEN),
+            });
             anchor - best_d
         }
 
-        /// The v21 defect, at the layer that fixes it. `expand_conceal` cannot reach
+        /// The defect, at the layer that fixes it. `expand_conceal` cannot reach
         /// `occupied == 0` — `expand_inner` refuses when `anchor < hist_frames`, and
         /// with history alone that is `352 < 480` — so the codec was the only thing
         /// left, and on an uncompressed stream the codec has never been fed.
@@ -2094,7 +2206,7 @@ mod tests {
                 ts.take_splice_step().is_none(),
                 "concealment must not write the fade-shape tripwire: its ≤1.00 \
                  ceiling is the only thing that distinguishes a monotonic ramp \
-                 from the v18 bell, and a hard join can exceed 1.00 honestly",
+                 from a bell, and a hard join can exceed 1.00 honestly",
             );
         }
 

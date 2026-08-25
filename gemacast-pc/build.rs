@@ -7,12 +7,20 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
-    // --- Windows application manifest (ComCtl32 v6 + DPI awareness) ---
-    // This fixes the "TaskDialogIndirect entry point not found" crash
-    // that occurs when tray-icon tries to use comctl32.dll v6 features.
+    // --- Windows application resources (icon + ComCtl32 v6/DPI manifest) ---
+    // rfd uses native task dialogs, which inherit the executable's application
+    // icon. Compile the icon and manifest into one resource to keep every dialog
+    // and the executable itself consistently branded.
     if target_os == "windows" {
-        embed_manifest::embed_manifest(embed_manifest::new_manifest("Gemacast.PC"))
-            .expect("unable to embed Windows application manifest");
+        let manifest = embed_manifest::new_manifest("Gemacast.PC").to_string();
+        let mut resources = tauri_winres::WindowsResource::new();
+        resources
+            .set_icon("../wix/assets/Product.ico")
+            .set_manifest(&manifest)
+            .compile()
+            .expect("unable to embed Windows application resources");
+
+        println!("cargo:rerun-if-changed=../wix/assets/Product.ico");
     }
 
     // --- Bundle ADB binaries ---

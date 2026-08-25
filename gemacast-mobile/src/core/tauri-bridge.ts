@@ -5,14 +5,18 @@ import type {
   ConnectionMode,
   JitterConfig,
   NetworkLinkPairInfo,
+  NotificationPermission,
   ProcessInfo,
-  SenderCapabilities,
+  StreamerCapabilities,
 } from './types';
 
 export function resolveBitrate(preset: BitratePreset, customKbps: number): number | null {
   if (preset === 'raw') return null;
-  if (preset === 'custom') return customKbps * 1000;
-  return parseInt(preset, 10) * 1000;
+  const kbps = preset === 'custom' ? customKbps : Number(preset);
+  if (!Number.isInteger(kbps) || kbps < 6 || kbps > 512) {
+    throw new Error('Bitrate must be a whole number from 6 to 512 Kbps');
+  }
+  return kbps * 1000;
 }
 
 export type ConnectArgs = {
@@ -40,19 +44,17 @@ export type PlaybackArgs = {
 
 export const tauriBridge = {
   checkForUpdate: () =>
-    invoke<{ version: string; downloadUrl: string; sha256: string | null } | null>(
-      'check_for_update',
-    ),
+    invoke<{ version: string; downloadUrl: string; sha256: string } | null>('check_for_update'),
 
-  downloadUpdate: (args: { url: string; sha256?: string | null }) =>
+  downloadUpdate: (args: { url: string; sha256: string }) =>
     invoke<string>('download_update', args),
 
   installApk: (args: { path: string }) => invoke('install_apk', args),
 
   cleanupStaleUpdates: () => invoke('cleanup_stale_updates'),
 
-  connectToSender: (args: ConnectArgs) =>
-    invoke('connect_to_sender', {
+  connectToStreamer: (args: ConnectArgs) =>
+    invoke('connect_to_streamer', {
       ip: args.ip,
       deviceId: args.deviceId,
       deviceName: args.deviceName,
@@ -63,7 +65,7 @@ export const tauriBridge = {
       transport: args.transport,
     }),
 
-  disconnectFromSender: (args: DisconnectArgs) => invoke('disconnect_from_sender', args),
+  disconnectFromStreamer: (args: DisconnectArgs) => invoke('disconnect_from_streamer', args),
 
   startAudioPlayback: (args: PlaybackArgs) => invoke('start_audio_playback', args),
 
@@ -74,10 +76,10 @@ export const tauriBridge = {
 
   notifyStreamingStopped: () => invoke('notify_streaming_stopped'),
 
-  startListeningForSenders: (args: { deviceId: string; mode: ConnectionMode }) =>
-    invoke('start_listening_for_senders', args),
+  startListeningForStreamers: (args: { deviceId: string; mode: ConnectionMode }) =>
+    invoke('start_listening_for_streamers', args),
 
-  stopListeningForSenders: () => invoke('stop_listening_for_senders'),
+  stopListeningForStreamers: () => invoke('stop_listening_for_streamers'),
 
   getNetworkState: () =>
     invoke<{
@@ -85,6 +87,10 @@ export const tauriBridge = {
       networkId: string;
       modes: { wifi: boolean; usb: boolean; adb: boolean };
     }>('get_network_state'),
+
+  forgetPcIdentity: (pcId: string) => invoke('forget_pc_identity', { pcId }),
+
+  getPairedPcIds: () => invoke<string[]>('get_paired_pc_ids'),
 
   getLocalIp: () => invoke<string>('get_local_ip'),
 
@@ -94,7 +100,7 @@ export const tauriBridge = {
     invoke<{ wifi: boolean; usb: boolean; adb: boolean }>('get_connection_status'),
 
   getAudioSources: (args: { ip: string }) =>
-    invoke<[AudioSource[], SenderCapabilities]>('get_audio_sources', args),
+    invoke<[AudioSource[], StreamerCapabilities]>('get_audio_sources', args),
 
   changeAudioSource: (args: { ip: string; deviceId: string; source: AudioSource }) =>
     invoke('change_audio_source', args),
@@ -107,20 +113,14 @@ export const tauriBridge = {
   changeAudioBitrate: (args: { ip: string; deviceId: string; bitrate: number | null }) =>
     invoke('change_audio_bitrate', args),
 
-  probeSender: (args: { ip: string; deviceId: string }) => invoke('probe_sender', args),
+  probeStreamer: (args: { ip: string; deviceId: string }) => invoke('probe_streamer', args),
 
-  /**
-   * Start the Rust-side recovery prober after an unrequested link loss.
-   *
-   * Deliberately not a `setInterval` here: Android throttles WebView timers
-   * with the screen off, which is exactly when the link dies.
-   */
   startLinkRecovery: (args: { ip: string; deviceId: string }) =>
     invoke('start_link_recovery', args),
 
   stopLinkRecovery: () => invoke('stop_link_recovery'),
 
-  establishWebsocket: (args: { senderIp: string; deviceId: string }) =>
+  establishWebsocket: (args: { streamerIp: string; deviceId: string }) =>
     invoke('establish_websocket', args),
 
   setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),
@@ -130,4 +130,8 @@ export const tauriBridge = {
   getNetworkLinkPair: () => invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),
 
   checkExclusiveSupport: () => invoke<boolean>('check_exclusive_support'),
+
+  getNotificationPermission: () => invoke<NotificationPermission>('get_notification_permission'),
+
+  openNotificationSettings: () => invoke('open_notification_settings'),
 };

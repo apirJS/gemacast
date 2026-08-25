@@ -39,9 +39,11 @@ pub fn spawn_adb_port_forwarding_watchdog(
     set: &mut JoinSet<()>,
     tcp_drop_tx: tokio::sync::broadcast::Sender<()>,
 ) {
-    let audio_port = format!("tcp:{}", Ports::ADB_AUDIO_TCP);
-    let discovery_port = format!("tcp:{}", Ports::ADB_DISCOVERY_TCP);
-    let control_port = format!("tcp:{}", Ports::CONTROL);
+    let managed_ports = [
+        format!("tcp:{}", Ports::ADB_AUDIO_TCP),
+        format!("tcp:{}", Ports::ADB_DISCOVERY_TCP),
+        format!("tcp:{}", Ports::CONTROL),
+    ];
 
     set.spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
@@ -50,16 +52,24 @@ pub fn spawn_adb_port_forwarding_watchdog(
         loop {
             tokio::select! {
                 _ = drop_rx.recv() => {
-                    let _ = adb_command().args(["reverse", "--remove-all"]).output().await;
+                    if let Ok(output) = adb_command().arg("devices").output().await {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        for serial in stdout.lines().filter_map(connected_serial) {
+                            for port in &managed_ports {
+                                let _ = adb_command()
+                                    .args(["-s", serial, "reverse", "--remove", port])
+                                    .output()
+                                    .await;
+                            }
+                        }
+                    }
                     break;
                 }
                 _ = interval.tick() => {
                     if let Ok(output) = adb_command().arg("devices").output().await
                         && output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        for line in stdout.lines() {
-                            if line.ends_with("device") {
-                                let serial = line.split_whitespace().next().unwrap_or("");
+                        for serial in stdout.lines().filter_map(connected_serial) {
                                 if !serial.is_empty()
                                     && let Ok(c) = adb_command()
                                         .args(["-s", serial, "reverse", "--list"])
@@ -67,30 +77,35 @@ pub fn spawn_adb_port_forwarding_watchdog(
                                         .await
                                     {
                                         let check_out = String::from_utf8_lossy(&c.stdout);
-                                        if !check_out.contains(&audio_port) {
+                                        if !check_out.contains(&managed_ports[0]) {
                                             let _ = adb_command()
-                                                .args(["-s", serial, "reverse", &audio_port, &audio_port])
+                                                .args(["-s", serial, "reverse", &managed_ports[0], &managed_ports[0]])
                                                 .output()
                                                 .await;
                                         }
-                                        if !check_out.contains(&discovery_port) {
+                                        if !check_out.contains(&managed_ports[1]) {
                                             let _ = adb_command()
-                                                .args(["-s", serial, "reverse", &discovery_port, &discovery_port])
+                                                .args(["-s", serial, "reverse", &managed_ports[1], &managed_ports[1]])
                                                 .output()
                                                 .await;
                                         }
-                                        if !check_out.contains(&control_port) {
+                                        if !check_out.contains(&managed_ports[2]) {
                                             let _ = adb_command()
-                                                .args(["-s", serial, "reverse", &control_port, &control_port])
+                                                .args(["-s", serial, "reverse", &managed_ports[2], &managed_ports[2]])
                                                 .output()
                                                 .await;
                                         }
                                     }
-                            }
                         }
                     }
                 }
             }
         }
     });
+}
+
+fn connected_serial(line: &str) -> Option<&str> {
+    let mut fields = line.split_whitespace();
+    let serial = fields.next()?;
+    (fields.next() == Some("device")).then_some(serial)
 }

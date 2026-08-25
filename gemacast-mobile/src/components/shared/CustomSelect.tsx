@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef } from 'react';
 
 export type SelectOption<T extends string = string> = {
   value: T;
@@ -30,31 +30,25 @@ export function CustomSelect<T extends string = string>({
 
   const selectedOption = options.find((o) => o.value === value);
 
-  const startClosing = useCallback(() => {
+  const startClosing = () => {
     if (closing) return;
     setClosing(true);
     setTimeout(() => {
       setOpen(false);
       setClosing(false);
     }, FADE_MS);
-  }, [closing]);
+  };
 
-  const handleSelect = useCallback(
-    (optionValue: T) => {
-      onChange(optionValue);
+  const handleSelect = (optionValue: T) => {
+    onChange(optionValue);
+    startClosing();
+  };
+
+  const handleBlur = (e: React.FocusEvent) => {
+    if (!containerRef.current?.contains(e.relatedTarget as Node)) {
       startClosing();
-    },
-    [onChange, startClosing],
-  );
-
-  const handleBlur = useCallback(
-    (e: React.FocusEvent) => {
-      if (!containerRef.current?.contains(e.relatedTarget as Node)) {
-        startClosing();
-      }
-    },
-    [startClosing],
-  );
+    }
+  };
 
   return (
     <div id={id} ref={containerRef} className="relative" onBlur={handleBlur}>

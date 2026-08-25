@@ -1,6 +1,7 @@
 package com.apir.gemacast
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -20,10 +22,54 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.annotation.Keep
 import java.io.File
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.Signature
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import java.math.BigInteger
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
+    companion object {
+        private const val DEVICE_AUTH_KEY_ALIAS = "gemacast_device_auth_p256_v1"
+        private const val P256_COORDINATE_SIZE = 32
+        private const val TRUSTED_PC_PREFERENCES = "gemacast_trusted_pcs_v1"
+
+        /** Non-secret app state. Kept apart from [TRUSTED_PC_PREFERENCES] so a "Forget PC" wipe cannot touch it. */
+        private const val APP_STATE_PREFERENCES = "gemacast_app_state_v1"
+
+        /**
+         * Whether this install has ever reached the system `POST_NOTIFICATIONS` dialog.
+         *
+         * Required because `shouldShowRequestPermissionRationale` reads false both
+         * before the first ask and after a permanent denial — see
+         * [NotificationPermissionPolicy].
+         */
+        private const val NOTIFICATION_ASKED_KEY = "notification_permission_asked"
+
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
+    }
     private var gemaCastService: GemaCastService? = null
     private var serviceBound = false
+    @Volatile private var pendingPcId: String? = null
+    @Volatile private var pendingPcFingerprint: String? = null
+    private val pcIdentityConfirmationState = PcIdentityConfirmationState()
+    private var pcIdentityConfirmationDialog: AlertDialog? = null
+    private var pcIdentityConfirmationDialogKey: PcIdentityConfirmationKey? = null
+
+    /**
+     * Guards the battery-optimization prompt.
+     *
+     * It is now reached from four places (three notification outcomes plus the
+     * permission-result callback) precisely so it never stacks on top of the
+     * system permission dialog, and exactly one of them should win.
+     */
+    private var batteryOptimizationPrompted = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -95,19 +141,318 @@ class MainActivity : TauriActivity() {
             
             val networkType = if (activeTransports.isEmpty()) "NONE" else activeTransports.joinToString(",")
 
+            // Tethering state. Needed because when this phone shares its
+            // connection, its *active* network is the upstream (often cellular),
+            // so the checks above report neither WIFI nor ETHERNET — and a Wi-Fi
+            // hotspot would otherwise be indistinguishable from a USB cable.
+            val tether = try {
+                val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+                    ?.toList()
+                    ?.filter { it.isUp && !it.isLoopback }
+                    ?.map { iface ->
+                        TetherClassifier.Iface(
+                            iface.name ?: "",
+                            iface.inetAddresses.toList()
+                                .filterIsInstance<java.net.Inet4Address>()
+                                .mapNotNull { it.hostAddress },
+                        )
+                    }
+                    ?: emptyList()
+                TetherClassifier.classify(ifaces)
+            } catch (e: Exception) {
+                TetherClassifier.Tether.NONE
+            }
+
             val intentFilter = android.content.IntentFilter("android.hardware.usb.action.USB_STATE")
             val usbIntent = registerReceiver(null, intentFilter)
             val usbConnected = usbIntent?.extras?.getBoolean("connected") ?: false
 
             val adbActive = android.provider.Settings.Global.getInt(
-                contentResolver, 
+                contentResolver,
                 android.provider.Settings.Global.ADB_ENABLED, 0
             ) != 0
 
             val adbStatus = if (usbConnected && adbActive) "ADB_ON" else "ADB_OFF"
 
-            "${networkType}|${adbStatus}"
+            val tetherStatus = when (tether) {
+                TetherClassifier.Tether.HOTSPOT -> "|HOTSPOT"
+                TetherClassifier.Tether.USB -> "|USB_TETHER"
+                TetherClassifier.Tether.NONE -> ""
+            }
+
+            "${networkType}|${adbStatus}${tetherStatus}"
         } catch (e: Exception) {
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun getOrCreateDeviceAuthKeyPair(): java.security.KeyPair {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existingPrivateKey = keyStore.getKey(DEVICE_AUTH_KEY_ALIAS, null)
+        val existingCertificate = keyStore.getCertificate(DEVICE_AUTH_KEY_ALIAS)
+        if (existingPrivateKey != null && existingCertificate != null) {
+            return java.security.KeyPair(existingCertificate.publicKey, existingPrivateKey as java.security.PrivateKey)
+        }
+
+        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(
+            DEVICE_AUTH_KEY_ALIAS,
+            KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+        )
+            .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setUserAuthenticationRequired(false)
+            .build()
+        generator.initialize(spec)
+        return generator.generateKeyPair()
+    }
+
+    private fun fixedUnsigned(value: BigInteger): ByteArray {
+        val encoded = value.toByteArray()
+        val unsigned = if (encoded.size == P256_COORDINATE_SIZE + 1 && encoded[0].toInt() == 0) {
+            encoded.copyOfRange(1, encoded.size)
+        } else {
+            encoded
+        }
+        require(unsigned.size <= P256_COORDINATE_SIZE) { "P-256 coordinate is too large" }
+        return ByteArray(P256_COORDINATE_SIZE - unsigned.size) + unsigned
+    }
+
+    @Keep
+    fun getDeviceAuthPublicKey(): String {
+        return try {
+            val publicKey = getOrCreateDeviceAuthKeyPair().public as ECPublicKey
+            val sec1 = byteArrayOf(0x04) + fixedUnsigned(publicKey.w.affineX) + fixedUnsigned(publicKey.w.affineY)
+            Base64.encodeToString(sec1, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun signDeviceAuthTranscript(transcriptBase64: String): String {
+        return try {
+            val transcript = Base64.decode(transcriptBase64, Base64.DEFAULT)
+            val signature = Signature.getInstance("SHA256withECDSA").apply {
+                initSign(getOrCreateDeviceAuthKeyPair().private)
+                update(transcript)
+            }
+            Base64.encodeToString(signature.sign(), Base64.NO_WRAP)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun getTrustedPcFingerprint(pcId: String): String {
+        return try {
+            getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(pcId, "") ?: ""
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun getTrustedPcIds(): String {
+        return try {
+            val ids = JSONArray()
+            getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .all
+                .keys
+                .asSequence()
+                .sorted()
+                .forEach(ids::put)
+            ids.toString()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun pcIdentityConfirmationKey(request: JSONObject): PcIdentityConfirmationKey {
+        val pcId = request.getString("pcId")
+        val fingerprint = request.getString("fingerprint").lowercase()
+        val pairingCode = request.getString("pairingCode")
+        require(fingerprint.matches(Regex("[0-9a-f]{64}"))) {
+            "Invalid PC certificate fingerprint"
+        }
+        require(pairingCode.matches(Regex("[0-9]{6}"))) {
+            "Invalid pairing code"
+        }
+        return PcIdentityConfirmationKey(pcId, fingerprint, pairingCode)
+    }
+
+    @Keep
+    fun confirmPcIdentity(payload: String): String {
+        return try {
+            val request = JSONObject(payload)
+            val key = pcIdentityConfirmationKey(request)
+            val pcName = request.getString("pcName")
+            val requiresApproval = request.optBoolean("requiresApproval", true)
+
+            val stored = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(key.pcId, null)
+            if (stored != null && !stored.equals(key.fingerprint, ignoreCase = true)) {
+                return "ERROR: The paired PC certificate changed. Forget this PC before pairing again."
+            }
+            if (stored != null && !requiresApproval) {
+                return "TRUSTED"
+            }
+
+            when (pcIdentityConfirmationState.begin(key, SystemClock.elapsedRealtime())) {
+                PcIdentityConfirmationState.BeginResult.APPROVED -> "APPROVED"
+                PcIdentityConfirmationState.BeginResult.REJECTED -> "REJECTED"
+                PcIdentityConfirmationState.BeginResult.PENDING -> "PENDING"
+                PcIdentityConfirmationState.BeginResult.BUSY ->
+                    "ERROR: Another PC pairing confirmation is already pending"
+                PcIdentityConfirmationState.BeginResult.STARTED -> {
+                    runOnUiThread {
+                        pcIdentityConfirmationDialog?.dismiss()
+                        val shortFingerprint = key.fingerprint.take(16).chunked(4).joinToString(" ")
+                        val dialog = AlertDialog.Builder(this)
+                            .setTitle("Verify Gemacast PC")
+                            .setMessage(
+                                "Connect to $pcName?\n\n" +
+                                    "Pairing code:  ${key.pairingCode}\n\n" +
+                                    "After tapping Continue, confirm that the PC shows the same code.\n\n" +
+                                    "PC certificate: $shortFingerprint"
+                            )
+                            .setPositiveButton("Continue") { _, _ ->
+                                if (
+                                    pcIdentityConfirmationState.complete(
+                                        key,
+                                        approved = true,
+                                        nowMillis = SystemClock.elapsedRealtime(),
+                                    )
+                                ) {
+                                    pendingPcId = key.pcId
+                                    pendingPcFingerprint = key.fingerprint
+                                }
+                            }
+                            .setNegativeButton("Cancel") { _, _ ->
+                                pcIdentityConfirmationState.complete(
+                                    key,
+                                    approved = false,
+                                    nowMillis = SystemClock.elapsedRealtime(),
+                                )
+                            }
+                            .create()
+                        dialog.setOnCancelListener {
+                            pcIdentityConfirmationState.complete(
+                                key,
+                                approved = false,
+                                nowMillis = SystemClock.elapsedRealtime(),
+                            )
+                        }
+                        dialog.setOnDismissListener {
+                            if (pcIdentityConfirmationDialogKey == key) {
+                                pcIdentityConfirmationDialog = null
+                                pcIdentityConfirmationDialogKey = null
+                            }
+                        }
+                        pcIdentityConfirmationDialog = dialog
+                        pcIdentityConfirmationDialogKey = key
+                        dialog.show()
+                    }
+                    "PENDING"
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun pollPcIdentityConfirmation(payload: String): String {
+        return try {
+            val key = pcIdentityConfirmationKey(JSONObject(payload))
+            pcIdentityConfirmationState.poll(key, SystemClock.elapsedRealtime()).name
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun cancelPcIdentityConfirmation(payload: String): String {
+        return try {
+            val key = pcIdentityConfirmationKey(JSONObject(payload))
+            pcIdentityConfirmationState.cancel(key)
+            runOnUiThread {
+                if (pcIdentityConfirmationDialogKey == key) {
+                    pcIdentityConfirmationDialog?.dismiss()
+                    pcIdentityConfirmationDialog = null
+                    pcIdentityConfirmationDialogKey = null
+                }
+            }
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun rememberPcIdentity(payload: String): String {
+        return try {
+            val request = JSONObject(payload)
+            val pcId = request.getString("pcId")
+            val fingerprint = request.getString("fingerprint").lowercase()
+            require(fingerprint.matches(Regex("[0-9a-f]{64}"))) {
+                "Invalid PC certificate fingerprint"
+            }
+            val existing = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(pcId, null)
+            if (existing != null && !existing.equals(fingerprint, ignoreCase = true)) {
+                return "ERROR: Refusing to replace an existing PC certificate pin"
+            }
+            if (existing == null && (pendingPcId != pcId || pendingPcFingerprint != fingerprint)) {
+                return "ERROR: PC certificate was not confirmed by the phone user"
+            }
+            val saved = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .putString(pcId, fingerprint)
+                .commit()
+            if (!saved) {
+                return "ERROR: Android could not persist the PC certificate pin"
+            }
+            pendingPcId = null
+            pendingPcFingerprint = null
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    @Keep
+    fun forgetPcIdentity(pcId: String): String {
+        return try {
+            require(pcId.isNotBlank()) { "PC ID cannot be empty" }
+            val preferences = getSharedPreferences(TRUSTED_PC_PREFERENCES, Context.MODE_PRIVATE)
+            if (!preferences.edit().remove(pcId).commit()) {
+                return "ERROR: Android could not remove the PC certificate pin"
+            }
+            if (pendingPcId == pcId) {
+                pendingPcId = null
+                pendingPcFingerprint = null
+            }
+            pcIdentityConfirmationState.cancelAll()
+            runOnUiThread {
+                if (pcIdentityConfirmationDialogKey?.pcId == pcId) {
+                    pcIdentityConfirmationDialog?.dismiss()
+                    pcIdentityConfirmationDialog = null
+                    pcIdentityConfirmationDialogKey = null
+                }
+            }
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
             "ERROR: ${e.message}"
         }
     }
@@ -157,35 +502,211 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    /**
+     * Read the current notification permission situation as a
+     * [NotificationPermissionState] name.
+     *
+     * Called from Rust via JNI; the frontend uses it to decide whether to show the
+     * in-app notice with the Settings shortcut.
+     */
+    @Keep
+    fun notificationPermissionState(): String {
+        return try {
+            NotificationPermissionPolicy.wireValue(readNotificationPermissionState())
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    /**
+     * Open this app's notification settings.
+     *
+     * The only way back from [NotificationPermissionState.BLOCKED]: once the user
+     * has permanently denied, `requestPermissions` returns immediately without
+     * showing anything, so the app has to hand off to Settings instead.
+     */
+    @Keep
+    fun openNotificationSettings(): String {
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName"))
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // Some OEM builds ship no activity for ACTION_APP_NOTIFICATION_SETTINGS.
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$packageName"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                "OK"
+            } catch (fallback: Exception) {
+                fallback.printStackTrace()
+                "ERROR: ${fallback.message}"
+            }
+        }
+    }
+
+    /**
+     * Finish this activity and drop its task record, then let the caller kill the
+     * process.
+     *
+     * Called from Rust while handling `ExitRequested`. Without it the process exits
+     * with the task record still in place, and because the activity is
+     * `launchMode="singleTask"` a relaunch can be routed into that stale record
+     * instead of starting cold. Removing the task also fires
+     * `GemaCastService.onTaskRemoved`, which is where the service's own teardown
+     * lives.
+     *
+     * Deliberately does not kill the process — Rust owns that, so there is exactly
+     * one place that ends the app.
+     */
+    @Keep
+    fun finishAndRemoveAppTask(): String {
+        return try {
+            val finished = java.util.concurrent.CountDownLatch(1)
+            runOnUiThread {
+                try {
+                    finishAndRemoveTask()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    finished.countDown()
+                }
+            }
+            // Bounded on purpose: the caller kills the process straight after this
+            // returns, so a busy main thread must not be able to stall the exit.
+            finished.await(1, java.util.concurrent.TimeUnit.SECONDS)
+            "OK"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun readNotificationPermissionState(): NotificationPermissionState {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasAsked = getSharedPreferences(APP_STATE_PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(NOTIFICATION_ASKED_KEY, false)
+        val systemWillShowRationale = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.shouldShowRequestPermissionRationale(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        return NotificationPermissionPolicy.state(
+            sdkInt = Build.VERSION.SDK_INT,
+            granted = granted,
+            hasAsked = hasAsked,
+            systemWillShowRationale = systemWillShowRationale,
+        )
+    }
+
+    /**
+     * Explain what the notification is for, then hand off to the system dialog.
+     *
+     * Android only ever shows the system dialog twice; spending one of those on a
+     * request the user has no context for is how an app ends up permanently blocked.
+     */
+    private fun requestNotificationPermission() {
+        AlertDialog.Builder(this)
+            .setTitle("Allow notifications")
+            .setMessage(
+                "While streaming, Gemacast shows a notification with Play and Pause buttons " +
+                    "so you can control playback without opening the app."
+            )
+            .setPositiveButton("Continue") { _, _ ->
+                // Recorded before the request, not in the result callback: the flag
+                // means "the system dialog has been reached", which is already true
+                // here and stays true even if the callback never arrives.
+                markNotificationPermissionAsked()
+                try {
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                        NOTIFICATION_PERMISSION_REQUEST_CODE,
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    promptBatteryOptimization()
+                }
+            }
+            .setNegativeButton("Not Now") { _, _ -> promptBatteryOptimization() }
+            .setOnCancelListener { promptBatteryOptimization() }
+            .show()
+    }
+
+    private fun markNotificationPermissionAsked() {
+        try {
+            getSharedPreferences(APP_STATE_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(NOTIFICATION_ASKED_KEY, true)
+                .commit()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != NOTIFICATION_PERMISSION_REQUEST_CODE) return
+
+        markNotificationPermissionAsked()
+        promptBatteryOptimization()
+    }
+
+    private fun promptBatteryOptimization() {
+        if (batteryOptimizationPrompted) return
+        batteryOptimizationPrompted = true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            if (powerManager.isIgnoringBatteryOptimizations(packageName)) return
+            AlertDialog.Builder(this)
+                .setTitle("Battery Optimization")
+                .setMessage("To prevent audio from stuttering, Gemacast needs to be excluded from battery optimizations. Please disable battery optimization for Gemacast in the setting.")
+                .setPositiveButton("Allow") { _, _ ->
+                    try {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+                .setNegativeButton("Not Now", null)
+                .show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
-            }
-        }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                android.app.AlertDialog.Builder(this)
-                    .setTitle("Battery Optimization")
-                    .setMessage("To prevent audio from stuttering, Gemacast needs to be excluded from battery optimizations. Please disable battery optimization for Gemacast in the next screen.")
-                    .setPositiveButton("Allow") { _, _ ->
-                        try {
-                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:$packageName")
-                            }
-                            startActivity(intent)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
-                    .setNegativeButton("Not Now", null)
-                    .show()
-            }
+        when (NotificationPermissionPolicy.startupAction(readNotificationPermissionState())) {
+            NotificationPermissionAction.EXPLAIN_THEN_REQUEST -> requestNotificationPermission()
+            // Asking again would show nothing at all. The in-app notice in Settings
+            // is the recovery path, so do not interrupt the launch for it.
+            NotificationPermissionAction.DEFER_TO_SETTINGS -> promptBatteryOptimization()
+            NotificationPermissionAction.NOTHING -> promptBatteryOptimization()
         }
     }
 
@@ -220,6 +741,10 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        pcIdentityConfirmationState.cancelAll()
+        pcIdentityConfirmationDialog?.dismiss()
+        pcIdentityConfirmationDialog = null
+        pcIdentityConfirmationDialogKey = null
         super.onDestroy()
     }
 }

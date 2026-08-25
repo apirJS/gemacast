@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::audio::MAX_OPUS_PACKET_SIZE;
 
 /// Maximum payload size for a single audio packet.
-/// Covers both Opus (typically <500 bytes) and raw uncompressed PCM (7680 bytes).
+/// Covers both Opus (typically <500 bytes) and raw uncompressed PCM (3840 bytes).
 pub const MAX_PACKET_PAYLOAD: usize = MAX_OPUS_PACKET_SIZE;
 
 /// A raw Opus packet received from the network, awaiting decode in the audio callback.
@@ -17,7 +17,7 @@ pub const MAX_PACKET_PAYLOAD: usize = MAX_OPUS_PACKET_SIZE;
 /// The SPSC ring buffer pre-allocates all slots at startup, so the total memory
 /// cost is fixed and paid once.
 pub struct RawPacket {
-    /// Sender's monotonic sequence number (u64, big-endian over the wire).
+    /// Streamer's monotonic sequence number (u64, big-endian over the wire).
     pub seq_num: u64,
     /// Payload bytes (Opus encoded or raw PCM). Fixed-size inline buffer.
     pub payload_data: [u8; MAX_PACKET_PAYLOAD],

@@ -17,9 +17,13 @@ use crate::ports::capture::{CaptureBackend, CaptureHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use screencapturekit::dispatch_queue::DispatchQueue;
 use screencapturekit::prelude::*;
 
-use super::sck_common::{SckAudioHandler, create_sck_audio_config, create_sck_ring_buffer};
+use super::sck_common::{
+    SckAudioHandler, create_sck_audio_config, create_sck_capture_queue, create_sck_ring_buffer,
+    map_sck_error,
+};
 
 /// ScreenCaptureKit desktop audio capture backend.
 ///
@@ -29,14 +33,16 @@ use super::sck_common::{SckAudioHandler, create_sck_audio_config, create_sck_rin
 pub struct SckDesktopCapture {
     stream: SCStream,
     is_running: Arc<AtomicBool>,
+    /// The serial dispatch queue SCK delivers callbacks on. Held here — declared after
+    /// `stream` so it drops after it — purely to guarantee it outlives the stream; the
+    /// callbacks reference it by raw pointer.
+    _queue: DispatchQueue,
 }
 
 impl CaptureBackend for SckDesktopCapture {
     fn play(&mut self) -> Result<(), GemaCastError> {
         if !self.is_running.load(Ordering::Relaxed) {
-            self.stream
-                .start_capture()
-                .map_err(|e| AudioError::ScreenCaptureKitError(format!("start: {e}")))?;
+            self.stream.start_capture().map_err(map_sck_error)?;
             self.is_running.store(true, Ordering::Relaxed);
         }
         Ok(())
@@ -44,9 +50,7 @@ impl CaptureBackend for SckDesktopCapture {
 
     fn pause(&mut self) -> Result<(), GemaCastError> {
         if self.is_running.load(Ordering::Relaxed) {
-            self.stream
-                .stop_capture()
-                .map_err(|e| AudioError::ScreenCaptureKitError(format!("stop: {e}")))?;
+            self.stream.stop_capture().map_err(map_sck_error)?;
             self.is_running.store(false, Ordering::Relaxed);
         }
         Ok(())
@@ -75,14 +79,7 @@ impl Drop for SckDesktopCapture {
 pub fn create_sck_desktop_loopback()
 -> Result<CaptureHandle<super::PlatformCaptureBackend>, GemaCastError> {
     // Enumerate shareable content — this will fail if permission is denied.
-    let content = SCShareableContent::get().map_err(|e| {
-        let msg = format!("{e}");
-        if msg.contains("permission") || msg.contains("denied") || msg.contains("not authorized") {
-            GemaCastError::Audio(AudioError::ScreenCapturePermissionDenied)
-        } else {
-            GemaCastError::Audio(AudioError::ScreenCaptureKitError(msg))
-        }
-    })?;
+    let content = SCShareableContent::get().map_err(map_sck_error)?;
 
     let displays = content.displays();
     if displays.is_empty() {
@@ -100,7 +97,12 @@ pub fn create_sck_desktop_loopback()
     let config = create_sck_audio_config();
 
     let (producer, stream_error_tx, resources) = create_sck_ring_buffer();
-    let handler = SckAudioHandler::new(producer, resources.notify.clone());
+    let handler = SckAudioHandler::new(
+        producer,
+        resources.notify.clone(),
+        resources.counters.clone(),
+        "sck-desktop",
+    );
 
     let delegate =
         screencapturekit::stream::delegate_trait::StreamCallbacks::new().on_error(move |e| {
@@ -108,12 +110,18 @@ pub fn create_sck_desktop_loopback()
             let _ = stream_error_tx.try_send(cpal::StreamError::DeviceNotAvailable);
         });
 
+    let queue = create_sck_capture_queue();
     let mut stream = SCStream::new_with_delegate(&filter, &config, delegate);
-    stream.add_output_handler(handler, SCStreamOutputType::Audio);
-
+    // `Option<usize>` handler id; `None` means SCK refused the output. Running a stream
+    // with no audio handler would capture nothing forever, so fail here and let the
+    // factory fall back to CPAL instead.
     stream
-        .start_capture()
-        .map_err(|e| AudioError::ScreenCaptureKitError(format!("start: {e}")))?;
+        .add_output_handler_with_queue(handler, SCStreamOutputType::Audio, Some(&queue))
+        .ok_or_else(|| {
+            AudioError::ScreenCaptureKitError("SCK rejected the audio output handler".to_string())
+        })?;
+
+    stream.start_capture().map_err(map_sck_error)?;
 
     tracing::info!("[SCK Desktop] Capture stream started on primary display");
 
@@ -121,9 +129,11 @@ pub fn create_sck_desktop_loopback()
         backend: super::PlatformCaptureBackend::SckDesktop(SckDesktopCapture {
             stream,
             is_running: Arc::new(AtomicBool::new(true)),
+            _queue: queue,
         }),
         consumer: resources.consumer,
         notify: resources.notify,
         stream_error_rx: resources.stream_error_rx,
+        counters: resources.counters,
     })
 }

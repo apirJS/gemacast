@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048" width="2048" height="2048">
+  <defs>
+    <!-- Gruvbox Dark red ramp: accent-red #fb4934 -> neutral #cc241d -> faded #9d0006 -->
+    <linearGradient id="red" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fb4934"/>
+      <stop offset="1" stop-color="#cc241d"/>
+    </linearGradient>
+    <linearGradient id="redMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cc241d"/>
+      <stop offset="1" stop-color="#9d0006"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Brand field: Gruvbox Dark color-background -->
+  <rect width="2048" height="2048" fill="#282828"/>
+
+  <!--
+    Safe-zone inset. Do NOT let the artwork bleed to the canvas edge.
+
+    An Android adaptive icon is a 108dp drawable of which only the central 72dp
+    is ever visible, and the launcher masks that to a circle/squircle. Google's
+    guidance is to keep key content inside the central 66dp circle. A full-bleed
+    version of this composition was measured at radius 59.4dp on the 108dp
+    canvas and the launcher cut off the outer wave and both arc tips, leaving a
+    sliver of the monitor.
+
+    The artwork's own bounds are x 268..1476.5, y 326..1679 (1208 x 1353,
+    stroke widths and round caps included); its bounding-box centre is
+    (872.25, 1002.5) and its furthest content point sits 770.6 units from that
+    centre. Scaling by 0.812 puts that at 625.7 units = exactly the 66dp safe
+    circle on a 2048 canvas (66/2/108 * 2048 = 625.8), and the translate centres
+    the bounding box, so the tile reads centred in square contexts too (Windows
+    taskbar, macOS dock, MSI, tray). Result: art occupies 48% x 54% of the tile
+    with even 533px side and 475px top/bottom margins.
+
+    Recompute both numbers if any geometry below moves.
+  -->
+  <g transform="translate(315.7,210.0) scale(0.812)">
+    <!-- cast / broadcast waves -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M 890,610 C 1085,840 1085,1180 890,1410" stroke="url(#red)" stroke-width="46"/>
+      <path d="M 1235,350 C 1525,720 1525,1300 1235,1655" stroke="url(#red)" stroke-width="48"/>
+    </g>
+
+    <!-- monitor, front-facing (no perspective) -->
+    <g>
+      <!-- stand base -->
+      <rect x="356" y="1150" width="228" height="30" rx="15" fill="url(#redMid)"/>
+      <!-- stand neck -->
+      <rect x="446" y="1082" width="48" height="82" rx="10" fill="url(#redMid)"/>
+      <!-- screen -->
+      <rect x="268" y="792" width="404" height="300" rx="30" fill="url(#red)"/>
+    </g>
+  </g>
+</svg>

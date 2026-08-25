@@ -3,14 +3,13 @@ name = "gemacast-mobile"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 publish = false
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -23,33 +22,32 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-
-gemacast-core = {path = "../../gemacast-core"}
-tokio = { version = "1.50.0", features = ["full"] }
 tauri-plugin-device-info = "1.0.1"
 netdev = "0.43.0"
-# `log` feature: with no `tracing` subscriber installed, every `tracing` event is
-# emitted as a `log` record instead. tauri-plugin-log installs a `log` logger
-# (→ logcat on Android), so this is the bridge that makes our `tracing::*` calls
-# across gemacast-core visible on-device. Do NOT also install a tracing subscriber
-# here or the bridge goes silent.
-tracing = { version = "0.1.44", features = ["log"] }
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 semver = "1"
 futures-util = "0.3"
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+gemacast-core = { path = "../../gemacast-core" }
+tokio = { version = "1.50.0", features = ["full"] }
+
+# `release_max_level_off` compiles every `tracing::*` call in this crate and its
+# dependencies out of release builds — a shipped APK emits no log output. Debug
+# builds are unaffected, so `adb logcat` field captures need a `--debug` APK.
+tracing = { version = "0.1.44", features = ["log", "release_max_level_off"] }
+
+reqwest = { version = "0.12", default-features = false, features = [
+  "stream",
+  "rustls-tls",
+] }
+base64 = "0.22"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
 
 [dev-dependencies]
-# `test-util` gives `#[tokio::test(start_paused = true)]`. The link-recovery
-# tests span a 60 s budget; on the virtual clock they finish instantly and
-# deterministically, instead of either sleeping for a minute or asserting
-# against a shortened interval that isn't the shipped one.
 tokio = { version = "1.50.0", features = ["full", "test-util"] }

@@ -12,7 +12,8 @@ pub mod mocks {
     use gemacast_core::domain::types::{AudioSource, DeviceId, DiscoveredDevice, TransportType};
 
     use crate::traits::{
-        AudioController, DeviceNotifier, DeviceRegistry, RegistrationOutcome, TrayNotifier,
+        AudioController, ConnectionApprovalRequest, DeviceNotifier, DeviceRegistry,
+        RegistrationOutcome, TrayNotifier,
     };
 
     // -----------------------------------------------------------------------
@@ -21,6 +22,15 @@ pub mod mocks {
 
     #[derive(Debug, Clone, PartialEq)]
     pub enum TrayCall {
+        ApprovalRequested {
+            request_id: String,
+            device_id: DeviceId,
+            name: String,
+            addr: SocketAddr,
+            key_fingerprint: String,
+            pairing_code: String,
+            replaces_existing_identity: bool,
+        },
         Discovered {
             device_id: DeviceId,
             name: String,
@@ -57,7 +67,33 @@ pub mod mocks {
         }
     }
 
+    #[async_trait]
     impl TrayNotifier for MockTrayNotifier {
+        async fn request_connection_approval(&self, request: ConnectionApprovalRequest) -> bool {
+            let ConnectionApprovalRequest {
+                request_id,
+                device_id,
+                name,
+                addr,
+                key_fingerprint,
+                pairing_code,
+                replaces_existing_identity,
+            } = request;
+            self.calls
+                .lock()
+                .unwrap()
+                .push(TrayCall::ApprovalRequested {
+                    request_id,
+                    device_id,
+                    name,
+                    addr,
+                    key_fingerprint,
+                    pairing_code,
+                    replaces_existing_identity,
+                });
+            true
+        }
+
         fn notify_device_discovered(
             &self,
             device_id: DeviceId,
@@ -163,40 +199,54 @@ pub mod mocks {
         async fn subscribe(
             &self,
             device_id: DeviceId,
+            _generation: u64,
             target_addr: Option<SocketAddr>,
             source: Option<AudioSource>,
             bitrate: Option<i32>,
-        ) {
+        ) -> Result<(), String> {
             self.calls.lock().unwrap().push(AudioCall::Subscribe {
                 device_id,
                 target_addr,
                 source,
                 bitrate,
             });
+            Ok(())
         }
 
-        async fn unsubscribe(&self, device_id: &DeviceId) {
+        async fn unsubscribe(&self, device_id: &DeviceId) -> Result<(), String> {
             self.calls.lock().unwrap().push(AudioCall::Unsubscribe {
                 device_id: device_id.clone(),
             });
+            Ok(())
         }
 
-        async fn change_source(&self, device_id: DeviceId, source: AudioSource) {
+        async fn change_source(
+            &self,
+            device_id: DeviceId,
+            source: AudioSource,
+        ) -> Result<(), String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(AudioCall::ChangeSource { device_id, source });
+            Ok(())
         }
 
-        async fn change_bitrate(&self, device_id: DeviceId, bitrate: Option<i32>) {
+        async fn change_bitrate(
+            &self,
+            device_id: DeviceId,
+            bitrate: Option<i32>,
+        ) -> Result<(), String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(AudioCall::ChangeBitrate { device_id, bitrate });
+            Ok(())
         }
 
-        async fn shutdown(&self) {
+        async fn shutdown(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push(AudioCall::Shutdown);
+            Ok(())
         }
     }
 
@@ -366,8 +416,7 @@ pub mod mocks {
             let mut evicted = Vec::new();
             let now = std::time::Instant::now();
             self.inner.lock().unwrap().retain(|id, device| {
-                if now.duration_since(device.last_seen) > timeout && !device.addr.ip().is_loopback()
-                {
+                if now.duration_since(device.last_seen) > timeout {
                     evicted.push((id.clone(), device.addr));
                     false
                 } else {

@@ -1,4 +1,4 @@
-//! Trait abstractions for all I/O boundaries in the PC sender.
+//! Trait abstractions for all I/O boundaries in the PC streamer.
 //!
 //! These traits decouple business logic from concrete dependencies
 //! (`EventLoopProxy`, `mpsc::Sender`, `Arc<Mutex<HashMap>>`, HTTP clients),
@@ -20,4 +20,4 @@ pub mod tray_notifier;
 pub use audio_controller::AudioController;
 pub use device_notifier::DeviceNotifier;
 pub use device_registry::{DeviceRegistry, RegistrationOutcome};
-pub use tray_notifier::TrayNotifier;
+pub use tray_notifier::{ConnectionApprovalRequest, TrayNotifier};

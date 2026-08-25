@@ -1,5 +1,5 @@
 use crate::traits::{
-    FrontendNotifier, SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
+    FrontendNotifier, SessionInfo, SessionManager, SessionParams, StreamerControlClientFactory,
 };
 use async_trait::async_trait;
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
@@ -23,12 +23,14 @@ struct ActiveSession {
     target_ip: Option<std::net::IpAddr>,
     device_id: String,
     network_link: gemacast_core::domain::types::NetworkLink,
+    session_token: Option<String>,
+    session_generation: Option<gemacast_core::control::SessionGeneration>,
 }
 
 /// Manages playback sessions and WebSocket client tasks using Tokio primitives.
 pub struct TokioSessionManager {
     notifier: Arc<dyn FrontendNotifier>,
-    client_factory: Arc<dyn SenderControlClientFactory>,
+    client_factory: Arc<dyn StreamerControlClientFactory>,
     session: tokio::sync::Mutex<Option<ActiveSession>>,
     ws_client_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -36,7 +38,7 @@ pub struct TokioSessionManager {
 impl TokioSessionManager {
     pub fn new(
         notifier: Arc<dyn FrontendNotifier>,
-        client_factory: Arc<dyn SenderControlClientFactory>,
+        client_factory: Arc<dyn StreamerControlClientFactory>,
     ) -> Self {
         Self {
             notifier,
@@ -61,7 +63,7 @@ impl SessionManager for TokioSessionManager {
             shutdown_tx,
             playback_task,
             exclusive_granted,
-        ) = crate::domains::audio::playback::spawn_session_receiver(
+        ) = crate::services::audio::playback::spawn_session_player(
             params.jitter_config.clone(),
             params.is_tcp,
             params.exclusive_mode,
@@ -70,6 +72,8 @@ impl SessionManager for TokioSessionManager {
             params.mode,
             params.device_id.clone(),
             params.network_link,
+            params.session_token.clone(),
+            params.session_generation,
         )?;
 
         let probe_task = match params.target_ip {
@@ -95,6 +99,8 @@ impl SessionManager for TokioSessionManager {
             target_ip: params.target_ip,
             device_id: params.device_id,
             network_link: params.network_link,
+            session_token: params.session_token,
+            session_generation: params.session_generation,
         });
 
         Ok(())
@@ -106,6 +112,13 @@ impl SessionManager for TokioSessionManager {
                 probe_task.abort();
             }
             let _ = session.shutdown_tx.send(());
+            // Upper bound, not a fixed per-teardown cost: the receive loop's
+            // `select!` wakes on `shutdown_tx` immediately and its `ScopeGuard`
+            // detaches (does not join) the worker threads, so this await normally
+            // returns in well under a frame. The 1.5 s only elapses if the Oboe
+            // stream's `Drop`/close hangs — and force-proceeding earlier would just
+            // re-open the device into that same stuck close (worse under exclusive
+            // mode). Left as a safety ceiling.
             let _ = tokio::time::timeout(
                 std::time::Duration::from_millis(1500),
                 session.playback_task,
@@ -159,6 +172,8 @@ impl SessionManager for TokioSessionManager {
             target_ip: s.target_ip,
             device_id: s.device_id.clone(),
             network_link: s.network_link,
+            session_token: s.session_token.clone(),
+            session_generation: s.session_generation,
         })
     }
 
@@ -191,20 +206,23 @@ impl SessionManager for TokioSessionManager {
     }
 }
 
-/// Run the HTTP probe heartbeat loop until cancelled.
+/// Run the HTTPS probe heartbeat loop until cancelled.
 ///
-/// Sends an HTTP probe to the PC sender every 5 seconds so the PC's
+/// Sends an HTTPS probe to the PC streamer every 5 seconds so the PC's
 /// device watchdog keeps the connection alive. This replaces the old
 /// WebView `setInterval` timer which Android would throttle when the
 /// app was backgrounded or the screen was off.
 ///
 /// Errors are logged but never terminate the loop — probes are best-effort.
-async fn run_probe_loop(client: Arc<dyn crate::traits::SenderControlClient>, device_id: DeviceId) {
+async fn run_probe_loop(
+    client: Arc<dyn crate::traits::StreamerControlClient>,
+    device_id: DeviceId,
+) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         interval.tick().await;
         if let Err(e) = client.probe(Some(device_id.clone())).await {
-            tracing::warn!("[Probe] Failed to probe sender: {}", e);
+            tracing::warn!("[Probe] Failed to probe streamer: {}", e);
         }
     }
 }

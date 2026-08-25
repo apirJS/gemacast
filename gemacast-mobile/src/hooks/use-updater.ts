@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { tauriBridge } from '../core/tauri-bridge';
 import { useToastStore } from '../stores/toast-store';
@@ -19,7 +19,7 @@ export function useUpdater() {
 
   // --- Actions ---
 
-  const checkForUpdates = useCallback(async () => {
+  const checkForUpdates = async () => {
     useUpdateStore.getState().setChecking();
 
     // Don't delete the downloaded APK while the user is in the install flow.
@@ -35,9 +35,7 @@ export function useUpdater() {
     try {
       const result = await tauriBridge.checkForUpdate();
       if (result) {
-        useUpdateStore
-          .getState()
-          .setAvailable(result.version, result.downloadUrl, result.sha256 ?? null);
+        useUpdateStore.getState().setAvailable(result.version, result.downloadUrl, result.sha256);
       } else {
         useUpdateStore.getState().setUpToDate();
       }
@@ -46,7 +44,7 @@ export function useUpdater() {
       useUpdateStore.getState().setError(message);
       useToastStore.getState().show('error', 'Update check failed', message);
     }
-  }, []);
+  };
 
   // --- Check for updates on first mount (only if still idle) ---
   useEffect(() => {
@@ -67,9 +65,10 @@ export function useUpdater() {
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
-  const startDownload = useCallback(async () => {
+  const startDownload = async () => {
     const { status, downloadUrl, sha256, version } = useUpdateStore.getState();
-    if (status !== 'available' || !downloadUrl || !version) return;
+
+    if (status !== 'available' || !downloadUrl || !version || !sha256) return;
 
     // Register the progress listener BEFORE starting the download
     // to avoid losing early progress events.
@@ -85,7 +84,7 @@ export function useUpdater() {
     try {
       const apkPath = await tauriBridge.downloadUpdate({
         url: downloadUrl,
-        sha256: sha256,
+        sha256,
       });
       useUpdateStore.getState().setReady(version, apkPath);
     } catch (e) {
@@ -95,9 +94,9 @@ export function useUpdater() {
     } finally {
       unlisten();
     }
-  }, []);
+  };
 
-  const installUpdate = useCallback(async () => {
+  const installUpdate = async () => {
     const { status, apkPath } = useUpdateStore.getState();
     if (status !== 'ready' || !apkPath) return;
 
@@ -113,12 +112,12 @@ export function useUpdater() {
       useUpdateStore.getState().setError(message);
       useToastStore.getState().show('error', 'Install failed', message);
     }
-  }, []);
+  };
 
-  const retry = useCallback(() => {
+  const retry = () => {
     // Reset to idle so the next mount (or immediate re-run) will re-check.
     useUpdateStore.getState().reset();
-  }, []);
+  };
 
   return {
     state: store,

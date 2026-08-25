@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { makeDeviceInfo, makeDiscoveredSender } from '../__tests__/setup';
+import { makeDeviceInfo, makeDiscoveredStreamer } from '../__tests__/setup';
 import { useAppStore } from './app-store';
 import { Status } from '../core/types';
 import { GemaCastError, ErrorCode } from '../core/error';
@@ -18,8 +18,8 @@ describe('app-store — initialization', () => {
     expect(useAppStore.getState().deviceInfo.ip).toBe('192.168.1.100');
   });
 
-  it('starts with null connected sender', () => {
-    expect(useAppStore.getState().connectedSender).toBeNull();
+  it('starts with null connected streamer', () => {
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
   });
 });
 
@@ -37,67 +37,67 @@ describe('app-store — status transitions', () => {
   });
 });
 
-describe('app-store — discovered senders', () => {
-  it('adds a new sender', () => {
-    const sender = makeDiscoveredSender();
-    useAppStore.getState().updateDiscoveredSender(sender);
-    expect(useAppStore.getState().discoveredSenders).toHaveLength(1);
-    expect(useAppStore.getState().discoveredSenders[0].deviceId).toBe(sender.deviceId);
+describe('app-store — discovered streamers', () => {
+  it('adds a new streamer', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().updateDiscoveredStreamer(streamer);
+    expect(useAppStore.getState().discoveredStreamers).toHaveLength(1);
+    expect(useAppStore.getState().discoveredStreamers[0].deviceId).toBe(streamer.deviceId);
   });
 
-  it('updates an existing sender', () => {
-    const sender = makeDiscoveredSender();
-    useAppStore.getState().updateDiscoveredSender(sender);
-    const updated = { ...sender, deviceName: 'New Name' };
-    useAppStore.getState().updateDiscoveredSender(updated);
-    expect(useAppStore.getState().discoveredSenders).toHaveLength(1);
-    expect(useAppStore.getState().discoveredSenders[0].deviceName).toBe('New Name');
+  it('updates an existing streamer', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().updateDiscoveredStreamer(streamer);
+    const updated = { ...streamer, deviceName: 'New Name' };
+    useAppStore.getState().updateDiscoveredStreamer(updated);
+    expect(useAppStore.getState().discoveredStreamers).toHaveLength(1);
+    expect(useAppStore.getState().discoveredStreamers[0].deviceName).toBe('New Name');
   });
 
-  it('removes an offline sender', () => {
-    const sender = makeDiscoveredSender();
-    useAppStore.getState().updateDiscoveredSender(sender);
-    useAppStore.getState().updateDiscoveredSender({ ...sender, isOffline: true });
-    expect(useAppStore.getState().discoveredSenders).toHaveLength(0);
+  it('removes an offline streamer', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().updateDiscoveredStreamer(streamer);
+    useAppStore.getState().updateDiscoveredStreamer({ ...streamer, isOffline: true });
+    expect(useAppStore.getState().discoveredStreamers).toHaveLength(0);
   });
 
-  it('clears connected sender when it goes offline', () => {
-    const sender = makeDiscoveredSender();
-    useAppStore.getState().setConnectedSender(sender);
-    useAppStore.getState().updateDiscoveredSender(sender);
-    useAppStore.getState().updateDiscoveredSender({ ...sender, isOffline: true });
-    expect(useAppStore.getState().connectedSender).toBeNull();
+  it('clears connected streamer when it goes offline', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().setConnectedStreamer(streamer);
+    useAppStore.getState().updateDiscoveredStreamer(streamer);
+    useAppStore.getState().updateDiscoveredStreamer({ ...streamer, isOffline: true });
+    expect(useAppStore.getState().connectedStreamer).toBeNull();
     expect(useAppStore.getState().status).toBe(Status.Listening);
   });
 
-  it('returns auto-reconnect target when last connected sender reappears', () => {
-    const sender = makeDiscoveredSender();
+  it('returns auto-reconnect target when last connected streamer reappears', () => {
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
       status: Status.Listening,
-      lastConnectedSender: sender,
+      lastConnectedStreamer: streamer,
       isSuspended: false,
     });
-    const result = useAppStore.getState().updateDiscoveredSender(sender);
-    expect(result?.deviceId).toBe(sender.deviceId);
+    const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
+    expect(result?.deviceId).toBe(streamer.deviceId);
   });
 
   it('does not auto-reconnect when suspended', () => {
-    const sender = makeDiscoveredSender();
+    const streamer = makeDiscoveredStreamer();
     useAppStore.getState().patch({
       status: Status.Listening,
-      lastConnectedSender: sender,
+      lastConnectedStreamer: streamer,
       isSuspended: true,
     });
-    const result = useAppStore.getState().updateDiscoveredSender(sender);
+    const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
     expect(result).toBeNull();
   });
 });
 
 describe('app-store — error handling', () => {
   it('displays a GemaCastError', () => {
-    const error = GemaCastError.senderTimeout();
+    const error = GemaCastError.streamerTimeout();
     useAppStore.getState().displayError(error);
-    expect(useAppStore.getState().error?.code).toBe(ErrorCode.NETWORK_SENDER_TIMEOUT);
+    expect(useAppStore.getState().error?.code).toBe(ErrorCode.NETWORK_STREAMER_TIMEOUT);
   });
 
   it('displays a string error by wrapping it', () => {
@@ -107,26 +107,35 @@ describe('app-store — error handling', () => {
   });
 
   it('dismisses error', () => {
-    useAppStore.getState().displayError(GemaCastError.senderTimeout());
+    useAppStore.getState().displayError(GemaCastError.streamerTimeout());
     useAppStore.getState().dismissError();
     expect(useAppStore.getState().error).toBeNull();
   });
 });
 
-describe('app-store — latency', () => {
-  it('updates latency stats', () => {
-    useAppStore.getState().updateLatency({ current: 50, avg: 45, max: 80, min: 20 });
-    const { latency } = useAppStore.getState();
-    expect(latency.current).toBe(50);
-    expect(latency.avg).toBe(45);
+describe('app-store — metrics', () => {
+  it('updates metrics by patch', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50, jitterMs: 4 });
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBe(50);
+    expect(metrics.jitterMs).toBe(4);
   });
 
-  it('resets latency', () => {
-    useAppStore.getState().updateLatency({ current: 50, avg: 45, max: 80, min: 20 });
-    useAppStore.getState().resetLatency();
-    const { latency } = useAppStore.getState();
-    expect(latency.current).toBeNull();
-    expect(latency.avg).toBeNull();
+  it('merges successive metric patches', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50 });
+    useAppStore.getState().updateMetrics({ networkRttMs: 18 });
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBe(50);
+    expect(metrics.networkRttMs).toBe(18);
+  });
+
+  it('resets metrics', () => {
+    useAppStore.getState().updateMetrics({ bufferMs: 50, networkRttMs: 18, jitterMs: 4 });
+    useAppStore.getState().resetMetrics();
+    const { metrics } = useAppStore.getState();
+    expect(metrics.bufferMs).toBeNull();
+    expect(metrics.networkRttMs).toBeNull();
+    expect(metrics.jitterMs).toBeNull();
   });
 });
 

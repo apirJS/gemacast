@@ -11,7 +11,7 @@ use gemacast_core::domain::types::JitterConfig;
 /// **Tests**: [`crate::testing::mocks::MockSessionManager`]
 #[async_trait]
 pub trait SessionManager: Send + Sync {
-    /// Tear down any existing session, then spawn a new audio receiver.
+    /// Tear down any existing session, then spawn a new audio player.
     async fn start_session(&self, params: SessionParams) -> Result<(), String>;
 
     /// Gracefully shut down the active session and WebSocket client.

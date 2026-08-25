@@ -26,3 +26,17 @@
 -keep class androidx.core.content.FileProvider { *; }
 -keep class android.content.Intent { *; }
 -keep class android.net.Uri { *; }
+
+# --- JNI entry points on MainActivity (same failure mode as above) ---
+# Rust resolves these by name at runtime, from services/discovery/native.rs and
+# services/updater/install.rs. Worse than an untraceable call: most names are not
+# even literals at the call site — call_native_string_method takes the Kotlin
+# method name as a runtime &str and hands it to env.call_method, so there is
+# nothing for R8 to follow. It sees 15 uncalled public methods.
+#
+# -keepclassmembers rather than -keep: aapt's rule already keeps the class alive,
+# so only the members need pinning. `public <methods>` covers all 15 without a
+# hand-maintained list and leaves private helpers minifiable.
+-keepclassmembers class com.apir.gemacast.MainActivity {
+    public <methods>;
+}

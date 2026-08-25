@@ -1,3 +1,4 @@
+use gemacast_core::control::SessionGeneration;
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig, NetworkLink};
 use std::net::IpAddr;
 
@@ -11,6 +12,10 @@ pub struct SessionParams {
     pub mode: ConnectionMode,
     pub device_id: String,
     pub bitrate: Option<i32>,
+    /// Credentials returned by the acknowledged PC connection. Required for
+    /// the ADB audio socket; absent for UDP/Wi-Fi sessions.
+    pub session_token: Option<String>,
+    pub session_generation: Option<SessionGeneration>,
     /// Effective network link for the session, used for runtime link-aware
     /// jitter policy (e.g. reorder tolerance). Derived from the connect-time
     /// [`LinkPair`]'s `effective_link()`.
@@ -28,6 +33,8 @@ pub struct SessionInfo {
     pub target_ip: Option<IpAddr>,
     pub device_id: String,
     pub network_link: NetworkLink,
+    pub session_token: Option<String>,
+    pub session_generation: Option<SessionGeneration>,
 }
 
 /// Simplified network interface info, decoupled from `netdev::Interface`.
@@ -41,7 +48,7 @@ pub struct InterfaceInfo {
     pub is_usb: bool,
 }
 
-/// Parameters for connecting to a sender.
+/// Parameters for connecting to a streamer.
 #[derive(Debug, Clone)]
 pub struct ConnectParams {
     pub ip: String,
@@ -55,7 +62,7 @@ pub struct ConnectParams {
     pub phone_network_link: Option<NetworkLink>,
 }
 
-/// Parameters for resuming audio playback with an HTTP reconnect.
+/// Parameters for resuming audio playback after an HTTPS reconnect.
 #[derive(Debug, Clone)]
 pub struct ResumeParams {
     pub ip: IpAddr,

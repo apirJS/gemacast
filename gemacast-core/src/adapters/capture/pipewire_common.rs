@@ -13,6 +13,8 @@
 //! the same pattern used by the WASAPI capture backends on Windows.
 
 use crate::audio::{OPUS_CHANNELS, OPUS_FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+use crate::domain::error::AudioError;
+use crate::ports::capture::CaptureCounters;
 
 use ringbuf::{HeapRb, traits::*};
 use std::sync::Arc;
@@ -30,11 +32,41 @@ pub const PW_RING_BUFFER_SIZE: usize = OPUS_FRAME_SAMPLES * 64;
 ///
 /// This creates the pod parameter that tells PipeWire what audio format
 /// we want to receive in our capture stream's `process` callback.
-pub fn build_audio_params() -> Vec<u8> {
+///
+/// `capture_kind` only labels the log line — `"desktop"` or `"process"` — so a field
+/// capture can tell the two PipeWire backends apart, which is what the WASAPI path
+/// already records.
+///
+/// # What the log line says, and what it deliberately does not
+///
+/// It reports the format **requested**, and says so. Nothing here reads the server's
+/// answer back: neither PipeWire stream installs a `param_changed` handler, so the
+/// negotiated `AudioInfoRaw` is never parsed, never validated and never logged. Calling
+/// this line "negotiated" would be a claim nothing checked.
+///
+/// It is still worth logging, because the request is not a formality on this backend.
+/// The pod below carries **one fixed value** per field rather than a `Choice` range, so
+/// a server that cannot deliver 48 kHz stereo `F32LE` fails `connect` outright instead
+/// of answering with something else — which means on the paths where capture works at
+/// all, the requested format is also the running one. Reading the negotiation back is
+/// what makes that inference unnecessary, and it is its own commit.
+///
+/// The buffer period is absent for the same reason: PipeWire's quantum is not known
+/// until the server reports it, so there is nothing to log here yet.
+pub fn build_audio_params(capture_kind: &str) -> Result<Vec<u8>, AudioError> {
     let mut format_value = spa::param::audio::AudioInfoRaw::new();
     format_value.set_format(spa::param::audio::AudioFormat::F32LE);
     format_value.set_rate(OPUS_SAMPLE_RATE);
     format_value.set_channels(OPUS_CHANNELS as u32);
+
+    // Read back through the accessors instead of restating the three constants, so the
+    // line reports what actually went into the pod rather than what was meant to.
+    // Field by field on purpose: `AudioInfoRaw`'s own `Debug` also prints `position`, a
+    // fixed 64-entry channel map that is all zeros here and would bury the three values
+    // that matter.
+    let requested_format = format_value.format();
+    let requested_rate = format_value.rate();
+    let requested_channels = format_value.channels();
 
     let mut cursor = std::io::Cursor::new(Vec::new());
     spa::pod::serialize::PodSerializer::serialize(
@@ -45,9 +77,22 @@ pub fn build_audio_params() -> Vec<u8> {
             properties: format_value.into(),
         }),
     )
-    .expect("Failed to serialize PipeWire audio params");
+    .map_err(|error| {
+        AudioError::PipeWireError(format!("audio parameter serialization: {error}"))
+    })?;
 
-    cursor.into_inner()
+    // After serialization, so the line means "this is what was asked of the server"
+    // rather than "this is what we intended to ask".
+    tracing::info!(
+        capture_kind,
+        "[PipeWire] Requested capture format: {} Hz / {} ch / {:?}, interleaved \
+         (negotiated format is not read back)",
+        requested_rate,
+        requested_channels,
+        requested_format,
+    );
+
+    Ok(cursor.into_inner())
 }
 
 /// Convenience struct for the resources produced by a PipeWire capture stream setup.
@@ -58,6 +103,12 @@ pub struct PwCaptureResources {
     pub notify: Arc<Notify>,
     /// Receives fatal stream errors from the PipeWire thread.
     pub stream_error_rx: mpsc::Receiver<cpal::StreamError>,
+    /// Diagnostic counters written by the `process` callback.
+    ///
+    /// The same `Arc` goes into [`PwProcessData`] on the PipeWire thread and into
+    /// `CaptureHandle` on the consumer side, so the counts the callback writes are
+    /// the counts the pool logs.
+    pub counters: Arc<CaptureCounters>,
 }
 
 /// Create the ring buffer and associated synchronization primitives
@@ -81,6 +132,7 @@ pub fn create_pw_ring_buffer() -> (
             consumer,
             notify,
             stream_error_rx,
+            counters: Arc::new(CaptureCounters::default()),
         },
         stream_error_tx,
     )
@@ -94,10 +146,22 @@ pub fn create_pw_ring_buffer() -> (
 pub struct PwProcessData {
     pub producer: ringbuf::HeapProd<f32>,
     pub notify: Arc<Notify>,
+    /// Shared with the `CaptureHandle` this stream produced — see
+    /// [`PwCaptureResources::counters`].
+    pub counters: Arc<CaptureCounters>,
 }
 
 /// Extract interleaved f32 samples from a PipeWire buffer's data chunks
 /// and push them into the ring buffer.
+///
+/// A push that does not fit is dropped **whole** and counted in
+/// `counters.dropped_samples`. That is the pre-existing policy, kept deliberately:
+/// whether a partial push is better than dropping the buffer is a real decision, and
+/// it should be made once a field capture shows how often this fires at all. Until
+/// then the counter is the only new thing here.
+///
+/// `notify` is signalled only when samples were actually pushed. A wake with nothing
+/// to read costs the consumer a round trip for no work.
 ///
 /// # Safety
 ///
@@ -108,6 +172,7 @@ pub unsafe fn push_pw_audio_to_ringbuf(
     n_samples: usize,
     producer: &mut ringbuf::HeapProd<f32>,
     notify: &Notify,
+    counters: &CaptureCounters,
 ) {
     if data_ptr.is_null() || n_samples == 0 {
         return;
@@ -116,10 +181,14 @@ pub unsafe fn push_pw_audio_to_ringbuf(
     let samples = unsafe { std::slice::from_raw_parts(data_ptr, n_samples) };
 
     if producer.vacant_len() >= samples.len() {
-        let _ = producer.push_slice(samples);
+        let pushed = producer.push_slice(samples);
+        // Short push cannot happen after the vacancy check above, but counting the
+        // shortfall costs nothing and makes that claim falsifiable.
+        CaptureCounters::add(&counters.dropped_samples, (samples.len() - pushed) as u64);
+        notify.notify_one();
+    } else {
+        CaptureCounters::add(&counters.dropped_samples, samples.len() as u64);
     }
-
-    notify.notify_one();
 }
 
 /// Check if PipeWire is available on the system by attempting to initialize it.
@@ -180,9 +249,70 @@ mod tests {
                 n_samples,
                 &mut producer,
                 &resources.notify,
+                &resources.counters,
             );
         }
 
         assert_eq!(producer.occupied_len(), n_samples);
+        assert!(
+            resources.counters.all_clear(),
+            "a push that fits must not record a drop: {:?}",
+            resources.counters.snapshot()
+        );
+    }
+
+    #[test]
+    fn should_count_dropped_samples_when_the_ring_is_full() {
+        let (mut producer, resources, _tx) = create_pw_ring_buffer();
+
+        // Fill the ring so the next push cannot fit.
+        let filler = vec![0.0f32; PW_RING_BUFFER_SIZE];
+        assert_eq!(producer.push_slice(&filler), PW_RING_BUFFER_SIZE);
+
+        let dropped = [0.1f32, 0.2, 0.3, 0.4];
+        unsafe {
+            push_pw_audio_to_ringbuf(
+                dropped.as_ptr(),
+                dropped.len(),
+                &mut producer,
+                &resources.notify,
+                &resources.counters,
+            );
+        }
+
+        assert_eq!(
+            resources
+                .counters
+                .dropped_samples
+                .load(std::sync::atomic::Ordering::Relaxed),
+            dropped.len() as u64,
+            "a whole-buffer drop must be counted, not silent"
+        );
+    }
+
+    #[test]
+    fn should_ignore_a_null_or_empty_push_without_counting_a_drop() {
+        let (mut producer, resources, _tx) = create_pw_ring_buffer();
+
+        unsafe {
+            push_pw_audio_to_ringbuf(
+                std::ptr::null(),
+                4,
+                &mut producer,
+                &resources.notify,
+                &resources.counters,
+            );
+            let empty = [0.0f32; 1];
+            push_pw_audio_to_ringbuf(
+                empty.as_ptr(),
+                0,
+                &mut producer,
+                &resources.notify,
+                &resources.counters,
+            );
+        }
+
+        assert_eq!(producer.occupied_len(), 0);
+        assert!(resources.counters.all_clear());
     }
 }

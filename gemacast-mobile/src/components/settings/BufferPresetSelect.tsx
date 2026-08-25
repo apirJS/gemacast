@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useSettings } from '../../hooks/use-settings';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import { JITTER_PRESETS } from '../../core/presets';
@@ -28,7 +28,7 @@ export function BufferPresetSelect() {
   const warningDialogRef = useRef<HTMLDialogElement>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
 
-  const options: SelectOption<string>[] = useMemo(() => {
+  const options: SelectOption<string>[] = (() => {
     const builtIn = JITTER_PRESETS.map((p) => ({
       value: p.id,
       label: p.name,
@@ -45,19 +45,19 @@ export function BufferPresetSelect() {
     }));
 
     return [...builtIn, ...saved];
-  }, [settings.savedPresets]);
+  })();
 
-  const applyNoBuffer = useCallback(() => {
+  const applyNoBuffer = () => {
     update({ bufferPreset: 'nobuffer' as PresetId });
-  }, [update]);
+  };
 
-  const handleWarningOk = useCallback(() => {
+  const handleWarningOk = () => {
     if (dontShowAgain) {
       dismissWarning();
     }
     warningDialogRef.current?.close();
     applyNoBuffer();
-  }, [dontShowAgain, applyNoBuffer]);
+  };
 
   const handleChange = (value: string) => {
     if (value === 'nobuffer') {

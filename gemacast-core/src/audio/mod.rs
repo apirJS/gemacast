@@ -1,5 +1,6 @@
 use opus::{Decoder, Encoder};
 
+pub mod mixdown;
 pub mod resampler;
 pub use resampler::CaptureResampler;
 pub const OPUS_CHANNELS: u16 = 2;
@@ -9,8 +10,6 @@ pub const OPUS_BITRATE: usize = 128_000;
 pub const OPUS_FRAME_SIZE: usize = 480;
 pub const OPUS_FRAME_SAMPLES: usize = OPUS_FRAME_SIZE * OPUS_CHANNELS as usize;
 
-/// Safe bounds for largest possible packet.
-/// A full uncompressed PCM frame is 1920 f32s = 7680 bytes.
 pub const MAX_OPUS_PACKET_SIZE: usize = 8000;
 pub const SEQ_NUM_SIZE: usize = 8;
 pub const FORMAT_FLAG_SIZE: usize = 1;
@@ -18,6 +17,27 @@ pub const FORMAT_FLAG_SIZE: usize = 1;
 pub const FORMAT_OPUS: u8 = 0;
 pub const FORMAT_UNCOMPRESSED: u8 = 1;
 pub const FORMAT_SILENCE: u8 = 2;
+
+/// Convert a **per-channel** frame count to milliseconds at a given sample rate.
+///
+/// The per-channel part is the whole reason this exists instead of being written inline
+/// at each call site. Every platform quotes its buffer size in frames — cpal's
+/// `FrameCount`, WASAPI's `GetBufferSize`, PipeWire's quantum — and a frame is one
+/// sample *per channel*, so the period is `frames / rate` and never
+/// `frames / (rate * channels)`. Dividing by the interleaved total reports half the true
+/// period, and that is exactly the confusion [`OPUS_FRAME_SIZE`] and
+/// [`OPUS_FRAME_SAMPLES`] invite: 480 is the frame count a platform API wants, 960 is
+/// the length of the buffer holding it.
+///
+/// Returns `None` for a zero rate so a caller can log "rate unknown" rather than
+/// `inf ms`, which reads as a broken device.
+pub fn frames_to_ms(frames: u32, rate: u32) -> Option<f64> {
+    if rate == 0 {
+        return None;
+    }
+
+    Some(f64::from(frames) * 1000.0 / f64::from(rate))
+}
 
 pub fn create_opus_encoder_with_bitrate(bitrate: i32) -> Result<Encoder, opus::Error> {
     let mut encoder = Encoder::new(
@@ -27,7 +47,6 @@ pub fn create_opus_encoder_with_bitrate(bitrate: i32) -> Result<Encoder, opus::E
     )?;
 
     encoder.set_bitrate(opus::Bitrate::Bits(bitrate))?;
-    // Complexity 5 (vs default 10): no perceptible quality loss at >=128kbps,
     encoder.set_complexity(5)?;
     // CELT mode: treated as music/system audio, avoids speech/music detection overhead.
     encoder.set_signal(opus::Signal::Music)?;
@@ -59,7 +78,7 @@ mod tests {
 
         #[test]
         fn max_packet_size_should_accommodate_uncompressed_pcm_frame() {
-            // Uncompressed PCM frame = OPUS_FRAME_SAMPLES * 4 bytes/f32 = 1920 bytes
+            // Uncompressed PCM frame = OPUS_FRAME_SAMPLES * 4 bytes/f32 = 3840 bytes
             let uncompressed_size = OPUS_FRAME_SAMPLES * std::mem::size_of::<f32>();
             assert!(
                 MAX_OPUS_PACKET_SIZE >= uncompressed_size,
@@ -67,6 +86,52 @@ mod tests {
                 MAX_OPUS_PACKET_SIZE,
                 uncompressed_size
             );
+        }
+    }
+
+    /// The frames-to-milliseconds conversion used by every backend's format log.
+    mod frame_duration {
+        use super::*;
+
+        #[test]
+        fn one_opus_frame_should_be_ten_milliseconds() {
+            // The per-channel count, which is what a platform API is handed.
+            assert_eq!(
+                frames_to_ms(OPUS_FRAME_SIZE as u32, OPUS_SAMPLE_RATE),
+                Some(10.0)
+            );
+        }
+
+        #[test]
+        fn the_interleaved_sample_count_should_read_as_twenty_milliseconds() {
+            // Not a quirk to fix here — this is what asking for `OPUS_FRAME_SAMPLES`
+            // frames actually buys, and the assertion exists so a caller that confuses
+            // the two constants sees 20 ms in the log rather than a plausible 10.
+            assert_eq!(
+                frames_to_ms(OPUS_FRAME_SAMPLES as u32, OPUS_SAMPLE_RATE),
+                Some(20.0)
+            );
+        }
+
+        #[test]
+        fn should_not_divide_by_the_channel_count() {
+            // The discriminating case: a divisor of `rate * channels` would give 5.0.
+            assert_eq!(
+                frames_to_ms(OPUS_FRAME_SIZE as u32, OPUS_SAMPLE_RATE),
+                Some(10.0)
+            );
+            assert_ne!(
+                frames_to_ms(
+                    OPUS_FRAME_SIZE as u32,
+                    OPUS_SAMPLE_RATE * OPUS_CHANNELS as u32
+                ),
+                Some(10.0)
+            );
+        }
+
+        #[test]
+        fn should_refuse_a_zero_rate_rather_than_reporting_an_infinite_period() {
+            assert_eq!(frames_to_ms(480, 0), None);
         }
     }
 

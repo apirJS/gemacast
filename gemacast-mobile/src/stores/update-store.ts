@@ -22,19 +22,13 @@ export type UpdateState = {
 
 type UpdateActions = {
   setChecking: () => void;
-  setAvailable: (version: string, downloadUrl: string, sha256: string | null) => void;
+  setAvailable: (version: string, downloadUrl: string, sha256: string) => void;
   setUpToDate: () => void;
   setDownloading: (percent: number) => void;
   setReady: (version: string, apkPath: string) => void;
   setInstalling: () => void;
   setError: (message: string) => void;
-  /** Reset to idle so the user can retry the entire flow. */
   reset: () => void;
-  /**
-   * Called when the app returns to the foreground after an install attempt.
-   * If we were in 'installing' state, transition back to 'ready' so the
-   * user can retry.
-   */
   handleAppResume: () => void;
 };
 

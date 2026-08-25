@@ -11,6 +11,21 @@ use std::net::SocketAddr;
 /// These drive the system tray menu: adding/removing device entries
 /// and displaying fatal error dialogs.
 pub enum TrayEvent {
+    /// A first-time LAN player is waiting for local approval.
+    ConnectionApproval {
+        request_id: String,
+        name: String,
+        addr: SocketAddr,
+        key_fingerprint: String,
+        pairing_code: String,
+        replaces_existing_identity: bool,
+        response_tx: tokio::sync::oneshot::Sender<bool>,
+    },
+    /// A native approval dialog completed without blocking Tao's event loop.
+    ConnectionApprovalResult {
+        response_tx: tokio::sync::oneshot::Sender<bool>,
+        approved: bool,
+    },
     /// A new version has been downloaded and is ready to install.
     UpdateReady {
         version: String,

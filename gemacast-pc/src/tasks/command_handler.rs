@@ -8,19 +8,31 @@ use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::discovery::PresenceBroadcaster;
 use gemacast_core::domain::types::DeviceId;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::device_auth::DeviceAuthManager;
 use crate::events::AppCommand;
 use crate::traits::{AudioController, DeviceNotifier, DeviceRegistry, TrayNotifier};
+use crate::trusted_devices::TrustedDeviceStore;
 
 /// Holds the shutdown handle for an active presence broadcaster.
 #[derive(Default)]
 pub(crate) struct BroadcasterState {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+fn online_presence(streamer_id: &DeviceId, streamer_name: &str) -> ControlMessage {
+    ControlMessage::Presence {
+        device_id: streamer_id.clone(),
+        streamer_name: streamer_name.to_string(),
+        is_offline: false,
+        transport: None,
+    }
 }
 
 /// Handles [`AppCommand`]s from the tray UI.
@@ -29,10 +41,15 @@ pub(crate) struct BroadcasterState {
 /// independently unit-testable with mock implementations.
 pub struct CommandHandler {
     pub is_broadcasting: Arc<AtomicBool>,
+    pub streamer_id: DeviceId,
+    pub streamer_name: String,
     pub registry: Arc<dyn DeviceRegistry>,
     pub tray: Arc<dyn TrayNotifier>,
     pub audio: Arc<dyn AudioController>,
     pub notifier: Arc<dyn DeviceNotifier>,
+    pub authorizer: SessionAuthorizer,
+    pub trusted_devices: TrustedDeviceStore,
+    pub device_auth: DeviceAuthManager,
 }
 
 impl CommandHandler {
@@ -56,7 +73,6 @@ impl CommandHandler {
             }
             AppCommand::ExitApp => {
                 self.handle_stop_all_streams(broadcaster).await;
-                self.tray.notify_shutdown_complete();
             }
             AppCommand::CheckForUpdates => {
                 self.handle_check_for_updates();
@@ -79,19 +95,14 @@ impl CommandHandler {
         self.is_broadcasting.store(true, Ordering::Relaxed);
         broadcaster.shutdown_tx = Some(stop_tx);
 
-        let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
-        let sender_id = DeviceId(format!("PC_{}", device_name.to_uppercase()));
         let registry = self.registry.clone();
+        let streamer_id = self.streamer_id.clone();
+        let streamer_name = self.streamer_name.clone();
 
         tokio::spawn(async move {
-            let sid = sender_id;
-            let sname = device_name;
-            let factory = move || ControlMessage::Presence {
-                device_id: sid.clone(),
-                sender_name: sname.clone(),
-                is_offline: false,
-                transport: None,
-            };
+            let sid = streamer_id;
+            let sname = streamer_name;
+            let factory = move || online_presence(&sid, &sname);
             let registry_ref = registry;
             let target_ips = move || {
                 registry_ref
@@ -123,9 +134,15 @@ impl CommandHandler {
             let _ = tx.send(());
         }
 
-        let all = self.registry.all_devices();
-        for (device_id, _device) in all {
-            self.audio.unsubscribe(&device_id).await;
+        let all = self.registry.drain_all();
+        self.authorizer.revoke_all();
+        self.device_auth.clear_pending();
+        for (device_id, device) in all {
+            self.notifier
+                .notify_disconnect(&device_id, Some(device.addr))
+                .await;
+            let _ = self.audio.unsubscribe(&device_id).await;
+            self.tray.notify_device_lost(device_id, device.addr);
         }
     }
 
@@ -133,7 +150,17 @@ impl CommandHandler {
         tracing::info!("Executing KickDevice command for device: {:?}", device_id);
         let addr = self.registry.get_addr(&device_id);
         self.registry.unregister(&device_id);
-        self.audio.unsubscribe(&device_id).await;
+        self.authorizer.revoke(&device_id, None);
+        self.authorizer.cancel_pending_for_device(&device_id);
+        self.device_auth.cancel_pending_for_device(&device_id);
+        if let Err(error) = self.trusted_devices.forget(&device_id) {
+            tracing::error!("Failed to remove trusted device {:?}: {}", device_id, error);
+            self.tray.notify_fatal_error(format!(
+                "Could not persist the removal of {}. It remains revoked until restart; retry the kick before restarting: {error}",
+                device_id.0
+            ));
+        }
+        let _ = self.audio.unsubscribe(&device_id).await;
         self.notifier.notify_disconnect(&device_id, addr).await;
     }
 
@@ -145,15 +172,16 @@ impl CommandHandler {
             let _ = tx.send(());
         }
 
-        self.audio.shutdown().await;
-
         let all = self.registry.drain_all();
+        self.authorizer.revoke_all();
+        self.device_auth.clear_pending();
         for (device_id, device) in all {
             self.tray.notify_device_lost(device_id.clone(), device.addr);
             self.notifier
                 .notify_disconnect(&device_id, Some(device.addr))
                 .await;
         }
+        let _ = self.audio.shutdown().await;
     }
 
     fn handle_check_for_updates(&self) {
@@ -209,7 +237,7 @@ impl CommandHandler {
                 &info.download_url,
                 &file_path,
                 None,
-                info.sha256.as_deref(),
+                &info.sha256,
             )
             .await
             {
@@ -230,11 +258,23 @@ pub fn spawn_command_handler(
     set: &mut JoinSet<()>,
     mut command_rx: mpsc::Receiver<AppCommand>,
     handler: Arc<CommandHandler>,
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
 ) {
     set.spawn(async move {
         let mut broadcaster = BroadcasterState::default();
+        let mut shutdown_tx = Some(shutdown_tx);
         while let Some(command) = command_rx.recv().await {
+            let should_exit = matches!(command, AppCommand::ExitApp);
             handler.handle(command, &mut broadcaster).await;
+            if should_exit {
+                if let Some(tx) = shutdown_tx.take() {
+                    let _ = tx.send(());
+                }
+                break;
+            }
+        }
+        if let Some(tx) = shutdown_tx.take() {
+            let _ = tx.send(());
         }
     });
 }
@@ -252,10 +292,15 @@ mod tests {
     ) -> CommandHandler {
         CommandHandler {
             is_broadcasting: Arc::new(AtomicBool::new(true)),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "Test PC".into(),
             registry,
             tray,
             audio,
             notifier,
+            authorizer: SessionAuthorizer::default(),
+            trusted_devices: TrustedDeviceStore::in_memory(),
+            device_auth: DeviceAuthManager::default(),
         }
     }
 
@@ -283,6 +328,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn start_broadcasting_should_advertise_the_persistent_pc_identity() {
+        let handler = make_handler(
+            Arc::new(MockDeviceRegistry::new()),
+            Arc::new(MockTrayNotifier::new()),
+            Arc::new(MockAudioController::new()),
+            Arc::new(MockDeviceNotifier::new()),
+        );
+        match online_presence(&handler.streamer_id, &handler.streamer_name) {
+            ControlMessage::Presence {
+                device_id,
+                streamer_name,
+                is_offline,
+                transport,
+            } => {
+                assert_eq!(device_id, handler.streamer_id);
+                assert_eq!(streamer_name, handler.streamer_name);
+                assert!(!is_offline);
+                assert!(transport.is_none());
+            }
+            _ => panic!("online presence helper returned the wrong message type"),
+        }
+    }
+
     #[tokio::test]
     async fn kick_device_should_unregister_and_notify_disconnect() {
         let registry = Arc::new(MockDeviceRegistry::with_device(
@@ -293,16 +362,47 @@ mod tests {
         let audio = Arc::new(MockAudioController::new());
         let notifier = Arc::new(MockDeviceNotifier::new());
         let handler = make_handler(registry.clone(), tray, audio.clone(), notifier.clone());
+        let device_id = DeviceId("phone-1".into());
+        handler
+            .trusted_devices
+            .trust(device_id.clone(), "Phone 1".into(), "key".into())
+            .unwrap();
+        let approval_request = handler
+            .authorizer
+            .create_pending(device_id.clone())
+            .unwrap();
+        handler
+            .device_auth
+            .hold_pending_pairing(
+                approval_request.clone(),
+                device_id.clone(),
+                crate::device_auth::VerifiedDeviceIdentity {
+                    public_key: "key".into(),
+                    fingerprint: "fingerprint".into(),
+                    pairing_code: "123456".into(),
+                },
+            )
+            .unwrap();
 
         let mut broadcaster = BroadcasterState::default();
         handler
-            .handle(
-                AppCommand::KickDevice(DeviceId("phone-1".into())),
-                &mut broadcaster,
-            )
+            .handle(AppCommand::KickDevice(device_id.clone()), &mut broadcaster)
             .await;
 
         assert!(!registry.contains("phone-1"));
+        assert!(!handler.trusted_devices.is_trusted(&device_id, "key"));
+        assert_eq!(
+            handler
+                .authorizer
+                .pending_status(&approval_request, &device_id),
+            None
+        );
+        assert!(
+            handler
+                .device_auth
+                .pending_pairing(&approval_request, &device_id, "key")
+                .is_none()
+        );
 
         let audio_calls = audio.take_calls();
         assert_eq!(audio_calls.len(), 1);

@@ -11,12 +11,12 @@ pub mod mocks {
     use gemacast_core::control::types::{ConnectReq, PresenceResponse};
     use gemacast_core::domain::types::{
         AudioSource, ConnectionMode, DeviceId, DiscoveredDevice, JitterConfig, ProcessInfo,
-        SenderCapabilities,
+        StreamerCapabilities,
     };
 
     use crate::traits::{
-        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SenderControlClient,
-        SenderControlClientFactory, SessionInfo, SessionManager, SessionParams,
+        FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SessionInfo,
+        SessionManager, SessionParams, StreamerControlClient, StreamerControlClientFactory,
     };
 
     // -------------------------------------------------------------------
@@ -26,15 +26,22 @@ pub mod mocks {
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
     pub enum FrontendEvent {
-        SenderDiscovered(DiscoveredDevice),
-        SenderTimeout(DeviceId),
+        StreamerDiscovered(DiscoveredDevice),
+        StreamerTimeout(DeviceId),
         ForceDisconnect,
         LinkLost,
-        LinkRecovered { device_registered: Option<bool> },
+        LinkRecovered {
+            device_registered: Option<bool>,
+        },
         LinkRecoveryGaveUp,
-        SenderConnected(String),
-        AudioTelemetry { latency: f32, is_active: bool },
+        StreamerConnected(String),
+        AudioTelemetry {
+            latency: f32,
+            is_active: bool,
+            jitter_ms: f32,
+        },
         PlaybackError(String),
+        NetworkRtt(f32),
         WsDisconnect,
         WsError(String),
         ServiceCommand(String),
@@ -58,18 +65,18 @@ pub mod mocks {
     }
 
     impl FrontendNotifier for MockFrontendNotifier {
-        fn emit_sender_discovered(&self, device: DiscoveredDevice) {
+        fn emit_streamer_discovered(&self, device: DiscoveredDevice) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderDiscovered(device));
+                .push(FrontendEvent::StreamerDiscovered(device));
         }
 
-        fn emit_sender_timeout(&self, sender_id: &DeviceId) {
+        fn emit_streamer_timeout(&self, streamer_id: &DeviceId) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderTimeout(sender_id.clone()));
+                .push(FrontendEvent::StreamerTimeout(streamer_id.clone()));
         }
 
         fn emit_force_disconnect(&self) {
@@ -97,18 +104,22 @@ pub mod mocks {
                 .push(FrontendEvent::LinkRecoveryGaveUp);
         }
 
-        fn emit_sender_connected(&self, ip: String) {
+        fn emit_streamer_connected(&self, ip: String) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::SenderConnected(ip));
+                .push(FrontendEvent::StreamerConnected(ip));
         }
 
-        fn emit_audio_telemetry(&self, latency: f32, is_active: bool) {
+        fn emit_audio_telemetry(&self, latency: f32, is_active: bool, jitter_ms: f32) {
             self.events
                 .lock()
                 .unwrap()
-                .push(FrontendEvent::AudioTelemetry { latency, is_active });
+                .push(FrontendEvent::AudioTelemetry {
+                    latency,
+                    is_active,
+                    jitter_ms,
+                });
         }
 
         fn emit_playback_error(&self, error: String) {
@@ -116,6 +127,13 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(FrontendEvent::PlaybackError(error));
+        }
+
+        fn emit_network_rtt(&self, rtt_ms: f32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(FrontendEvent::NetworkRtt(rtt_ms));
         }
 
         fn emit_ws_disconnect(&self) {
@@ -265,7 +283,7 @@ pub mod mocks {
     }
 
     // -------------------------------------------------------------------
-    // ControlClientCall + MockSenderControlClient
+    // ControlClientCall + MockStreamerControlClient
     // -------------------------------------------------------------------
 
     #[allow(dead_code)]
@@ -293,22 +311,24 @@ pub mod mocks {
     }
 
     /// Records every HTTP control call for later assertion.
-    pub struct MockSenderControlClient {
+    pub struct MockStreamerControlClient {
         pub calls: Mutex<Vec<ControlClientCall>>,
         connect_result: Mutex<Result<(), String>>,
         disconnect_result: Mutex<Result<(), String>>,
+        change_bitrate_result: Mutex<Result<(), String>>,
         /// Number of probes still to be failed before one succeeds.
         /// `u32::MAX` stands for "never succeeds".
         probe_failures: Mutex<u32>,
         probe_device_registered: Mutex<Option<bool>>,
     }
 
-    impl MockSenderControlClient {
+    impl MockStreamerControlClient {
         pub fn new() -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
                 connect_result: Mutex::new(Ok(())),
                 disconnect_result: Mutex::new(Ok(())),
+                change_bitrate_result: Mutex::new(Ok(())),
                 probe_failures: Mutex::new(0),
                 probe_device_registered: Mutex::new(Some(true)),
             }
@@ -338,13 +358,18 @@ pub mod mocks {
             self
         }
 
+        pub fn with_change_bitrate_error(self, err: String) -> Self {
+            *self.change_bitrate_result.lock().unwrap() = Err(err);
+            self
+        }
+
         pub fn take_calls(&self) -> Vec<ControlClientCall> {
             self.calls.lock().unwrap().drain(..).collect()
         }
     }
 
     #[async_trait]
-    impl SenderControlClient for MockSenderControlClient {
+    impl StreamerControlClient for MockStreamerControlClient {
         async fn connect(&self, req: ConnectReq) -> Result<PresenceResponse, String> {
             self.calls.lock().unwrap().push(ControlClientCall::Connect {
                 device_id: req.device_id.clone(),
@@ -354,11 +379,16 @@ pub mod mocks {
                 .unwrap()
                 .clone()
                 .map(|_| PresenceResponse {
-                    device_id: DeviceId("test-sender".to_string()),
-                    sender_name: "Test Sender".to_string(),
+                    device_id: DeviceId("test-streamer".to_string()),
+                    streamer_name: "Test Streamer".to_string(),
                     is_offline: false,
                     pc_network_link: None,
                     device_registered: Some(true),
+                    session_token: None,
+                    session_generation: None,
+                    pending_request_id: None,
+                    device_auth_challenge: None,
+                    pc_certificate_fingerprint: None,
                 })
         }
 
@@ -374,14 +404,14 @@ pub mod mocks {
 
         async fn get_audio_sources(
             &self,
-        ) -> Result<(Vec<AudioSource>, SenderCapabilities), String> {
+        ) -> Result<(Vec<AudioSource>, StreamerCapabilities), String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(ControlClientCall::GetAudioSources);
             Ok((
                 vec![],
-                SenderCapabilities {
+                StreamerCapabilities {
                     supports_process_capture: false,
                 },
             ))
@@ -404,11 +434,16 @@ pub mod mocks {
             }
 
             Ok(PresenceResponse {
-                device_id: DeviceId("test-sender".to_string()),
-                sender_name: "Test Sender".to_string(),
+                device_id: DeviceId("test-streamer".to_string()),
+                streamer_name: "Test Streamer".to_string(),
                 is_offline: false,
                 pc_network_link: None,
                 device_registered: *self.probe_device_registered.lock().unwrap(),
+                session_token: None,
+                session_generation: None,
+                pending_request_id: None,
+                device_auth_challenge: None,
+                pc_certificate_fingerprint: None,
             })
         }
 
@@ -433,7 +468,7 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(ControlClientCall::ChangeBitrate { device_id, bitrate });
-            Ok(())
+            self.change_bitrate_result.lock().unwrap().clone()
         }
 
         async fn get_process_list(&self) -> Result<Vec<ProcessInfo>, String> {
@@ -447,18 +482,18 @@ pub mod mocks {
 
     /// Factory that returns a shared mock client, so all calls are recorded
     /// in one place regardless of how many times `create()` is called.
-    pub struct MockSenderControlClientFactory {
-        pub client: Arc<MockSenderControlClient>,
+    pub struct MockStreamerControlClientFactory {
+        pub client: Arc<MockStreamerControlClient>,
     }
 
-    impl MockSenderControlClientFactory {
-        pub fn new(client: Arc<MockSenderControlClient>) -> Self {
+    impl MockStreamerControlClientFactory {
+        pub fn new(client: Arc<MockStreamerControlClient>) -> Self {
             Self { client }
         }
     }
 
-    impl SenderControlClientFactory for MockSenderControlClientFactory {
-        fn create(&self, _ip: IpAddr) -> Arc<dyn SenderControlClient> {
+    impl StreamerControlClientFactory for MockStreamerControlClientFactory {
+        fn create(&self, _ip: IpAddr) -> Arc<dyn StreamerControlClient> {
             self.client.clone()
         }
     }
@@ -468,22 +503,32 @@ pub mod mocks {
     // -------------------------------------------------------------------
 
     #[allow(dead_code)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum PlatformCall {
         GetTransportType,
+        DevicePublicKey,
+        SignDeviceAuth,
+        PairedPcIds,
+        ForgetPcIdentity {
+            pc_id: DeviceId,
+        },
         SyncService {
-            is_playing: bool,
+            state: crate::traits::PlaybackState,
             is_exclusive: bool,
         },
         SetStreamingFlag {
             active: bool,
         },
+        NotificationPermission,
+        OpenNotificationSettings,
     }
 
     /// Records every platform call and returns configurable results.
     pub struct MockPlatformService {
         pub calls: Mutex<Vec<PlatformCall>>,
         transport_type: Mutex<Result<String, String>>,
+        paired_pc_ids: Mutex<Result<Vec<DeviceId>, String>>,
+        notification_permission: Mutex<Result<crate::traits::NotificationPermission, String>>,
     }
 
     impl MockPlatformService {
@@ -491,11 +536,38 @@ pub mod mocks {
             Self {
                 calls: Mutex::new(Vec::new()),
                 transport_type: Mutex::new(Err("not android".to_string())),
+                paired_pc_ids: Mutex::new(Ok(Vec::new())),
+                notification_permission: Mutex::new(Ok(
+                    crate::traits::NotificationPermission::Granted,
+                )),
             }
         }
 
         pub fn with_transport_type(self, transport: &str) -> Self {
             *self.transport_type.lock().unwrap() = Ok(transport.to_string());
+            self
+        }
+
+        pub fn with_paired_pc_ids(self, ids: Vec<DeviceId>) -> Self {
+            *self.paired_pc_ids.lock().unwrap() = Ok(ids);
+            self
+        }
+
+        #[allow(dead_code)]
+        pub fn with_notification_permission(
+            self,
+            permission: crate::traits::NotificationPermission,
+        ) -> Self {
+            *self.notification_permission.lock().unwrap() = Ok(permission);
+            self
+        }
+
+        /// Make [`PlatformService::notification_permission`] fail, standing in for a
+        /// JNI or platform error.
+        #[allow(dead_code)]
+        pub fn with_failing_notification_permission(self) -> Self {
+            *self.notification_permission.lock().unwrap() =
+                Err("test notification permission is unavailable".to_string());
             self
         }
 
@@ -515,9 +587,63 @@ pub mod mocks {
 
         fn sync_service(&self, state: crate::traits::PlaybackState, is_exclusive: bool) {
             self.calls.lock().unwrap().push(PlatformCall::SyncService {
-                is_playing: matches!(state, crate::traits::PlaybackState::Playing),
+                state,
                 is_exclusive,
             });
+        }
+
+        fn device_public_key(&self) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::DevicePublicKey);
+            Err("test device identity is not configured".into())
+        }
+
+        fn sign_device_auth(&self, _transcript: &[u8]) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::SignDeviceAuth);
+            Err("test device identity is not configured".into())
+        }
+
+        fn trusted_pc_fingerprint(&self, _pc_id: &DeviceId) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn paired_pc_ids(&self) -> Result<Vec<DeviceId>, String> {
+            self.calls.lock().unwrap().push(PlatformCall::PairedPcIds);
+            self.paired_pc_ids.lock().unwrap().clone()
+        }
+
+        fn confirm_pc_identity(
+            &self,
+            _pc_id: &DeviceId,
+            _pc_name: &str,
+            _fingerprint: &str,
+            _pairing_code: &str,
+            _requires_approval: bool,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn remember_pc_identity(
+            &self,
+            _pc_id: &DeviceId,
+            _fingerprint: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn forget_pc_identity(&self, pc_id: &DeviceId) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::ForgetPcIdentity {
+                    pc_id: pc_id.clone(),
+                });
+            Ok(())
         }
 
         fn set_streaming_flag(&self, active: bool) {
@@ -525,6 +651,22 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(PlatformCall::SetStreamingFlag { active });
+        }
+
+        fn notification_permission(&self) -> Result<crate::traits::NotificationPermission, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::NotificationPermission);
+            self.notification_permission.lock().unwrap().clone()
+        }
+
+        fn open_notification_settings(&self) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PlatformCall::OpenNotificationSettings);
+            Ok(())
         }
     }
 

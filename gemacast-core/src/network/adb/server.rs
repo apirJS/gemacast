@@ -1,24 +1,142 @@
 use crate::control::messages::ControlMessage;
+use crate::control::{SessionAuthorizer, SessionGeneration};
 use crate::domain::types::DeviceId;
 use crate::network::Ports;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::JoinSet;
 
 use super::framer::TcpAudioFramer;
 
+#[derive(Debug, PartialEq, Eq)]
+struct AdbAudioHandshake {
+    device_id: DeviceId,
+    session_token: String,
+    generation: SessionGeneration,
+}
+
+fn parse_adb_audio_handshake(bytes: &[u8]) -> Result<AdbAudioHandshake, &'static str> {
+    use crate::stream::player::transport::{
+        ADB_HANDSHAKE_VERSION, MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH,
+    };
+
+    let mut cursor = 0usize;
+    let take = |cursor: &mut usize, len: usize| -> Option<&[u8]> {
+        let end = cursor.checked_add(len)?;
+        let value = bytes.get(*cursor..end)?;
+        *cursor = end;
+        Some(value)
+    };
+
+    if take(&mut cursor, 1) != Some(&[ADB_HANDSHAKE_VERSION][..]) {
+        return Err("unsupported ADB audio handshake version");
+    }
+    let device_len = *take(&mut cursor, 1)
+        .and_then(|value| value.first())
+        .ok_or("missing ADB device ID length")? as usize;
+    if device_len == 0 || device_len > MAX_DEVICE_ID_LENGTH {
+        return Err("invalid ADB device ID length");
+    }
+    let device_id =
+        std::str::from_utf8(take(&mut cursor, device_len).ok_or("truncated ADB device ID")?)
+            .map_err(|_| "ADB device ID is not UTF-8")?;
+
+    let token_len = *take(&mut cursor, 1)
+        .and_then(|value| value.first())
+        .ok_or("missing ADB session token length")? as usize;
+    if token_len == 0 || token_len > MAX_SESSION_TOKEN_LENGTH {
+        return Err("invalid ADB session token length");
+    }
+    let session_token =
+        std::str::from_utf8(take(&mut cursor, token_len).ok_or("truncated ADB session token")?)
+            .map_err(|_| "ADB session token is not UTF-8")?;
+
+    let generation = u64::from_be_bytes(
+        take(&mut cursor, 8)
+            .ok_or("missing ADB session generation")?
+            .try_into()
+            .map_err(|_| "invalid ADB session generation")?,
+    );
+    if generation == 0 || cursor != bytes.len() {
+        return Err("invalid ADB session generation or trailing data");
+    }
+
+    Ok(AdbAudioHandshake {
+        device_id: DeviceId(device_id.to_string()),
+        session_token: session_token.to_string(),
+        generation: SessionGeneration(generation),
+    })
+}
+
+async fn read_adb_audio_handshake(
+    socket: &mut tokio::net::TcpStream,
+) -> Result<AdbAudioHandshake, &'static str> {
+    use crate::stream::player::transport::{MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH};
+    use tokio::io::AsyncReadExt;
+
+    let mut prefix = [0u8; 2];
+    socket
+        .read_exact(&mut prefix)
+        .await
+        .map_err(|_| "truncated ADB audio handshake")?;
+    let device_len = prefix[1] as usize;
+    if device_len == 0 || device_len > MAX_DEVICE_ID_LENGTH {
+        return Err("invalid ADB device ID length");
+    }
+
+    let mut encoded = Vec::with_capacity(3 + device_len + MAX_SESSION_TOKEN_LENGTH + 8);
+    encoded.extend_from_slice(&prefix);
+    let mut device_and_token_len = vec![0u8; device_len + 1];
+    socket
+        .read_exact(&mut device_and_token_len)
+        .await
+        .map_err(|_| "truncated ADB audio handshake")?;
+    let token_len = device_and_token_len[device_len] as usize;
+    if token_len == 0 || token_len > MAX_SESSION_TOKEN_LENGTH {
+        return Err("invalid ADB session token length");
+    }
+    encoded.extend_from_slice(&device_and_token_len);
+
+    let mut token_and_generation = vec![0u8; token_len + 8];
+    socket
+        .read_exact(&mut token_and_generation)
+        .await
+        .map_err(|_| "truncated ADB audio handshake")?;
+    encoded.extend_from_slice(&token_and_generation);
+    parse_adb_audio_handshake(&encoded)
+}
+
+fn authorize_adb_audio_handshake(
+    authorizer: &SessionAuthorizer,
+    handshake: &AdbAudioHandshake,
+) -> bool {
+    authorizer
+        .authenticate(&handshake.device_id, &handshake.session_token)
+        .is_some_and(|session| session.generation == handshake.generation)
+}
+
 pub trait PresenceProvider: Send + Sync + 'static {
     fn is_broadcasting(&self) -> bool;
-    fn sender_id(&self) -> DeviceId;
-    fn sender_name(&self) -> String;
+    fn streamer_id(&self) -> DeviceId;
+    fn streamer_name(&self) -> String;
 }
 
 pub fn spawn_adb_audio_tcp_server(
     set: &mut JoinSet<()>,
-    engine_command_tx: tokio::sync::mpsc::Sender<crate::stream::sender::engine::AudioStreamCommand>,
+    engine_command_tx: tokio::sync::mpsc::Sender<
+        crate::stream::streamer::engine::AudioStreamCommand,
+    >,
     tcp_drop_tx_for_audio: tokio::sync::broadcast::Sender<()>,
     error_tx: tokio::sync::mpsc::Sender<String>,
+    authorizer: SessionAuthorizer,
 ) {
     set.spawn(async move {
+        let socket_owners = Arc::new(std::sync::Mutex::new(HashMap::<
+            DeviceId,
+            (u64, tokio::sync::oneshot::Sender<()>),
+        >::new()));
+        let next_socket_id = Arc::new(AtomicU64::new(0));
         let listener = {
             let mut attempts = 0;
             loop {
@@ -68,33 +186,52 @@ pub fn spawn_adb_audio_tcp_server(
 
             let engine_command_tx = engine_command_tx.clone();
             let mut drop_rx = tcp_drop_tx_for_audio.subscribe();
+            let socket_owners = socket_owners.clone();
+            let next_socket_id = next_socket_id.clone();
+            let authorizer = authorizer.clone();
 
             tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut len_buf = [0u8; 1];
-                if socket.read_exact(&mut len_buf).await.is_err() {
-                    return;
-                }
-
-                let len = len_buf[0] as usize;
-                if len == 0 || len > 128 {
-                    return;
-                }
-
-                let mut id_buf = vec![0u8; len];
-                if socket.read_exact(&mut id_buf).await.is_err() {
-                    return;
-                }
-
-                let device_id = match String::from_utf8(id_buf) {
-                    Ok(id) => id,
-                    Err(_) => return,
+                let handshake = match tokio::time::timeout(
+                    tokio::time::Duration::from_secs(3),
+                    read_adb_audio_handshake(&mut socket),
+                )
+                .await
+                {
+                    Ok(Ok(handshake)) => handshake,
+                    Ok(Err(reason)) => {
+                        tracing::warn!(%reason, "[ADB] Rejected malformed audio handshake");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::warn!("[ADB] Timed out waiting for audio handshake");
+                        return;
+                    }
                 };
+                if !authorize_adb_audio_handshake(&authorizer, &handshake) {
+                    tracing::warn!(
+                        device_id = %handshake.device_id,
+                        generation = handshake.generation.0,
+                        "[ADB] Rejected unauthorized audio socket"
+                    );
+                    return;
+                }
+                let typed_device_id = handshake.device_id;
+                let device_id = typed_device_id.to_string();
+                let socket_id = next_socket_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+                let (socket_replaced_tx, mut socket_replaced_rx) = tokio::sync::oneshot::channel();
+                if let Ok(mut owners) = socket_owners.lock()
+                    && let Some((_, old_socket_tx)) = owners.insert(
+                        typed_device_id.clone(),
+                        (socket_id, socket_replaced_tx),
+                    )
+                {
+                    let _ = old_socket_tx.send(());
+                }
 
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 if engine_command_tx
-                    .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                        device_id: crate::domain::types::DeviceId(device_id.clone()),
+                    .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                        device_id: typed_device_id.clone(),
                         reply: reply_tx,
                     })
                     .await
@@ -112,8 +249,8 @@ pub fn spawn_adb_audio_tcp_server(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         if engine_command_tx
-                            .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                device_id: crate::domain::types::DeviceId(device_id.clone()),
+                            .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                device_id: typed_device_id.clone(),
                                 reply: reply_tx,
                             })
                             .await
@@ -128,7 +265,7 @@ pub fn spawn_adb_audio_tcp_server(
                     }
                 }
 
-                let broadcaster = match broadcaster {
+                let lease = match broadcaster {
                     Some(b) => b,
                     _ => {
                         tracing::warn!("[ADB] No active source found for device={:?} after retries", device_id);
@@ -137,8 +274,9 @@ pub fn spawn_adb_audio_tcp_server(
                 };
 
                 let mut framer = TcpAudioFramer::new();
-                let mut current_rx = broadcaster.subscribe();
-                drop(broadcaster);
+                let session_generation = lease.session_generation;
+                let mut current_rx = lease.broadcaster.subscribe();
+                drop(lease);
 
                 loop {
                     tokio::select! {
@@ -168,8 +306,8 @@ pub fn spawn_adb_audio_tcp_server(
                                     // Try to fetch the new broadcaster from the engine.
                                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                                     if engine_command_tx
-                                        .send(crate::stream::sender::engine::AudioStreamCommand::GetTcpBroadcaster {
-                                            device_id: crate::domain::types::DeviceId(device_id.clone()),
+                                        .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                            device_id: typed_device_id.clone(),
                                             reply: reply_tx,
                                         })
                                         .await
@@ -179,8 +317,10 @@ pub fn spawn_adb_audio_tcp_server(
                                     }
 
                                     match reply_rx.await {
-                                        Ok(Some(new_broadcaster)) => {
-                                            current_rx = new_broadcaster.subscribe();
+                                        Ok(Some(new_lease))
+                                            if new_lease.session_generation == session_generation =>
+                                        {
+                                            current_rx = new_lease.broadcaster.subscribe();
                                             continue;
                                         }
                                         _ => break, // No active source found, actually shut down
@@ -191,7 +331,28 @@ pub fn spawn_adb_audio_tcp_server(
                         _ = drop_rx.recv() => {
                             break;
                         }
+                        _ = &mut socket_replaced_rx => break,
                     }
+                }
+
+                let is_current = socket_owners
+                    .lock()
+                    .ok()
+                    .and_then(|mut owners| {
+                        (owners.get(&typed_device_id).map(|(id, _)| *id) == Some(socket_id))
+                            .then(|| owners.remove(&typed_device_id))
+                            .flatten()
+                    })
+                    .is_some();
+                if is_current {
+                    let _ = engine_command_tx
+                        .send(
+                            crate::stream::streamer::engine::AudioStreamCommand::TransportClosed {
+                                device_id: typed_device_id,
+                                generation: session_generation,
+                            },
+                        )
+                        .await;
                 }
             });
         }
@@ -255,15 +416,15 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
 
             let pp = presence_provider.clone();
             let is_brdcst = pp.is_broadcasting();
-            let sid = pp.sender_id();
-            let sname = pp.sender_name();
+            let sid = pp.streamer_id();
+            let sname = pp.streamer_name();
             let sid_task = sid.clone();
             let sname_task = sname.clone();
             let is_offline = !is_brdcst;
 
             let presence = ControlMessage::Presence {
                 device_id: sid,
-                sender_name: sname,
+                streamer_name: sname,
                 is_offline,
                 transport: None,
             };
@@ -312,7 +473,7 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
                             let is_brcst_now = pp_clone.is_broadcasting();
                             let presence_update = ControlMessage::Presence {
                                 device_id: sid_task.clone(),
-                                sender_name: sname_task.clone(),
+                                streamer_name: sname_task.clone(),
                                 is_offline: !is_brcst_now,
                                 transport: None,
                             };
@@ -361,4 +522,37 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::player::transport::encode_adb_audio_handshake;
+
+    #[test]
+    fn authenticated_handshake_round_trips_and_requires_current_credentials() {
+        let authorizer = SessionAuthorizer::default();
+        let device_id = DeviceId("phone-1".into());
+        let (token, generation) = authorizer.issue(device_id.clone()).unwrap();
+        let encoded = encode_adb_audio_handshake(&device_id, &token, generation).unwrap();
+        let handshake = parse_adb_audio_handshake(&encoded).unwrap();
+
+        assert_eq!(handshake.device_id, device_id);
+        assert!(authorize_adb_audio_handshake(&authorizer, &handshake));
+
+        let mut stale = handshake;
+        stale.generation = SessionGeneration(stale.generation.0 + 1);
+        assert!(!authorize_adb_audio_handshake(&authorizer, &stale));
+        stale.generation = generation;
+        stale.session_token.push('x');
+        assert!(!authorize_adb_audio_handshake(&authorizer, &stale));
+    }
+
+    #[test]
+    fn malformed_handshake_is_rejected() {
+        assert!(parse_adb_audio_handshake(&[1, 0]).is_err());
+        assert!(
+            parse_adb_audio_handshake(&[99, 1, b'x', 1, b'y', 0, 0, 0, 0, 0, 0, 0, 1]).is_err()
+        );
+    }
 }

@@ -1,0 +1,111 @@
+import { describe, it, expect, beforeEach } from 'bun:test';
+import { render, screen, cleanup } from '@testing-library/react';
+import { useAppStore } from '../../stores/app-store';
+import { Status } from '../../core/types';
+import { ConnectionMetrics } from './ConnectionMetrics';
+
+beforeEach(() => {
+  cleanup();
+  useAppStore.getState().init({
+    deviceId: 'test',
+    deviceName: 'Test',
+    ip: '127.0.0.1',
+  });
+});
+
+describe('ConnectionMetrics', () => {
+  it('renders nothing when Idle', () => {
+    useAppStore.getState().setStatus(Status.Idle);
+    const { container } = render(<ConnectionMetrics />);
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('renders nothing when Listening', () => {
+    useAppStore.getState().setStatus(Status.Listening);
+    const { container } = render(<ConnectionMetrics />);
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('renders the three metrics when Connected', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    useAppStore.getState().updateMetrics({ bufferMs: 42, networkRttMs: 18, jitterMs: 3 });
+    render(<ConnectionMetrics />);
+    // The value and its unit are separate spans (18px digits / 10px "ms"), so
+    // each number is asserted on its own node rather than as "42 ms".
+    expect(screen.getByText('42')).toBeTruthy();
+    expect(screen.getByText('18')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getAllByText('ms')).toHaveLength(3);
+  });
+
+  it('renders buffer metric when Playing', () => {
+    useAppStore.getState().setStatus(Status.Playing);
+    useAppStore.getState().updateMetrics({ bufferMs: 55 });
+    render(<ConnectionMetrics />);
+    expect(screen.getByText('55')).toBeTruthy();
+  });
+
+  it('renders placeholders when metrics are null', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    render(<ConnectionMetrics />);
+    expect(screen.getAllByText('--')).toHaveLength(3);
+  });
+
+  it('tints each metric by its own health band', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    // Buffer ok (<=30), RTT degraded (>30, <=80), jitter lost (>25).
+    useAppStore.getState().updateMetrics({ bufferMs: 12, networkRttMs: 45, jitterMs: 40 });
+    render(<ConnectionMetrics />);
+    expect(screen.getByText('12').className).toContain('text-status-ok');
+    expect(screen.getByText('45').className).toContain('text-status-warn');
+    expect(screen.getByText('40').className).toContain('text-status-lost');
+  });
+
+  it('marks RTT as not applicable on an ADB link instead of showing a pending value', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    useAppStore.getState().setNetworkLinkPair({
+      phone: 'adb',
+      pc: 'adb',
+      effective: 'adb',
+      effectiveLabel: 'ADB',
+    });
+    // The control-channel probe loop does not run over loopback, so RTT is
+    // permanently null there — "n/a" rather than a "--" that implies pending.
+    useAppStore.getState().updateMetrics({ bufferMs: 8, jitterMs: 1 });
+    render(<ConnectionMetrics />);
+    expect(screen.getByText('n/a')).toBeTruthy();
+    expect(screen.queryByText('--')).toBeNull();
+  });
+
+  // The help button is passed in rather than built here, so the row keeps
+  // rendering standalone and the dialog stays owned by one component.
+  it('renders no help affordance unless the caller supplies one', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    render(<ConnectionMetrics />);
+    expect(screen.queryByLabelText('Help')).toBeNull();
+  });
+
+  it('asks for help on the metrics key, not some other entry', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+    // Echoing the requested key back as the label is what makes a wrong key
+    // fail here: it would otherwise open an empty dialog and assert nothing.
+    render(
+      <ConnectionMetrics renderHelpButton={(key) => <button aria-label="Help">{key}</button>} />,
+    );
+    expect(screen.getByLabelText('Help').textContent).toBe('connection-metrics');
+  });
+
+  // The help button occupies a column of its own, so without a counterweight it
+  // drags the three metrics off the card's centre line.
+  it('counterweights the help button so the metrics stay centred', () => {
+    useAppStore.getState().setStatus(Status.Connected);
+
+    const { container: bare } = render(<ConnectionMetrics />);
+    // No button, no spacer — the row must lay out exactly as it always did.
+    expect(bare.querySelector('[aria-hidden="true"]')?.className).toBe('');
+
+    cleanup();
+    render(<ConnectionMetrics renderHelpButton={() => <button aria-label="Help">?</button>} />);
+    expect(screen.getByLabelText('Connection metrics').firstElementChild?.className).toBe('w-6');
+  });
+});

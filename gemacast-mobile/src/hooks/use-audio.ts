@@ -13,14 +13,14 @@ export async function startPlayback(): Promise<Result<true, GemaCastError>> {
   store.getState().setLoading(true);
   try {
     const state = store.getState();
-    const sender = state.connectedSender;
+    const streamer = state.connectedStreamer;
     await tauriBridge.startAudioPlayback({
-      ip: sender ? sender.addr.split(':')[0] : null,
+      ip: streamer ? streamer.addr.split(':')[0] : null,
       deviceId: state.deviceInfo.deviceId,
       deviceName: state.deviceInfo.deviceName,
     });
     const current = store.getState();
-    if (current.connectedSender) {
+    if (current.connectedStreamer) {
       store.getState().patch({ status: Status.Connected, isLoading: false });
     } else {
       store.getState().setLoading(false);
@@ -39,13 +39,13 @@ export async function stopPlayback(): Promise<Result<true, GemaCastError>> {
   store.getState().setLoading(true);
   try {
     const state = store.getState();
-    const sender = state.connectedSender;
+    const streamer = state.connectedStreamer;
     await tauriBridge.stopAudioPlayback({
-      ip: sender ? sender.addr.split(':')[0] : null,
+      ip: streamer ? streamer.addr.split(':')[0] : null,
       deviceId: state.deviceInfo.deviceId,
     });
     // Transition to Paused — the session stays alive, only the Oboe stream
-    // is silenced. connectedSender remains set.
+    // is silenced. connectedStreamer remains set.
     store.getState().patch({ status: Status.Paused, isLoading: false });
     return ok(true);
   } catch (e) {

@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from 'react';
+import { useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { HELP_CONTENT } from '../../core/help-content';
 
@@ -44,31 +44,28 @@ export function useHelpDialog() {
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const helpDialogRef = useRef<HTMLDialogElement>(null);
 
-  const openHelp = useCallback((key: string) => {
+  const openHelp = (key: string) => {
     setActiveHelp(key);
     helpDialogRef.current?.showModal();
-  }, []);
+  };
 
-  const closeHelp = useCallback(() => {
+  const closeHelp = () => {
     helpDialogRef.current?.close();
     setActiveHelp(null);
-  }, []);
+  };
 
-  const renderHelpButton = useCallback(
-    (helpKey: string) => (
-      <button
-        type="button"
-        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-[0.7rem] font-bold text-muted-foreground hover:border-primary hover:bg-primary hover:text-primary-foreground transition-colors"
-        onClick={(e) => {
-          e.stopPropagation();
-          openHelp(helpKey);
-        }}
-        aria-label="Help"
-      >
-        ?
-      </button>
-    ),
-    [openHelp],
+  const renderHelpButton = (helpKey: string) => (
+    <button
+      type="button"
+      className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-[0.7rem] font-bold text-muted-foreground hover:border-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+      onClick={(e) => {
+        e.stopPropagation();
+        openHelp(helpKey);
+      }}
+      aria-label="Help"
+    >
+      ?
+    </button>
   );
 
   return {
