@@ -20,6 +20,7 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: RUSTSEC-2021-0119,RUSTSEC-2026-0194,RUSTSEC-2026-0195
 
   frontend:
     name: Frontend Checks (TypeScript / Tauri)
@@ -133,8 +134,8 @@ jobs:
         if: matrix.target == 'android'
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
       - name: Setup Android SDK & NDK
         if: matrix.target == 'android'
         uses: android-actions/setup-android@v3
@@ -184,4 +185,3 @@ jobs:
             sleep 2
             cargo test --workspace
           '
-

@@ -24,6 +24,8 @@
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Gemacast streams your Mac's audio to your phone over the local network.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Gemacast reads your Mac's audio output through an audio input device so it can be streamed to your phone. No microphone audio is recorded or transmitted.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
