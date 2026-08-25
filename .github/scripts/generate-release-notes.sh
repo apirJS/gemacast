@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Generate formatted release notes with download matrix.
-# Expects env vars: TAG, REPO
+# Expects env vars: TAG, REPO, SIGNING_KEY_FINGERPRINT
 set -euo pipefail
 
 TAG="${TAG:?TAG is required}"
 REPO="${REPO:?REPO is required}"
+FPR="${SIGNING_KEY_FINGERPRINT:?SIGNING_KEY_FINGERPRINT is required}"
 
 VERSION="${TAG#v}"
 BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
@@ -66,7 +67,16 @@ fi
   echo "* **Android**: [APK Installer](${BASE_URL}/gemacast-mobile.apk)"
   echo ""
   echo "### Security"
-  echo "All binaries are cryptographically signed. Download the corresponding \`.sig\` file to verify."
+  echo "All binaries are signed with the Gemacast release key, fingerprint \`${FPR}\`."
+  echo ""
+  echo '```sh'
+  echo "gpg --keyserver keys.openpgp.org --recv-keys ${FPR}"
+  echo "gpg --verify gemacast-mobile.apk.sig gemacast-mobile.apk"
+  echo '```'
+  echo ""
+  echo "\`pubkey.asc\` below is the same key, for offline import. Import it once and"
+  echo "verify every later release against it - if one ever fails with \`No public key\`,"
+  echo "the signing key changed."
   echo ""
   echo "---"
   echo ""
