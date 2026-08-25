@@ -154,8 +154,28 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy Android
         if: matrix.target == 'android'
+        # The env vars below are not lint configuration — they are what makes the
+        # next step possible. `:app` cannot even be configured without four
+        # gitignored artifacts (tauri.settings.gradle, app/tauri.build.gradle.kts,
+        # app/proguard-tauri.pro, app/src/main/java/com/apir/gemacast/generated/),
+        # and all four are written by *build scripts* gated purely on these
+        # variables: tauri-build's `generate_gradle_files` runs only when
+        # TAURI_ANDROID_PROJECT_PATH is set, and wry's + tauri's build.rs emit the
+        # generated/ Kotlin only when WRY_ANDROID_KOTLIN_FILES_OUT_DIR is. The
+        # Tauri CLI normally sets them while shelling out to cargo; here we set
+        # them on the lint pass we already run, so generation costs no extra
+        # compilation. Verified locally: with the artifacts deleted, this command
+        # reproduces all four byte-identically to real CLI output.
+        # Values mirror `identifier` in tauri.conf.json and the src-tauri lib name.
+        env:
+          TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/gemacast-mobile/src-tauri/gen/android
+          WRY_ANDROID_PACKAGE: com.apir.gemacast
+          WRY_ANDROID_LIBRARY: gemacast_mobile_lib
+          WRY_ANDROID_KOTLIN_FILES_OUT_DIR: ${{ github.workspace }}/gemacast-mobile/src-tauri/gen/android/app/src/main/java/com/apir/gemacast/generated
         run: |
           cargo install cargo-ndk --force
+          # wry canonicalizes this path, so it must exist before cargo runs.
+          mkdir -p "$WRY_ANDROID_KOTLIN_FILES_OUT_DIR"
           cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
       - name: Android JVM Unit Tests
         if: matrix.target == 'android'
