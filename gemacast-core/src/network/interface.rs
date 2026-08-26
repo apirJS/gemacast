@@ -285,11 +285,38 @@ pub fn detect_pc_link(mode: ConnectionMode, client_ip: std::net::IpAddr) -> Netw
     link
 }
 
-/// Query the OS for the channel the Wi-Fi interface is currently connected to.
+/// Last Wi-Fi band we measured, and when.
+static WIFI_LINK_CACHE: Mutex<Option<(NetworkLink, Instant)>> = Mutex::new(None);
+
+/// Wi-Fi band of the current connection, cached for [`CACHE_TTL_SECS`].
+///
+/// `/connect` is a polling handshake - the phone re-POSTs every 250 ms for up
+/// to 70 s while the PC user is still at the approval dialog, and every POST
+/// asks for the link. Unfiltered that is ~280 subprocesses per pairing, which
+/// on Windows was ~280 console windows. One measurement per 5 s still notices
+/// a band change well within a session.
+///
+/// The lock is deliberately held across the query: a concurrent poll waits and
+/// then reads the fresh value instead of spawning a second process. Same shape
+/// as [`cached_interfaces`].
+fn get_connected_wifi_channel() -> NetworkLink {
+    let mut guard = WIFI_LINK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if let Some((link, measured_at)) = *guard
+        && now.duration_since(measured_at).as_secs() < CACHE_TTL_SECS
+    {
+        return link;
+    }
+    let link = query_connected_wifi_channel();
+    *guard = Some((link, now));
+    link
+}
+
+/// Ask the OS which channel the Wi-Fi interface is connected to.
 ///
 /// Uses platform-specific CLI commands that return instantly (<50ms),
 /// as opposed to hardware scans which block for 3-5 seconds.
-fn get_connected_wifi_channel() -> NetworkLink {
+fn query_connected_wifi_channel() -> NetworkLink {
     #[cfg(target_os = "android")]
     return NetworkLink::WifiUnknown;
 
