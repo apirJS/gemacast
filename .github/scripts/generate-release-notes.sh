@@ -74,9 +74,7 @@ fi
   echo "gpg --verify gemacast-mobile.apk.sig gemacast-mobile.apk"
   echo '```'
   echo ""
-  echo "\`pubkey.asc\` below is the same key, for offline import. Import it once and"
-  echo "verify every later release against it - if one ever fails with \`No public key\`,"
-  echo "the signing key changed."
+  echo "\`pubkey.asc\` below is the same key, for offline import."
   echo ""
   echo "---"
   echo ""
