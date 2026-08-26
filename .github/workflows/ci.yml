@@ -186,8 +186,8 @@ jobs:
         run: bash ./gradlew :app:testUniversalDebugUnitTest --no-daemon
       - name: Cargo Test (macOS/Windows)
         if: matrix.target == 'pc' && !contains(matrix.os, 'ubuntu')
-        # No RUSTFLAGS: the macOS Swift rpath moved to .cargo/config.toml so
-        # `dist build` gets it too. Setting RUSTFLAGS here would override it.
+        # No RUSTFLAGS: it would override the macOS Swift rpath in
+        # .cargo/config.toml, which is what lets the test binaries launch.
         run: cargo test --workspace
       - name: Cargo Test (Linux with PipeWire)
         if: matrix.target == 'pc' && contains(matrix.os, 'ubuntu')

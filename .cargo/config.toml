@@ -4,9 +4,9 @@ CMAKE_GENERATOR_armv7_linux_androideabi = "Ninja"
 CMAKE_GENERATOR_x86_64_linux_android = "Ninja"
 CMAKE_GENERATOR_i686_linux_android = "Ninja"
 
-# macOS: rpath to the OS Swift runtime. `screencapturekit` links a bundled Swift
-# bridge, so the binary needs it or it aborts at launch.
-# Setting RUSTFLAGS anywhere *replaces* these - don't. test-macos.sh asserts the rpath.
+# macOS: rpath to the OS Swift runtime, needed by screencapturekit's Swift bridge.
+# This covers `cargo test` only — gemacast-pc/build.rs is what covers the shipped
+# binary, because `dist build` sets RUSTFLAGS and cargo then ignores the lines below.
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
 

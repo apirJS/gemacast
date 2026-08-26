@@ -19,15 +19,20 @@ for VARIANT in x64 aarch64 universal; do
   if [ -f "$APP/Contents/MacOS/gemacast-pc" ]; then
     echo "PASS: Binary exists"
 
-    # Swift-runtime LC_RPATH (from .cargo/config.toml). Without it the app aborts
-    # at launch. One rpath per architecture slice, so universal must show two.
-    if [ "$VARIANT" = "universal" ]; then EXPECTED_RPATHS=2; else EXPECTED_RPATHS=1; fi
-    FOUND_RPATHS=$(otool -l "$APP/Contents/MacOS/gemacast-pc" \
-      | grep -A2 LC_RPATH | grep -c '/usr/lib/swift' || true)
-    if [ "$FOUND_RPATHS" -eq "$EXPECTED_RPATHS" ]; then
-      echo "PASS: Swift runtime LC_RPATH present in $FOUND_RPATHS/$EXPECTED_RPATHS slice(s)"
+    # Swift-runtime LC_RPATH (from gemacast-pc/build.rs). Without it the app aborts
+    # at launch. Every arch slice needs its own, so check them one by one.
+    BIN="$APP/Contents/MacOS/gemacast-pc"
+    SLICES=$(lipo -archs "$BIN")
+    MISSING_RPATH=""
+    for SLICE in $SLICES; do
+      if ! otool -arch "$SLICE" -l "$BIN" | grep -A2 LC_RPATH | grep -q '/usr/lib/swift'; then
+        MISSING_RPATH="$MISSING_RPATH $SLICE"
+      fi
+    done
+    if [ -z "$MISSING_RPATH" ]; then
+      echo "PASS: Swift runtime LC_RPATH present in all slices ($SLICES)"
     else
-      echo "FAIL: Swift runtime LC_RPATH found in $FOUND_RPATHS of $EXPECTED_RPATHS slice(s) —" \
+      echo "FAIL: Swift runtime LC_RPATH missing from slice(s):$MISSING_RPATH —" \
         "app will abort with 'Library not loaded: @rpath/libswift_Concurrency.dylib'"
       ERRORS=$((ERRORS+1))
     fi

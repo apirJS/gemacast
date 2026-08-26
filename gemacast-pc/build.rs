@@ -7,6 +7,15 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
+    // --- macOS Swift runtime rpath ---
+    // screencapturekit links a bundled Swift bridge, so the binary aborts at
+    // launch without this. It lives here rather than in .cargo/config.toml
+    // because `dist build` sets RUSTFLAGS, and that makes cargo drop
+    // [target.*].rustflags. Link args from a build script always survive.
+    if target_os == "macos" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
+
     // --- Windows application resources (icon + ComCtl32 v6/DPI manifest) ---
     // rfd uses native task dialogs, which inherit the executable's application
     // icon. Compile the icon and manifest into one resource to keep every dialog
