@@ -1,0 +1,14 @@
+[env]
+CMAKE_GENERATOR_aarch64_linux_android = "Ninja"
+CMAKE_GENERATOR_armv7_linux_androideabi = "Ninja"
+CMAKE_GENERATOR_x86_64_linux_android = "Ninja"
+CMAKE_GENERATOR_i686_linux_android = "Ninja"
+
+# macOS: rpath to the OS Swift runtime. `screencapturekit` links a bundled Swift
+# bridge, so the binary needs it or it aborts at launch.
+# Setting RUSTFLAGS anywhere *replaces* these - don't. test-macos.sh asserts the rpath.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]

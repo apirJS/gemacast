@@ -18,6 +18,19 @@ for VARIANT in x64 aarch64 universal; do
   # Check bundle structure
   if [ -f "$APP/Contents/MacOS/gemacast-pc" ]; then
     echo "PASS: Binary exists"
+
+    # Swift-runtime LC_RPATH (from .cargo/config.toml). Without it the app aborts
+    # at launch. One rpath per architecture slice, so universal must show two.
+    if [ "$VARIANT" = "universal" ]; then EXPECTED_RPATHS=2; else EXPECTED_RPATHS=1; fi
+    FOUND_RPATHS=$(otool -l "$APP/Contents/MacOS/gemacast-pc" \
+      | grep -A2 LC_RPATH | grep -c '/usr/lib/swift' || true)
+    if [ "$FOUND_RPATHS" -eq "$EXPECTED_RPATHS" ]; then
+      echo "PASS: Swift runtime LC_RPATH present in $FOUND_RPATHS/$EXPECTED_RPATHS slice(s)"
+    else
+      echo "FAIL: Swift runtime LC_RPATH found in $FOUND_RPATHS of $EXPECTED_RPATHS slice(s) —" \
+        "app will abort with 'Library not loaded: @rpath/libswift_Concurrency.dylib'"
+      ERRORS=$((ERRORS+1))
+    fi
   else
     echo "FAIL: Binary missing"; ERRORS=$((ERRORS+1))
   fi
