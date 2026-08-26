@@ -443,7 +443,7 @@ mod tests {
     fn test_linux_enumerate_pipewire_nodes() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
-            let _ = std::process::Command::new("pw-cli")
+            let _ = crate::process::quiet_command("pw-cli")
                 .args([
                     "create-node",
                     "adapter",
@@ -456,7 +456,7 @@ mod tests {
             // Spawn a dummy audio process playing silence from a proper WAV file.
             // CI's pw-cat uses libsndfile which requires a valid container header.
             let wav_path = create_silent_wav(30);
-            let mut child = match std::process::Command::new("pw-cat")
+            let mut child = match crate::process::quiet_command("pw-cat")
                 .arg("-p")
                 .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())

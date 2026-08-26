@@ -38,7 +38,7 @@ use gemacast_core::control::http::{ControlCommand, ControlServerState};
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::domain::types::DeviceId;
 use gemacast_core::network::adb::{
-    PresenceProvider, spawn_adb_audio_tcp_server, spawn_adb_discovery_tcp_server,
+    PresenceProvider, adb_command, spawn_adb_audio_tcp_server, spawn_adb_discovery_tcp_server,
     spawn_adb_port_forwarding_watchdog,
 };
 use gemacast_core::stream::streamer::engine::AudioStreamEngine;
@@ -79,61 +79,6 @@ impl PresenceProvider for PcPresenceProvider {
     fn streamer_name(&self) -> String {
         self.streamer_name.clone()
     }
-}
-
-/// Resolve the path to the bundled ADB binary next to our own executable.
-///
-/// On Windows this is `<exe_dir>/adb.exe`, on other platforms `<exe_dir>/adb`.
-/// Falls back to bare `"adb"` (PATH lookup) if the exe directory cannot be determined.
-pub(crate) fn local_adb_path() -> std::path::PathBuf {
-    let adb_name = if cfg!(target_os = "windows") {
-        "adb.exe"
-    } else {
-        "adb"
-    };
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let local = dir.join(adb_name);
-        if local.exists()
-            && std::process::Command::new(&local)
-                .arg("version")
-                .output()
-                .is_ok()
-        {
-            return local;
-        }
-    }
-    #[cfg(target_os = "linux")]
-    if std::path::Path::new("/usr/lib/gemacast/adb").exists()
-        && std::process::Command::new("/usr/lib/gemacast/adb")
-            .arg("version")
-            .output()
-            .is_ok()
-    {
-        return std::path::PathBuf::from("/usr/lib/gemacast/adb");
-    }
-    // Fallback: bare name (will search PATH)
-    std::path::PathBuf::from(adb_name)
-}
-
-/// Returns a Tokio Command for the bundled ADB.
-///
-/// On Windows the process is configured with CREATE_NO_WINDOW so no console
-/// window flashes when ADB commands run in the background.
-#[cfg(target_os = "windows")]
-fn adb_command() -> tokio::process::Command {
-    let mut std_cmd = std::process::Command::new(local_adb_path());
-    use std::os::windows::process::CommandExt;
-    std_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    tokio::process::Command::from(std_cmd)
-}
-
-/// Returns a Tokio Command for the bundled ADB.
-#[cfg(not(target_os = "windows"))]
-fn adb_command() -> tokio::process::Command {
-    let std_cmd = std::process::Command::new(local_adb_path());
-    tokio::process::Command::from(std_cmd)
 }
 
 // ---------------------------------------------------------------------------

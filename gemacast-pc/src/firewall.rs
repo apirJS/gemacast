@@ -166,7 +166,7 @@ pub fn warn_if_firewall_may_block() {
 /// A missing binary, non-zero exit, or spawn failure all yield `None`.
 #[cfg(target_os = "linux")]
 fn run_ok(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
+    let output = gemacast_core::process::quiet_command(program)
         .args(args)
         .output()
         .ok()?;

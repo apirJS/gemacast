@@ -10,6 +10,7 @@ pub mod discovery;
 
 pub mod jitter;
 pub mod network;
+pub mod process;
 pub mod stream;
 pub mod updater;
 

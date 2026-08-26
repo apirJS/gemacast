@@ -373,7 +373,7 @@ mod tests {
         }
 
         // Create a dummy null sink for the headless CI environment
-        let _ = std::process::Command::new("pw-cli")
+        let _ = crate::process::quiet_command("pw-cli")
             .args([
                 "create-node",
                 "adapter",
@@ -386,7 +386,7 @@ mod tests {
         // Spawn pw-cat to play the sine wave through the sink, generating audio traffic.
         // Use a proper WAV file because CI's pw-cat uses libsndfile which needs a container header.
         let wav_path = create_sine_wav(30);
-        let mut child = match std::process::Command::new("pw-cat")
+        let mut child = match crate::process::quiet_command("pw-cat")
             .arg("-p")
             .arg(&wav_path)
             .stdout(std::process::Stdio::piped())

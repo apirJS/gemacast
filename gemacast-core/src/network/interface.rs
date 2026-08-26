@@ -297,7 +297,7 @@ fn get_connected_wifi_channel() -> NetworkLink {
     {
         // `netsh wlan show interfaces` outputs key-value lines like:
         //     Channel                : 36
-        let output = std::process::Command::new("netsh")
+        let output = crate::process::quiet_command("netsh")
             .args(["wlan", "show", "interfaces"])
             .output();
 
@@ -328,7 +328,7 @@ fn get_connected_wifi_channel() -> NetworkLink {
     {
         // `system_profiler SPAirPortDataType` outputs lines like:
         //     Channel: 149 (5GHz, 80MHz)
-        let output = std::process::Command::new("system_profiler")
+        let output = crate::process::quiet_command("system_profiler")
             .arg("SPAirPortDataType")
             .output();
 
@@ -359,7 +359,7 @@ fn get_connected_wifi_channel() -> NetworkLink {
     {
         // Try `iwgetid --channel --raw` first (outputs bare channel number like "6").
         // Falls back to `nmcli` if iwgetid is unavailable.
-        let output = std::process::Command::new("iwgetid")
+        let output = crate::process::quiet_command("iwgetid")
             .args(["--channel", "--raw"])
             .output();
 
@@ -376,7 +376,7 @@ fn get_connected_wifi_channel() -> NetworkLink {
 
         // Fallback: nmcli -t -f IN-USE,CHAN dev wifi list
         // Connected network line starts with "*:", e.g. "*:36"
-        let output = std::process::Command::new("nmcli")
+        let output = crate::process::quiet_command("nmcli")
             .args(["-t", "-f", "IN-USE,CHAN", "dev", "wifi", "list"])
             .output();
 
