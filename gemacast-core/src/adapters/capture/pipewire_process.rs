@@ -511,7 +511,7 @@ mod tests {
     fn test_process_capture_end_to_end() {
         if is_pipewire_available() {
             // Create a dummy sink in PipeWire so pw-cat doesn't exit instantly in headless CI
-            let _ = std::process::Command::new("pw-cli")
+            let _ = crate::process::quiet_command("pw-cli")
                 .args([
                     "create-node",
                     "adapter",
@@ -525,7 +525,7 @@ mod tests {
             // We generate a proper WAV file because the CI's pw-cat version uses libsndfile
             // which requires a valid container header (raw /dev/zero or stdin won't work).
             let wav_path = create_sine_wav(120);
-            let mut child = match std::process::Command::new("pw-cat")
+            let mut child = match crate::process::quiet_command("pw-cat")
                 .arg("-p")
                 .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())
@@ -642,7 +642,7 @@ mod tests {
         }
 
         // Create a dummy null sink
-        let _ = std::process::Command::new("pw-cli")
+        let _ = crate::process::quiet_command("pw-cli")
             .args([
                 "create-node",
                 "adapter",
@@ -655,7 +655,7 @@ mod tests {
         // Helper to spawn a pw-cat process playing silence from a WAV file
         let spawn_pw_cat = || -> Option<(std::process::Child, String)> {
             let wav_path = create_sine_wav(120);
-            match std::process::Command::new("pw-cat")
+            match crate::process::quiet_command("pw-cat")
                 .arg("-p")
                 .arg(&wav_path)
                 .stdout(std::process::Stdio::piped())

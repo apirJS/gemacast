@@ -1,38 +1,57 @@
 use crate::network::Ports;
+use crate::process::{quiet_command, quiet_tokio_command};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::task::JoinSet;
 
-/// Resolve the path to the bundled ADB binary next to our own executable.
-fn local_adb_path() -> std::path::PathBuf {
+/// Path to the bundled ADB binary, resolved once per process.
+///
+/// Memoized because resolving spawns a process (see [`runs`]). Without this,
+/// every ADB command would cost two processes, and the watchdog below runs one
+/// every 3 seconds for the life of the app.
+fn local_adb_path() -> &'static Path {
+    static ADB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    ADB_PATH.get_or_init(resolve_adb_path).as_path()
+}
+
+/// Find a working ADB: next to our own executable first (how every archive and
+/// installer ships it), then the deb/rpm install path, then bare `adb` so a dev
+/// box falls back to PATH.
+fn resolve_adb_path() -> PathBuf {
     let adb_name = if cfg!(target_os = "windows") {
         "adb.exe"
     } else {
         "adb"
     };
+
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let local = dir.join(adb_name);
-        if local.exists() {
-            return local;
+        let sibling = dir.join(adb_name);
+        if runs(&sibling) {
+            return sibling;
         }
     }
-    std::path::PathBuf::from(adb_name)
+
+    #[cfg(target_os = "linux")]
+    {
+        let packaged = PathBuf::from("/usr/lib/gemacast/adb");
+        if runs(&packaged) {
+            return packaged;
+        }
+    }
+
+    PathBuf::from(adb_name)
 }
 
-/// Returns a Tokio Command for the bundled ADB (with CREATE_NO_WINDOW on Windows).
-#[cfg(target_os = "windows")]
-pub fn adb_command() -> tokio::process::Command {
-    let mut std_cmd = std::process::Command::new(local_adb_path());
-    use std::os::windows::process::CommandExt;
-    std_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    tokio::process::Command::from(std_cmd)
+/// Whether `path` exists and can actually be launched.
+fn runs(path: &Path) -> bool {
+    path.exists() && quiet_command(path).arg("version").output().is_ok()
 }
 
-/// Returns a Tokio Command for the bundled ADB.
-#[cfg(not(target_os = "windows"))]
+/// A Tokio Command for the bundled ADB. Never pops a console window.
 pub fn adb_command() -> tokio::process::Command {
-    let std_cmd = std::process::Command::new(local_adb_path());
-    tokio::process::Command::from(std_cmd)
+    quiet_tokio_command(local_adb_path())
 }
 
 pub fn spawn_adb_port_forwarding_watchdog(

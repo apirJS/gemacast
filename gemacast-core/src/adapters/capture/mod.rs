@@ -267,7 +267,7 @@ fn macos_supports_sck() -> bool {
 /// command cannot be run or its output parsed. See [`macos_supports_sck`].
 #[cfg(target_os = "macos")]
 fn macos_product_version_major() -> Option<u32> {
-    let output = std::process::Command::new("sw_vers")
+    let output = crate::process::quiet_command("sw_vers")
         .arg("-productVersion")
         .output()
         .ok()?;

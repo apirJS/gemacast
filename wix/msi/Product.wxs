@@ -38,8 +38,10 @@
     <util:CloseApplication Id="CloseGemacast" Target="gemacast-pc.exe" CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" TerminateProcess="5" />
     <util:CloseApplication Id="CloseAdb" Target="adb.exe" CloseMessage="no" PromptToContinue="no" RebootPrompt="no" TerminateProcess="3" />
 
-    <!-- Forcefully delete ANY firewall rules associated with the executable on uninstall (catches Windows Defender auto-generated rules) -->
-    <CustomAction Id="RemoveFirewallRules" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]cmd.exe /c netsh advfirewall firewall delete rule name=all program=&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- Forcefully delete ANY firewall rules associated with the executable on uninstall (catches Windows Defender auto-generated rules).
+         netsh is invoked directly rather than through cmd.exe /c: no shell feature is used, and one fewer process means one fewer
+         chance of a console window. Return="ignore" already tolerates "no rules matched". -->
+    <CustomAction Id="RemoveFirewallRules" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe advfirewall firewall delete rule name=all program=&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="RemoveFirewallRules" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
