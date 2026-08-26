@@ -28,16 +28,19 @@ echo ""
 echo "Step 3: Determining previous version..."
 git fetch --tags origin
 
-# Find the most recent tag that isn't the one we're rolling back
-PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | head -1)
-if [ -z "$PREV_TAG" ]; then
-  echo "::warning::Could not determine previous version tag. Manual version revert required."
-  echo "Rollback partially complete (release and tag deleted, versions NOT reverted)."
-  exit 0
-fi
+# `|| true` matters: grep exits 1 when it filters out every line, and
+# `pipefail` + `set -e` then kill the script right here, making the guard below
+# unreachable. 
+PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | head -1 || true)
 
-PREV_VERSION="${PREV_TAG#v}"
-echo "Previous version: $PREV_VERSION (from tag $PREV_TAG)"
+if [ -z "$PREV_TAG" ]; then
+  PREV_VERSION="0.0.0"
+  echo "No previous tag found — treating $TAG as the first release."
+  echo "Previous version: $PREV_VERSION (release-please baseline; no tag to read)"
+else
+  PREV_VERSION="${PREV_TAG#v}"
+  echo "Previous version: $PREV_VERSION (from tag $PREV_TAG)"
+fi
 
 # ── Step 4: Revert version files on main ──────────────────────────────────
 echo ""
@@ -74,8 +77,14 @@ fi
 echo ""
 echo "Step 5: Committing and pushing revert..."
 git add -A
-git commit -m "chore: revert version ${CURRENT_VERSION} → ${PREV_VERSION} (release pipeline failed)"
-git push origin main
+# Same trap as step 3: `git commit` with nothing staged exits 1, aborting the
+# rollback after the release and tag are already gone.
+if git diff --cached --quiet; then
+  echo "Version files already at $PREV_VERSION — nothing to commit."
+else
+  git commit -m "chore: revert version ${CURRENT_VERSION} → ${PREV_VERSION} (release pipeline failed)"
+  git push origin main
+fi
 
 echo ""
 echo "=== ROLLBACK COMPLETE ==="
