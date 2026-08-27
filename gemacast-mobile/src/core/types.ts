@@ -42,15 +42,6 @@ export enum Status {
   Reconnecting = 'reconnecting',
 }
 
-/**
- * True while a session exists — i.e. the phone is attached to a PC, whether the
- * stream is currently flowing, held, or being re-established.
- *
- * `Connecting` is excluded on purpose: nothing is established yet, so a UI that
- * commits to "we have a session" would flicker on a failed attempt. Live in one
- * place because more than one surface keys off it, and the set drifting apart
- * would show two contradictory states on the same screen.
- */
 export function hasLiveSession(status: Status): boolean {
   return (
     status === Status.Connected ||
@@ -62,14 +53,6 @@ export function hasLiveSession(status: Status): boolean {
 
 export type ConnectionHealth = 'ok' | 'degraded' | 'lost';
 
-/**
- * The three live connection metrics shown in the UI. Each is milliseconds or
- * `null` when not yet measured. They are three genuinely distinct signals, not
- * views of one:
- * - `bufferMs`   — jitter-buffer dwell time (a frame's time from arrival to playback).
- * - `networkRttMs` — control-channel probe round-trip; `null` on ADB/loopback (no probe loop).
- * - `jitterMs`   — rolling network inter-arrival jitter estimate.
- */
 export type Metrics = {
   bufferMs: number | null;
   networkRttMs: number | null;
@@ -139,20 +122,6 @@ export type ProcessInfo = {
   hasAudioSession: boolean;
 };
 
-/**
- * Whether the app may post the streaming notification.
- *
- * Mirrors `NotificationPermission` in the Rust port, which mirrors
- * `NotificationPermissionState.kt`. A denial does not stop playback — the
- * foreground service needs no permission — it removes the Pause and Disconnect
- * buttons that exist outside the app.
- *
- * `denied` and `blocked` differ in what can be done about them: `denied` can
- * still be asked again, `blocked` can only be undone in system settings.
- * `notRequired` also covers "could not be read", so treat it as "say nothing".
- */
-export type NotificationPermission = 'notRequired' | 'granted' | 'denied' | 'blocked';
-
 export type AppState = {
   deviceInfo: DeviceInfo;
   status: Status;
@@ -177,6 +146,4 @@ export type AppState = {
   networkLinkPair: NetworkLinkPairInfo | null;
   /** Whether the device supports Oboe exclusive audio mode (probed at startup). */
   exclusiveSupported: boolean;
-  /** Whether the app may post the streaming notification (probed at startup). */
-  notificationPermission: NotificationPermission;
 };

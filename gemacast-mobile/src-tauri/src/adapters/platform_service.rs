@@ -1,4 +1,4 @@
-use crate::traits::{NotificationPermission, PlatformService, PlaybackState};
+use crate::traits::{PlatformService, PlaybackState};
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
@@ -174,34 +174,6 @@ impl PlatformService for NativePlatformService {
             } else {
                 let _ = std::fs::remove_file(&flag_path);
             }
-        }
-    }
-
-    fn notification_permission(&self) -> Result<NotificationPermission, String> {
-        #[cfg(target_os = "android")]
-        {
-            let wire =
-                crate::services::discovery::native::call_native_notification_permission_state(
-                    &self.app_handle,
-                )?;
-            NotificationPermission::from_wire(&wire)
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            Ok(NotificationPermission::NotRequired)
-        }
-    }
-
-    fn open_notification_settings(&self) -> Result<(), String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_open_notification_settings(
-                &self.app_handle,
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            Err("Notification settings are only available on Android".to_string())
         }
     }
 }

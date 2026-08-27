@@ -1,19 +1,15 @@
 package com.apir.gemacast
 
-import android.Manifest
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.activity.enableEdgeToEdge
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -39,20 +35,6 @@ class MainActivity : TauriActivity() {
         private const val DEVICE_AUTH_KEY_ALIAS = "gemacast_device_auth_p256_v1"
         private const val P256_COORDINATE_SIZE = 32
         private const val TRUSTED_PC_PREFERENCES = "gemacast_trusted_pcs_v1"
-
-        /** Non-secret app state. Kept apart from [TRUSTED_PC_PREFERENCES] so a "Forget PC" wipe cannot touch it. */
-        private const val APP_STATE_PREFERENCES = "gemacast_app_state_v1"
-
-        /**
-         * Whether this install has ever reached the system `POST_NOTIFICATIONS` dialog.
-         *
-         * Required because `shouldShowRequestPermissionRationale` reads false both
-         * before the first ask and after a permanent denial — see
-         * [NotificationPermissionPolicy].
-         */
-        private const val NOTIFICATION_ASKED_KEY = "notification_permission_asked"
-
-        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
     }
     private var gemaCastService: GemaCastService? = null
     private var serviceBound = false
@@ -62,13 +44,7 @@ class MainActivity : TauriActivity() {
     private var pcIdentityConfirmationDialog: AlertDialog? = null
     private var pcIdentityConfirmationDialogKey: PcIdentityConfirmationKey? = null
 
-    /**
-     * Guards the battery-optimization prompt.
-     *
-     * It is now reached from four places (three notification outcomes plus the
-     * permission-result callback) precisely so it never stacks on top of the
-     * system permission dialog, and exactly one of them should win.
-     */
+    /** Guards the battery-optimization prompt so it can only ever show once. */
     private var batteryOptimizationPrompted = false
 
     private val serviceConnection = object : ServiceConnection {
@@ -503,60 +479,6 @@ class MainActivity : TauriActivity() {
     }
 
     /**
-     * Read the current notification permission situation as a
-     * [NotificationPermissionState] name.
-     *
-     * Called from Rust via JNI; the frontend uses it to decide whether to show the
-     * in-app notice with the Settings shortcut.
-     */
-    @Keep
-    fun notificationPermissionState(): String {
-        return try {
-            NotificationPermissionPolicy.wireValue(readNotificationPermissionState())
-        } catch (e: Exception) {
-            e.printStackTrace()
-            "ERROR: ${e.message}"
-        }
-    }
-
-    /**
-     * Open this app's notification settings.
-     *
-     * The only way back from [NotificationPermissionState.BLOCKED]: once the user
-     * has permanently denied, `requestPermissions` returns immediately without
-     * showing anything, so the app has to hand off to Settings instead.
-     */
-    @Keep
-    fun openNotificationSettings(): String {
-        return try {
-            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-            } else {
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    .setData(Uri.parse("package:$packageName"))
-            }
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-            "OK"
-        } catch (e: Exception) {
-            e.printStackTrace()
-            // Some OEM builds ship no activity for ACTION_APP_NOTIFICATION_SETTINGS.
-            try {
-                startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                        .setData(Uri.parse("package:$packageName"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-                "OK"
-            } catch (fallback: Exception) {
-                fallback.printStackTrace()
-                "ERROR: ${fallback.message}"
-            }
-        }
-    }
-
-    /**
      * Finish this activity and drop its task record, then let the caller kill the
      * process.
      *
@@ -593,83 +515,6 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    private fun readNotificationPermissionState(): NotificationPermissionState {
-        val granted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.POST_NOTIFICATIONS,
-        ) == PackageManager.PERMISSION_GRANTED
-        val hasAsked = getSharedPreferences(APP_STATE_PREFERENCES, Context.MODE_PRIVATE)
-            .getBoolean(NOTIFICATION_ASKED_KEY, false)
-        val systemWillShowRationale = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ActivityCompat.shouldShowRequestPermissionRationale(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS,
-            )
-        return NotificationPermissionPolicy.state(
-            sdkInt = Build.VERSION.SDK_INT,
-            granted = granted,
-            hasAsked = hasAsked,
-            systemWillShowRationale = systemWillShowRationale,
-        )
-    }
-
-    /**
-     * Explain what the notification is for, then hand off to the system dialog.
-     *
-     * Android only ever shows the system dialog twice; spending one of those on a
-     * request the user has no context for is how an app ends up permanently blocked.
-     */
-    private fun requestNotificationPermission() {
-        AlertDialog.Builder(this)
-            .setTitle("Allow notifications")
-            .setMessage(
-                "While streaming, Gemacast shows a notification with Play and Pause buttons " +
-                    "so you can control playback without opening the app."
-            )
-            .setPositiveButton("Continue") { _, _ ->
-                // Recorded before the request, not in the result callback: the flag
-                // means "the system dialog has been reached", which is already true
-                // here and stays true even if the callback never arrives.
-                markNotificationPermissionAsked()
-                try {
-                    ActivityCompat.requestPermissions(
-                        this,
-                        arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                        NOTIFICATION_PERMISSION_REQUEST_CODE,
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    promptBatteryOptimization()
-                }
-            }
-            .setNegativeButton("Not Now") { _, _ -> promptBatteryOptimization() }
-            .setOnCancelListener { promptBatteryOptimization() }
-            .show()
-    }
-
-    private fun markNotificationPermissionAsked() {
-        try {
-            getSharedPreferences(APP_STATE_PREFERENCES, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean(NOTIFICATION_ASKED_KEY, true)
-                .commit()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != NOTIFICATION_PERMISSION_REQUEST_CODE) return
-
-        markNotificationPermissionAsked()
-        promptBatteryOptimization()
-    }
-
     private fun promptBatteryOptimization() {
         if (batteryOptimizationPrompted) return
         batteryOptimizationPrompted = true
@@ -701,13 +546,7 @@ class MainActivity : TauriActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        when (NotificationPermissionPolicy.startupAction(readNotificationPermissionState())) {
-            NotificationPermissionAction.EXPLAIN_THEN_REQUEST -> requestNotificationPermission()
-            // Asking again would show nothing at all. The in-app notice in Settings
-            // is the recovery path, so do not interrupt the launch for it.
-            NotificationPermissionAction.DEFER_TO_SETTINGS -> promptBatteryOptimization()
-            NotificationPermissionAction.NOTHING -> promptBatteryOptimization()
-        }
+        promptBatteryOptimization()
     }
 
     override fun onStart() {

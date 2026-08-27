@@ -8,7 +8,6 @@ import { ExclusiveToggle } from './ExclusiveToggle';
 import { KeepScreenOnToggle } from './KeepScreenOnToggle';
 import { ModeSelector } from './ModeSelector';
 import { UpdateBanner } from './UpdateBanner';
-import { NotificationPermissionNotice } from './NotificationPermissionNotice';
 import { ForgetPcIdentity } from './ForgetPcIdentity';
 import { HelpDialog, useHelpDialog } from '../shared/HelpDialog';
 import { useAppStore } from '../../stores/app-store';
@@ -35,7 +34,8 @@ function SectionDivider() {
 }
 
 export function SettingsDrawer() {
-  const { open, closing, dialogRef, handleOpen, handleClose } = useDrawer('settings');
+  const { open, closing, dialogRef, handleOpen, handleClose, handleNativeClose } =
+    useDrawer('settings');
   const help = useHelpDialog();
   const exclusiveSupported = useAppStore((s) => s.exclusiveSupported);
 
@@ -65,7 +65,7 @@ export function SettingsDrawer() {
       <dialog
         ref={dialogRef}
         className={`
-          fixed inset-y-0 left-0 z-50 m-0 h-screen max-h-none w-screen max-w-[100vw]
+          fixed top-0 left-0 z-50 m-0 h-dvh max-h-none w-screen max-w-[100vw] overflow-hidden
           border-none border-r border-border bg-background p-0 text-foreground
           shadow-[4px_0_24px_rgba(0,0,0,0.2)]
           backdrop:bg-black/30 backdrop:backdrop-blur-xs
@@ -75,7 +75,7 @@ export function SettingsDrawer() {
         style={{
           paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))',
         }}
-        onClose={handleClose}
+        onClose={handleNativeClose}
       >
         <div className="flex h-full flex-col">
           <div
@@ -95,7 +95,6 @@ export function SettingsDrawer() {
 
           <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
             <UpdateBanner />
-            <NotificationPermissionNotice />
 
             {/* Buffer Preset */}
             <div>

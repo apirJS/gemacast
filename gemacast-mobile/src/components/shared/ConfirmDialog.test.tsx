@@ -1,11 +1,20 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, afterEach, beforeEach, mock } from 'bun:test';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { ConfirmDialog } from './ConfirmDialog';
+
+// One test below stubs `open` on the prototype. bun test shares a single runtime
+// across files, so leaving it stubbed makes every dialog in every later file
+// report itself as already open.
+const nativeOpen = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'open')!;
 
 beforeEach(() => {
   cleanup();
   HTMLDialogElement.prototype.showModal = mock();
   HTMLDialogElement.prototype.close = mock();
+});
+
+afterEach(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'open', nativeOpen);
 });
 
 describe('ConfirmDialog', () => {
