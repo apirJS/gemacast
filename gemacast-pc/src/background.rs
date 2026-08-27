@@ -38,8 +38,8 @@ use gemacast_core::control::http::{ControlCommand, ControlServerState};
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::domain::types::DeviceId;
 use gemacast_core::network::adb::{
-    PresenceProvider, adb_command, spawn_adb_audio_tcp_server, spawn_adb_discovery_tcp_server,
-    spawn_adb_port_forwarding_watchdog,
+    PresenceProvider, adb_command, kill_adb_server, spawn_adb_audio_tcp_server,
+    spawn_adb_discovery_tcp_server, spawn_adb_port_forwarding_watchdog,
 };
 use gemacast_core::stream::streamer::engine::AudioStreamEngine;
 use gemacast_core::stream::streamer::engine::StreamSessionFailure;
@@ -685,6 +685,13 @@ impl EngineReady {
             set.abort_all();
             while set.join_next().await.is_some() {}
         }
+
+        // Must come after the drain: the watchdog's own shutdown branch runs
+        // `adb devices` while draining, which would restart a server we killed
+        // too early. Note this stops whichever server owns port 5037, so on a dev
+        // machine it can end an Android Studio session too. Leaving a process that
+        // pins our install directory is worse.
+        kill_adb_server().await;
 
         self.tray.notify_shutdown_complete();
 
