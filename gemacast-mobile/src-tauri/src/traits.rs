@@ -21,7 +21,7 @@ pub mod types;
 
 pub use frontend_notifier::FrontendNotifier;
 pub use network_info::NetworkInfoProvider;
-pub use platform_service::{NotificationPermission, PlatformService, PlaybackState};
+pub use platform_service::{PlatformService, PlaybackState};
 pub use session_manager::SessionManager;
 pub use streamer_control::{StreamerControlClient, StreamerControlClientFactory};
 pub use types::{ConnectParams, InterfaceInfo, ResumeParams, SessionInfo, SessionParams};

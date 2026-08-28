@@ -28,15 +28,43 @@
     <!-- Public property for desktop shortcut toggle -->
     <Property Id="CREATEDESKTOPSHORTCUT" Value="1" Secure="yes" />
 
+    <!-- Reinstall where the user put us last time. Without this, an upgrade - including
+         the in-app self-update - silently relocates a custom install back to the default
+         folder and abandons the old copy. AppSearch (50) reads this well before
+         RemoveExistingProducts (1501) deletes it. -->
+    <Property Id="INSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="RememberedInstallFolder"
+                      Root="HKLM"
+                      Key="Software\EchaApriliyanto\Gemacast"
+                      Name="InstallDir"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+
+    <!-- Public so a silent install can pick the parent folder the same way the browse
+         dialog does: msiexec /i ... INSTALLROOT="D:\Program Files". Secure="yes" is
+         what lets it cross into the elevated execute sequence. -->
+    <Property Id="INSTALLROOT" Secure="yes" />
+
     <!-- ===== UI Configuration ===== -->
     <WixVariable Id="WixUILicenseRtf" Value="$(var.IconDir)\LICENSE.rtf" />
 
     <Property Id="LAUNCHAPP" Value="1" />
     <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
 
-    <!-- Kill the app before uninstallation or upgrade to prevent FilesInUse errors -->
-    <util:CloseApplication Id="CloseGemacast" Target="gemacast-pc.exe" CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" TerminateProcess="5" />
-    <util:CloseApplication Id="CloseAdb" Target="adb.exe" CloseMessage="no" PromptToContinue="no" RebootPrompt="no" TerminateProcess="3" />
+    <!-- Kill the app before uninstallation or upgrade to prevent FilesInUse errors.
+         Order matters: gemacast-pc has to die first. Its ADB watchdog runs
+         `adb devices` every 3 seconds and that starts the server back up, so
+         killing adb first only brings it straight back. -->
+    <util:CloseApplication Id="CloseGemacast" Target="gemacast-pc.exe" Sequence="1" CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" TerminateProcess="5" />
+    <util:CloseApplication Id="CloseAdb" Target="adb.exe" Sequence="2" CloseMessage="no" PromptToContinue="no" RebootPrompt="no" TerminateProcess="3" />
+
+    <!-- Don't let MSI hand the close over to Restart Manager. RM runs at
+         InstallValidate, before we are allowed to terminate anything, and it cannot
+         close either process anyway - the tray app ignores WM_QUERYENDSESSION and
+         adb has no window at all. It just raised MsiRMFilesInUse and then reported
+         it had failed. With RM off, the terminate below does the work instead. -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
 
     <!-- Forcefully delete ANY firewall rules associated with the executable on uninstall (catches Windows Defender auto-generated rules).
          netsh is invoked directly rather than through cmd.exe /c: no shell feature is used, and one fewer process means one fewer
@@ -44,6 +72,15 @@
     <CustomAction Id="RemoveFirewallRules" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe advfirewall firewall delete rule name=all program=&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
 
     <InstallExecuteSequence>
+      <!-- Util schedules this before InstallFiles (4000) by default, which is too late
+           on uninstall - RemoveFiles is 3500, so the files are already queued for
+           deletion by then. It cannot move before InstallValidate either: the
+           immediate action always schedules a deferred half, and scheduling one
+           outside InstallInitialize..InstallFinalize is error 2762. So it goes here -
+           inside the transaction, ahead of every file operation in the script. Util's
+           row is virtual, so "override" replaces it instead of clashing with it. The
+           _X64 suffix tracks InstallerPlatform in msi.wixproj. -->
+      <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" />
       <Custom Action="RemoveFirewallRules" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
@@ -52,8 +89,14 @@
 
     <!-- ===== Directory Structure ===== -->
 
+    <!-- INSTALLROOT is the parent the user picks; Name="." makes it resolve to its own
+         parent. The browse dialog retargets INSTALLROOT (see CustomUI.wxs), so the
+         Gemacast folder is always created inside the chosen location instead of being
+         replaced by it. -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Gemacast" />
+      <Directory Id="INSTALLROOT" Name=".">
+        <Directory Id="INSTALLFOLDER" Name="Gemacast" />
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
@@ -127,8 +170,16 @@
                        Key="Software\EchaApriliyanto\Gemacast"
                        Name="Installed"
                        Type="integer" Value="1" KeyPath="yes" />
+        <!-- HKLM, not HKCU: a per-machine install must not remember its location per-user.
+             Read back by the RememberedInstallFolder search above. -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\EchaApriliyanto\Gemacast"
+                       Name="InstallDir"
+                       Type="string" Value="[INSTALLFOLDER]" />
         <RemoveRegistryKey Id="RemoveGemacastKey" Root="HKCU" Key="Software\EchaApriliyanto\Gemacast" Action="removeOnUninstall" />
         <RemoveRegistryKey Id="RemoveVendorKey" Root="HKCU" Key="Software\EchaApriliyanto" Action="removeOnUninstall" />
+        <RemoveRegistryKey Id="RemoveGemacastKeyMachine" Root="HKLM" Key="Software\EchaApriliyanto\Gemacast" Action="removeOnUninstall" />
+        <RemoveRegistryKey Id="RemoveVendorKeyMachine" Root="HKLM" Key="Software\EchaApriliyanto" Action="removeOnUninstall" />
       </Component>
 
     </ComponentGroup>

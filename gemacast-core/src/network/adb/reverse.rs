@@ -54,6 +54,22 @@ pub fn adb_command() -> tokio::process::Command {
     quiet_tokio_command(local_adb_path())
 }
 
+/// Stop the ADB server so it does not outlive us.
+///
+/// The watchdog below runs `adb devices`, which starts a server. Nothing ever
+/// stopped it, so `adb.exe` kept holding our install directory open long after
+/// the app quit - which is why an uninstall later still found it in use.
+///
+/// Errors are ignored on purpose: `kill-server` exits non-zero when no server is
+/// running and, unlike other subcommands, does not start one.
+pub async fn kill_adb_server() {
+    let _ = tokio::time::timeout(
+        tokio::time::Duration::from_secs(2),
+        adb_command().arg("kill-server").output(),
+    )
+    .await;
+}
+
 pub fn spawn_adb_port_forwarding_watchdog(
     set: &mut JoinSet<()>,
     tcp_drop_tx: tokio::sync::broadcast::Sender<()>,

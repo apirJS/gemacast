@@ -366,7 +366,7 @@ unsafe fn initialize_application_loopback(
     GemaCastError,
 > {
     let audio_client = unsafe { activate_process_loopback(pid, mode)? };
-    let mix_format_ptr = unsafe { get_default_mix_format()? };
+    let (mix_format_ptr, endpoint_name) = unsafe { get_default_mix_format()? };
     let format = match unsafe { parse_mix_format(mix_format_ptr) } {
         Ok(format) => format,
         Err(error) => {
@@ -380,8 +380,13 @@ unsafe fn initialize_application_loopback(
         }
     };
 
+    // The endpoint is named because the format is *its* mix format, not ours: switching
+    // the default output device changes the rate, channel count and bit depth this
+    // capture runs at. Without the name, a format change between two captures looks
+    // unexplained.
     tracing::info!(
         capture_kind,
+        endpoint = endpoint_name.as_deref().unwrap_or("<name unavailable>"),
         "[WASAPI] Application loopback: native_rate={}, native_channels={}, bits={}, block_align={}, is_float={}",
         format.native_rate,
         format.native_channels,

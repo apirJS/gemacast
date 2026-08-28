@@ -92,13 +92,6 @@ export function App() {
         console.warn('Failed to probe exclusive mode support:', e);
       }
 
-      try {
-        const permission = await tauriBridge.getNotificationPermission();
-        useAppStore.getState().setNotificationPermission(permission);
-      } catch (e) {
-        console.warn('Failed to probe notification permission:', e);
-      }
-
       const theme = useAppStore.getState().settings.theme;
       document.documentElement.classList.toggle('dark', theme === 'dark');
       document.documentElement.classList.toggle('light', theme === 'light');

@@ -3,7 +3,7 @@
 //! These functions take trait references as parameters, making the
 //! transport classification and network identity logic fully testable.
 
-use crate::traits::{NetworkInfoProvider, NotificationPermission, PlatformService};
+use crate::traits::{NetworkInfoProvider, PlatformService};
 use gemacast_core::domain::types::{ConnectionModes, DeviceId, NetworkLink};
 
 /// Network state returned to the frontend.
@@ -151,26 +151,6 @@ pub fn forget_pc_identity(platform: &dyn PlatformService, pc_id: &DeviceId) -> R
 /// Return the locally stored PC identities used by the paired-PC settings UI.
 pub fn paired_pc_ids(platform: &dyn PlatformService) -> Result<Vec<DeviceId>, String> {
     platform.paired_pc_ids()
-}
-
-/// Report whether the app may post the streaming notification.
-///
-/// Failure is reported as [`NotificationPermission::NotRequired`] rather than an
-/// error: the only caller is a settings notice, and a JNI hiccup should not make
-/// the UI claim notifications are broken when it does not actually know.
-pub fn notification_permission(platform: &dyn PlatformService) -> NotificationPermission {
-    match platform.notification_permission() {
-        Ok(permission) => permission,
-        Err(error) => {
-            tracing::warn!("could not read the notification permission state: {error}");
-            NotificationPermission::NotRequired
-        }
-    }
-}
-
-/// Open this app's notification settings so a blocked permission can be restored.
-pub fn open_notification_settings(platform: &dyn PlatformService) -> Result<(), String> {
-    platform.open_notification_settings()
 }
 
 /// Detect the phone's network link type from platform transport info.
@@ -348,52 +328,6 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|call| matches!(call, PlatformCall::PairedPcIds))
-        );
-    }
-
-    #[test]
-    fn notification_permission_reports_what_the_platform_says() {
-        let platform = MockPlatformService::new()
-            .with_notification_permission(NotificationPermission::Blocked);
-
-        assert_eq!(
-            notification_permission(&platform),
-            NotificationPermission::Blocked
-        );
-        assert!(
-            platform
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|call| matches!(call, PlatformCall::NotificationPermission))
-        );
-    }
-
-    #[test]
-    fn an_unreadable_notification_permission_does_not_claim_notifications_are_off() {
-        // The mock's default transport error stands in for a JNI failure. Reporting
-        // `Denied` here would put a recovery notice in front of a user whose
-        // notifications are working fine, so the unknown case has to stay quiet.
-        let platform = MockPlatformService::new().with_failing_notification_permission();
-
-        assert_eq!(
-            notification_permission(&platform),
-            NotificationPermission::NotRequired
-        );
-    }
-
-    #[test]
-    fn open_notification_settings_delegates_to_platform() {
-        let platform = MockPlatformService::new();
-        open_notification_settings(&platform).unwrap();
-        assert!(
-            platform
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|call| matches!(call, PlatformCall::OpenNotificationSettings))
         );
     }
 

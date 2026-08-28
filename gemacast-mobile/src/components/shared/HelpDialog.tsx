@@ -46,7 +46,10 @@ export function useHelpDialog() {
 
   const openHelp = (key: string) => {
     setActiveHelp(key);
-    helpDialogRef.current?.showModal();
+    // showModal() throws on an already-open dialog, and the throw escapes the
+    // click handler - tapping a second "?" while one is up would take the whole
+    // screen down with it.
+    if (!helpDialogRef.current?.open) helpDialogRef.current?.showModal();
   };
 
   const closeHelp = () => {

@@ -488,17 +488,60 @@ pub unsafe fn activate_process_loopback(
     }
 }
 
-/// Query the default render endpoint's mix format.
+/// Friendly name of an audio endpoint (`"Speakers (Realtek(R) Audio)"`), for logs only.
+///
+/// `None` if the property store cannot be read or the value is not a string. A name we
+/// could not read must never fail a capture that is otherwise fine.
+///
+/// # Safety
+///
+/// Calls COM interfaces on `device`.
+unsafe fn endpoint_friendly_name(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Option<String> {
+    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+    use windows::Win32::System::Com::STGM_READ;
+    use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+    use windows::Win32::System::Variant::VT_LPWSTR;
+
+    unsafe {
+        let store = device.OpenPropertyStore(STGM_READ).ok()?;
+        let mut value = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
+
+        // Check the tag before touching the union: reading the wrong arm is UB, and a
+        // driver is free to store this property as something other than a string.
+        let name = if value.Anonymous.Anonymous.vt == VT_LPWSTR {
+            value.Anonymous.Anonymous.Anonymous.pwszVal.to_string().ok()
+        } else {
+            None
+        };
+
+        let _ = PropVariantClear(&mut value);
+        name
+    }
+}
+
+/// Query the default render endpoint's mix format, and the name of that endpoint.
 ///
 /// Process loopback streams use the same shared-mode format as the system mixer,
 /// so this gives us the correct format to pass to `IAudioClient::Initialize`.
+///
+/// The name is returned alongside rather than read by a second call on purpose: it must
+/// describe the *same* `IMMDevice` the format came from. Enumerating again could land on
+/// a different endpoint if the user changes their default output in between, and a log
+/// line naming the wrong device is worse than one naming none.
 ///
 /// # Safety
 ///
 /// Calls COM interfaces. The returned pointer is CoTaskMem-allocated and must
 /// be freed by the caller via `CoTaskMemFree`.
-pub unsafe fn get_default_mix_format()
--> Result<*mut windows::Win32::Media::Audio::WAVEFORMATEX, GemaCastError> {
+pub unsafe fn get_default_mix_format() -> Result<
+    (
+        *mut windows::Win32::Media::Audio::WAVEFORMATEX,
+        Option<String>,
+    ),
+    GemaCastError,
+> {
     use windows::Win32::Media::Audio::{
         IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
     };
@@ -513,6 +556,8 @@ pub unsafe fn get_default_mix_format()
             .GetDefaultAudioEndpoint(eRender, eConsole)
             .map_err(AudioError::WindowsApi)?;
 
+        let endpoint_name = endpoint_friendly_name(&device);
+
         let audio_client: IAudioClient = device
             .Activate(CLSCTX_ALL, None)
             .map_err(AudioError::WindowsApi)?;
@@ -521,7 +566,7 @@ pub unsafe fn get_default_mix_format()
             .GetMixFormat()
             .map_err(AudioError::WindowsApi)?;
 
-        Ok(mix_format_ptr)
+        Ok((mix_format_ptr, endpoint_name))
     }
 }
 

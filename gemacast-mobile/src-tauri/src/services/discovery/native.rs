@@ -243,19 +243,6 @@ pub fn call_native_forget_pc_identity(app: &tauri::AppHandle, pc_id: &str) -> Re
     }
 }
 
-pub fn call_native_notification_permission_state(app: &tauri::AppHandle) -> Result<String, String> {
-    call_native_string_method(app, "notificationPermissionState", None)
-}
-
-pub fn call_native_open_notification_settings(app: &tauri::AppHandle) -> Result<(), String> {
-    let result = call_native_string_method(app, "openNotificationSettings", None)?;
-    if result == "OK" {
-        Ok(())
-    } else {
-        Err(format!("unexpected notification settings result: {result}"))
-    }
-}
-
 /// Ask Android to finish the activity and drop its task record, on the way out.
 ///
 /// Bounded wait rather than [`call_native_string_method`]'s blocking `recv()`: this

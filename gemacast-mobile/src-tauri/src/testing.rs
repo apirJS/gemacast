@@ -519,8 +519,6 @@ pub mod mocks {
         SetStreamingFlag {
             active: bool,
         },
-        NotificationPermission,
-        OpenNotificationSettings,
     }
 
     /// Records every platform call and returns configurable results.
@@ -528,7 +526,6 @@ pub mod mocks {
         pub calls: Mutex<Vec<PlatformCall>>,
         transport_type: Mutex<Result<String, String>>,
         paired_pc_ids: Mutex<Result<Vec<DeviceId>, String>>,
-        notification_permission: Mutex<Result<crate::traits::NotificationPermission, String>>,
     }
 
     impl MockPlatformService {
@@ -537,9 +534,6 @@ pub mod mocks {
                 calls: Mutex::new(Vec::new()),
                 transport_type: Mutex::new(Err("not android".to_string())),
                 paired_pc_ids: Mutex::new(Ok(Vec::new())),
-                notification_permission: Mutex::new(Ok(
-                    crate::traits::NotificationPermission::Granted,
-                )),
             }
         }
 
@@ -550,24 +544,6 @@ pub mod mocks {
 
         pub fn with_paired_pc_ids(self, ids: Vec<DeviceId>) -> Self {
             *self.paired_pc_ids.lock().unwrap() = Ok(ids);
-            self
-        }
-
-        #[allow(dead_code)]
-        pub fn with_notification_permission(
-            self,
-            permission: crate::traits::NotificationPermission,
-        ) -> Self {
-            *self.notification_permission.lock().unwrap() = Ok(permission);
-            self
-        }
-
-        /// Make [`PlatformService::notification_permission`] fail, standing in for a
-        /// JNI or platform error.
-        #[allow(dead_code)]
-        pub fn with_failing_notification_permission(self) -> Self {
-            *self.notification_permission.lock().unwrap() =
-                Err("test notification permission is unavailable".to_string());
             self
         }
 
@@ -651,22 +627,6 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(PlatformCall::SetStreamingFlag { active });
-        }
-
-        fn notification_permission(&self) -> Result<crate::traits::NotificationPermission, String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(PlatformCall::NotificationPermission);
-            self.notification_permission.lock().unwrap().clone()
-        }
-
-        fn open_notification_settings(&self) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(PlatformCall::OpenNotificationSettings);
-            Ok(())
         }
     }
 

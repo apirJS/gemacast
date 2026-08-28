@@ -103,8 +103,6 @@ pub fn run() {
             services::discovery::commands::get_network_state,
             services::discovery::commands::forget_pc_identity,
             services::discovery::commands::get_paired_pc_ids,
-            services::discovery::commands::get_notification_permission,
-            services::discovery::commands::open_notification_settings,
             services::audio::commands::connect_to_streamer,
             services::audio::commands::disconnect_from_streamer,
             services::audio::commands::start_audio_playback,
