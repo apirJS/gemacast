@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/apirJS/gemacast/compare/v0.1.0...v0.2.0) (2026-08-28)
+
+
+### Features
+
+* **mobile:** remove unused custom media control & fix installation folder issue ([#74](https://github.com/apirJS/gemacast/issues/74)) ([b2600e4](https://github.com/apirJS/gemacast/commit/b2600e45c326e87a6628fac60b4eb3367544cd29))
+
 ## 0.1.0 (2026-08-26)
 
 
