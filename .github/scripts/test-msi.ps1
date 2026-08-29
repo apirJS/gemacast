@@ -150,9 +150,6 @@ Write-Host "`nSmoke test: starting gemacast-pc.exe..."
 $app = Start-Process -FilePath "$installDir\gemacast-pc.exe" -PassThru
 
 try {
-    # The ADB watchdog polls every 3 s and each poll starts a server, so this is
-    # long enough for adb.exe to be holding the install directory open. It runs
-    # whether or not a phone is attached.
     Start-Sleep -Seconds 10
 
     if ($app.HasExited) {
@@ -161,10 +158,23 @@ try {
         Write-Host "PASS: gemacast-pc.exe is running (PID $($app.Id))"
     }
 
-    if (Get-Process adb -ErrorAction SilentlyContinue) {
-        Write-Host "PASS: adb.exe is running and holding the install directory"
+    $watchdogAdb = Get-Process adb -ErrorAction SilentlyContinue
+    if ($watchdogAdb) {
+        Write-Host "NOTE: the app's ADB watchdog already started a server"
     } else {
-        $errors += "adb.exe is not running, so uninstalling now would prove nothing"
+        Write-Host "NOTE: no ADB server from the app; starting one directly"
+    }
+
+    $null = & "$installDir\adb.exe" kill-server 2>$null
+    $null = & "$installDir\adb.exe" start-server 2>$null
+
+    $ourAdb = Get-Process adb -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($installDir, 'OrdinalIgnoreCase') }
+    if ($ourAdb) {
+        Write-Host "PASS: adb.exe is running from the install directory and holding it open"
+    } else {
+        $running = (Get-Process adb -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }) -join ', '
+        $errors += "no adb.exe running from ${installDir} (running: '$running'), so uninstalling now would prove nothing"
     }
 
     if ($errors.Count -gt 0) {
