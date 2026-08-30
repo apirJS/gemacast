@@ -461,7 +461,7 @@ mod tests {
         let handle = spawn_packet_receive_thread(
             MockTransport {
                 packet_to_send: Some(packet),
-                streamer_addr: "10.0.0.2:55558".parse().unwrap(),
+                streamer_addr: "10.0.0.2:23558".parse().unwrap(),
             },
             producer,
             Arc::new(AtomicU32::new(0)),
