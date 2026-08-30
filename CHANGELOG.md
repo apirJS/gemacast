@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/apirJS/gemacast/compare/v0.2.0...v0.3.0) (2026-08-30)
+
+
+### Features
+
+* port range migration and firewall warn dialog ([#78](https://github.com/apirJS/gemacast/issues/78)) ([7a83180](https://github.com/apirJS/gemacast/commit/7a831803b2ce32989ed4e327e3ceb67fc50ae6f4))
+
 ## [0.2.0](https://github.com/apirJS/gemacast/compare/v0.1.0...v0.2.0) (2026-08-29)
 
 
