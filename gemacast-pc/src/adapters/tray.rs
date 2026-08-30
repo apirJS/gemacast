@@ -77,6 +77,10 @@ impl TrayNotifier for EventLoopTrayNotifier {
         let _ = self.proxy.send_event(TrayEvent::FatalError(message));
     }
 
+    fn notify_firewall_warning(&self, message: String) {
+        let _ = self.proxy.send_event(TrayEvent::FirewallWarning(message));
+    }
+
     fn notify_shutdown_complete(&self) {
         let _ = self.proxy.send_event(TrayEvent::ShutdownComplete);
     }

@@ -54,6 +54,8 @@ pub enum TrayEvent {
     },
     /// An unrecoverable error occurred in the background engine.
     FatalError(String),
+    /// A Linux firewall looks like it is blocking discovery and streaming.
+    FirewallWarning(String),
     /// The OS or user requested a process shutdown (e.g. Ctrl+C).
     ShutdownRequested,
     /// The background engine has finished tearing down resources.

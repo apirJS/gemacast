@@ -269,6 +269,18 @@ fn handle_tray_event(
         TrayEvent::FatalError(message) => {
             display_error_dialog(message);
         }
+        TrayEvent::FirewallWarning(message) => {
+            // Its own thread, like the approval dialog above: a modal shown from
+            // here would freeze the tray until the user dismisses it.
+            std::thread::spawn(move || {
+                crate::dialog::MessageDialog::new()
+                    .set_title("Gemacast Firewall Warning")
+                    .set_description(message)
+                    .set_level(crate::dialog::MessageLevel::Warning)
+                    .set_buttons(crate::dialog::MessageButtons::Ok)
+                    .show();
+            });
+        }
         TrayEvent::ShutdownRequested => {
             tracing::info!("Shutdown requested. Tearing down gracefully...");
             let _ = command_tx.try_send(AppCommand::ExitApp);

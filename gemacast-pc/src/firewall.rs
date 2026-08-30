@@ -4,9 +4,15 @@
 //! ([linux/deb-postinst.sh](../../linux/deb-postinst.sh)), but the portable
 //! **AppImage runs no privileged install step**, so on a default-blocking
 //! firewall an AppImage user's phone silently fails to discover or stream and
-//! there is nothing on disk to tell them why. This module fills that gap: once
-//! per session, on Linux, it inspects the live firewall and — only if it looks
-//! like our ports are actually blocked — logs the exact unblock command.
+//! there is nothing on disk to tell them why. This module fills that gap: at
+//! startup, on Linux, it inspects the live firewall and — only if it looks like
+//! our ports are actually blocked — hands the caller a message naming the exact
+//! unblock command, which the tray shows in a dialog.
+//!
+//! It must not log the message instead. `gemacast-pc` builds with
+//! `release_max_level_off` ([Cargo.toml](../Cargo.toml)), so every `tracing::*`
+//! call in this crate is compiled out of a release binary — a warning logged here
+//! reaches nobody in the builds users actually download.
 //!
 //! Discovery + streaming need three **inbound** LAN openings: UDP
 //! [`Ports::DISCOVERY`], UDP [`Ports::AUDIO_UDP`], TCP [`Ports::CONTROL`]. The
@@ -85,7 +91,7 @@ fn firewalld_blocks(list_services: &str, list_ports: &str) -> bool {
 /// deny-incoming when active, so we are blocked unless every required port
 /// appears in an allow rule. Ranges are not parsed (rare on desktops); a bare
 /// port substring match is sufficient because ufw prints the port number
-/// verbatim (e.g. `55555,55556/udp  ALLOW  Anywhere`).
+/// verbatim (e.g. `23555,23556/udp  ALLOW  Anywhere`).
 fn ufw_blocks(status: &str) -> bool {
     // "Status: inactive" does not contain "Status: active" as a substring.
     if !status.contains("Status: active") {
@@ -117,49 +123,43 @@ fn firewall_advice(firewalld: Option<(&str, &str)>, ufw: Option<&str>) -> Option
     let audio = Ports::AUDIO_UDP;
     let ctrl = Ports::CONTROL;
 
-    let mut lines = vec![format!(
-        "A firewall on this PC may be blocking phone discovery and streaming \
-         (needs inbound UDP {disc}, UDP {audio}, TCP {ctrl}):"
-    )];
+    // Written for a dialog, not a log line: short lead, blank lines between
+    // blocks, each command on its own line so it can be selected and copied.
+    let mut msg = String::from(
+        "This PC's firewall looks like it is blocking Gemacast. Your phone may not find \
+         this PC, or may connect but play no audio.\n\nOpen the ports by running:",
+    );
     if firewalld_blocking {
-        lines.push(format!(
-            "  firewalld: sudo firewall-cmd --permanent --add-port={disc}/udp \
+        msg.push_str(&format!(
+            "\n\nfirewalld:\nsudo firewall-cmd --permanent --add-port={disc}/udp \
              --add-port={audio}/udp --add-port={ctrl}/tcp && sudo firewall-cmd --reload"
         ));
     }
     if ufw_blocking {
-        lines.push(format!(
-            "  ufw: sudo ufw allow {disc},{audio}/udp && sudo ufw allow {ctrl}/tcp"
+        msg.push_str(&format!(
+            "\n\nufw:\nsudo ufw allow {disc},{audio}/udp && sudo ufw allow {ctrl}/tcp"
         ));
     }
-    lines.push(
-        "  or connect over USB (ADB), which is loopback and needs no firewall rule.".to_string(),
-    );
+    msg.push_str("\n\nOr connect over USB instead, which needs no firewall change.");
 
-    Some(lines.join("\n"))
+    Some(msg)
 }
 
-/// Inspect the live Linux firewall once per session and, if it looks like our
-/// LAN ports are blocked, log a best-effort hint with the exact unblock command.
+/// Inspect the live Linux firewall and, if it looks like our LAN ports are
+/// blocked, return a message naming the exact unblock command.
 ///
 /// Never fails and never blocks meaningfully: each probe is a short-lived
 /// read-only command, and any error (missing binary, permission denied, daemon
-/// down) is treated as "cannot tell → stay silent".
+/// down) is treated as "cannot tell → stay silent". Called once, at engine
+/// startup; the caller decides how to show the result.
 #[cfg(target_os = "linux")]
-pub fn warn_if_firewall_may_block() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let firewalld = query_firewalld();
-        let ufw = query_ufw();
-        let advice = firewall_advice(
-            firewalld.as_ref().map(|(s, p)| (s.as_str(), p.as_str())),
-            ufw.as_deref(),
-        );
-        if let Some(msg) = advice {
-            tracing::warn!("{msg}");
-        }
-    });
+pub fn firewall_warning() -> Option<String> {
+    let firewalld = query_firewalld();
+    let ufw = query_ufw();
+    firewall_advice(
+        firewalld.as_ref().map(|(s, p)| (s.as_str(), p.as_str())),
+        ufw.as_deref(),
+    )
 }
 
 /// Run a read-only command, returning its stdout only on a clean (exit-0) run.
@@ -248,7 +248,7 @@ mod tests {
         fn ignores_malformed_tokens() {
             assert!(!firewalld_ports_cover(
                 "garbage no-slash /tcp abc-def/tcp",
-                55559,
+                Ports::CONTROL,
                 Proto::Tcp
             ));
         }
@@ -369,6 +369,21 @@ mod tests {
                 .unwrap();
             assert!(msg.contains("firewall-cmd"));
             assert!(msg.contains("ufw allow"));
+        }
+
+        #[test]
+        fn formats_the_message_for_a_dialog_not_a_log_line() {
+            let msg = firewall_advice(Some(("ssh", "")), Some("Status: active\n\n22/tcp ALLOW\n"))
+                .unwrap();
+            // The old log-shaped message indented every fix by two spaces, which a
+            // dialog renders as ragged text rather than as a list.
+            assert!(!msg.lines().any(|line| line.starts_with(' ')));
+            // Each command alone on its line, so it can be selected and copied.
+            assert!(
+                msg.lines()
+                    .any(|line| line.starts_with("sudo firewall-cmd"))
+            );
+            assert!(msg.lines().any(|line| line.starts_with("sudo ufw allow")));
         }
     }
 }
