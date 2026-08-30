@@ -37,6 +37,9 @@ pub trait TrayNotifier: Send + Sync {
     /// An unrecoverable background error occurred.
     fn notify_fatal_error(&self, message: String);
 
+    /// A firewall looks like it is blocking discovery and streaming (Linux only).
+    fn notify_firewall_warning(&self, message: String);
+
     /// The background engine has finished shutting down.
     fn notify_shutdown_complete(&self);
 

@@ -33,6 +33,17 @@ else
   echo "FAIL: /usr/lib/gemacast/adb missing or not executable"; ERRORS=$((ERRORS+1))
 fi
 
+# Proof the scriptlet body actually ran, not just that alien carried its text.
+# rpm invokes %post with an install count in $1, never dpkg's "configure", so a
+# guard that only matches "configure" silently skips the whole firewall setup.
+# The sysctl drop-in is the cheapest observable the body writes; /proc/sys is
+# read-only in this container, so check the file rather than the live value.
+if [ -f /etc/sysctl.d/99-gemacast.conf ]; then
+  echo "PASS: postinst scriptlet ran"
+else
+  echo "FAIL: postinst scriptlet did not run - check its \$1 guard"; ERRORS=$((ERRORS+1))
+fi
+
 # Smoke test under xvfb
 echo ""
 echo "Smoke test: starting gemacast-pc under xvfb..."
@@ -69,6 +80,12 @@ if command -v gemacast-pc &>/dev/null; then
   echo "FAIL: gemacast-pc still on PATH after uninstall"; ERRORS=$((ERRORS+1))
 else
   echo "PASS: gemacast-pc removed from PATH"
+fi
+
+if [ -f /etc/sysctl.d/99-gemacast.conf ]; then
+  echo "FAIL: sysctl drop-in survived uninstall"; ERRORS=$((ERRORS+1))
+else
+  echo "PASS: postrm scriptlet ran"
 fi
 
 if [ $ERRORS -gt 0 ]; then exit 1; fi

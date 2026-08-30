@@ -601,7 +601,7 @@ mod tests {
             1,
             "My Phone".into(),
             make_addr("192.168.1.5:9000"),
-            make_addr("192.168.1.5:55559"),
+            make_addr("192.168.1.5:23559"),
             None,
             None,
             None,
@@ -635,7 +635,7 @@ mod tests {
             1,
             "My Phone".into(),
             make_addr("192.168.1.2:9000"), // new IP!
-            make_addr("192.168.1.2:55559"),
+            make_addr("192.168.1.2:23559"),
             None,
             None,
             None,
@@ -677,7 +677,7 @@ mod tests {
             1,
             "ADB Phone".into(),
             make_addr("127.0.0.1:9000"),
-            make_addr("127.0.0.1:55559"), // loopback → ADB mode
+            make_addr("127.0.0.1:23559"), // loopback → ADB mode
             None,
             None,
             None,
@@ -709,7 +709,7 @@ mod tests {
             1,
             "My Phone".into(),
             make_addr("192.168.1.1:9000"), // same addr
-            make_addr("192.168.1.1:55559"),
+            make_addr("192.168.1.1:23559"),
             None,
             None,
             None,
@@ -797,7 +797,7 @@ mod tests {
             trusted_devices: trusted_devices.clone(),
         };
         let device_id = DeviceId("phone-1".into());
-        let remote_addr = make_addr("192.168.1.5:55559");
+        let remote_addr = make_addr("192.168.1.5:23559");
         let request_id = authorizer.create_pending(device_id.clone()).unwrap();
         let public_key = "verified-public-key".to_string();
         device_auth
@@ -901,7 +901,7 @@ mod tests {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 bitrate: Some(128_000),
                 response_tx: challenge_tx,
                 authorized: false,
@@ -939,7 +939,7 @@ mod tests {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 bitrate: Some(128_000),
                 response_tx: connect_tx,
                 authorized: false,
@@ -996,7 +996,7 @@ mod tests {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 bitrate: Some(128_000),
                 response_tx: repair_challenge_tx,
                 authorized: false,
@@ -1033,7 +1033,7 @@ mod tests {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 bitrate: Some(128_000),
                 response_tx: repair_tx,
                 authorized: false,
@@ -1121,7 +1121,7 @@ mod tests {
         let new_public_key =
             base64::engine::general_purpose::STANDARD.encode(key_pair.public_key());
         let phone_nonce = base64::engine::general_purpose::STANDARD.encode([11_u8; 32]);
-        let remote_addr = make_addr("192.168.1.5:55559");
+        let remote_addr = make_addr("192.168.1.5:23559");
 
         let (challenge_tx, challenge_rx) = tokio::sync::oneshot::channel();
         dispatcher
@@ -1276,7 +1276,7 @@ mod tests {
                 device_id,
                 device_name: "My Phone".into(),
                 source: None,
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 bitrate: Some(128_000),
                 response_tx,
                 authorized: false,
@@ -1326,7 +1326,7 @@ mod tests {
                 device_id: device_id.clone(),
                 device_name: "ADB Phone".into(),
                 source: None,
-                remote_addr: make_addr("127.0.0.1:55559"),
+                remote_addr: make_addr("127.0.0.1:23559"),
                 bitrate: Some(128_000),
                 response_tx,
                 authorized: true,
@@ -1378,7 +1378,7 @@ mod tests {
         dispatcher
             .handle_http_command(ControlCommand::Disconnect {
                 device_id: device_id.clone(),
-                remote_addr: make_addr("192.168.1.5:55559"),
+                remote_addr: make_addr("192.168.1.5:23559"),
                 generation: Some(generation),
                 response_tx,
             })

@@ -71,6 +71,16 @@
          chance of a console window. Return="ignore" already tolerates "no rules matched". -->
     <CustomAction Id="RemoveFirewallRules" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe advfirewall firewall delete rule name=all program=&quot;[INSTALLFOLDER]gemacast-pc.exe&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
 
+    <!-- Exclude 23555-23559 from ephemeral allocation, so Windows cannot hand one of our
+         ports to another program's outbound socket and leave us unable to bind. The block
+         is already below the 49152 default, so this only matters where the dynamic range
+         was widened downward. Same deferred/no-impersonate shape as above to stay
+         window-free; Return="ignore" tolerates an exclusion that already exists. -->
+    <CustomAction Id="ReservePortsTcp" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe int ipv4 add excludedportrange protocol=tcp startport=23555 numberofports=5 store=persistent" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="ReservePortsUdp" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe int ipv4 add excludedportrange protocol=udp startport=23555 numberofports=5 store=persistent" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UnreservePortsTcp" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe int ipv4 delete excludedportrange protocol=tcp startport=23555 numberofports=5 store=persistent" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UnreservePortsUdp" Directory="INSTALLFOLDER" ExeCommand="[SystemFolder]netsh.exe int ipv4 delete excludedportrange protocol=udp startport=23555 numberofports=5 store=persistent" Execute="deferred" Impersonate="no" Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- Util schedules this before InstallFiles (4000) by default, which is too late
            on uninstall - RemoveFiles is 3500, so the files are already queued for
@@ -82,6 +92,11 @@
            _X64 suffix tracks InstallerPlatform in msi.wixproj. -->
       <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" />
       <Custom Action="RemoveFirewallRules" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <!-- Last, so nothing is still bound in the range netsh has to exclude. -->
+      <Custom Action="ReservePortsTcp" Before="InstallFinalize" Condition="NOT REMOVE" />
+      <Custom Action="ReservePortsUdp" After="ReservePortsTcp" Condition="NOT REMOVE" />
+      <Custom Action="UnreservePortsTcp" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UnreservePortsUdp" After="UnreservePortsTcp" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
     <!-- Reference our custom WixUI sequence from CustomUI.wxs -->

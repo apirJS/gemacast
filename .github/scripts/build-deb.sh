@@ -33,7 +33,7 @@ fi
 cp linux/gemacast-pc.desktop "${PKG_NAME}/usr/share/applications/"
 cp linux/gemacast-pc.png "${PKG_NAME}/usr/share/icons/hicolor/256x256/apps/"
 
-# firewalld service definition (opens UDP 55555/55556 + TCP 55559 for LAN).
+# firewalld service definition (opens UDP 23555/23556 + TCP 23559 for LAN).
 # Fedora/RHEL ship firewalld blocking-by-default, so without this a fresh install
 # cannot be discovered. Named plainly `gemacast.xml` so `--add-service=gemacast`
 # in the maintainer scripts resolves it.

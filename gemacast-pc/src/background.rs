@@ -372,9 +372,11 @@ impl EngineWithAdapters {
         // On Linux, a default-blocking firewall (firewalld's restrictive zones,
         // or an enabled ufw) silently drops inbound discovery/streaming. The
         // deb/rpm handle this from their maintainer scripts; this best-effort,
-        // once-per-session hint covers the AppImage, which has no install hook.
+        // once-per-session dialog covers the AppImage, which has no install hook.
         #[cfg(target_os = "linux")]
-        crate::firewall::warn_if_firewall_may_block();
+        if let Some(msg) = crate::firewall::firewall_warning() {
+            self.tray.notify_firewall_warning(msg);
+        }
 
         // --- HTTPS control server state ---
         let control_state = ControlServerState {
@@ -519,7 +521,10 @@ impl EngineReady {
             )
             .await
             {
-                let msg = friendly_bind_error(e, "Control port (55559)");
+                let msg = friendly_bind_error(
+                    e,
+                    &format!("Control port ({})", gemacast_core::network::Ports::CONTROL),
+                );
                 tracing::error!("Fatal error: {}", msg);
                 tray_for_control.notify_fatal_error(msg);
             }

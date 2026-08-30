@@ -42,6 +42,7 @@ pub mod mocks {
             addr: SocketAddr,
         },
         FatalError(String),
+        FirewallWarning(String),
         ShutdownComplete,
         UpdateReady(String, std::path::PathBuf),
         UpdateFailed(String),
@@ -121,6 +122,13 @@ pub mod mocks {
                 .lock()
                 .unwrap()
                 .push(TrayCall::FatalError(message));
+        }
+
+        fn notify_firewall_warning(&self, message: String) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(TrayCall::FirewallWarning(message));
         }
 
         fn notify_shutdown_complete(&self) {

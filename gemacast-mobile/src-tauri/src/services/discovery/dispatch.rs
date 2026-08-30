@@ -153,7 +153,7 @@ mod tests {
             transport: None,
         };
         // Non-USB IP address (10.99.99.x avoids matching real host interfaces)
-        let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
+        let addr: std::net::SocketAddr = "10.99.99.5:23555".parse().unwrap();
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
         let events = notifier.take_events();
@@ -170,7 +170,7 @@ mod tests {
             is_offline: false,
             transport: Some(TransportType::Usb),
         };
-        let addr: std::net::SocketAddr = "192.168.42.1:55555".parse().unwrap();
+        let addr: std::net::SocketAddr = "192.168.42.1:23555".parse().unwrap();
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
         assert!(notifier.take_events().is_empty());
@@ -182,7 +182,7 @@ mod tests {
         let msg = gemacast_core::control::messages::ControlMessage::Disconnect {
             device_id: DeviceId("phone".into()),
         };
-        let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
+        let addr: std::net::SocketAddr = "10.99.99.5:23555".parse().unwrap();
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
         let events = notifier.take_events();
@@ -205,7 +205,7 @@ mod tests {
             is_offline: true,
             transport: None,
         };
-        let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
+        let addr: std::net::SocketAddr = "10.99.99.5:23555".parse().unwrap();
         ctx.dispatch(msg, addr, ConnectionMode::Wifi);
 
         // Streamer was removed from tracker
@@ -231,12 +231,12 @@ mod tests {
             transport: None,
         };
         // Non-loopback should be rejected
-        let addr: std::net::SocketAddr = "10.99.99.5:55555".parse().unwrap();
+        let addr: std::net::SocketAddr = "10.99.99.5:23555".parse().unwrap();
         ctx.dispatch(msg.clone(), addr, ConnectionMode::Adb);
         assert!(notifier.take_events().is_empty());
 
         // Loopback should be accepted
-        let loopback: std::net::SocketAddr = "127.0.0.1:55555".parse().unwrap();
+        let loopback: std::net::SocketAddr = "127.0.0.1:23555".parse().unwrap();
         ctx.dispatch(msg, loopback, ConnectionMode::Adb);
         assert_eq!(notifier.take_events().len(), 1);
     }

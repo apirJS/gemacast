@@ -3,7 +3,7 @@
  * If the Rust values ever change, update these to match.
  */
 export const Ports = {
-  DISCOVERY: 55555,
-  AUDIO_UDP: 55556,
-  CONTROL: 55559,
+  DISCOVERY: 23555,
+  AUDIO_UDP: 23556,
+  CONTROL: 23559,
 } as const;

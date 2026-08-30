@@ -57,6 +57,33 @@ else
   echo "FAIL: firewalld service definition not found"; ERRORS=$((ERRORS+1))
 fi
 
+# The postinst's actual effect, not just its presence. ufw is on the runner but
+# inactive; `ufw allow` still records the rule, and `show added` lists it.
+# firewalld cannot be checked the same way - the daemon is not running here.
+if command -v ufw &>/dev/null; then
+  ADDED=$(sudo ufw show added 2>/dev/null || true)
+  if echo "$ADDED" | grep -q "23555,23556/udp" && echo "$ADDED" | grep -q "23559/tcp"; then
+    echo "PASS: postinst added the ufw rules"
+  else
+    echo "FAIL: ufw rules missing after install"; ERRORS=$((ERRORS+1))
+  fi
+else
+  echo "SKIP: ufw not installed, cannot verify its rules"
+fi
+
+# Port reservation against ephemeral allocation.
+if [ -f /etc/sysctl.d/99-gemacast.conf ]; then
+  echo "PASS: sysctl drop-in installed"
+else
+  echo "FAIL: /etc/sysctl.d/99-gemacast.conf not created"; ERRORS=$((ERRORS+1))
+fi
+
+if sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null | grep -q "23555-23559"; then
+  echo "PASS: 23555-23559 reserved in the running kernel"
+else
+  echo "FAIL: 23555-23559 not in ip_local_reserved_ports"; ERRORS=$((ERRORS+1))
+fi
+
 # Maintainer scripts present in the package (they run during install, so they are
 # not left on disk — inspect the .deb's control archive instead).
 CTRL_FILES=$(dpkg-deb --ctrl-tarfile "$DEB_FILE" | tar -tf - 2>/dev/null || true)
@@ -123,6 +150,27 @@ if [ -f /usr/lib/firewalld/services/gemacast.xml ]; then
   echo "FAIL: firewalld service definition still exists"; ERRORS=$((ERRORS+1))
 else
   echo "PASS: firewalld service definition removed"
+fi
+
+if command -v ufw &>/dev/null; then
+  ADDED=$(sudo ufw show added 2>/dev/null || true)
+  if echo "$ADDED" | grep -q "23555,23556/udp"; then
+    echo "FAIL: ufw rules survived uninstall"; ERRORS=$((ERRORS+1))
+  else
+    echo "PASS: ufw rules removed"
+  fi
+fi
+
+if [ -f /etc/sysctl.d/99-gemacast.conf ]; then
+  echo "FAIL: sysctl drop-in survived uninstall"; ERRORS=$((ERRORS+1))
+else
+  echo "PASS: sysctl drop-in removed"
+fi
+
+if sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null | grep -q "23555-23559"; then
+  echo "FAIL: 23555-23559 still reserved in the running kernel"; ERRORS=$((ERRORS+1))
+else
+  echo "PASS: port reservation cleared"
 fi
 
 if [ $ERRORS -gt 0 ]; then

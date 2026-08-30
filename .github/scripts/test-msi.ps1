@@ -11,6 +11,18 @@ if (-not $msiPath -or -not (Test-Path $msiPath)) {
 
 $regKey = "HKLM:\SOFTWARE\EchaApriliyanto\Gemacast"
 
+# The block the installer excludes from ephemeral allocation. Mirrors
+# gemacast-core's Ports:: constants and Product.wxs's netsh custom actions.
+$reservedStart = 23555
+$reservedEnd = 23559
+
+# Whether netsh reports our exclusion for one protocol. The table prints
+# "<start> <end>" per row, so both endpoints on one line is an exact match.
+function Test-PortExclusion($proto) {
+    $out = netsh int ipv4 show excludedportrange protocol=$proto 2>&1 | Out-String
+    return $out -match "\b$reservedStart\s+$reservedEnd\b"
+}
+
 # ── Custom Folder Cycle ───────────────────────────────────────────────────
 # Gates the directory nesting and the remembered install location. The browse
 # dialog retargets INSTALLROOT, so passing it here is the silent equivalent.
@@ -126,6 +138,15 @@ if ($udpRule -match "Gemacast") {
     Write-Host "PASS: UDP firewall rule exists"
 } else {
     $errors += "UDP firewall rule 'Gemacast (UDP)' not found"
+}
+
+# Check port reservation
+foreach ($proto in @("tcp", "udp")) {
+    if (Test-PortExclusion $proto) {
+        Write-Host "PASS: $proto ports $reservedStart-$reservedEnd excluded from ephemeral allocation"
+    } else {
+        $errors += "$proto ports $reservedStart-$reservedEnd not excluded after install"
+    }
 }
 
 # Check Start Menu shortcut
@@ -245,6 +266,16 @@ if ($udpRule -match "No rules match") {
     Write-Host "PASS: UDP firewall rule removed"
 } else {
     $errors += "UDP firewall rule still exists after uninstall"
+}
+
+# The exclusion must not outlive the product - it would keep the block off-limits
+# to every other program on the box for nothing.
+foreach ($proto in @("tcp", "udp")) {
+    if (Test-PortExclusion $proto) {
+        $errors += "$proto ports $reservedStart-$reservedEnd still excluded after uninstall"
+    } else {
+        Write-Host "PASS: $proto port exclusion removed"
+    }
 }
 
 if ($errors.Count -gt 0) {

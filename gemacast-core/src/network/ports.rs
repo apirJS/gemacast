@@ -1,27 +1,23 @@
-/// Centralized port allocation for all GemaCast network services.
+/// One port per GemaCast service, so firewall rules stay simple.
 ///
-/// Each port serves a single, well-defined purpose to avoid multiplexing
-/// concerns and simplify firewall configuration.
+/// Keep these in 1024..32768. Below 1024 needs root; 32768 and up is ephemeral
+/// range on Linux and Android (49152 on Windows and macOS), and the OS will hand
+/// a port in there to someone else's outbound socket before we can bind it.
 pub struct Ports;
 
 impl Ports {
-    /// UDP broadcast port for presence announcements (PC -> network).
-    /// Carries only `Presence` and `Probe` messages.
-    pub const DISCOVERY: u16 = 55555;
+    /// UDP presence broadcast, PC -> network. Carries `Presence` and `Probe` only.
+    pub const DISCOVERY: u16 = 23555;
 
-    /// HTTPS/WSS port for control handshakes (mobile to PC via Axum REST).
-    /// Carries `Connect`, `Disconnect`, `GetSources`, `SourceList`,
-    /// `ChangeSource`, and `Probe` requests/responses.
-    pub const CONTROL: u16 = 55559;
+    /// HTTPS/WSS control channel, phone -> PC (Axum).
+    pub const CONTROL: u16 = 23559;
 
-    /// UDP port for real-time audio streaming (PC -> mobile).
-    pub const AUDIO_UDP: u16 = 55556;
+    /// UDP real-time audio, PC -> phone.
+    pub const AUDIO_UDP: u16 = 23556;
 
-    /// TCP port for ADB-tunneled audio (PC -> mobile via `adb reverse`).
-    /// Uses length-prefixed framing via [`TcpAudioFramer`].
-    pub const ADB_AUDIO_TCP: u16 = 55557;
+    /// TCP audio over `adb reverse`. Length-prefixed by [`TcpAudioFramer`].
+    pub const ADB_AUDIO_TCP: u16 = 23557;
 
-    /// TCP port for ADB-tunneled discovery (PC <-> mobile via `adb reverse`).
-    /// Carries newline-delimited JSON `ControlMessage` payloads.
-    pub const ADB_DISCOVERY_TCP: u16 = 55558;
+    /// TCP discovery over `adb reverse`. Newline-delimited `ControlMessage` JSON.
+    pub const ADB_DISCOVERY_TCP: u16 = 23558;
 }
