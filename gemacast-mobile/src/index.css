@@ -344,30 +344,6 @@
   }
 }
 
-@keyframes slide-from-left {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-
-@keyframes slide-out-left {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-100%);
-  }
-}
-
-@keyframes backdrop-fade-out {
-  to {
-    opacity: 0;
-  }
-}
-
 @layer utilities {
   /*
    * Scrollable, with no visible scrollbar. The streamer list is a touch surface —
