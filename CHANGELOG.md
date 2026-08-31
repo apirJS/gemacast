@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/apirJS/gemacast/compare/v0.3.0...v0.4.0) (2026-08-31)
+
+
+### Features
+
+* **mobile:** simplify setting drawer and auto reconnect ([#80](https://github.com/apirJS/gemacast/issues/80)) ([390ae29](https://github.com/apirJS/gemacast/commit/390ae29686b6e11be60588178d64d08ab18f3663))
+
 ## [0.3.0](https://github.com/apirJS/gemacast/compare/v0.2.0...v0.3.0) (2026-08-30)
 
 
