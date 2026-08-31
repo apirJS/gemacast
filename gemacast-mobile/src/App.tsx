@@ -94,9 +94,6 @@ export function App() {
       try {
         const supported = await tauriBridge.checkExclusiveSupport();
         useAppStore.getState().setExclusiveSupported(supported);
-        if (!supported && useAppStore.getState().settings.exclusiveMode) {
-          useAppStore.getState().updateSettings({ exclusiveMode: false });
-        }
       } catch (e) {
         console.warn('Failed to probe exclusive mode support:', e);
       }

@@ -9,7 +9,7 @@ export function ExclusiveToggle() {
   return (
     <Toggle
       id="setting-exclusive-mode"
-      checked={settings.exclusiveMode}
+      checked={settings.exclusiveMode && exclusiveSupported}
       onChange={(checked) => update({ exclusiveMode: checked })}
       disabled={!exclusiveSupported}
     />
