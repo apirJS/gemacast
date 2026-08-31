@@ -6,6 +6,7 @@ import { tauriBridge } from './core/tauri-bridge';
 import { getOrCreateDeviceId } from './core/persistence';
 import { useTauriEvents } from './hooks/use-tauri-events';
 import { useNetworkMonitor } from './hooks/use-network-monitor';
+import { reconnectOnAppOpen } from './hooks/use-connection';
 import { startListening } from './hooks/use-discovery';
 import { AppShell } from './components/layout/AppShell';
 
@@ -36,8 +37,16 @@ function AppInner() {
       }
     };
 
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') reconnectOnAppOpen().catch(console.warn);
+    };
+
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   return <AppShell />;
@@ -85,9 +94,6 @@ export function App() {
       try {
         const supported = await tauriBridge.checkExclusiveSupport();
         useAppStore.getState().setExclusiveSupported(supported);
-        if (!supported && useAppStore.getState().settings.exclusiveMode) {
-          useAppStore.getState().updateSettings({ exclusiveMode: false });
-        }
       } catch (e) {
         console.warn('Failed to probe exclusive mode support:', e);
       }
@@ -95,6 +101,8 @@ export function App() {
       const theme = useAppStore.getState().settings.theme;
       document.documentElement.classList.toggle('dark', theme === 'dark');
       document.documentElement.classList.toggle('light', theme === 'light');
+
+      await reconnectOnAppOpen().catch(console.warn);
 
       setReady(true);
     })();

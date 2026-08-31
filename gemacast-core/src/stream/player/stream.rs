@@ -31,16 +31,49 @@ pub type PlaybackStream = cpal::Stream;
 #[cfg(target_os = "android")]
 pub enum PlaybackStream {
     Oboe(oboe::AudioStreamAsync<oboe::Output, OboeCallback>),
+    OboeI16(oboe::AudioStreamAsync<oboe::Output, OboeCallbackI16>),
     Cpal(cpal::Stream),
 }
 
 #[cfg(target_os = "android")]
-pub struct OboeCallback {
+const OBOE_SCRATCH_SAMPLES: usize = 16_384;
+
+#[cfg(target_os = "android")]
+struct OboeRenderer {
     jitter_manager: JitterBufferManager,
     packet_consumer: ringbuf::HeapCons<RawPacket>,
     volume: Arc<AtomicU32>,
     is_playing: Arc<AtomicBool>,
     was_playing: bool,
+}
+
+#[cfg(target_os = "android")]
+impl OboeRenderer {
+    fn render(&mut self, out: &mut [f32]) {
+        let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
+
+        if !self.is_playing.load(Ordering::Relaxed) {
+            while self.packet_consumer.try_pop().is_some() {}
+            for sample in out.iter_mut() {
+                *sample = 0.0;
+            }
+            if self.was_playing {
+                self.jitter_manager.reset();
+                self.was_playing = false;
+            }
+            return;
+        }
+        self.was_playing = true;
+
+        self.jitter_manager
+            .ingest_packets(&mut self.packet_consumer);
+        self.jitter_manager.fill_output(out, vol);
+    }
+}
+
+#[cfg(target_os = "android")]
+pub struct OboeCallback {
+    renderer: OboeRenderer,
 }
 
 #[cfg(target_os = "android")]
@@ -52,34 +85,75 @@ impl AudioOutputCallback for OboeCallback {
         _stream: &mut dyn AudioOutputStreamSafe,
         audio_data: &mut [(f32, f32)],
     ) -> DataCallbackResult {
-        let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
-
-        let float_slice = unsafe {
+        let out = unsafe {
             std::slice::from_raw_parts_mut(
                 audio_data.as_mut_ptr() as *mut f32,
                 audio_data.len() * 2,
             )
         };
+        self.renderer.render(out);
+        DataCallbackResult::Continue
+    }
+}
 
-        if !self.is_playing.load(Ordering::Relaxed) {
-            while self.packet_consumer.try_pop().is_some() {}
-            for sample in float_slice.iter_mut() {
-                *sample = 0.0;
+/// Exclusive playback path. An MMAP NOIRQ endpoint is commonly PCM_16_BIT only,
+/// and Oboe will not convert float for us — `QuirksManager::isConversionNeeded`
+/// gates float→i16 output behind `shouldConvertFloatToI16ForOutputStreams()`, a
+/// pre-L/Vivo device quirk. So the stream is opened as i16 and converted here.
+#[cfg(target_os = "android")]
+pub struct OboeCallbackI16 {
+    renderer: OboeRenderer,
+    scratch: Vec<f32>,
+}
+
+#[cfg(target_os = "android")]
+impl AudioOutputCallback for OboeCallbackI16 {
+    type FrameType = (i16, oboe::Stereo);
+
+    fn on_audio_ready(
+        &mut self,
+        _stream: &mut dyn AudioOutputStreamSafe,
+        audio_data: &mut [(i16, i16)],
+    ) -> DataCallbackResult {
+        let out = unsafe {
+            std::slice::from_raw_parts_mut(
+                audio_data.as_mut_ptr() as *mut i16,
+                audio_data.len() * 2,
+            )
+        };
+
+        // One chunk in every realistic case; the loop only exists so an
+        // oversized callback cannot allocate on the audio thread.
+        let capacity = self.scratch.len();
+        for chunk in out.chunks_mut(capacity) {
+            let staging = &mut self.scratch[..chunk.len()];
+            self.renderer.render(staging);
+            for (dst, src) in chunk.iter_mut().zip(staging.iter()) {
+                *dst = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
             }
-            if self.was_playing {
-                self.jitter_manager.reset();
-                self.was_playing = false;
-            }
-            return DataCallbackResult::Continue;
         }
-        self.was_playing = true;
-
-        self.jitter_manager
-            .ingest_packets(&mut self.packet_consumer);
-        self.jitter_manager.fill_output(float_slice, vol);
 
         DataCallbackResult::Continue
     }
+}
+
+#[cfg(target_os = "android")]
+fn log_opened_stream<S: AudioStreamBase>(stream: &S) {
+    // Log the GRANTED stream params (not the requested ones). If the granted
+    // sample rate is not 48000, Oboe is resampling internally — the prime suspect
+    // for the reconnect-dependent buzz.
+    tracing::info!(
+        "[Oboe] Stream opened: granted_rate={}Hz, sharing={:?}, perf={:?}, \
+         conv_quality={:?}, frames_per_callback={}, channels={:?}, format={:?}, requested_rate={}Hz",
+        stream.get_sample_rate(),
+        stream.get_sharing_mode(),
+        stream.get_performance_mode(),
+        stream.get_sample_rate_conversion_quality(),
+        stream.get_frames_per_callback(),
+        stream.get_channel_count(),
+        stream.get_format(),
+        OPUS_SAMPLE_RATE,
+    );
 }
 
 #[cfg(not(target_os = "android"))]
@@ -284,7 +358,7 @@ pub fn build_playback_stream(
         source: e,
     })?;
 
-    let callback = OboeCallback {
+    let renderer = OboeRenderer {
         jitter_manager: JitterBufferManager::new(
             decoder,
             latency_metric.clone(),
@@ -299,68 +373,60 @@ pub fn build_playback_stream(
         was_playing: true,
     };
 
-    let builder = AudioStreamBuilder::default()
+    let base = AudioStreamBuilder::default()
         .set_direction::<oboe::Output>()
-        .set_performance_mode(PerformanceMode::LowLatency)
-        .set_sharing_mode(if exclusive_mode {
-            SharingMode::Exclusive
-        } else {
-            SharingMode::Shared
-        })
-        .set_format::<f32>()
-        .set_channel_count::<oboe::Stereo>()
-        .set_channel_conversion_allowed(true)
-        .set_format_conversion_allowed(true)
-        .set_sample_rate(OPUS_SAMPLE_RATE as i32)
-        .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
-        .set_callback(callback);
+        .set_performance_mode(PerformanceMode::LowLatency);
 
-    match builder.open_stream() {
-        Ok(stream) => {
-            // Log the GRANTED stream params (not the requested ones). If the
-            // granted sample rate is not 48000, Oboe is resampling internally —
-            // the prime suspect for the reconnect-dependent buzz. This one line on
-            // a buzzy vs. clean open tells us definitively.
-            tracing::info!(
-                "[Oboe] Stream opened: granted_rate={}Hz, sharing={:?}, perf={:?}, \
-                 conv_quality={:?}, frames_per_callback={}, channels={:?}, format={:?}, requested_rate={}Hz",
-                stream.get_sample_rate(),
-                stream.get_sharing_mode(),
-                stream.get_performance_mode(),
-                stream.get_sample_rate_conversion_quality(),
-                stream.get_frames_per_callback(),
-                stream.get_channel_count(),
-                stream.get_format(),
-                OPUS_SAMPLE_RATE,
-            );
-            let exclusive_granted = stream.get_sharing_mode() == SharingMode::Exclusive;
-            Ok((PlaybackStream::Oboe(stream), exclusive_granted))
-        }
-        Err(oboe_err) => {
-            tracing::warn!(
-                "Oboe failed to open stream ({}), falling back to cpal",
-                oboe_err
-            );
+    // Exclusive asks for an exact MMAP match: i16, stereo, 48 kHz, no conversion.
+    // Any conversion request makes Oboe open a child stream and wrap it in a
+    // FilterAudioStream, whose sharing mode reports what we asked for rather than
+    // what the child was granted.
+    let result = if exclusive_mode {
+        base.set_sharing_mode(SharingMode::Exclusive)
+            .set_format::<i16>()
+            .set_channel_count::<oboe::Stereo>()
+            .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+            .set_callback(OboeCallbackI16 {
+                renderer,
+                scratch: vec![0.0; OBOE_SCRATCH_SAMPLES],
+            })
+            .open_stream()
+            .map(|stream| {
+                log_opened_stream(&stream);
+                let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+                (PlaybackStream::OboeI16(stream), granted)
+            })
+    } else {
+        base.set_sharing_mode(SharingMode::Shared)
+            .set_format::<f32>()
+            .set_channel_count::<oboe::Stereo>()
+            .set_channel_conversion_allowed(true)
+            .set_format_conversion_allowed(true)
+            .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+            .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
+            .set_callback(OboeCallback { renderer })
+            .open_stream()
+            .map(|stream| {
+                log_opened_stream(&stream);
+                let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+                (PlaybackStream::Oboe(stream), granted)
+            })
+    };
 
-            // The original packet_consumer was moved into the OboeCallback
-            // (which is now dropped), so we need a fresh ring buffer for the
-            // cpal fallback. The caller will connect it to the same producer.
-            //
-            // However, since the consumer was already split from the ring buffer
-            // and consumed by the failed Oboe callback, we cannot recover it.
-            // Instead, return an error with proper Oboe error types and let the
-            // caller handle the fallback at a higher level.
-            //
-            // For a seamless fallback, we would need to defer callback creation,
-            // but that would require restructuring the ring buffer ownership.
-            // For now, return the Oboe error — the caller can retry with cpal.
-            Err(AudioError::OboeStreamBuildFailed {
-                direction: StreamDirection::Output,
-                message: format!("{}", oboe_err),
-            }
-            .into())
+    result.map_err(|oboe_err| {
+        tracing::warn!(
+            "Oboe failed to open stream ({}), falling back to cpal",
+            oboe_err
+        );
+
+        // The packet_consumer was moved into the callback (now dropped), so the
+        // caller has to retry with a fresh ring buffer.
+        AudioError::OboeStreamBuildFailed {
+            direction: StreamDirection::Output,
+            message: format!("{}", oboe_err),
         }
-    }
+        .into()
+    })
 }
 
 /// Probe whether the device supports Oboe exclusive audio mode by opening a
@@ -374,32 +440,38 @@ pub fn probe_exclusive_support() -> bool {
 
     struct SilentProbe;
     impl AudioOutputCallback for SilentProbe {
-        type FrameType = (f32, oboe::Mono);
+        type FrameType = (i16, oboe::Stereo);
         fn on_audio_ready(
             &mut self,
             _stream: &mut dyn AudioOutputStreamSafe,
-            data: &mut [f32],
+            data: &mut [(i16, i16)],
         ) -> DataCallbackResult {
-            data.fill(0.0);
+            data.fill((0, 0));
             DataCallbackResult::Stop
         }
     }
 
+    // Must request exactly what the exclusive path in build_playback_stream
+    // requests. A failed exclusive open is silently retried as shared, so any
+    // mismatch here reads back as "the device does not support it".
     let builder = AudioStreamBuilder::default()
         .set_direction::<oboe::Output>()
         .set_performance_mode(PerformanceMode::LowLatency)
         .set_sharing_mode(SharingMode::Exclusive)
-        .set_format::<f32>()
-        .set_channel_count::<oboe::Mono>()
+        .set_format::<i16>()
+        .set_channel_count::<oboe::Stereo>()
+        .set_sample_rate(OPUS_SAMPLE_RATE as i32)
         .set_callback(SilentProbe);
 
     match builder.open_stream() {
         Ok(stream) => {
             let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
             tracing::info!(
-                "[Oboe] exclusive probe: granted={}, sharing={:?}",
+                "[Oboe] exclusive probe: granted={}, sharing={:?}, format={:?}, rate={}Hz",
                 granted,
                 stream.get_sharing_mode(),
+                stream.get_format(),
+                stream.get_sample_rate(),
             );
             granted
         }

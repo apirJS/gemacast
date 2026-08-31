@@ -101,6 +101,7 @@ export type AppSettings = {
   mode: ConnectionMode;
   exclusiveMode: boolean;
   keepScreenOn: boolean;
+  autoReconnect: boolean;
   bufferPreset: PresetId | string;
   customJitterConfig: JitterConfig;
   savedPresets: SavedPreset[];
@@ -129,6 +130,7 @@ export type AppState = {
   connectedStreamer: DiscoveredStreamer | null;
   connectingStreamerId: string | null;
   lastConnectedStreamer: DiscoveredStreamer | null;
+  lastConnectedMode: ConnectionMode | null;
   error: GemaCastError | null;
   connectionHealth: ConnectionHealth;
   isNetworkAvailable: boolean;

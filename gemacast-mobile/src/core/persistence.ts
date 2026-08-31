@@ -3,6 +3,7 @@ import { ConnectionMode } from './types';
 import { JITTER_PRESETS } from './presets';
 
 const LS_LAST_STREAMER = 'gemacast_last_streamer';
+const LS_LAST_MODE = 'gemacast_last_mode';
 const LS_SETTINGS = 'gemacast_settings';
 const LS_DEVICE_ID = 'gemacast_device_id';
 const LS_PC_NAMES = 'gemacast_pc_names';
@@ -21,6 +22,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mode: ConnectionMode.Wifi,
   exclusiveMode: true,
   keepScreenOn: false,
+  autoReconnect: true,
   bufferPreset: 'auto',
   customJitterConfig: DEFAULT_AUTO_CONFIG,
   savedPresets: [],
@@ -85,6 +87,25 @@ export function saveLastStreamer(streamer: DiscoveredStreamer | null) {
   }
 }
 
+export function loadLastMode(): ConnectionMode | null {
+  try {
+    const raw = localStorage.getItem(LS_LAST_MODE);
+    return raw === ConnectionMode.Wifi || raw === ConnectionMode.Usb || raw === ConnectionMode.Adb
+      ? raw
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastMode(mode: ConnectionMode | null) {
+  if (mode) {
+    localStorage.setItem(LS_LAST_MODE, mode);
+  } else {
+    localStorage.removeItem(LS_LAST_MODE);
+  }
+}
+
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(LS_SETTINGS);
@@ -97,17 +118,6 @@ export function loadSettings(): AppSettings {
   return DEFAULT_SETTINGS;
 }
 
-/**
- * Friendly names for PCs we have seen, keyed by the same `deviceId` the native
- * trust store uses for paired PCs.
- *
- * This exists because the two are stored in different places with different
- * lifetimes: the native trust store keeps the *id* until the user forgets the
- * PC, while the human-readable name only ever arrived with a live discovery
- * packet or an active session. Anything that clears discovery — Wi-Fi dropping,
- * a network hop, switching to ADB and back — used to leave the Paired PCs list
- * with no name to show and it fell back to the raw `PC_<hex>` id.
- */
 function readPcNames(): Record<string, string> {
   try {
     const raw = localStorage.getItem(LS_PC_NAMES);

@@ -5,7 +5,6 @@ import { disconnect, killPlayback } from './use-connection';
 import { startListening, stopListening } from './use-discovery';
 import { tauriBridge } from '../core/tauri-bridge';
 import { ConnectionMode, Status } from '../core/types';
-import { saveLastStreamer } from '../core/persistence';
 
 export function useNetworkMonitor() {
   const networkIdRef = useRef('');
@@ -42,14 +41,14 @@ export function useNetworkMonitor() {
           }
 
           killPlayback();
-          saveLastStreamer(null);
 
           store.getState().dismissError();
           store.getState().patch({
             deviceInfo: { ...currentState.deviceInfo, ip: localIp },
             discoveredStreamers: [],
             connectedStreamer: null,
-            lastConnectedStreamer: null,
+            lastConnectedStreamer:
+              currentState.lastConnectedStreamer ?? currentState.connectedStreamer,
             status: Status.Listening,
           });
 
@@ -116,11 +115,9 @@ export function useNetworkMonitor() {
         store.getState().patch({
           status: Status.Listening,
           connectedStreamer: null,
-          lastConnectedStreamer: null,
         });
         store.getState().resetMetrics();
         killPlayback();
-        saveLastStreamer(null);
       }
     };
 

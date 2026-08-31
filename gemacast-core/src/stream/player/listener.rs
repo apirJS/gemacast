@@ -219,18 +219,24 @@ impl AudioStreamPlayer {
         #[cfg(target_os = "android")]
         {
             use oboe::{AudioStream, AudioStreamSafe};
-            match &mut self.playback_stream {
-                PlaybackStream::Oboe(stream) => {
-                    let burst = stream.get_frames_per_burst();
-                    let _ = stream.set_buffer_size_in_frames(burst * 2);
 
-                    stream
+            macro_rules! start_oboe {
+                ($stream:expr) => {{
+                    let burst = $stream.get_frames_per_burst();
+                    let _ = $stream.set_buffer_size_in_frames(burst * 2);
+
+                    $stream
                         .start()
                         .map_err(|e| AudioError::OboeStreamStartFailed {
                             direction: StreamDirection::Output,
                             message: format!("{}", e),
                         })?;
-                }
+                }};
+            }
+
+            match &mut self.playback_stream {
+                PlaybackStream::Oboe(stream) => start_oboe!(stream),
+                PlaybackStream::OboeI16(stream) => start_oboe!(stream),
                 PlaybackStream::Cpal(stream) => {
                     use cpal::traits::StreamTrait;
                     stream.play().map_err(|e| AudioError::PlayStreamFailed {

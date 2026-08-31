@@ -13,7 +13,13 @@ import type {
 } from '../core/types';
 import { Status, ConnectionMode } from '../core/types';
 import { GemaCastError } from '../core/error';
-import { loadLastStreamer, loadSettings, rememberPcName, saveSettings } from '../core/persistence';
+import {
+  loadLastMode,
+  loadLastStreamer,
+  loadSettings,
+  rememberPcName,
+  saveSettings,
+} from '../core/persistence';
 import { useToastStore } from './toast-store';
 
 const EMPTY_METRICS: Metrics = { bufferMs: null, networkRttMs: null, jitterMs: null };
@@ -26,6 +32,7 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     connectedStreamer: null,
     connectingStreamerId: null,
     lastConnectedStreamer: loadLastStreamer(),
+    lastConnectedMode: loadLastMode(),
     error: null,
     connectionHealth: 'ok',
     isNetworkAvailable: typeof navigator !== 'undefined' ? navigator.onLine : true,
@@ -142,8 +149,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     if (
       !streamer.isOffline &&
+      state.settings.autoReconnect &&
       state.status === Status.Listening &&
       state.lastConnectedStreamer?.deviceId === streamer.deviceId &&
+      state.lastConnectedMode === state.settings.mode &&
       !state.isSuspended
     ) {
       return streamer;
