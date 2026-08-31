@@ -38,13 +38,9 @@ pub fn setup_event_forwarding(notifier: Arc<dyn FrontendNotifier>) -> EventForwa
 
     let (latency_tx, mut latency_rx) = tokio::sync::mpsc::channel::<(f32, f32, f32)>(10);
     tokio::spawn(async move {
-        // Cadence is bounded upstream — the receive loop only sends on every 100th
-        // packet (~1 s, listener.rs) — so no extra throttle is needed here. The
-        // `Latency: …ms RMS: …` line is a load-bearing field diagnostic (it is what
-        // identified the v20 wire formats); keep it.
         while let Some((latency, rms, jitter)) = latency_rx.recv().await {
             notifier.emit_audio_telemetry(latency, rms > 0.0001, jitter);
-            println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
+            // println!("Latency: {:.2}ms RMS: {:.2}", latency, rms);
         }
     });
 

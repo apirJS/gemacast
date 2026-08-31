@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { tauriBridge } from '../../core/tauri-bridge';
-import { forgetPcName, loadPcNames } from '../../core/persistence';
+import {
+  forgetPcName,
+  loadLastStreamer,
+  loadPcNames,
+  saveLastMode,
+  saveLastStreamer,
+} from '../../core/persistence';
 import { disconnect } from '../../hooks/use-connection';
 import { useAppStore } from '../../stores/app-store';
 import { useToastStore } from '../../stores/toast-store';
@@ -68,6 +74,11 @@ export function ForgetPcIdentity() {
       }
       await tauriBridge.forgetPcIdentity(pc.deviceId);
       forgetPcName(pc.deviceId);
+      if (loadLastStreamer()?.deviceId === pc.deviceId) {
+        saveLastStreamer(null);
+        saveLastMode(null);
+        useAppStore.getState().patch({ lastConnectedStreamer: null, lastConnectedMode: null });
+      }
       setPairedPcIds((ids) => ids.filter((id) => id !== pc.deviceId));
       useToastStore.getState().show('success', `Forgot ${pc.deviceName}`);
     } catch (error) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { makeDeviceInfo, makeDiscoveredStreamer } from '../__tests__/setup';
 import { useAppStore } from './app-store';
-import { Status } from '../core/types';
+import { ConnectionMode, Status } from '../core/types';
 import { GemaCastError, ErrorCode } from '../core/error';
 
 beforeEach(() => {
@@ -75,6 +75,7 @@ describe('app-store — discovered streamers', () => {
     useAppStore.getState().patch({
       status: Status.Listening,
       lastConnectedStreamer: streamer,
+      lastConnectedMode: ConnectionMode.Wifi,
       isSuspended: false,
     });
     const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
@@ -86,7 +87,45 @@ describe('app-store — discovered streamers', () => {
     useAppStore.getState().patch({
       status: Status.Listening,
       lastConnectedStreamer: streamer,
+      lastConnectedMode: ConnectionMode.Wifi,
       isSuspended: true,
+    });
+    const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
+    expect(result).toBeNull();
+  });
+
+  it('does not auto-reconnect when the toggle is off', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().patch({
+      status: Status.Listening,
+      lastConnectedStreamer: streamer,
+      lastConnectedMode: ConnectionMode.Wifi,
+      isSuspended: false,
+      settings: { ...useAppStore.getState().settings, autoReconnect: false },
+    });
+    const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
+    expect(result).toBeNull();
+  });
+
+  it('does not auto-reconnect on a different mode than the last connection used', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().patch({
+      status: Status.Listening,
+      lastConnectedStreamer: streamer,
+      lastConnectedMode: ConnectionMode.Adb,
+      isSuspended: false,
+    });
+    const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
+    expect(result).toBeNull();
+  });
+
+  it('does not auto-reconnect after an explicit disconnect cleared the target', () => {
+    const streamer = makeDiscoveredStreamer();
+    useAppStore.getState().patch({
+      status: Status.Listening,
+      lastConnectedStreamer: null,
+      lastConnectedMode: ConnectionMode.Wifi,
+      isSuspended: false,
     });
     const result = useAppStore.getState().updateDiscoveredStreamer(streamer);
     expect(result).toBeNull();

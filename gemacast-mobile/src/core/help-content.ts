@@ -17,6 +17,10 @@ export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
     title: 'Keep Screen On',
     body: 'Stops the screen turning off while the app is open.\n\nStreaming keeps working with the screen off, but some phones throttle harder once it is, which can cause stuttering. Turn this on if that happens — otherwise leave it off and save battery.',
   },
+  'auto-reconnect': {
+    title: 'Auto Reconnect',
+    body: 'Picks up where you left off. Come back to the app and it connects straight to the last PC you used, over the same mode as before — switching the mode for you if you are on a different one.\n\nWhile you are in the app it also reconnects on its own if the stream drops.\n\nIt stays put when:\n• You disconnected yourself\n• The PC kicked you from system tray\n• The mode it needs is gone — cable unplugged, Wi-Fi off',
+  },
   'connection-mode': {
     title: 'Connection Mode',
     body: 'How the phone reaches the PC, lowest delay first.\n\n• USB — cable with USB tethering on. Lowest delay, steadiest timing.\n• ADB — cable over Android Debug Bridge. About the same. Use it when tethering is not available.\n• Wi-Fi — no cable, more delay. 5 GHz is usually fine; 2.4 GHz stutters the most.\n\nGemacast spots your Wi-Fi band and calculates the buffer to match. The badge on the main screen shows the link it used.',

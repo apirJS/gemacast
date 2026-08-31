@@ -6,6 +6,7 @@ import { BitrateSelect } from './BitrateSelect';
 import { GainSlider } from './GainSlider';
 import { ExclusiveToggle } from './ExclusiveToggle';
 import { KeepScreenOnToggle } from './KeepScreenOnToggle';
+import { AutoReconnectToggle } from './AutoReconnectToggle';
 import { ModeSelector } from './ModeSelector';
 import { UpdateBanner } from './UpdateBanner';
 import { ForgetPcIdentity } from './ForgetPcIdentity';
@@ -144,6 +145,13 @@ export function SettingsDrawer() {
                 Keep Screen On
               </SectionLabel>
               <KeepScreenOnToggle />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <SectionLabel helpButton={help.renderHelpButton('auto-reconnect')}>
+                Auto Reconnect
+              </SectionLabel>
+              <AutoReconnectToggle />
             </div>
           </div>
 

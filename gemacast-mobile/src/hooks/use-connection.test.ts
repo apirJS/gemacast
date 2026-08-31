@@ -6,7 +6,7 @@ import {
   makeDiscoveredStreamer,
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
-import { Status } from '../core/types';
+import { ConnectionMode, Status } from '../core/types';
 import {
   connectToStreamer,
   disconnect,
@@ -17,11 +17,13 @@ import {
   handleLinkRecovered,
   changeAudioSource,
   isTerminalConnectError,
+  reconnectOnAppOpen,
 } from './use-connection';
 import { ErrorCode } from '../core/error';
 import { useToastStore } from '../stores/toast-store';
 
 beforeEach(() => {
+  localStorage.clear();
   setupInvokeMock({
     connect_to_streamer: undefined,
     disconnect_from_streamer: undefined,
@@ -245,6 +247,7 @@ describe('disconnect', () => {
     useAppStore.getState().patch({
       connectedStreamer: null,
       lastConnectedStreamer: streamer,
+      lastConnectedMode: ConnectionMode.Wifi,
       status: Status.Listening,
       isSuspended: false,
     });
@@ -252,6 +255,104 @@ describe('disconnect', () => {
     expect(useAppStore.getState().updateDiscoveredStreamer(streamer)).toMatchObject({
       deviceId: 'pc-1',
     });
+  });
+});
+
+describe('reconnectOnAppOpen', () => {
+  const ALL_MODES = { wifi: true, usb: true, adb: true };
+
+  function mockBridge(modes: { wifi: boolean; usb: boolean; adb: boolean }) {
+    setupInvokeMock({
+      get_connection_status: modes,
+      connect_to_streamer: undefined,
+      disconnect_from_streamer: undefined,
+      establish_websocket: undefined,
+      kill_playback: undefined,
+      notify_streaming_stopped: undefined,
+      get_audio_sources: [[], { supportsProcessCapture: false }],
+      get_process_list: [],
+    });
+  }
+
+  async function connectThenDisconnect(streamer: ReturnType<typeof makeDiscoveredStreamer>) {
+    useAppStore.getState().setDiscoveredStreamers([streamer]);
+    await connectToStreamer(streamer);
+    await disconnect(true);
+  }
+
+  it('does nothing when no PC has ever been connected', async () => {
+    mockBridge(ALL_MODES);
+    useAppStore.getState().setDiscoveredStreamers([makeDiscoveredStreamer({ deviceId: 'pc-1' })]);
+
+    await reconnectOnAppOpen();
+
+    expect(invokeCalls.some((c) => c.cmd === 'connect_to_streamer')).toBe(false);
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
+  });
+
+  it('reconnects to the saved PC after an explicit disconnect and reopen', async () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
+    mockBridge(ALL_MODES);
+    await connectThenDisconnect(streamer);
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
+
+    mockBridge(ALL_MODES);
+    await reconnectOnAppOpen();
+
+    expect(useAppStore.getState().status).toBe(Status.Connected);
+    expect(useAppStore.getState().connectedStreamer?.deviceId).toBe('pc-1');
+  });
+
+  it('does not reconnect when the saved mode is unavailable', async () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
+    mockBridge(ALL_MODES);
+    await connectThenDisconnect(streamer);
+
+    mockBridge({ wifi: false, usb: true, adb: true });
+    await reconnectOnAppOpen();
+
+    expect(invokeCalls.some((c) => c.cmd === 'connect_to_streamer')).toBe(false);
+    expect(useAppStore.getState().status).toBe(Status.Listening);
+  });
+
+  it('switches to the saved mode instead of connecting on the wrong one', async () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
+    mockBridge(ALL_MODES);
+    useAppStore.getState().updateSettings({ mode: ConnectionMode.Adb });
+    await connectThenDisconnect(streamer);
+    useAppStore.getState().updateSettings({ mode: ConnectionMode.Wifi });
+
+    mockBridge(ALL_MODES);
+    await reconnectOnAppOpen();
+
+    expect(useAppStore.getState().settings.mode).toBe(ConnectionMode.Adb);
+    expect(invokeCalls.some((c) => c.cmd === 'connect_to_streamer')).toBe(false);
+    expect(useAppStore.getState().lastConnectedStreamer?.deviceId).toBe('pc-1');
+  });
+
+  it('does nothing when the toggle is off', async () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
+    mockBridge(ALL_MODES);
+    await connectThenDisconnect(streamer);
+    useAppStore.getState().updateSettings({ autoReconnect: false });
+
+    mockBridge(ALL_MODES);
+    await reconnectOnAppOpen();
+
+    expect(invokeCalls.some((c) => c.cmd === 'connect_to_streamer')).toBe(false);
+    expect(useAppStore.getState().lastConnectedStreamer).toBeNull();
+  });
+
+  it('does nothing while a session is live', async () => {
+    const streamer = makeDiscoveredStreamer({ deviceId: 'pc-1' });
+    mockBridge(ALL_MODES);
+    useAppStore.getState().setDiscoveredStreamers([streamer]);
+    await connectToStreamer(streamer);
+
+    mockBridge(ALL_MODES);
+    await reconnectOnAppOpen();
+
+    expect(invokeCalls.some((c) => c.cmd === 'connect_to_streamer')).toBe(false);
   });
 });
 

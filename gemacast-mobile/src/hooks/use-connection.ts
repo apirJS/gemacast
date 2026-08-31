@@ -3,8 +3,14 @@ import { useToastStore } from '../stores/toast-store';
 import { tauriBridge } from '../core/tauri-bridge';
 import { GemaCastError } from '../core/error';
 import { getPresetConfig } from '../core/presets';
-import { rememberPcName, saveLastStreamer } from '../core/persistence';
-import { Status } from '../core/types';
+import {
+  loadLastMode,
+  loadLastStreamer,
+  rememberPcName,
+  saveLastMode,
+  saveLastStreamer,
+} from '../core/persistence';
+import { ConnectionMode, Status } from '../core/types';
 import type { AudioSource, DiscoveredStreamer, Result } from '../core/types';
 import { ok, err } from '../core/types';
 
@@ -79,8 +85,13 @@ export async function connectToStreamer(
     const config = getPresetConfig(settings.bufferPreset, settings.customJitterConfig);
 
     const isManual = streamer.deviceId.startsWith('manual-');
-    const connectionMode = isManual ? 'wifi' : settings.mode;
-    const transport = connectionMode === 'usb' ? 'usb' : connectionMode === 'wifi' ? 'wifi' : null;
+    const connectionMode = isManual ? ConnectionMode.Wifi : settings.mode;
+    const transport =
+      connectionMode === ConnectionMode.Usb
+        ? 'usb'
+        : connectionMode === ConnectionMode.Wifi
+          ? 'wifi'
+          : null;
 
     const args = {
       ip,
@@ -95,7 +106,7 @@ export async function connectToStreamer(
     };
 
     // ADB mode uses TCP transport which takes longer to initialize
-    const isAdbMode = connectionMode === 'adb';
+    const isAdbMode = connectionMode === ConnectionMode.Adb;
     // LAN pairing can legitimately wait for a PC dialog. The native request
     // already has a 70-second budget, so repeating it here can duplicate a
     // server-side success after a lost response. ADB keeps bounded retries for
@@ -107,6 +118,7 @@ export async function connectToStreamer(
       .catch((e) => console.warn('WebSocket setup failed (non-fatal):', e));
 
     saveLastStreamer(streamer);
+    saveLastMode(connectionMode);
     // A completed connect is what puts this PC in the native trust store, so it
     // is also where its name must be cached for the Paired PCs list. Covers the
     // paths discovery never sees, e.g. connecting by address.
@@ -117,6 +129,7 @@ export async function connectToStreamer(
       connectedStreamer: streamer,
       connectingStreamerId: null,
       lastConnectedStreamer: streamer,
+      lastConnectedMode: connectionMode,
       status: Status.Connected,
       connectionHealth: 'ok',
       reconnectAttempts: 0,
@@ -154,6 +167,9 @@ export async function connectToStreamer(
       isLoading: false,
       status: Status.Listening,
       connectingStreamerId: null,
+      lastConnectedStreamer: isTerminalConnectError(e)
+        ? null
+        : store.getState().lastConnectedStreamer,
     });
     return err(error);
   }
@@ -175,8 +191,6 @@ export async function disconnect(
 
   const streamer = state.connectedStreamer;
   const retainedStreamer = streamer ?? state.lastConnectedStreamer;
-
-  if (forgetStreamer) saveLastStreamer(null);
 
   store.getState().patch({
     status: Status.Listening,
@@ -266,7 +280,6 @@ export function handleForceDisconnect(forgetStreamer: boolean = true) {
     return;
   }
 
-  if (forgetStreamer) saveLastStreamer(null);
   store.getState().patch({
     connectedStreamer: null,
     lastConnectedStreamer: forgetStreamer ? null : state.lastConnectedStreamer,
@@ -278,6 +291,33 @@ export function handleForceDisconnect(forgetStreamer: boolean = true) {
   store.getState().resetMetrics();
   tauriBridge.notifyStreamingStopped().catch(console.warn);
   tauriBridge.killPlayback().catch(console.warn);
+}
+
+export async function reconnectOnAppOpen() {
+  const state = store.getState();
+  if (!state.settings.autoReconnect) return;
+  if (state.status !== Status.Listening && state.status !== Status.Idle) return;
+
+  const streamer = loadLastStreamer();
+  const mode = loadLastMode();
+  if (!streamer || !mode) return;
+
+  const modes = await tauriBridge.getConnectionStatus().catch(() => state.availableModes);
+  if (!modes[mode]) return;
+
+  store.getState().patch({
+    lastConnectedStreamer: streamer,
+    lastConnectedMode: mode,
+    isSuspended: false,
+  });
+
+  if (mode !== state.settings.mode) {
+    store.getState().updateSettings({ mode });
+    return;
+  }
+
+  const onList = state.discoveredStreamers.find((s) => s.deviceId === streamer.deviceId);
+  if (onList) await connectToStreamer(onList);
 }
 
 /**
