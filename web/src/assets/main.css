@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+* {
+  border: solid 0.1px black;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+section,
+main {
+  min-height: 100vh;
+}
