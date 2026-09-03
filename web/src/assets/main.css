@@ -1,7 +1,11 @@
 @import "tailwindcss";
 
-* {
+/** {
   border: solid 0.1px black;
+}*/
+
+@theme {
+  --color-primary: oklch(0.5, 0.37, 0)
 }
 
 html {
