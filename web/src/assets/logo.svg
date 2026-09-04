@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048" width="2048" height="2048">
+  <defs>
+    <linearGradient id="gray" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ebdbb2"/>
+      <stop offset="1" stop-color="#ebdbb2"/>
+    </linearGradient>
+    <linearGradient id="grayMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ebdbb2"/>
+      <stop offset="1" stop-color="#ebdbb2"/>
+    </linearGradient>
+  </defs>
+  <rect width="2048" height="2048" fill="#3c3836"/>
+  <g transform="translate(315.7,210.0) scale(0.812)">
+    <g fill="none" stroke-linecap="round">
+      <path d="M 890,610 C 1085,840 1085,1180 890,1410" stroke="url(#gray)" stroke-width="46"/>
+      <path d="M 1235,350 C 1525,720 1525,1300 1235,1655" stroke="url(#gray)" stroke-width="48"/>
+    </g>
+    <g>
+      <!-- stand base -->
+      <rect x="356" y="1150" width="228" height="30" rx="15" fill="url(#grayMid)"/>
+      <!-- stand neck -->
+      <rect x="446" y="1082" width="48" height="82" rx="10" fill="url(#grayMid)"/>
+      <!-- screen -->
+      <rect x="268" y="792" width="404" height="300" rx="30" fill="url(#gray)"/>
+    </g>
+  </g>
+</svg>

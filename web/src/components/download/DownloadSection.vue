@@ -4,7 +4,7 @@ import PcDownload from "./PcDownload.vue";
 </script>
 
 <template>
-  <section class="grid grid-cols-2">
+  <section class="grid grid-cols-1 sm:grid-cols-2">
     <PcDownload />
     <AndroidDownload />
   </section>
