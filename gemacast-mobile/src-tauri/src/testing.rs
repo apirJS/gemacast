@@ -1,8 +1,3 @@
-//! Hand-written mock implementations for unit testing.
-//!
-//! Each mock records calls in a `Mutex<Vec<..>>` so tests can assert
-//! what was called and with which arguments. Mirrors the pattern from
-
 pub mod mocks {
     use std::net::IpAddr;
     use std::sync::{Arc, Mutex};
@@ -18,10 +13,6 @@ pub mod mocks {
         FrontendNotifier, InterfaceInfo, NetworkInfoProvider, PlatformService, SessionInfo,
         SessionManager, SessionParams, StreamerControlClient, StreamerControlClientFactory,
     };
-
-    // -------------------------------------------------------------------
-    // FrontendEvent + MockFrontendNotifier
-    // -------------------------------------------------------------------
 
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
@@ -44,10 +35,10 @@ pub mod mocks {
         NetworkRtt(f32),
         WsDisconnect,
         WsError(String),
+        PcVolumeChanged(f32),
         ServiceCommand(String),
     }
 
-    /// Records every frontend event for later assertion.
     pub struct MockFrontendNotifier {
         pub events: Mutex<Vec<FrontendEvent>>,
     }
@@ -150,6 +141,13 @@ pub mod mocks {
                 .push(FrontendEvent::WsError(message));
         }
 
+        fn emit_pc_volume_changed(&self, level: f32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(FrontendEvent::PcVolumeChanged(level));
+        }
+
         fn emit_service_command(&self, command: String) {
             self.events
                 .lock()
@@ -157,10 +155,6 @@ pub mod mocks {
                 .push(FrontendEvent::ServiceCommand(command));
         }
     }
-
-    // -------------------------------------------------------------------
-    // SessionCall + MockSessionManager
-    // -------------------------------------------------------------------
 
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
@@ -181,11 +175,13 @@ pub mod mocks {
         UpdateBitrate {
             bitrate: Option<i32>,
         },
+        SetVolume {
+            linear: f32,
+        },
         StartWsClient,
         StopWsClient,
     }
 
-    /// Records every session lifecycle call for later assertion.
     pub struct MockSessionManager {
         pub calls: Mutex<Vec<SessionCall>>,
         start_result: Mutex<Result<(), String>>,
@@ -269,7 +265,7 @@ pub mod mocks {
         }
 
         async fn start_ws_client(&self, task: tokio::task::JoinHandle<()>) {
-            task.abort(); // don't run anything in tests
+            task.abort();
             self.calls.lock().unwrap().push(SessionCall::StartWsClient);
         }
 
@@ -277,14 +273,13 @@ pub mod mocks {
             self.calls.lock().unwrap().push(SessionCall::StopWsClient);
         }
 
-        async fn set_volume(&self, _linear: f32) {
-            // No-op in tests
+        async fn set_volume(&self, linear: f32) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SessionCall::SetVolume { linear });
         }
     }
-
-    // -------------------------------------------------------------------
-    // ControlClientCall + MockStreamerControlClient
-    // -------------------------------------------------------------------
 
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
@@ -310,16 +305,14 @@ pub mod mocks {
         GetProcessList,
     }
 
-    /// Records every HTTP control call for later assertion.
     pub struct MockStreamerControlClient {
         pub calls: Mutex<Vec<ControlClientCall>>,
         connect_result: Mutex<Result<(), String>>,
         disconnect_result: Mutex<Result<(), String>>,
         change_bitrate_result: Mutex<Result<(), String>>,
-        /// Number of probes still to be failed before one succeeds.
-        /// `u32::MAX` stands for "never succeeds".
         probe_failures: Mutex<u32>,
         probe_device_registered: Mutex<Option<bool>>,
+        pc_output_volume: Mutex<Option<f32>>,
     }
 
     impl MockStreamerControlClient {
@@ -331,22 +324,25 @@ pub mod mocks {
                 change_bitrate_result: Mutex::new(Ok(())),
                 probe_failures: Mutex::new(0),
                 probe_device_registered: Mutex::new(Some(true)),
+                pc_output_volume: Mutex::new(None),
             }
         }
 
-        /// Fail the first `n` probes, then succeed. Models a PC that comes back.
+        pub fn with_pc_output_volume(self, level: f32) -> Self {
+            *self.pc_output_volume.lock().unwrap() = Some(level);
+            self
+        }
+
         pub fn with_probe_failures(self, n: u32) -> Self {
             *self.probe_failures.lock().unwrap() = n;
             self
         }
 
-        /// Fail every probe. Models a PC that never comes back.
         pub fn with_unreachable_probe(self) -> Self {
             *self.probe_failures.lock().unwrap() = u32::MAX;
             self
         }
 
-        /// What a successful probe reports for `device_registered`.
         pub fn with_probe_registration(self, registered: Option<bool>) -> Self {
             *self.probe_device_registered.lock().unwrap() = registered;
             self
@@ -389,6 +385,7 @@ pub mod mocks {
                     pending_request_id: None,
                     device_auth_challenge: None,
                     pc_certificate_fingerprint: None,
+                    pc_output_volume: *self.pc_output_volume.lock().unwrap(),
                 })
         }
 
@@ -413,6 +410,7 @@ pub mod mocks {
                 vec![],
                 StreamerCapabilities {
                     supports_process_capture: false,
+                    supports_volume_sync: false,
                 },
             ))
         }
@@ -425,7 +423,6 @@ pub mod mocks {
             {
                 let mut remaining = self.probe_failures.lock().unwrap();
                 if *remaining > 0 {
-                    // u32::MAX is the "never succeeds" sentinel, so don't spend it.
                     if *remaining != u32::MAX {
                         *remaining -= 1;
                     }
@@ -444,6 +441,7 @@ pub mod mocks {
                 pending_request_id: None,
                 device_auth_challenge: None,
                 pc_certificate_fingerprint: None,
+                pc_output_volume: None,
             })
         }
 
@@ -480,8 +478,6 @@ pub mod mocks {
         }
     }
 
-    /// Factory that returns a shared mock client, so all calls are recorded
-    /// in one place regardless of how many times `create()` is called.
     pub struct MockStreamerControlClientFactory {
         pub client: Arc<MockStreamerControlClient>,
     }
@@ -497,10 +493,6 @@ pub mod mocks {
             self.client.clone()
         }
     }
-
-    // -------------------------------------------------------------------
-    // PlatformCall + MockPlatformService
-    // -------------------------------------------------------------------
 
     #[allow(dead_code)]
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,7 +513,6 @@ pub mod mocks {
         },
     }
 
-    /// Records every platform call and returns configurable results.
     pub struct MockPlatformService {
         pub calls: Mutex<Vec<PlatformCall>>,
         transport_type: Mutex<Result<String, String>>,
@@ -630,11 +621,6 @@ pub mod mocks {
         }
     }
 
-    // -------------------------------------------------------------------
-    // MockNetworkInfoProvider
-    // -------------------------------------------------------------------
-
-    /// Returns configurable network info for testing.
     pub struct MockNetworkInfoProvider {
         local_ip: Mutex<Result<IpAddr, String>>,
         default_interface: Mutex<Result<InterfaceInfo, String>>,

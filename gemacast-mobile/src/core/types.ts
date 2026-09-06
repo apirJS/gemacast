@@ -73,11 +73,9 @@ export type JitterConfig = {
   staticTargetMs?: number | null;
 };
 
-/** Detected network link type for one side of the connection. */
 export type NetworkLink =
   'adb' | 'usbTether' | 'wifi5Ghz' | 'wifi2_4Ghz' | 'ethernet' | 'wifiUnknown' | 'unknown';
 
-/** Network link pair info from the backend (both sides + effective). */
 export type NetworkLinkPairInfo = {
   phone: NetworkLink;
   pc: NetworkLink;
@@ -108,6 +106,7 @@ export type AppSettings = {
   bitratePreset: BitratePreset;
   customBitrateKbps: number;
   gainDb: number;
+  matchPcVolume: boolean;
 };
 
 export type AudioSource =
@@ -115,6 +114,7 @@ export type AudioSource =
 
 export type StreamerCapabilities = {
   supportsProcessCapture: boolean;
+  supportsVolumeSync: boolean;
 };
 
 export type ProcessInfo = {
@@ -144,8 +144,7 @@ export type AppState = {
   currentAudioSource: AudioSource;
   streamerCapabilities: StreamerCapabilities | null;
   processList: ProcessInfo[];
-  /** Detected network link pair from the active connection. */
   networkLinkPair: NetworkLinkPairInfo | null;
-  /** Whether the device supports Oboe exclusive audio mode (probed at startup). */
   exclusiveSupported: boolean;
+  pcOutputVolume: number | null;
 };

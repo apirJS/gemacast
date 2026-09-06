@@ -2,7 +2,6 @@ use crate::traits::FrontendNotifier;
 use gemacast_core::domain::types::{DeviceId, DiscoveredDevice};
 use tauri::Emitter;
 
-/// Emits events to the Tauri webview frontend via `AppHandle::emit()`.
 pub struct TauriFrontendNotifier {
     app_handle: tauri::AppHandle,
 }
@@ -83,6 +82,10 @@ impl FrontendNotifier for TauriFrontendNotifier {
 
     fn emit_ws_error(&self, message: String) {
         let _ = self.app_handle.emit("ws-error", message);
+    }
+
+    fn emit_pc_volume_changed(&self, level: f32) {
+        let _ = self.app_handle.emit("pc-volume-changed", level);
     }
 
     fn emit_service_command(&self, command: String) {

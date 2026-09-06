@@ -33,6 +33,10 @@ export const HELP_CONTENT: Record<string, { title: string; body: string }> = {
     title: 'Audio Gain',
     body: "Volume for the stream, on top of your phone's volume buttons.\n\n• 0 dB — no change. Leave it here unless the volume is wrong.\n• Above 0 — louder, for quiet PC audio. Too much makes it distort.\n• Below 0 — quieter, for loud PC audio.\n\nYour setting is remembered for next time.",
   },
+  'match-pc-volume': {
+    title: 'Match Volume With PC',
+    body: "Follows your PC's own volume slider, so turning the PC down turns the phone down too.\n\nIt stacks on top of Audio Gain and your phone's volume buttons, so a PC at half volume plays at half of whatever you already set. Muting the PC silences the stream.\n\nThe PC tells the phone whenever its volume moves. The toggle is greyed out if the PC cannot report it.",
+  },
   'connection-metrics': {
     title: 'Connection Metrics',
     body: 'Live numbers, all in milliseconds.\n\n• Buffer — how much audio is waiting to play. This is the biggest part of your delay, and it grows on its own when the connection gets worse.\n• RTT — how long a message takes to reach the PC and come back. Shows n/a on ADB, which is normal.\n• Jitter — how unevenly the audio is arriving. This is what causes stuttering, and what pushes Buffer up.\n\nIf Buffer is high on the Auto preset, move closer to the router, switch to 5 GHz, or use a cable.',

@@ -109,7 +109,6 @@ pub enum AudioSource {
     },
 }
 
-/// A running process discovered on the PC streamer, suitable for per-process audio capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessInfo {
@@ -122,6 +121,8 @@ pub struct ProcessInfo {
 #[serde(rename_all = "camelCase")]
 pub struct StreamerCapabilities {
     pub supports_process_capture: bool,
+    #[serde(default)]
+    pub supports_volume_sync: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

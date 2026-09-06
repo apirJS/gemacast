@@ -77,10 +77,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      # Read the pin from rust-toolchain.toml instead of hardcoding it here, so
-      # the version lives in exactly one place. `@master` is required whenever
-      # the `toolchain` input is passed explicitly — with a version @rev the
-      # action takes the version from the rev and ignores the input.
+      # Version lives only in rust-toolchain.toml; @master is required whenever the
+      # toolchain input is passed explicitly.
       - name: Resolve pinned Rust version
         id: rust
         shell: bash
@@ -103,8 +101,7 @@ jobs:
             libwebkit2gtk-4.1-dev librsvg2-dev patchelf libxdo-dev dbus-x11 clang \
             meson ninja-build pkg-config libudev-dev libdbus-1-dev python3-docutils \
             libglib2.0-dev liblua5.3-dev
-          # Build PipeWire 1.2.7 from source for pipewire-rs 0.10 headers
-          # (Ubuntu 22.04 apt only ships PipeWire 0.3.48 headers)
+          # PipeWire 1.2.7 from source: apt on 22.04 ships 0.3.48 headers, pipewire-rs 0.10 needs 1.2.x.
           PW_VERSION=1.2.7
           curl -fsSL --retry 3 --retry-delay 5 "https://github.com/PipeWire/pipewire/archive/refs/tags/${PW_VERSION}.tar.gz" | tar xz
           cd "pipewire-${PW_VERSION}"
@@ -119,10 +116,8 @@ jobs:
           sudo ldconfig
           cd ..
           rm -rf "pipewire-${PW_VERSION}"
-          # Build WirePlumber 0.5.15 from source (ABI-compatible with PipeWire 1.2.7)
-          # Ubuntu 22.04's apt WirePlumber 0.4.8 was built against PipeWire 0.3.48 ABI,
-          # causing infinite "impl_ext_end_proxy called from wrong context" spam when
-          # paired with our source-built PipeWire 1.2.7 daemon.
+          # WirePlumber 0.5.15 from source: apt 0.4.8 targets the 0.3.48 ABI and spams
+          # "impl_ext_end_proxy called from wrong context" against our 1.2.7 daemon.
           WP_VERSION=0.5.15
           curl -fsSL --retry 3 --retry-delay 5 "https://github.com/PipeWire/wireplumber/archive/refs/tags/${WP_VERSION}.tar.gz" | tar xz
           cd "wireplumber-${WP_VERSION}"
@@ -157,18 +152,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy Android
         if: matrix.target == 'android'
-        # The env vars below are not lint configuration — they are what makes the
-        # next step possible. `:app` cannot even be configured without four
-        # gitignored artifacts (tauri.settings.gradle, app/tauri.build.gradle.kts,
-        # app/proguard-tauri.pro, app/src/main/java/com/apir/gemacast/generated/),
-        # and all four are written by *build scripts* gated purely on these
-        # variables: tauri-build's `generate_gradle_files` runs only when
-        # TAURI_ANDROID_PROJECT_PATH is set, and wry's + tauri's build.rs emit the
-        # generated/ Kotlin only when WRY_ANDROID_KOTLIN_FILES_OUT_DIR is. The
-        # Tauri CLI normally sets them while shelling out to cargo; here we set
-        # them on the lint pass we already run, so generation costs no extra
-        # compilation. Verified locally: with the artifacts deleted, this command
-        # reproduces all four byte-identically to real CLI output.
+        # These env vars are what generate the four gitignored artifacts `:app` cannot be
+        # configured without — tauri-build's generate_gradle_files and wry's/tauri's build.rs
+        # emit them only when set, so the lint pass we already run does the generation.
         # Values mirror `identifier` in tauri.conf.json and the src-tauri lib name.
         env:
           TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/gemacast-mobile/src-tauri/gen/android
@@ -186,8 +172,7 @@ jobs:
         run: bash ./gradlew :app:testUniversalDebugUnitTest --no-daemon
       - name: Cargo Test (macOS/Windows)
         if: matrix.target == 'pc' && !contains(matrix.os, 'ubuntu')
-        # No RUSTFLAGS: it would override the macOS Swift rpath in
-        # .cargo/config.toml, which is what lets the test binaries launch.
+        # No RUSTFLAGS: it would override the macOS Swift rpath in .cargo/config.toml.
         run: cargo test --workspace
       - name: Cargo Test (Linux with PipeWire)
         if: matrix.target == 'pc' && contains(matrix.os, 'ubuntu')
@@ -196,15 +181,43 @@ jobs:
           export XDG_RUNTIME_DIR=/tmp/runtime-dir
           mkdir -p $XDG_RUNTIME_DIR
           chmod 0700 $XDG_RUNTIME_DIR
-          # Both PipeWire 1.2.7 and WirePlumber 0.5.15 are source-built against
-          # the same ABI. WirePlumber is required for session management (node
-          # routing, pw-cat sink connections) which some tests depend on.
-          # PipeWire stderr is suppressed to avoid harmless "XOpenDisplay() failed"
-          # warnings in headless CI.
+          # WirePlumber handles the session management some tests need; PipeWire stderr is
+          # suppressed to hide harmless headless "XOpenDisplay() failed" warnings.
           PIPEWIRE_LOG_LEVEL=2 dbus-run-session -- sh -c '
             pipewire 2>/dev/null &
             sleep 2
             wireplumber 2>/dev/null &
             sleep 2
             cargo test --workspace
+          '
+      - name: OS Volume Reader Tests (Windows)
+        if: matrix.target == 'pc' && contains(matrix.os, 'windows')
+        run: |
+          cargo test -p gemacast-core output_volume -- --nocapture
+          cargo test -p gemacast-pc volume_watcher -- --nocapture
+      - name: OS Volume Reader Tests (macOS)
+        if: matrix.target == 'pc' && contains(matrix.os, 'macos')
+        run: |
+          if osascript -e 'output volume of (get volume settings)' >/dev/null 2>&1; then
+            export GEMACAST_EXPECT_OS_VOLUME=1
+          fi
+          cargo test -p gemacast-core output_volume -- --nocapture
+          cargo test -p gemacast-pc volume_watcher -- --nocapture
+      - name: OS Volume Reader Tests (Linux)
+        if: matrix.target == 'pc' && contains(matrix.os, 'ubuntu')
+        timeout-minutes: 10
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/runtime-dir
+          mkdir -p $XDG_RUNTIME_DIR
+          chmod 0700 $XDG_RUNTIME_DIR
+          PIPEWIRE_LOG_LEVEL=2 dbus-run-session -- sh -c '
+            pipewire 2>/dev/null &
+            sleep 2
+            wireplumber 2>/dev/null &
+            sleep 2
+            if wpctl get-volume @DEFAULT_AUDIO_SINK@ >/dev/null 2>&1; then
+              export GEMACAST_EXPECT_OS_VOLUME=1
+            fi
+            cargo test -p gemacast-core output_volume -- --nocapture
+            cargo test -p gemacast-pc volume_watcher -- --nocapture
           '

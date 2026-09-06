@@ -1,27 +1,3 @@
-//! Background engine — spawns and wires together all background tasks.
-//!
-//! Creates the Tokio runtime, constructs all channels, wraps streamers in
-//! production adapters ([`crate::adapters`]), and spawns the task set:
-//!
-//! - **UDP Listener**: Receives presence/probe messages from mobile devices
-//! - **Control Dispatcher**: Routes HTTPS and UDP control commands
-//! - **Audio Engine**: Captures and streams desktop audio to connected devices
-//! - **Command Handler**: Processes tray UI commands (start/stop, kick, shutdown)
-//! - **Device Watchdog**: Removes stale devices that stop sending probes
-//! - **ADB tasks**: Port forwarding, discovery, and audio tunneling for USB devices
-//!
-//! ## Construction Phases (Typestate Builder)
-//!
-//! The background engine is assembled through four compile-time-enforced phases:
-//!
-//! 1. [`BackgroundEngine::new`] — shared state (`registry`, `is_broadcasting`, `ws_connections`)
-//! 2. [`BackgroundEngine::create_channels`] → [`EngineWithChannels`] — all `mpsc`/`broadcast` channels
-//! 3. [`EngineWithChannels::create_adapters`] → [`EngineWithAdapters`] — trait object wrappers
-//! 4. [`EngineWithAdapters::init_infrastructure`] -> [`EngineReady`] - ADB, UDP, mDNS, HTTPS verified
-//!
-//! Finally, [`EngineReady::spawn_tasks_and_run`] spawns every background task
-//! and awaits completion.
-
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -32,6 +8,7 @@ use tokio::task::JoinSet;
 
 use gemacast_core::adapters::capture::DefaultCaptureFactory;
 use gemacast_core::adapters::error_notifier::WsErrorNotifier;
+use gemacast_core::adapters::output_volume::PlatformOutputVolumeReader;
 use gemacast_core::adapters::process_lister::DefaultProcessLister;
 use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::http::{ControlCommand, ControlServerState};
@@ -52,13 +29,10 @@ use crate::events::{AppCommand, TrayEvent};
 use crate::state::SharedMapDeviceRegistry;
 use crate::tasks::{
     audio_engine, command_handler, control_dispatcher, device_watchdog, udp_listener,
+    volume_watcher,
 };
 use crate::traits::DeviceRegistry;
 use crate::trusted_devices::TrustedDeviceStore;
-
-// ---------------------------------------------------------------------------
-// ADB Presence Provider
-// ---------------------------------------------------------------------------
 
 struct PcPresenceProvider {
     is_broadcasting: Arc<AtomicBool>,
@@ -81,14 +55,6 @@ impl PresenceProvider for PcPresenceProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Background engine entry point
-// ---------------------------------------------------------------------------
-
-/// Spawn the background engine on a dedicated thread with its own Tokio runtime.
-///
-/// Creates all channels, wraps them in production adapters, and spawns
-/// every background task into a `JoinSet`.
 pub fn spawn_background_engine(
     event_loop_proxy: EventLoopProxy<TrayEvent>,
     command_rx: mpsc::Receiver<AppCommand>,
@@ -106,7 +72,6 @@ pub fn spawn_background_engine(
     });
 }
 
-/// Build a multi-threaded Tokio runtime with max thread priority.
 fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runtime::Runtime> {
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -128,7 +93,6 @@ fn build_tokio_runtime(proxy: &EventLoopProxy<TrayEvent>) -> Option<tokio::runti
     }
 }
 
-/// The main async body: build the engine through four phases, then run.
 async fn run_background_tasks(
     event_loop_proxy: EventLoopProxy<TrayEvent>,
     command_rx: mpsc::Receiver<AppCommand>,
@@ -144,12 +108,7 @@ async fn run_background_tasks(
     engine.spawn_tasks_and_run().await;
 }
 
-// ---------------------------------------------------------------------------
-// Phase 1: Shared state
-// ---------------------------------------------------------------------------
-
-/// Phase 1 — holds the core shared state that every subsystem needs.
-#[allow(dead_code)] // Fields are consumed by `create_channels()`, not read directly.
+#[allow(dead_code)]
 struct BackgroundEngine {
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
@@ -171,7 +130,6 @@ impl BackgroundEngine {
         }
     }
 
-    /// Create all inter-task channels, consuming `self` and producing the next phase.
     fn create_channels(self, command_rx: mpsc::Receiver<AppCommand>) -> EngineWithChannels {
         let (presence_tx, presence_rx) = mpsc::channel(8);
         let (inbound_control_tx, inbound_control_rx) = mpsc::channel(32);
@@ -206,13 +164,7 @@ impl BackgroundEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: Channels created
-// ---------------------------------------------------------------------------
-
-/// Phase 2 — all inter-task channels have been created.
 struct EngineWithChannels {
-    // Shared state (from Phase 1)
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
@@ -220,7 +172,6 @@ struct EngineWithChannels {
     trusted_devices: TrustedDeviceStore,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
-    // Channels
     command_rx: mpsc::Receiver<AppCommand>,
     presence_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
@@ -237,8 +188,6 @@ struct EngineWithChannels {
 }
 
 impl EngineWithChannels {
-    /// Wrap channels in production trait adapters, consuming `self` and
-    /// producing the next phase.
     fn create_adapters(self) -> EngineWithAdapters {
         let tray: Arc<dyn crate::traits::TrayNotifier> =
             Arc::new(EventLoopTrayNotifier::new(self.event_loop_proxy.clone()));
@@ -278,13 +227,7 @@ impl EngineWithChannels {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3: Adapters created
-// ---------------------------------------------------------------------------
-
-/// Phase 3 — trait adapters are ready, infrastructure can now be initialized.
 struct EngineWithAdapters {
-    // Shared state
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
@@ -292,7 +235,6 @@ struct EngineWithAdapters {
     trusted_devices: TrustedDeviceStore,
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
-    // Channels
     command_rx: mpsc::Receiver<AppCommand>,
     presence_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
@@ -307,17 +249,13 @@ struct EngineWithAdapters {
     fatal_error_tx: mpsc::Sender<String>,
     fatal_error_rx: mpsc::Receiver<String>,
 
-    // Adapters
     tray: Arc<dyn crate::traits::TrayNotifier>,
     audio: Arc<dyn crate::traits::AudioController>,
     notifier: Arc<dyn crate::traits::DeviceNotifier>,
 }
 
 impl EngineWithAdapters {
-    /// Verify ADB, bind the UDP listener, create HTTPS control state, start
-    /// mDNS, and resolve the PC identity. Returns `None` on fatal errors.
     async fn init_infrastructure(self) -> Option<EngineReady> {
-        // --- Verify ADB availability ---
         if adb_command().arg("version").output().await.is_err() {
             let msg = "Failed to launch bundled ADB! Please ensure the application was installed correctly.";
             tracing::error!("{}", msg);
@@ -325,7 +263,6 @@ impl EngineWithAdapters {
             return None;
         }
 
-        // --- Identity ---
         let device_name = whoami::devicename().unwrap_or_else(|_| "Desktop PC".to_string());
         let pc_identity = match crate::pc_identity::PcIdentity::load_default() {
             Ok(identity) => identity,
@@ -357,7 +294,6 @@ impl EngineWithAdapters {
             }
         };
 
-        // --- Presence listener ---
         tracing::info!("Initializing UDP Presence Listener...");
         let listener = match gemacast_core::network::PresenceListener::new(self.presence_tx).await {
             Ok(l) => l,
@@ -369,16 +305,11 @@ impl EngineWithAdapters {
             }
         };
 
-        // On Linux, a default-blocking firewall (firewalld's restrictive zones,
-        // or an enabled ufw) silently drops inbound discovery/streaming. The
-        // deb/rpm handle this from their maintainer scripts; this best-effort,
-        // once-per-session dialog covers the AppImage, which has no install hook.
         #[cfg(target_os = "linux")]
         if let Some(msg) = crate::firewall::firewall_warning() {
             self.tray.notify_firewall_warning(msg);
         }
 
-        // --- HTTPS control server state ---
         let control_state = ControlServerState {
             command_tx: self.http_command_tx,
             is_broadcasting: self.is_broadcasting.clone(),
@@ -390,7 +321,6 @@ impl EngineWithAdapters {
             pc_certificate_fingerprint: pc_certificate_fingerprint.clone(),
         };
 
-        // --- mDNS broadcaster ---
         let _mdns_broadcaster = match gemacast_core::discovery::MdnsBroadcaster::new(
             streamer_id.clone(),
             device_name.clone(),
@@ -406,7 +336,6 @@ impl EngineWithAdapters {
             }
         };
 
-        // --- ADB presence provider ---
         let presence_provider = Arc::new(PcPresenceProvider {
             is_broadcasting: self.is_broadcasting.clone(),
             streamer_id: streamer_id.clone(),
@@ -446,13 +375,7 @@ impl EngineWithAdapters {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phase 4: Ready to spawn
-// ---------------------------------------------------------------------------
-
-/// Phase 4 — all infrastructure is verified and ready; tasks can be spawned.
 struct EngineReady {
-    // Shared state
     registry: Arc<SharedMapDeviceRegistry>,
     is_broadcasting: Arc<AtomicBool>,
     ws_connections: WsConnectionMap,
@@ -461,7 +384,6 @@ struct EngineReady {
     #[allow(dead_code)]
     event_loop_proxy: EventLoopProxy<TrayEvent>,
 
-    // Channels (receivers are consumed during spawning)
     command_rx: mpsc::Receiver<AppCommand>,
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
@@ -474,12 +396,10 @@ struct EngineReady {
     fatal_error_tx: mpsc::Sender<String>,
     fatal_error_rx: mpsc::Receiver<String>,
 
-    // Adapters
     tray: Arc<dyn crate::traits::TrayNotifier>,
     audio: Arc<dyn crate::traits::AudioController>,
     notifier: Arc<dyn crate::traits::DeviceNotifier>,
 
-    // Infrastructure
     listener: gemacast_core::network::PresenceListener,
     control_state: ControlServerState<DefaultProcessLister>,
     #[allow(dead_code)]
@@ -492,13 +412,11 @@ struct EngineReady {
 }
 
 impl EngineReady {
-    /// Spawn every background task and block until all tasks complete.
     async fn spawn_tasks_and_run(self) {
         let mut set = JoinSet::new();
 
         tracing::info!("Spawning all background tasks...");
 
-        // -- Fatal error relay --
         let tray_for_errors = self.tray.clone();
         let mut fatal_error_rx = self.fatal_error_rx;
         set.spawn(async move {
@@ -508,7 +426,6 @@ impl EngineReady {
             }
         });
 
-        // -- HTTPS control server --
         let (control_shutdown_tx, control_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let tray_for_control = self.tray.clone();
         let control_state = self.control_state;
@@ -530,7 +447,6 @@ impl EngineReady {
             }
         });
 
-        // -- UDP listener --
         udp_listener::spawn_udp_listener(
             &mut set,
             self.listener,
@@ -539,7 +455,6 @@ impl EngineReady {
             self.tray.clone(),
         );
 
-        // -- Audio engine --
         let error_notifier = WsErrorNotifier::new(self.ws_connections.clone());
         let (session_failure_tx, mut session_failure_rx) =
             tokio::sync::mpsc::unbounded_channel::<StreamSessionFailure>();
@@ -552,10 +467,6 @@ impl EngineReady {
             self.tray.clone(),
         );
 
-        // Capture/encoder/ADB transport failures have already removed the
-        // audio session. Mirror that teardown immediately into the registry,
-        // tray, notification transport, and authorization state rather than
-        // waiting for the periodic watchdog.
         let failure_registry = self.registry.clone();
         let failure_tray = self.tray.clone();
         let failure_notifier = self.notifier.clone();
@@ -576,7 +487,6 @@ impl EngineReady {
             }
         });
 
-        // -- ADB tasks --
         spawn_adb_audio_tcp_server(
             &mut set,
             self.audio_command_tx.clone(),
@@ -596,7 +506,6 @@ impl EngineReady {
 
         spawn_adb_port_forwarding_watchdog(&mut set, self.adb_shutdown_tx.clone());
 
-        // -- Device watchdog --
         device_watchdog::spawn_device_watchdog(
             &mut set,
             self.registry.clone(),
@@ -605,7 +514,13 @@ impl EngineReady {
             self.authorizer.clone(),
         );
 
-        // -- Control dispatcher --
+        volume_watcher::spawn_volume_watcher(
+            &mut set,
+            PlatformOutputVolumeReader::new(),
+            self.registry.clone(),
+            self.ws_connections.clone(),
+        );
+
         let streamer_id = self.streamer_id;
         let streamer_name = self.device_name;
         let device_auth = crate::device_auth::DeviceAuthManager::default();
@@ -631,7 +546,6 @@ impl EngineReady {
             self.registry.clone(),
         );
 
-        // -- Command handler --
         let handler = Arc::new(command_handler::CommandHandler {
             is_broadcasting: self.is_broadcasting,
             streamer_id,
@@ -653,10 +567,8 @@ impl EngineReady {
             engine_shutdown_tx,
         );
 
-        // -- Update checker --
         crate::tasks::updater::spawn_update_checker(&mut set, self.tray.clone());
 
-        // --- Wait for shutdown, then stop and join every background task ---
         loop {
             tokio::select! {
                 _ = &mut engine_shutdown_rx => break,
@@ -691,11 +603,6 @@ impl EngineReady {
             while set.join_next().await.is_some() {}
         }
 
-        // Must come after the drain: the watchdog's own shutdown branch runs
-        // `adb devices` while draining, which would restart a server we killed
-        // too early. Note this stops whichever server owns port 5037, so on a dev
-        // machine it can end an Android Studio session too. Leaving a process that
-        // pins our install directory is worse.
         kill_adb_server().await;
 
         self.tray.notify_shutdown_complete();
@@ -704,7 +611,6 @@ impl EngineReady {
     }
 }
 
-/// Convert a bind error into a user-friendly message.
 fn friendly_bind_error(e: impl std::fmt::Display, port_name: &str) -> String {
     let e_str = e.to_string();
     if e_str.contains("Address already in use")

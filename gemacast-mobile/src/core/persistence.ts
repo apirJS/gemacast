@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bitratePreset: '128',
   customBitrateKbps: 128,
   gainDb: 0,
+  matchPcVolume: false,
 };
 
 function sanitizeJitterConfig(value: unknown, fallback: JitterConfig): JitterConfig {

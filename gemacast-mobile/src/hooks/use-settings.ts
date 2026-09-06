@@ -26,11 +26,10 @@ export function useSettings() {
         patch.bitratePreset !== undefined ||
         patch.customBitrateKbps !== undefined ||
         patch.exclusiveMode !== undefined ||
-        patch.gainDb !== undefined),
+        patch.gainDb !== undefined ||
+        patch.matchPcVolume !== undefined),
     );
 
-    // No stream is active, so there is nothing to acknowledge. Keep this
-    // synchronous for ordinary settings/preset editing and persist directly.
     if (!needsRemoteApply) {
       updateSettings(patch);
       return Promise.resolve(true);
@@ -38,9 +37,6 @@ export function useSettings() {
 
     return (async () => {
       try {
-        // Apply live settings first. Persistence follows only after the backend
-        // acknowledges the operation, so a failed change leaves the previous
-        // known-good setting intact.
         if (patch.bufferPreset !== undefined || patch.customJitterConfig !== undefined) {
           const activeConfig = getPresetConfig(
             nextSettings.bufferPreset,
@@ -68,6 +64,10 @@ export function useSettings() {
 
         if (patch.gainDb !== undefined) {
           await tauriBridge.setAudioGain({ gainDb: patch.gainDb });
+        }
+
+        if (patch.matchPcVolume !== undefined) {
+          await tauriBridge.setMatchPcVolume({ enabled: patch.matchPcVolume });
         }
 
         updateSettings(patch);

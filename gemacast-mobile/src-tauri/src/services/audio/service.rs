@@ -1,9 +1,3 @@
-//! Pure service functions for the audio domain, decoupled from Tauri.
-//!
-//! [`AudioService`] groups all trait dependencies needed to handle audio
-//! commands. The `#[tauri::command]` handlers in [`super::commands`] are
-//! thin wrappers that delegate to these methods.
-
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,70 +6,48 @@ use std::time::Duration;
 use gemacast_core::control::types::ConnectReq;
 use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, LinkPair};
 
+use crate::services::audio::volume::VolumeMix;
 use crate::traits::{
     ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams, SessionManager,
     SessionParams, StreamerControlClientFactory,
 };
 
-/// Handles all audio-related operations: connect, disconnect, playback
-/// control, source/bitrate changes, and WebSocket management.
-///
-/// Dependencies are injected as trait objects, making every method
-/// independently unit-testable with mock implementations.
+async fn push_pc_level(
+    volume_mix: &std::sync::Mutex<VolumeMix>,
+    session: &dyn SessionManager,
+    level: f32,
+) {
+    let effective = {
+        let mut mix = volume_mix.lock().unwrap();
+        mix.pc_level = Some(level);
+        if mix.match_pc {
+            Some(mix.effective())
+        } else {
+            None
+        }
+    };
+    if let Some(effective) = effective {
+        session.set_volume(effective).await;
+    }
+}
+
 pub struct AudioService {
     pub session: Arc<dyn SessionManager>,
     pub client_factory: Arc<dyn StreamerControlClientFactory>,
     pub notifier: Arc<dyn FrontendNotifier>,
     pub platform: Arc<dyn PlatformService>,
-    /// Shared flag read by the probe loop to skip subnet scans while streaming.
     pub is_streaming: Arc<AtomicBool>,
-    /// Cached network link pair from the last successful connection.
-    ///
-    /// Used to re-apply the network-aware Auto jitter config when the user
-    /// toggles back to Auto mid-session (Auto → Balanced → Auto).
-    /// Set during [`connect_to_streamer`], cleared on disconnect/kill.
     pub cached_link_pair: std::sync::Mutex<Option<LinkPair>>,
-    /// The in-flight link-recovery prober, if one is running.
-    ///
-    /// Held so any path that establishes or abandons a connection can cancel
-    /// it — a prober that outlived its reason would reconnect on top of a
-    /// session the user just started by hand.
     pub recovery_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub volume_mix: Arc<std::sync::Mutex<VolumeMix>>,
 }
 
-/// How often link recovery asks the PC whether it is back.
-///
-/// 2 s against the phone's 10 s playback watchdog: five chances to catch the
-/// PC inside the window where it still has us registered (`STALE_TIMEOUT` 15 s
-/// plus a `CHECK_INTERVAL` 2 s sweep, so eviction lands at 15-17 s).
 const RECOVERY_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Request timeout for a recovery probe.
-///
-/// Equal to the interval, never the client default of 10 s: a request that
-/// outlives its own poll period turns the period into a fiction and spends the
-/// budget on six attempts instead of thirty.
 const RECOVERY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Total time link recovery will keep asking before giving up.
-///
-/// 60 s / 2 s = 30 attempts. Past this the failure is not a transient
-/// re-association, and silent retries forever would be indistinguishable from
-/// a leak; the frontend settles into the same suspended state a link loss
-/// produces today and waits for a tap.
 const RECOVERY_BUDGET: Duration = Duration::from_secs(60);
 
-/// Ask the PC whether it is back, on `interval`, until it answers or `budget`
-/// runs out.
-///
-/// A probe carries our `device_id`, so a PC that answers also says whether it
-/// still has us registered. That answer cannot be self-fulfilling: the PC's
-/// `update_last_seen` only touches a device already in the map, so probing
-/// never resurrects one it evicted.
-///
-/// Emits exactly one terminal event — [`FrontendNotifier::emit_link_recovered`]
-/// or [`FrontendNotifier::emit_link_recovery_gave_up`] — or none at all if the
-/// task is aborted first.
 async fn run_link_recovery(
     client: Arc<dyn crate::traits::StreamerControlClient>,
     device_id: DeviceId,
@@ -88,9 +60,6 @@ async fn run_link_recovery(
     let mut attempts: u32 = 0;
 
     loop {
-        // The first tick resolves immediately, which is what we want: the
-        // playback watchdog already spent 10 s establishing that the link is
-        // gone, so there is nothing left to wait for.
         ticker.tick().await;
 
         if started.elapsed() >= budget {
@@ -128,10 +97,6 @@ async fn run_link_recovery(
 }
 
 impl AudioService {
-    /// Connect to a streamer: HTTPS handshake -> spawn audio player -> sync service.
-    ///
-    /// If the user selected "Auto" buffer preset, the jitter config is overridden
-    /// with a network-aware profile based on the detected [`LinkPair`].
     pub async fn connect_to_streamer(&self, params: ConnectParams) -> Result<(), String> {
         tracing::info!(
             "[AudioService] Connect: ip={}, device={:?}, mode={:?}, jitter_preset=min_{}ms/cap_{}ms",
@@ -141,9 +106,6 @@ impl AudioService {
             params.jitter_config.min_depth_ms,
             params.jitter_config.comfort_cap_ms,
         );
-        // A connect is the answer to whatever recovery was looking for, whether
-        // recovery asked for it or the user tapped. Either way the prober is
-        // done, and leaving it running would let it fire on top of this session.
         self.stop_link_recovery();
 
         let ip_addr: IpAddr = params
@@ -166,7 +128,6 @@ impl AudioService {
             })
             .await?;
 
-        // Build and cache the LinkPair from both sides' detected links
         let phone_link = params
             .phone_network_link
             .unwrap_or(gemacast_core::domain::types::NetworkLink::Unknown);
@@ -179,6 +140,11 @@ impl AudioService {
         };
         *self.cached_link_pair.lock().unwrap() = Some(link_pair);
 
+        if let Some(level) = response.pc_output_volume {
+            self.apply_pc_output_volume(level).await?;
+            self.notifier.emit_pc_volume_changed(level);
+        }
+
         tracing::info!(
             "Network link pair: phone={:?}, pc={:?}, effective={:?}",
             link_pair.phone,
@@ -186,7 +152,6 @@ impl AudioService {
             link_pair.effective_link()
         );
 
-        // Apply network-aware override if user selected Auto
         let effective_jitter_config = if params.jitter_config.is_auto_sentinel() {
             JitterConfig::for_link_pair(link_pair)
         } else {
@@ -211,10 +176,6 @@ impl AudioService {
             })
             .await
         {
-            // The PC has already acknowledged and registered the stream. If
-            // local playback cannot start, explicitly roll that subscription
-            // back instead of leaking a silent streamer-side session until the
-            // watchdog expires.
             let _ = client.disconnect(params.device_id.clone()).await;
             *self.cached_link_pair.lock().unwrap() = None;
             return Err(error);
@@ -228,7 +189,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Disconnect from a streamer: HTTPS disconnect -> tear down session -> sync service.
     pub async fn disconnect_from_streamer(
         &self,
         ip: IpAddr,
@@ -239,8 +199,6 @@ impl AudioService {
             ip,
             device_id
         );
-        // The user asked to stop. Any prober still running is chasing a link
-        // nobody wants back.
         self.stop_link_recovery();
 
         let client = self.client_factory.create(ip);
@@ -248,7 +206,6 @@ impl AudioService {
 
         self.session.stop_session().await;
 
-        // Clear the cached link pair — detection happens fresh on reconnect
         *self.cached_link_pair.lock().unwrap() = None;
 
         self.is_streaming.store(false, Ordering::Relaxed);
@@ -257,10 +214,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Resume audio playback after a pause.
-    ///
-    /// Re-enables the Oboe output callback via `resume_playback()` without
-    /// sending an HTTPS reconnect; the network connection stays alive.
     pub async fn start_audio_playback(&self, _resume: Option<ResumeParams>) -> Result<(), String> {
         tracing::info!("[AudioService] Resume playback");
         self.session.resume_playback().await?;
@@ -272,11 +225,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Pause audio playback without tearing down the session.
-    ///
-    /// Silences the Oboe output callback via `pause_playback()` while
-    /// keeping the network receive thread, heartbeat, and WebSocket alive.
-    /// Does not send an HTTPS disconnect to the PC.
     pub async fn stop_audio_playback(
         &self,
         _ip: Option<IpAddr>,
@@ -289,17 +237,11 @@ impl AudioService {
         Ok(())
     }
 
-    /// Kill playback immediately: tear down session, clear streaming flag.
-    ///
-    /// Cancels link recovery as well, so a forced teardown is always a full
-    /// stop. The link-lost path therefore has to call this **before**
-    /// [`Self::start_link_recovery`], not after.
     pub async fn kill_playback(&self) -> Result<(), String> {
         tracing::warn!("[AudioService] Kill playback (forced teardown)");
         self.stop_link_recovery();
         self.session.stop_session().await;
 
-        // Clear the cached link pair
         *self.cached_link_pair.lock().unwrap() = None;
 
         self.is_streaming.store(false, Ordering::Relaxed);
@@ -308,17 +250,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Notify that streaming has stopped (called by frontend).
-    ///
-    /// The frontend reaches this on the no-streamer branch of `disconnect()`, which
-    /// is a real stop — so it must sync the foreground service like every other
-    /// stop path (`disconnect_from_streamer`, `kill_playback`). Clearing only the
-    /// flag file left the notification and the Media Session fully live.
-    ///
-    /// Also cancels link recovery: this is the branch a user reaches by tapping
-    /// disconnect while suspended, which is exactly the state recovery runs in.
-    /// Like [`Self::kill_playback`], it must precede
-    /// [`Self::start_link_recovery`] on the link-lost path.
     pub fn notify_streaming_stopped(&self) {
         self.stop_link_recovery();
         self.is_streaming.store(false, Ordering::Relaxed);
@@ -326,22 +257,10 @@ impl AudioService {
         self.platform.sync_service(PlaybackState::Stopped, false);
     }
 
-    /// Start polling the PC after an unrequested link loss.
-    ///
-    /// This loop lives in Rust on purpose. The scenario it recovers from is a
-    /// link that died with the screen off, and Android throttles WebView timers
-    /// exactly then — the same reason the probe heartbeat was moved out of the
-    /// webview in `36730b4`. A `setInterval` here would be suspended precisely
-    /// when it is needed.
-    ///
-    /// Cancels any prober already running, so repeated link losses cannot stack
-    /// two loops onto one connection.
     pub fn start_link_recovery(&self, ip: IpAddr, device_id: DeviceId) {
         self.start_link_recovery_paced(ip, device_id, RECOVERY_PROBE_INTERVAL, RECOVERY_BUDGET);
     }
 
-    /// [`Self::start_link_recovery`] with the pacing spelled out, so tests can
-    /// drive the loop without waiting on the production interval.
     pub fn start_link_recovery_paced(
         &self,
         ip: IpAddr,
@@ -370,11 +289,6 @@ impl AudioService {
         *self.recovery_task.lock().unwrap() = Some(handle);
     }
 
-    /// Cancel link recovery if it is running.
-    ///
-    /// Called from every path that establishes or abandons a connection: a
-    /// prober still ticking after the user reconnected by hand would fire
-    /// `link-recovered` on top of a live session.
     pub fn stop_link_recovery(&self) {
         if let Some(handle) = self.recovery_task.lock().unwrap().take() {
             handle.abort();
@@ -382,11 +296,6 @@ impl AudioService {
         }
     }
 
-    /// Restart the audio session with a new exclusive mode setting.
-    ///
-    /// Tears down the old Oboe/cpal stream and spawns a new one without
-    /// sending any HTTPS disconnect/connect; the PC streamer doesn't care
-    /// about the phone's audio sharing mode.
     pub async fn restart_session(&self, exclusive_mode: bool) -> Result<(), String> {
         let info = self
             .session
@@ -433,13 +342,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Update the jitter buffer configuration on the active session.
-    ///
-    /// If the incoming config is the Auto sentinel (`peak_decay_halflife_ms == 0`,
-    /// no static target) and we have a cached [`LinkPair`] from the connection
-    /// handshake, we re-apply the network-aware override instead of the generic
-    /// Auto config. This ensures toggling Auto → Balanced → Auto mid-session
-    /// preserves the network-aware optimisation.
     pub async fn update_jitter_config(&self, config: JitterConfig) -> Result<(), String> {
         let effective_config = if config.is_auto_sentinel() {
             if let Some(pair) = *self.cached_link_pair.lock().unwrap() {
@@ -468,18 +370,40 @@ impl AudioService {
         Ok(())
     }
 
-    /// Set the audio output volume as a linear multiplier.
     pub async fn set_volume(&self, linear: f32) -> Result<(), String> {
-        self.session.set_volume(linear).await;
+        let effective = {
+            let mut mix = self.volume_mix.lock().unwrap();
+            mix.user_gain = linear;
+            mix.effective()
+        };
+        self.session.set_volume(effective).await;
         Ok(())
     }
 
-    /// Return the cached network link pair from the active connection, if any.
+    pub async fn set_match_pc_volume(&self, enabled: bool) -> Result<(), String> {
+        let effective = {
+            let mut mix = self.volume_mix.lock().unwrap();
+            mix.match_pc = enabled;
+            mix.effective()
+        };
+        self.session.set_volume(effective).await;
+        Ok(())
+    }
+
+    pub async fn apply_pc_output_volume(&self, level: f32) -> Result<(), String> {
+        push_pc_level(&self.volume_mix, self.session.as_ref(), level).await;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn volume_mix(&self) -> VolumeMix {
+        *self.volume_mix.lock().unwrap()
+    }
+
     pub fn get_cached_link_pair(&self) -> Option<LinkPair> {
         *self.cached_link_pair.lock().unwrap()
     }
 
-    /// Request audio sources from the streamer.
     pub async fn get_audio_sources(
         &self,
         ip: IpAddr,
@@ -494,7 +418,6 @@ impl AudioService {
         client.get_audio_sources().await
     }
 
-    /// Probe a streamer for its current state.
     pub async fn probe_streamer(
         &self,
         ip: IpAddr,
@@ -504,7 +427,6 @@ impl AudioService {
         client.probe(Some(device_id)).await
     }
 
-    /// Request the streamer to change audio source.
     pub async fn change_audio_source(
         &self,
         ip: IpAddr,
@@ -515,7 +437,6 @@ impl AudioService {
         client.change_source(device_id, source).await
     }
 
-    /// Request the streamer to change encoding bitrate.
     pub async fn change_audio_bitrate(
         &self,
         ip: IpAddr,
@@ -528,7 +449,6 @@ impl AudioService {
         Ok(())
     }
 
-    /// Request capturable process list from the streamer.
     pub async fn get_process_list(
         &self,
         ip: IpAddr,
@@ -537,10 +457,6 @@ impl AudioService {
         client.get_process_list().await
     }
 
-    /// Establish a WebSocket control connection to the streamer.
-    ///
-    /// Spawns a read loop that forwards disconnect/error events to the frontend
-    /// and tracks the task handle in the session manager.
     pub async fn establish_websocket(
         &self,
         streamer_ip: IpAddr,
@@ -549,6 +465,7 @@ impl AudioService {
         let client_factory = self.client_factory.clone();
         let session = self.session.clone();
         let notifier = self.notifier.clone();
+        let volume_mix = self.volume_mix.clone();
         let task = tokio::spawn(async move {
             const RETRY_DELAYS: [std::time::Duration; 4] = [
                 std::time::Duration::from_millis(250),
@@ -589,22 +506,29 @@ impl AudioService {
                     }
                 };
 
-                match ws_client.recv_event().await {
-                    Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
-                        notifier.emit_ws_disconnect();
-                        return;
-                    }
-                    Ok(gemacast_core::control::types::WsEvent::Error { message }) => {
-                        notifier.emit_ws_error(message);
-                        notifier.emit_ws_disconnect();
-                        return;
-                    }
-                    Err(error) => {
-                        tracing::warn!("WebSocket control channel dropped: {error}");
-                        if retry_delay.is_zero() {
+                loop {
+                    match ws_client.recv_event().await {
+                        Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
+                            notifier.emit_ws_disconnect();
                             return;
                         }
-                        tokio::time::sleep(retry_delay).await;
+                        Ok(gemacast_core::control::types::WsEvent::Error { message }) => {
+                            notifier.emit_ws_error(message);
+                            notifier.emit_ws_disconnect();
+                            return;
+                        }
+                        Ok(gemacast_core::control::types::WsEvent::VolumeChanged { level }) => {
+                            push_pc_level(&volume_mix, session.as_ref(), level).await;
+                            notifier.emit_pc_volume_changed(level);
+                        }
+                        Err(error) => {
+                            tracing::warn!("WebSocket control channel dropped: {error}");
+                            if retry_delay.is_zero() {
+                                return;
+                            }
+                            tokio::time::sleep(retry_delay).await;
+                            break;
+                        }
                     }
                 }
             }
@@ -634,8 +558,6 @@ mod tests {
         )
     }
 
-    /// [`make_service`] with the notifier supplied, for tests that assert on
-    /// the events the service emitted rather than on the calls it made.
     fn make_service_with_notifier(
         session: Arc<MockSessionManager>,
         client: Arc<MockStreamerControlClient>,
@@ -651,6 +573,7 @@ mod tests {
             is_streaming: Arc::new(AtomicBool::new(false)),
             cached_link_pair: std::sync::Mutex::new(None),
             recovery_task: std::sync::Mutex::new(None),
+            volume_mix: Arc::new(std::sync::Mutex::new(VolumeMix::default())),
         }
     }
 
@@ -675,7 +598,6 @@ mod tests {
             .await
             .unwrap();
 
-        // HTTP connect was called
         let client_calls = client.take_calls();
         assert_eq!(client_calls.len(), 1);
         assert!(matches!(
@@ -683,7 +605,6 @@ mod tests {
             ControlClientCall::Connect { device_id } if device_id.0 == "phone-1"
         ));
 
-        // Session was started
         let session_calls = session.take_calls();
         assert!(
             session_calls
@@ -691,7 +612,6 @@ mod tests {
                 .any(|c| matches!(c, SessionCall::StartSession { .. }))
         );
 
-        // Platform was synced
         let platform_calls = platform.take_calls();
         assert!(
             platform_calls
@@ -748,14 +668,12 @@ mod tests {
             .await
             .unwrap();
 
-        // HTTPS disconnect was called.
         let client_calls = client.take_calls();
         assert!(matches!(
             &client_calls[0],
             ControlClientCall::Disconnect { device_id } if device_id.0 == "phone-1"
         ));
 
-        // Session was stopped
         let session_calls = session.take_calls();
         assert!(
             session_calls
@@ -763,7 +681,6 @@ mod tests {
                 .any(|c| matches!(c, SessionCall::StopSession))
         );
 
-        // Platform streaming flag cleared
         let platform_calls = platform.take_calls();
         assert!(
             platform_calls
@@ -816,7 +733,6 @@ mod tests {
             .await
             .unwrap();
 
-        // No HTTPS reconnect should be sent; the connection stays alive.
         let client_calls = client.take_calls();
         assert_eq!(client_calls.len(), 0);
     }
@@ -836,7 +752,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Should pause, NOT stop the session
         let session_calls = session.take_calls();
         assert!(
             session_calls
@@ -849,11 +764,9 @@ mod tests {
                 .any(|c| matches!(c, SessionCall::StopSession))
         );
 
-        // No HTTPS disconnect should be sent.
         let client_calls = client.take_calls();
         assert_eq!(client_calls.len(), 0);
 
-        // Platform service should be notified
         let platform_calls = platform.take_calls();
         assert!(platform_calls.iter().any(|c| matches!(
             c,
@@ -911,8 +824,6 @@ mod tests {
                 .any(|c| matches!(c, PlatformCall::SetStreamingFlag { active: false })),
             "the streaming flag must still be cleared"
         );
-        // Without this the foreground notification and the Media Session stay
-        // live after a disconnect that had no connected streamer.
         assert!(
             platform_calls.iter().any(|c| matches!(
                 c,
@@ -926,10 +837,6 @@ mod tests {
         assert!(!service.is_streaming.load(Ordering::Relaxed));
     }
 
-    /// Every path that ends a stream has to leave the platform service in the
-    /// same state, or the notification survives on whichever path forgot.
-    /// The exact `Stopped` state matters: `Paused` intentionally keeps the
-    /// MediaSession and notification visible for a connected stream.
     #[tokio::test]
     async fn every_stop_path_should_sync_the_service() {
         fn synced_stopped(calls: &[PlatformCall]) -> bool {
@@ -944,7 +851,6 @@ mod tests {
             })
         }
 
-        // Path 1: disconnect with a known streamer.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
@@ -960,7 +866,6 @@ mod tests {
             "disconnect_from_streamer must sync the service"
         );
 
-        // Path 2: forced teardown by the playback watchdog.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
@@ -973,7 +878,6 @@ mod tests {
             "kill_playback must sync the service"
         );
 
-        // Path 3: the frontend's no-streamer branch.
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(
             Arc::new(MockSessionManager::new()),
@@ -1046,10 +950,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------
-    // LinkPair cache + update_jitter_config intercept
-    // ---------------------------------------------------------------
-
     #[tokio::test]
     async fn update_jitter_config_should_reapply_cached_link_pair_for_auto_sentinel() {
         use gemacast_core::domain::types::NetworkLink;
@@ -1059,14 +959,12 @@ mod tests {
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
-        // Simulate a cached link pair from a previous connect
         let pair = LinkPair {
             phone: NetworkLink::Wifi5Ghz,
             pc: NetworkLink::Wifi5Ghz,
         };
         *service.cached_link_pair.lock().unwrap() = Some(pair);
 
-        // Send the Auto sentinel config (peakDecayHalflifeMs = 0, no static target)
         let auto_config = JitterConfig {
             min_depth_ms: 25,
             comfort_cap_ms: 1000,
@@ -1077,8 +975,6 @@ mod tests {
 
         service.update_jitter_config(auto_config).await.unwrap();
 
-        // The session should have received the link-pair-optimised config,
-        // not the generic Auto config
         let calls = session.take_calls();
         assert!(
             calls
@@ -1086,8 +982,6 @@ mod tests {
                 .any(|c| matches!(c, SessionCall::UpdateJitterConfig)),
             "Expected UpdateJitterConfig call"
         );
-        // We can't directly inspect the config in the mock, but we verified
-        // the code path through the is_auto_sentinel + cached pair logic.
     }
 
     #[tokio::test]
@@ -1099,14 +993,12 @@ mod tests {
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
-        // Set a cached link pair
         let pair = LinkPair {
             phone: NetworkLink::Wifi5Ghz,
             pc: NetworkLink::Wifi5Ghz,
         };
         *service.cached_link_pair.lock().unwrap() = Some(pair);
 
-        // Send a non-Auto config (Balanced)
         let balanced_config = JitterConfig {
             min_depth_ms: 10,
             comfort_cap_ms: 200,
@@ -1117,7 +1009,6 @@ mod tests {
 
         service.update_jitter_config(balanced_config).await.unwrap();
 
-        // Should pass through unmodified (non-Auto has halflife != 0)
         let calls = session.take_calls();
         assert!(
             calls
@@ -1133,10 +1024,8 @@ mod tests {
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
-        // No cached link pair
         assert!(service.cached_link_pair.lock().unwrap().is_none());
 
-        // Send Auto sentinel
         let auto_config = JitterConfig {
             min_depth_ms: 25,
             comfort_cap_ms: 1000,
@@ -1147,7 +1036,6 @@ mod tests {
 
         service.update_jitter_config(auto_config).await.unwrap();
 
-        // Should pass through the generic Auto config since there's no cache
         let calls = session.take_calls();
         assert!(
             calls
@@ -1165,7 +1053,6 @@ mod tests {
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
-        // Set a cached link pair
         *service.cached_link_pair.lock().unwrap() = Some(LinkPair {
             phone: NetworkLink::Wifi5Ghz,
             pc: NetworkLink::Ethernet,
@@ -1188,7 +1075,6 @@ mod tests {
         let platform = Arc::new(MockPlatformService::new());
         let service = make_service(session.clone(), client.clone(), platform.clone());
 
-        // Set a cached link pair
         *service.cached_link_pair.lock().unwrap() = Some(LinkPair {
             phone: NetworkLink::Adb,
             pc: NetworkLink::Ethernet,
@@ -1213,8 +1099,6 @@ mod tests {
                 .count()
         }
 
-        /// Let the recovery task run to its terminal event on tokio's paused
-        /// clock, which auto-advances whenever every task is parked on a timer.
         async fn drain(service: &AudioService) {
             let handle = service.recovery_task.lock().unwrap().take();
             if let Some(handle) = handle {
@@ -1243,8 +1127,6 @@ mod tests {
             );
             drain(&service).await;
 
-            // Precondition: the loop really did have to retry, so the success
-            // below is the retry working and not the first probe getting lucky.
             assert_eq!(probe_count(&client.take_calls()), 4);
             assert!(matches!(
                 notifier.take_events().as_slice(),
@@ -1269,8 +1151,6 @@ mod tests {
             );
             drain(&service).await;
 
-            // Without the device id the PC can only say whether *it* is up,
-            // never whether it still holds a registration for us.
             let calls = client.take_calls();
             assert!(matches!(
                 calls.as_slice(),
@@ -1295,8 +1175,6 @@ mod tests {
             );
             drain(&service).await;
 
-            // Ticks land at 0, 2, .., 58 s and the check at 60 s ends it:
-            // 30 attempts, not a loop that runs forever.
             assert_eq!(probe_count(&client.take_calls()), 30);
             assert!(matches!(
                 notifier.take_events().as_slice(),
@@ -1320,9 +1198,6 @@ mod tests {
                 BUDGET,
             );
 
-            // Precondition: the prober is actually running and probing, so the
-            // silence after the kill is cancellation and not a task that never
-            // started.
             tokio::time::sleep(INTERVAL * 3).await;
             let probes_before = probe_count(&client.take_calls());
             assert!(probes_before > 0);
@@ -1361,9 +1236,153 @@ mod tests {
             );
             drain(&service).await;
 
-            // Two stacked loops would double this; the second start must have
-            // aborted the first.
             assert_eq!(probe_count(&client.take_calls()), 30);
+        }
+    }
+
+    mod pc_volume_matching {
+        use super::*;
+
+        fn volumes(calls: &[SessionCall]) -> Vec<f32> {
+            calls
+                .iter()
+                .filter_map(|c| match c {
+                    SessionCall::SetVolume { linear } => Some(*linear),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn service() -> (Arc<MockSessionManager>, AudioService) {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockStreamerControlClient::new());
+            let platform = Arc::new(MockPlatformService::new());
+            let service = make_service(session.clone(), client, platform);
+            (session, service)
+        }
+
+        #[tokio::test]
+        async fn the_user_gain_reaches_the_session_untouched_while_matching_is_off() {
+            let (session, service) = service();
+
+            service.set_volume(0.5).await.unwrap();
+
+            assert_eq!(volumes(&session.take_calls()), vec![0.5]);
+        }
+
+        #[tokio::test]
+        async fn a_pc_level_arriving_while_matching_is_off_is_remembered_but_not_applied() {
+            let (session, service) = service();
+
+            service.set_volume(1.0).await.unwrap();
+            session.take_calls();
+            service.apply_pc_output_volume(0.25).await.unwrap();
+
+            assert!(volumes(&session.take_calls()).is_empty());
+            assert_eq!(service.volume_mix().pc_level, Some(0.25));
+        }
+
+        #[tokio::test]
+        async fn turning_matching_on_applies_the_remembered_pc_level_immediately() {
+            let (session, service) = service();
+
+            service.set_volume(1.0).await.unwrap();
+            service.apply_pc_output_volume(0.25).await.unwrap();
+            session.take_calls();
+            service.set_match_pc_volume(true).await.unwrap();
+
+            assert_eq!(volumes(&session.take_calls()), vec![0.25]);
+        }
+
+        #[tokio::test]
+        async fn a_pc_level_arriving_while_matching_is_on_scales_the_user_gain() {
+            let (session, service) = service();
+
+            service.set_volume(0.8).await.unwrap();
+            service.set_match_pc_volume(true).await.unwrap();
+            session.take_calls();
+            service.apply_pc_output_volume(0.5).await.unwrap();
+
+            assert_eq!(volumes(&session.take_calls()), vec![0.4]);
+        }
+
+        #[tokio::test]
+        async fn turning_matching_off_restores_the_unscaled_user_gain() {
+            let (session, service) = service();
+
+            service.set_volume(0.8).await.unwrap();
+            service.apply_pc_output_volume(0.5).await.unwrap();
+            service.set_match_pc_volume(true).await.unwrap();
+            session.take_calls();
+            service.set_match_pc_volume(false).await.unwrap();
+
+            assert_eq!(volumes(&session.take_calls()), vec![0.8]);
+        }
+
+        async fn connect(service: &AudioService) {
+            service
+                .connect_to_streamer(ConnectParams {
+                    ip: "192.168.1.5".to_string(),
+                    device_id: DeviceId("phone-1".into()),
+                    device_name: "My Phone".into(),
+                    mode: ConnectionMode::Wifi,
+                    exclusive_mode: false,
+                    jitter_config: JitterConfig::default(),
+                    bitrate: None,
+                    phone_network_link: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn the_handshake_seeds_the_pc_level_and_announces_it_to_the_frontend() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockStreamerControlClient::new().with_pc_output_volume(0.35));
+            let platform = Arc::new(MockPlatformService::new());
+            let notifier = Arc::new(MockFrontendNotifier::new());
+            let service = make_service_with_notifier(session, client, platform, notifier.clone());
+
+            connect(&service).await;
+
+            assert_eq!(service.volume_mix().pc_level, Some(0.35));
+            assert!(
+                notifier
+                    .take_events()
+                    .iter()
+                    .any(|e| matches!(e, FrontendEvent::PcVolumeChanged(level) if *level == 0.35))
+            );
+        }
+
+        #[tokio::test]
+        async fn a_streamer_that_reports_no_pc_level_leaves_the_mix_unseeded() {
+            let session = Arc::new(MockSessionManager::new());
+            let client = Arc::new(MockStreamerControlClient::new());
+            let platform = Arc::new(MockPlatformService::new());
+            let notifier = Arc::new(MockFrontendNotifier::new());
+            let service = make_service_with_notifier(session, client, platform, notifier.clone());
+
+            connect(&service).await;
+
+            assert_eq!(service.volume_mix().pc_level, None);
+            assert!(
+                !notifier
+                    .take_events()
+                    .iter()
+                    .any(|e| matches!(e, FrontendEvent::PcVolumeChanged(_)))
+            );
+        }
+
+        #[tokio::test]
+        async fn moving_the_gain_slider_while_matching_keeps_the_pc_scaling() {
+            let (session, service) = service();
+
+            service.apply_pc_output_volume(0.5).await.unwrap();
+            service.set_match_pc_volume(true).await.unwrap();
+            session.take_calls();
+            service.set_volume(0.6).await.unwrap();
+
+            assert_eq!(volumes(&session.take_calls()), vec![0.3]);
         }
     }
 }

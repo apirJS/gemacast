@@ -172,15 +172,13 @@ impl<P: ProcessLister + 'static> ControlServerState<P> {
             streamer_name: self.streamer_name.clone(),
             is_offline: !self.is_broadcasting.load(Ordering::Relaxed),
             pc_network_link: None,
-            // This is the fallback used when the dispatcher never answered, so
-            // the registry was never consulted. `None` means "unknown", which
-            // callers resolve conservatively with a full reconnect.
             device_registered: None,
             session_token: None,
             session_generation: None,
             pending_request_id: None,
             device_auth_challenge: None,
             pc_certificate_fingerprint: Some(self.pc_certificate_fingerprint.clone()),
+            pc_output_volume: None,
         }
     }
 }
@@ -408,7 +406,6 @@ async fn handle_connect<P: ProcessLister + 'static>(
         }
     };
 
-    // Inject the PC's detected network link into the response
     presence.pc_network_link = pc_link;
     presence.pc_certificate_fingerprint = Some(state.pc_certificate_fingerprint.clone());
 
@@ -473,6 +470,7 @@ async fn handle_get_sources<P: ProcessLister + 'static>(
             sources: vec![AudioSource::Desktop],
             capabilities: StreamerCapabilities {
                 supports_process_capture: false,
+                supports_volume_sync: false,
             },
         },
     };
@@ -598,6 +596,24 @@ pub async fn send_ws_event(
     } else {
         Err(NetworkError::DeviceNotConnected(device_id.0.clone()).into())
     }
+}
+
+pub async fn broadcast_ws_event(
+    ws_connections: &Arc<Mutex<HashMap<DeviceId, mpsc::Sender<WsEvent>>>>,
+    event: WsEvent,
+) -> usize {
+    let targets: Vec<mpsc::Sender<WsEvent>> = {
+        let connections = ws_connections.lock().unwrap();
+        connections.values().cloned().collect()
+    };
+
+    let mut delivered = 0;
+    for tx in targets {
+        if tx.send(event.clone()).await.is_ok() {
+            delivered += 1;
+        }
+    }
+    delivered
 }
 
 #[cfg(test)]
@@ -740,6 +756,7 @@ mod tests {
                     pending_request_id: None,
                     device_auth_challenge: None,
                     pc_certificate_fingerprint: None,
+                    pc_output_volume: None,
                 }));
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -787,6 +804,7 @@ mod tests {
                     pending_request_id: Some("request-1".into()),
                     device_auth_challenge: None,
                     pc_certificate_fingerprint: None,
+                    pc_output_volume: None,
                 }));
             }
             _ => panic!("Expected ControlCommand::Connect"),
@@ -940,6 +958,7 @@ mod tests {
                     pending_request_id: None,
                     device_auth_challenge: None,
                     pc_certificate_fingerprint: None,
+                    pc_output_volume: None,
                 });
             }
             _ => panic!("Expected ControlCommand::Probe"),

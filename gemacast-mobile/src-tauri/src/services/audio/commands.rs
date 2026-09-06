@@ -1,9 +1,3 @@
-//! Thin Tauri command wrappers that delegate to [`super::service::AudioService`].
-//!
-//! Each `#[tauri::command]` handler extracts the `AudioService` from
-//! [`crate::state::AppState`] and forwards to the corresponding method.
-//! No I/O or business logic lives here.
-
 use crate::state::AppState;
 use crate::traits::{ConnectParams, ResumeParams};
 use gemacast_core::domain::types::{DeviceId, TransportType};
@@ -35,7 +29,6 @@ pub async fn connect_to_streamer(
         mode,
         exclusive_mode,
     );
-    // Detect the phone's network link at connection time
     let mode_str = match mode {
         gemacast_core::domain::types::ConnectionMode::Adb => "adb",
         gemacast_core::domain::types::ConnectionMode::Usb => "usb",
@@ -293,21 +286,23 @@ pub async fn restart_session(
 #[tauri::command]
 pub async fn set_audio_gain(gain_db: f32, state: State<'_, AppState>) -> Result<(), String> {
     tracing::info!("[Cmd] set_audio_gain: {}dB", gain_db);
-    // Convert dB to linear multiplier: 10^(dB/20)
-    // Clamp to safe range: -24 dB (0.063) to +12 dB (3.98)
     let clamped_db = gain_db.clamp(-24.0, 12.0);
     let linear = 10f32.powf(clamped_db / 20.0);
     state.audio.set_volume(linear).await
 }
 
-/// Response for the `get_network_link_pair` command.
+#[tauri::command]
+pub async fn set_match_pc_volume(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    tracing::info!("[Cmd] set_match_pc_volume: {}", enabled);
+    state.audio.set_match_pc_volume(enabled).await
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkLinkPairInfo {
     pub phone: gemacast_core::domain::types::NetworkLink,
     pub pc: gemacast_core::domain::types::NetworkLink,
     pub effective: gemacast_core::domain::types::NetworkLink,
-    /// Human-readable label for the effective link (e.g., "WiFi 5 GHz")
     pub effective_label: String,
 }
 

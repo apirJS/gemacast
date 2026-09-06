@@ -5,6 +5,7 @@ import { CustomJitterConfig } from './CustomJitterConfig';
 import { BitrateSelect } from './BitrateSelect';
 import { GainSlider } from './GainSlider';
 import { ExclusiveToggle } from './ExclusiveToggle';
+import { MatchPcVolumeToggle } from './MatchPcVolumeToggle';
 import { KeepScreenOnToggle } from './KeepScreenOnToggle';
 import { AutoReconnectToggle } from './AutoReconnectToggle';
 import { ModeSelector } from './ModeSelector';
@@ -38,6 +39,9 @@ export function SettingsDrawer() {
   const { open, handleOpen, handleClose } = useDrawer('settings');
   const help = useHelpDialog();
   const exclusiveSupported = useAppStore((s) => s.exclusiveSupported);
+  const volumeSyncSupported = useAppStore(
+    (s) => s.streamerCapabilities?.supportsVolumeSync ?? false,
+  );
 
   return (
     <>
@@ -95,7 +99,6 @@ export function SettingsDrawer() {
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
           <UpdateBanner />
 
-          {/* Buffer Preset */}
           <div>
             <SectionLabel helpButton={help.renderHelpButton('buffer-preset')}>
               Buffer Preset
@@ -106,7 +109,6 @@ export function SettingsDrawer() {
 
           <SectionDivider />
 
-          {/* Audio Bitrate Quality */}
           <div>
             <SectionLabel helpButton={help.renderHelpButton('audio-bitrate')}>
               Audio Bitrate Quality
@@ -116,7 +118,6 @@ export function SettingsDrawer() {
 
           <SectionDivider />
 
-          {/* Audio Gain */}
           <div>
             <SectionLabel helpButton={help.renderHelpButton('audio-gain')}>Audio Gain</SectionLabel>
             <GainSlider />
@@ -124,7 +125,6 @@ export function SettingsDrawer() {
 
           <SectionDivider />
 
-          {/* Toggles */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
@@ -138,6 +138,20 @@ export function SettingsDrawer() {
                 )}
               </div>
               <ExclusiveToggle />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <SectionLabel helpButton={help.renderHelpButton('match-pc-volume')}>
+                  Match Volume With PC
+                </SectionLabel>
+                {!volumeSyncSupported && (
+                  <p className="-mt-1 text-[0.7rem] text-muted-foreground/70">
+                    Not reported by this PC
+                  </p>
+                )}
+              </div>
+              <MatchPcVolumeToggle />
             </div>
 
             <div className="flex items-center justify-between">
@@ -157,7 +171,6 @@ export function SettingsDrawer() {
 
           <SectionDivider />
 
-          {/* Connection Mode */}
           <div>
             <SectionLabel helpButton={help.renderHelpButton('connection-mode')}>Mode</SectionLabel>
             <ModeSelector />
@@ -170,7 +183,6 @@ export function SettingsDrawer() {
             <ForgetPcIdentity />
           </div>
 
-          {/* Footer */}
           <div className="flex flex-col gap-y-1 mt-4 border-t border-border pt-6 text-center justify-center">
             <p className="text-xs text-muted-foreground">
               USB Tethering or 5 GHz Wi-Fi is recommended for lowest latency. Use{' '}
