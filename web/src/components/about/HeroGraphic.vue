@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { MonitorIcon, SmartphoneIcon, UsbIcon, WifiIcon } from "@lucide/vue";
+import { MonitorIcon, SmartphoneIcon, UsbIcon, WifiIcon } from '@lucide/vue'
 </script>
 
 <template>
-  <div class="flex flex-row gap-x-8 items-center">
+  <div class="flex flex-row gap-x-3 items-center sm:gap-x-8">
     <div class="relative flex flex-col items-center">
-      <MonitorIcon class="text-primary size-24 bg-background z-2" />
+      <MonitorIcon class="text-primary size-20 bg-background z-2 sm:size-24" />
 
       <div
         class="font-mono absolute top-[12.5%] bottom-[29.2%] left-[8.3%] right-[8.3%] flex flex-col items-center justify-center text-foreground text-[0.5rem] leading-tight font-semibold pointer-events-none z-3"
@@ -18,17 +18,17 @@ import { MonitorIcon, SmartphoneIcon, UsbIcon, WifiIcon } from "@lucide/vue";
     </div>
     <div class="flex flex-col">
       <div class="flex flex-row justify-center gap-x-4">
-        <WifiIcon />
-        <UsbIcon />
+        <WifiIcon class="text-primary size-5 sm:size-6" />
+        <UsbIcon class="text-primary size-5 sm:size-6" />
       </div>
       <svg
-        class="scale-125"
+        class="text-primary w-20 sm:w-30 sm:scale-125"
         xmlns="http://www.w3.org/2000/svg"
         width="120"
         height="24"
         viewBox="-60 -12 120 24"
         fill="none"
-        stroke="black"
+        stroke="currentColor"
         stroke-width="2"
         stroke-linecap="round"
         stroke-linejoin="round"
@@ -37,11 +37,11 @@ import { MonitorIcon, SmartphoneIcon, UsbIcon, WifiIcon } from "@lucide/vue";
         <polyline points="33 -7 40 0 33 7" />
       </svg>
       <div class="flex justify-center">
-        <span class="font-mono font-bold">ADB</span>
+        <span class="font-mono font-bold text-primary text-sm sm:text-base">ADB</span>
       </div>
     </div>
     <div class="relative flex flex-col items-center pt-6">
-      <SmartphoneIcon class="text-primary size-18 bg-background z-2" />
+      <SmartphoneIcon class="text-primary size-14 bg-background z-2 sm:size-18" />
       <span class="absolute animate-bip-phone">*bip*</span>
     </div>
   </div>

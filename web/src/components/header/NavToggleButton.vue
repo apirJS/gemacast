@@ -1,11 +1,11 @@
 <script setup lang="ts">
-const isMenuOpen = defineModel<boolean>("isMenuOpen");
-const toggleMenu = defineModel<() => void>("toggleMenu");
+const isMenuOpen = defineModel<boolean>('isMenuOpen')
+const toggleMenu = defineModel<() => void>('toggleMenu')
 </script>
 
 <template>
   <button
-    class="cursor-pointer sm:hidden border-none w-5 h-5 relative"
+    class="cursor-pointer md:hidden border-none w-5 h-5 relative"
     @click="toggleMenu"
     :class="{ 'is-open': isMenuOpen }"
   >

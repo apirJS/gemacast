@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 button > * {
   user-select: none;
@@ -66,9 +66,22 @@ section,
 main {
   min-height: 100dvh;
   min-height: 100vh;
-  border-bottom: 1px solid black;
+  border-bottom: 1px solid var(--color-primary);
+  scroll-margin-top: max(72px, 10vh);
 }
 
 body {
   background-color: var(--color-background);
+}
+
+@utility offset-shadow {
+  box-shadow: 4px 4px 0 0 var(--color-primary);
+}
+
+@utility offset-shadow-sm {
+  box-shadow: 2px 2px 0 0 var(--color-primary);
+}
+
+@utility offset-shadow-none {
+  box-shadow: 0 0 0 0 var(--color-primary);
 }

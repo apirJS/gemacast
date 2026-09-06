@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import NavToggleButton from "./NavToggleButton.vue";
-import NavMenuList from "./NavMenuList.vue";
-import { watch } from "vue";
-import { useBreakpoint } from "@/composables/useBreakpoint";
-import { useMenu } from "@/composables/useMenu";
+import NavToggleButton from './NavToggleButton.vue'
+import NavMenuList from './NavMenuList.vue'
+import { watch } from 'vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useMenu } from '@/composables/useMenu'
 
-const { isDesktop } = useBreakpoint();
-const { isMenuOpen, toggleMenu } = useMenu();
+const { isDesktop } = useBreakpoint('(min-width: 768px)')
+const { isMenuOpen, toggleMenu } = useMenu()
 
 watch(isDesktop, (nowDesktop) => {
-  isMenuOpen.value = nowDesktop;
-});
+  isMenuOpen.value = nowDesktop
+})
 </script>
 
 <template>
