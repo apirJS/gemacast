@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/apirJS/gemacast/compare/v0.4.0...v0.5.0) (2026-09-06)
+
+
+### Features
+
+* **mobile:** a toggle to match volume level with pc ([#82](https://github.com/apirJS/gemacast/issues/82)) ([b91db51](https://github.com/apirJS/gemacast/commit/b91db5120715719293ca1d26976edaa16faf7db1))
+
 ## [0.4.0](https://github.com/apirJS/gemacast/compare/v0.3.0...v0.4.0) (2026-08-31)
 
 
