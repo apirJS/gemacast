@@ -1,20 +1,12 @@
-//! Adapter implementations — concrete I/O wiring for port traits.
-//!
-//! These are the "driven" (secondary) adapters in hexagonal architecture.
-//! Each adapter implements a port trait from [`crate::ports`] and
-//! connects it to a real dependency (WebSocket map, WASAPI, etc.).
-//!
-//! # Re-exports
-//!
-//! For convenience, production adapters are re-exported here so consumers
-//! can import from `gemacast_core::adapters::*`.
-
 pub mod capture;
 pub mod error_notifier;
+pub mod output_volume;
 pub mod process_lister;
 pub mod transport;
 
 #[cfg(not(target_os = "android"))]
 pub use capture::{DefaultCaptureFactory, PlatformCaptureBackend};
 pub use error_notifier::WsErrorNotifier;
+#[cfg(not(target_os = "android"))]
+pub use output_volume::PlatformOutputVolumeReader;
 pub use process_lister::DefaultProcessLister;

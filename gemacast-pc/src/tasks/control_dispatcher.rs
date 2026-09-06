@@ -1,10 +1,3 @@
-//! Routes inbound control commands (from HTTPS and UDP) to the appropriate handlers.
-//!
-//! Spawns two tasks:
-//! 1. **Probe heartbeat handler**: Updates `last_seen` for devices sending UDP probes.
-//! 2. **HTTPS command handler**: Processes [`ControlCommand`]s from the Axum control server
-//!    (connect, disconnect, change source, change bitrate, get sources, probe).
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,11 +17,6 @@ use crate::traits::{
 };
 use crate::trusted_devices::TrustedDeviceStore;
 
-/// Shared context for the control dispatcher.
-///
-/// Groups all the trait dependencies and identity info needed to handle
-/// HTTPS control commands. Extracted as a struct to avoid a 10-parameter
-/// function signature.
 pub struct ControlDispatcher {
     pub registry: Arc<dyn DeviceRegistry>,
     pub tray: Arc<dyn TrayNotifier>,
@@ -44,9 +32,6 @@ pub struct ControlDispatcher {
 }
 
 impl ControlDispatcher {
-    /// Handle a single HTTPS control command.
-    ///
-    /// Extracted from the receive loop for unit testing.
     pub async fn handle_http_command(&self, cmd: ControlCommand) {
         match cmd {
             ControlCommand::Connect {
@@ -107,6 +92,7 @@ impl ControlDispatcher {
                                 pc_certificate_fingerprint: Some(
                                     self.pc_certificate_fingerprint.clone(),
                                 ),
+                                pc_output_volume: read_pc_output_volume(),
                             }));
                             return;
                         }
@@ -165,6 +151,7 @@ impl ControlDispatcher {
                             pc_certificate_fingerprint: Some(
                                 self.pc_certificate_fingerprint.clone(),
                             ),
+                            pc_output_volume: read_pc_output_volume(),
                         }));
                         return;
                     }
@@ -259,6 +246,7 @@ impl ControlDispatcher {
                             pc_certificate_fingerprint: Some(
                                 self.pc_certificate_fingerprint.clone(),
                             ),
+                            pc_output_volume: read_pc_output_volume(),
                         }));
                         return;
                     }
@@ -321,6 +309,7 @@ impl ControlDispatcher {
                                     pc_certificate_fingerprint: Some(
                                         self.pc_certificate_fingerprint.clone(),
                                     ),
+                                    pc_output_volume: read_pc_output_volume(),
                                 },
                             )
                         }
@@ -394,10 +383,6 @@ impl ControlDispatcher {
                 device_id,
                 response_tx,
             } => {
-                // `update_last_seen` refreshes only an existing entry, so its
-                // answer is the registration status *before* this probe — a
-                // probe cannot resurrect a device the watchdog already evicted.
-                // A probe with no device_id carries no per-device claim.
                 let device_registered = device_id.map(|id| self.registry.update_last_seen(&id));
 
                 let _ = response_tx.send(PresenceResponse {
@@ -411,13 +396,13 @@ impl ControlDispatcher {
                     pending_request_id: None,
                     device_auth_challenge: None,
                     pc_certificate_fingerprint: Some(self.pc_certificate_fingerprint.clone()),
+                    pc_output_volume: read_pc_output_volume(),
                 });
             }
         }
     }
 }
 
-/// Spawn the control dispatcher tasks.
 pub fn spawn_control_dispatcher(
     set: &mut JoinSet<()>,
     mut inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
@@ -425,21 +410,17 @@ pub fn spawn_control_dispatcher(
     dispatcher: Arc<ControlDispatcher>,
     registry_for_probes: Arc<dyn DeviceRegistry>,
 ) {
-    // Task 1: Handle UDP probe heartbeats (just update last_seen)
     set.spawn(async move {
         while let Some((message, _remote_addr)) = inbound_control_rx.recv().await {
             if let ControlMessage::Probe {
                 device_id: Some(id),
             } = message
             {
-                // UDP heartbeats are fire-and-forget: there is no response
-                // channel to carry the registration status back.
                 let _ = registry_for_probes.update_last_seen(&id);
             }
         }
     });
 
-    // Task 2: Handle HTTPS control commands
     set.spawn(async move {
         while let Some(cmd) = http_command_rx.recv().await {
             dispatcher.handle_http_command(cmd).await;
@@ -447,16 +428,6 @@ pub fn spawn_control_dispatcher(
     });
 }
 
-// ---------------------------------------------------------------------------
-// Device registration / unregistration
-// ---------------------------------------------------------------------------
-
-/// Register a device: update the registry, notify the tray, and subscribe to audio.
-///
-/// Handles three cases:
-/// - **New device**: Notify tray, subscribe to audio.
-/// - **IP changed**: Notify tray of loss at old IP, unsubscribe old, then treat as new.
-/// - **Already registered**: Just ensure audio subscription is active.
 #[allow(clippy::too_many_arguments)]
 pub async fn register_device(
     registry: &dyn DeviceRegistry,
@@ -478,7 +449,6 @@ pub async fn register_device(
         audio_addr
     );
 
-    // ADB/TCP devices use None (audio goes through the TCP tunnel, not UDP)
     let effective_addr = if remote_addr.ip().is_loopback() {
         None
     } else {
@@ -519,7 +489,6 @@ pub async fn register_device(
     Ok(())
 }
 
-/// Unregister a device: remove from registry, notify tray, disconnect via WS, unsubscribe audio.
 pub async fn unregister_device(
     registry: &dyn DeviceRegistry,
     tray: &dyn TrayNotifier,
@@ -538,37 +507,53 @@ pub async fn unregister_device(
     audio.unsubscribe(&device_id).await
 }
 
-/// Returns the available audio sources and streamer capabilities for the current platform.
-///
-/// - **Windows**: Always supports process capture (via WASAPI).
-/// - **Linux**: Supports process capture only if PipeWire is available.
-/// - **macOS**: Always supports process capture (via ScreenCaptureKit).
-/// - **Other**: Desktop capture only.
+fn read_pc_output_volume() -> Option<f32> {
+    #[cfg(not(target_os = "android"))]
+    {
+        use gemacast_core::ports::output_volume::OutputVolumeReader;
+        gemacast_core::adapters::output_volume::PlatformOutputVolumeReader::new().read()
+    }
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
+}
+
+fn platform_supports_process_capture() -> bool {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        gemacast_core::adapters::capture::pipewire_common::is_pipewire_available()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
 fn get_platform_sources() -> (
     Vec<gemacast_core::domain::types::AudioSource>,
     gemacast_core::domain::types::StreamerCapabilities,
 ) {
-    let supports_process = if cfg!(any(target_os = "windows", target_os = "macos")) {
-        true
-    } else if cfg!(target_os = "linux") {
-        // Check PipeWire availability at runtime — PulseAudio-only systems
-        // don't support per-process capture.
-        #[cfg(target_os = "linux")]
+    let supports_volume_sync = {
+        #[cfg(not(target_os = "android"))]
         {
-            gemacast_core::adapters::capture::pipewire_common::is_pipewire_available()
+            gemacast_core::adapters::output_volume::PlatformOutputVolumeReader::new().is_supported()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "android")]
         {
             false
         }
-    } else {
-        false
     };
 
     (
         vec![gemacast_core::domain::types::AudioSource::Desktop],
         gemacast_core::domain::types::StreamerCapabilities {
-            supports_process_capture: supports_process,
+            supports_process_capture: platform_supports_process_capture(),
+            supports_volume_sync,
         },
     )
 }
@@ -634,7 +619,7 @@ mod tests {
             DeviceId("phone-1".into()),
             1,
             "My Phone".into(),
-            make_addr("192.168.1.2:9000"), // new IP!
+            make_addr("192.168.1.2:9000"),
             make_addr("192.168.1.2:23559"),
             None,
             None,
@@ -643,7 +628,6 @@ mod tests {
         .await;
 
         let tray_calls = tray.take_calls();
-        // The registry still reports the address replacement to the tray.
         assert_eq!(tray_calls.len(), 2);
         assert!(
             matches!(&tray_calls[0], TrayCall::Lost { device_id, addr } if device_id.0 == "phone-1" && *addr == make_addr("192.168.1.1:9000"))
@@ -653,9 +637,6 @@ mod tests {
         );
 
         let audio_calls = audio.take_calls();
-        // Registration is transactional: subscribe succeeds before the new
-        // registry address is published, so the existing stream is not torn
-        // down and recreated during an IP change.
         assert_eq!(audio_calls.len(), 1);
         assert!(matches!(
             &audio_calls[0],
@@ -677,7 +658,7 @@ mod tests {
             1,
             "ADB Phone".into(),
             make_addr("127.0.0.1:9000"),
-            make_addr("127.0.0.1:23559"), // loopback → ADB mode
+            make_addr("127.0.0.1:23559"),
             None,
             None,
             None,
@@ -708,7 +689,7 @@ mod tests {
             DeviceId("phone-1".into()),
             1,
             "My Phone".into(),
-            make_addr("192.168.1.1:9000"), // same addr
+            make_addr("192.168.1.1:9000"),
             make_addr("192.168.1.1:23559"),
             None,
             None,
@@ -716,9 +697,7 @@ mod tests {
         )
         .await;
 
-        // No tray notification for existing device at same addr
         assert!(tray.take_calls().is_empty());
-        // Audio subscribe still sent (idempotent)
         assert_eq!(audio.take_calls().len(), 1);
     }
 
@@ -770,8 +749,6 @@ mod tests {
         .await;
 
         assert!(tray.take_calls().is_empty());
-        // Unsubscribe is intentionally idempotent so stale cleanup can race
-        // with an already-removed registry entry without leaking a stream.
         assert_eq!(audio.take_calls().len(), 1);
     }
 
@@ -1433,21 +1410,17 @@ mod tests {
             let presence = probe(&dispatcher, Some(DeviceId("phone-1".into()))).await;
 
             assert_eq!(presence.device_registered, Some(true));
-            // `is_offline` is a *global* flag and stays independent of this.
             assert!(!presence.is_offline);
         }
 
         #[tokio::test]
         async fn the_probe_response_should_report_an_evicted_device_as_unregistered() {
-            // Empty registry = the watchdog has already evicted us.
             let registry = Arc::new(MockDeviceRegistry::new());
             let dispatcher = make_dispatcher(registry);
 
             let presence = probe(&dispatcher, Some(DeviceId("phone-1".into()))).await;
 
             assert_eq!(presence.device_registered, Some(false));
-            // The PC process is up; only *our* subscription is gone. If the two
-            // were conflated the phone could not tell "resume" from "reconnect".
             assert!(!presence.is_offline);
         }
 
@@ -1468,14 +1441,10 @@ mod tests {
         async fn updating_last_seen_on_an_evicted_device_should_not_reregister_it() {
             let registry = MockDeviceRegistry::new();
 
-            // The probe must not resurrect an evicted device — that is what
-            // makes the returned status a truthful liveness signal rather than
-            // a self-fulfilling one.
             assert!(!registry.update_last_seen(&DeviceId("phone-1".into())));
             assert!(!registry.contains("phone-1"));
             assert!(registry.all_devices().is_empty());
 
-            // …and it must report `true` for one that is still there.
             let live = MockDeviceRegistry::with_device("phone-1", "192.168.1.5:9000");
             assert!(live.update_last_seen(&DeviceId("phone-1".into())));
             assert!(live.contains("phone-1"));

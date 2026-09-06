@@ -3,7 +3,6 @@ import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { useAppStore } from '../../stores/app-store';
 import { SettingsDrawer } from './SettingsDrawer';
 
-/** The sliding panel. Queried directly so no library visibility rule can hide it. */
 const panel = () => document.querySelector('[role="dialog"][aria-label="Settings"]')!;
 
 beforeEach(() => {
@@ -37,11 +36,26 @@ describe('SettingsDrawer', () => {
     expect(screen.getAllByText('Mode').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('renders Match Volume With PC label', () => {
+    render(<SettingsDrawer />);
+    expect(screen.getAllByText('Match Volume With PC').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('explains an unreported volume level while the PC cannot sync it', () => {
+    render(<SettingsDrawer />);
+    expect(screen.getAllByText('Not reported by this PC').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('drops the hint once the PC reports volume sync support', () => {
+    useAppStore.getState().setStreamerCapabilities({
+      supportsProcessCapture: false,
+      supportsVolumeSync: true,
+    });
+    render(<SettingsDrawer />);
+    expect(screen.queryByText('Not reported by this PC')).toBeNull();
+  });
+
   describe('sliding', () => {
-    // The bug these cover: the drawer used to stay in the DOM as an open modal
-    // <dialog> after sliding out, so its backdrop ate every tap in the app while
-    // showing nothing. Both properties asserted here are derived from `open`
-    // alone, so there is no state left to drift.
     it('keeps a closed drawer off-screen and inert, so it cannot swallow taps', () => {
       render(<SettingsDrawer />);
       expect(panel().className).toContain('-translate-x-full');
@@ -63,7 +77,6 @@ describe('SettingsDrawer', () => {
 
       act(() => {
         window.location.hash = '';
-        // A plain Event: the hook reads the hash, not the event.
         window.dispatchEvent(new Event('popstate'));
       });
 

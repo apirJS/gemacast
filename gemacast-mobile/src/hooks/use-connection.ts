@@ -105,12 +105,7 @@ export async function connectToStreamer(
       transport,
     };
 
-    // ADB mode uses TCP transport which takes longer to initialize
     const isAdbMode = connectionMode === ConnectionMode.Adb;
-    // LAN pairing can legitimately wait for a PC dialog. The native request
-    // already has a 70-second budget, so repeating it here can duplicate a
-    // server-side success after a lost response. ADB keeps bounded retries for
-    // local tunnel startup, where reconnects atomically replace the session.
     await connectWithRetry(args, isAdbMode ? 4 : 0, isAdbMode ? 500 : 300);
 
     tauriBridge
@@ -119,9 +114,6 @@ export async function connectToStreamer(
 
     saveLastStreamer(streamer);
     saveLastMode(connectionMode);
-    // A completed connect is what puts this PC in the native trust store, so it
-    // is also where its name must be cached for the Paired PCs list. Covers the
-    // paths discovery never sees, e.g. connecting by address.
     rememberPcName(streamer.deviceId, streamer.deviceName);
 
     store.getState().dismissError();
@@ -139,13 +131,11 @@ export async function connectToStreamer(
     fetchAudioSources(streamer);
     fetchProcessList(streamer);
 
-    // Fetch the detected network link pair for UI display
     tauriBridge
       .getNetworkLinkPair()
       .then((pair) => store.getState().setNetworkLinkPair(pair))
       .catch((e) => console.warn('Failed to fetch network link pair:', e));
 
-    // Re-apply persisted audio gain setting
     const gainDb = store.getState().settings.gainDb;
     if (gainDb !== 0) {
       tauriBridge.setAudioGain({ gainDb }).catch((e) => {
@@ -182,7 +172,6 @@ export async function disconnect(
 ): Promise<Result<true, GemaCastError>> {
   const state = store.getState();
 
-  // Idempotency guard to prevent echo loops and redundant toasts
   if (state.status === Status.Listening || state.status === Status.Idle || isDisconnecting) {
     return ok(true);
   }
@@ -210,6 +199,7 @@ export async function disconnect(
         isLoading: false,
         isSuspended: !forgetStreamer,
         networkLinkPair: null,
+        pcOutputVolume: null,
       });
       store.getState().resetMetrics();
       tauriBridge.notifyStreamingStopped().catch(console.warn);
@@ -244,6 +234,7 @@ export async function disconnect(
       streamerCapabilities: null,
       processList: [],
       networkLinkPair: null,
+      pcOutputVolume: null,
     });
     store.getState().resetMetrics();
     if (forgetStreamer) toast.getState().show('info', 'Disconnected');
@@ -320,14 +311,6 @@ export async function reconnectOnAppOpen() {
   if (onList) await connectToStreamer(onList);
 }
 
-/**
- * The playback watchdog tore the session down on its own — nobody asked for it.
- *
- * Distinct from {@link handleForceDisconnect}, which also serves the *user*
- * teardown path: this one never forgets the streamer, because the whole point is
- * to reconnect to it. It leaves the UI in the same suspended state a link loss
- * produces today and hands off to the Rust-side prober.
- */
 export async function handleLinkLost() {
   const state = store.getState();
   if (
@@ -350,9 +333,6 @@ export async function handleLinkLost() {
   });
   store.getState().resetMetrics();
 
-  // Both of these cancel link recovery on the Rust side, so the prober has to
-  // start strictly *after* them — firing all three concurrently would let a
-  // teardown abort the prober it was supposed to precede.
   await tauriBridge.notifyStreamingStopped().catch(console.warn);
   await tauriBridge.killPlayback().catch(console.warn);
 
@@ -364,13 +344,6 @@ export async function handleLinkLost() {
     .catch((e) => console.warn('Failed to start link recovery:', e));
 }
 
-/**
- * A recovery probe reached the PC again.
- *
- * `deviceRegistered` is the PC's answer to whether it still holds our
- * registration. Every answer takes the same full reconnect today; it is logged
- * so a field capture can say whether a cheaper resume path is worth building.
- */
 export async function handleLinkRecovered(deviceRegistered: boolean | null) {
   const state = store.getState();
   if (state.status === Status.Connected || state.status === Status.Connecting) return;
@@ -383,7 +356,6 @@ export async function handleLinkRecovered(deviceRegistered: boolean | null) {
   await connectToStreamer(streamer);
 }
 
-/** Link recovery spent its budget without reaching the PC. */
 export function handleLinkRecoveryGaveUp() {
   store.getState().patch({ connectionHealth: 'lost' });
   toast.getState().show('warning', 'Could not reach the PC — tap to reconnect');
@@ -440,7 +412,7 @@ async function fetchAudioSources(streamer: DiscoveredStreamer) {
     console.warn('Failed to fetch audio sources:', e);
     store.getState().patch({
       audioSources: [{ type: 'desktop' }],
-      streamerCapabilities: { supportsProcessCapture: false },
+      streamerCapabilities: { supportsProcessCapture: false, supportsVolumeSync: false },
     });
   }
 }

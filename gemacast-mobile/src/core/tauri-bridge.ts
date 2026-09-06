@@ -124,6 +124,8 @@ export const tauriBridge = {
 
   setAudioGain: (args: { gainDb: number }) => invoke('set_audio_gain', args),
 
+  setMatchPcVolume: (args: { enabled: boolean }) => invoke('set_match_pc_volume', args),
+
   restartSession: (args: { exclusiveMode: boolean }) => invoke('restart_session', args),
 
   getNetworkLinkPair: () => invoke<NetworkLinkPairInfo | null>('get_network_link_pair'),

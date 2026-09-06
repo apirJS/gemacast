@@ -36,6 +36,12 @@ export function useTauriEvents() {
     );
 
     unlisteners.push(
+      listen<number>('pc-volume-changed', (event) => {
+        useAppStore.getState().setPcOutputVolume(event.payload);
+      }),
+    );
+
+    unlisteners.push(
       listen<string>('playback-error', (event) => {
         useAppStore.getState().displayError(GemaCastError.playbackError(event.payload));
       }),
@@ -69,8 +75,6 @@ export function useTauriEvents() {
       }),
     );
 
-    // The playback watchdog gave up on its own. Unlike `force-disconnect`,
-    // nobody asked for this, so it keeps the streamer and probes for its return.
     unlisteners.push(
       listen('link-lost', () => {
         handleLinkLost();

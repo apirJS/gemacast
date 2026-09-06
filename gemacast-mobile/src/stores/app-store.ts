@@ -48,6 +48,7 @@ function createInitialState(deviceInfo: DeviceInfo): AppState {
     processList: [],
     networkLinkPair: null,
     exclusiveSupported: true,
+    pcOutputVolume: null,
   };
 }
 
@@ -85,6 +86,7 @@ type AppActions = {
   setProcessList: (list: ProcessInfo[]) => void;
   setNetworkLinkPair: (pair: NetworkLinkPairInfo | null) => void;
   setExclusiveSupported: (supported: boolean) => void;
+  setPcOutputVolume: (level: number | null) => void;
 
   patch: (partial: Partial<AppState>) => void;
 };
@@ -131,8 +133,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return null;
       }
     } else {
-      // Cache the name while we have it: this packet is the only place a PC's
-      // display name enters the app, and it outlives the discovery list.
       rememberPcName(streamer.deviceId, streamer.deviceName);
 
       if (index >= 0) {
@@ -196,9 +196,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setAvailableModes: (modes) => {
     const { settings, availableModes: prev } = get();
-    // The network monitor calls this every 3s with a fresh object from IPC.
-    // Only publish a new reference when a value actually changed, or every
-    // `availableModes` subscriber (e.g. ModeSelector) re-renders each tick.
     if (prev.wifi !== modes.wifi || prev.usb !== modes.usb || prev.adb !== modes.adb) {
       set({ availableModes: modes });
     }
@@ -233,6 +230,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setProcessList: (list) => set({ processList: list }),
   setNetworkLinkPair: (pair) => set({ networkLinkPair: pair }),
   setExclusiveSupported: (supported) => set({ exclusiveSupported: supported }),
+  setPcOutputVolume: (level) => set({ pcOutputVolume: level }),
 
   patch: (partial) => set(partial),
 }));

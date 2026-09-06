@@ -9,27 +9,18 @@ pub struct ConnectReq {
     pub device_name: String,
     pub mode: ConnectionMode,
     pub jitter_config: JitterConfig,
-    /// Desired bitrate in bits/sec. `None` = uncompressed raw PCM.
     #[serde(default = "default_bitrate")]
     pub bitrate: Option<i32>,
 
     #[serde(default)]
     pub source: Option<AudioSource>,
 
-    /// The phone's detected network link type (e.g., WiFi 5 GHz, USB tether).
-    /// Used by the PC to include in its response, and by the phone to compute
-    /// the effective link pair for Auto preset selection.
     #[serde(default)]
     pub network_link: Option<NetworkLink>,
 
-    /// Returned by the streamer while a first LAN connection awaits PC approval.
-    /// The player repeats the same request with this ID until it is approved
-    /// or rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_request_id: Option<String>,
 
-    /// Long-term device identity proof used for LAN pairing and trusted
-    /// reconnects. Loopback ADB connections intentionally omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_auth: Option<DeviceAuthRequest>,
 }
@@ -37,19 +28,12 @@ pub struct ConnectReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceAuthRequest {
-    /// Base64-encoded SEC1 uncompressed point for a P-256 public key.
     pub public_key: String,
-    /// Random player nonce, Base64 encoded, generated once per handshake.
     pub phone_nonce: String,
-    /// Set after the PC returns a challenge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub challenge_id: Option<String>,
-    /// Base64-encoded ASN.1 DER ECDSA signature over the auth transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    /// The phone user confirmed the comparison code. `None` means the
-    /// confirmation dialog has not completed yet; `Some(false)` cancels the
-    /// pending pairing on the PC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phone_confirmation: Option<bool>,
 }
@@ -58,15 +42,9 @@ pub struct DeviceAuthRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceAuthChallenge {
     pub challenge_id: String,
-    /// Random 256-bit challenge, Base64 encoded.
     pub challenge: String,
-    /// SHA-256 fingerprint of the certificate used by this HTTPS connection.
     pub pc_certificate_fingerprint: String,
-    /// Six decimal digits independently derived from the signed transcript.
     pub pairing_code: String,
-    /// True when the PC no longer trusts this phone key and will show a fresh
-    /// local approval prompt. A previously pinned phone must show the code
-    /// again so the two users still have something to compare after a kick.
     pub requires_approval: bool,
     pub expires_in_seconds: u64,
 }
@@ -116,46 +94,29 @@ pub struct PresenceResponse {
     pub streamer_name: String,
     pub is_offline: bool,
 
-    /// The PC's detected network link type.
-    /// Sent back to the phone so it can compute the effective link pair.
     #[serde(default)]
     pub pc_network_link: Option<NetworkLink>,
 
-    /// Whether the probing `device_id` is still in the streamer's device registry.
-    ///
-    /// `is_offline` is a *global* streamer flag, so a successful probe proves only
-    /// that the PC process is up — not that this device's subscription survived.
-    /// The two watchdogs make that distinction matter: the phone tears down at
-    /// 10 s while the PC evicts at 15-17 s, so there is a window where the PC is
-    /// still sending to a device that has already given up, and a resume is
-    /// cheaper than a full `/connect`.
-    ///
-    /// `None` from a streamer predating this field — callers must treat unknown
-    /// conservatively and do a full reconnect.
     #[serde(default)]
     pub device_registered: Option<bool>,
 
-    /// Rotated bearer token for authenticated control requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<String>,
 
-    /// Generation assigned to this connection. Delayed cleanup from an older
-    /// generation cannot remove a newer session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_generation: Option<crate::control::auth::SessionGeneration>,
 
-    /// Identifier shown in the PC approval prompt for a first LAN connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_request_id: Option<String>,
 
-    /// One-time proof-of-possession challenge for a LAN device identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_auth_challenge: Option<DeviceAuthChallenge>,
 
-    /// SHA-256 fingerprint of the PC's persistent TLS certificate. LAN
-    /// clients compare this with the certificate observed on the connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pc_certificate_fingerprint: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc_output_volume: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +137,7 @@ pub struct ControlErrorResponse {
 pub enum WsEvent {
     Disconnect,
     Error { message: String },
+    VolumeChanged { level: f32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,12 +219,71 @@ mod tests {
                 ],
                 capabilities: StreamerCapabilities {
                     supports_process_capture: true,
+                    supports_volume_sync: true,
                 },
             };
             let json = serde_json::to_string(&resp).unwrap();
             let parsed: SourcesResponse = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed.sources.len(), 2);
             assert!(parsed.capabilities.supports_process_capture);
+            assert!(parsed.capabilities.supports_volume_sync);
+        }
+
+        #[test]
+        fn volume_sync_support_defaults_to_false_when_the_key_is_absent() {
+            let json = r#"{"sources":[],"capabilities":{"supportsProcessCapture":true}}"#;
+            let parsed: SourcesResponse = serde_json::from_str(json).unwrap();
+            assert!(!parsed.capabilities.supports_volume_sync);
+        }
+    }
+
+    mod presence_response {
+        use super::*;
+
+        #[test]
+        fn the_pc_output_volume_uses_a_camel_case_key() {
+            let resp = PresenceResponse {
+                device_id: DeviceId("pc_1".to_string()),
+                streamer_name: "Desk PC".to_string(),
+                is_offline: false,
+                pc_network_link: None,
+                device_registered: None,
+                session_token: None,
+                session_generation: None,
+                pending_request_id: None,
+                device_auth_challenge: None,
+                pc_certificate_fingerprint: None,
+                pc_output_volume: Some(0.4),
+            };
+            let json = serde_json::to_string(&resp).unwrap();
+            assert!(
+                json.contains("\"pcOutputVolume\":0.4"),
+                "Expected camelCase pcOutputVolume key, got: {json}"
+            );
+            let parsed: PresenceResponse = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.pc_output_volume, Some(0.4));
+        }
+
+        #[test]
+        fn the_pc_output_volume_is_omitted_when_unknown() {
+            let resp = PresenceResponse {
+                device_id: DeviceId("pc_1".to_string()),
+                streamer_name: "Desk PC".to_string(),
+                is_offline: false,
+                pc_network_link: None,
+                device_registered: None,
+                session_token: None,
+                session_generation: None,
+                pending_request_id: None,
+                device_auth_challenge: None,
+                pc_certificate_fingerprint: None,
+                pc_output_volume: None,
+            };
+            let json = serde_json::to_string(&resp).unwrap();
+            assert!(
+                !json.contains("pcOutputVolume"),
+                "Expected the key to be skipped, got: {json}"
+            );
         }
     }
 
@@ -289,6 +310,27 @@ mod tests {
             let json = serde_json::to_string(&event).unwrap();
             let parsed: WsEvent = serde_json::from_str(&json).unwrap();
             assert!(matches!(parsed, WsEvent::Disconnect));
+        }
+
+        #[test]
+        fn volume_changed_variant_should_serialize_with_screaming_snake_case_tag() {
+            let event = WsEvent::VolumeChanged { level: 0.25 };
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(
+                json.contains("\"type\":\"VOLUME_CHANGED\""),
+                "Expected SCREAMING_SNAKE_CASE type tag, got: {json}"
+            );
+            let parsed: WsEvent = serde_json::from_str(&json).unwrap();
+            assert!(matches!(parsed, WsEvent::VolumeChanged { level } if level == 0.25));
+        }
+
+        #[test]
+        fn volume_changed_carries_its_level_in_the_payload_field() {
+            let json = serde_json::to_string(&WsEvent::VolumeChanged { level: 1.0 }).unwrap();
+            assert!(
+                json.contains("\"payload\":{\"level\":1.0}"),
+                "Expected a nested payload object, got: {json}"
+            );
         }
     }
 
