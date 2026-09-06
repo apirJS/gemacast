@@ -38,7 +38,7 @@ const pageLinks: FooterLink[] = [
           />
           <span class="font-[Black_Ops_One] text-lg text-secondary">Gemacast</span>
         </div>
-        <p class="font-mono text-xs leading-relaxed text-accent/80 sm:text-sm">
+        <p class="font-mono text-xs leading-relaxed text-accent sm:text-sm">
           Streams your PC's audio to your phone over Wi-Fi, USB, or a cable, with tens of
           milliseconds of delay.
         </p>
@@ -53,7 +53,7 @@ const pageLinks: FooterLink[] = [
 
       <nav class="grid grid-cols-2 gap-8 sm:gap-12">
         <div class="flex flex-col gap-y-3">
-          <h3 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-accent/60">
+          <h3 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-secondary">
             Project
           </h3>
           <ul class="flex flex-col gap-y-2">
@@ -72,7 +72,7 @@ const pageLinks: FooterLink[] = [
         </div>
 
         <div class="flex flex-col gap-y-3">
-          <h3 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-accent/60">
+          <h3 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-secondary">
             On this page
           </h3>
           <ul class="flex flex-col gap-y-2">
@@ -93,7 +93,7 @@ const pageLinks: FooterLink[] = [
       <div
         class="mx-auto flex max-w-6xl flex-col items-center gap-3 px-4 py-5 sm:flex-row sm:justify-between sm:px-6 lg:px-10"
       >
-        <span class="font-mono text-center text-xs text-accent/70">
+        <span class="font-mono text-center text-xs text-accent">
           Built by Echa Apriliyanto. GPL 3.0 Licensed.
         </span>
         <div class="flex items-center gap-x-2">

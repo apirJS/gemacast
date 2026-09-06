@@ -1,0 +1,34 @@
+# Gemacast
+
+> Gemacast streams your PC's desktop audio to an Android phone over Wi-Fi (LAN), USB tethering, or an ADB cable with ultra-low latency (tens of milliseconds). Free, open-source, and private with no accounts required.
+
+## Overview
+
+Gemacast turns your Android smartphone into a high-performance wireless or wired speaker for your computer. Built with a Rust core engine and a Tauri v2 / React mobile player, Gemacast achieves low-latency audio transmission via custom jitter buffering and low-delay audio codecs.
+
+## Key Features
+
+- **Ultra-Low Latency**: Latency budget in tens of milliseconds using Opus LowDelay/CELT compression (10 kbps to 512 kbps) or uncompressed raw PCM.
+- **Multiple Transports**: Connect over local Wi-Fi (UDP broadcast & mDNS discovery), USB tethering (RNDIS), or direct ADB cable (reverse port forwarding).
+- **Flexible Audio Capture**: Stream full desktop audio or select a specific application (WASAPI on Windows, PipeWire on Linux, ScreenCaptureKit/CPAL on macOS).
+- **Secure Pairing**: Authenticated control channel over TLS with ECDSA P-256 self-signed certificates, pinned certificate validation, and 6-digit transcript pairing codes.
+- **Adaptive Jitter Buffer**: Intelligent NetEQ-inspired jitter buffer operating directly on the audio thread to dynamically adjust buffer depth based on measured network link quality.
+- **Multi-Client Support**: Stream audio from one PC to multiple Android devices simultaneously, with independent bitrate and jitter configurations per client.
+
+## Downloads & Setup
+
+- [Latest Releases](https://github.com/apirJS/gemacast/releases/latest): Prebuilt binaries for Windows (.msi, .zip), Linux (.deb, .rpm, .AppImage, .tar.xz), macOS (.dmg), and Android (.apk).
+- [Source Code Repository](https://github.com/apirJS/gemacast): Full Rust and TypeScript codebase licensed under GPL-3.0.
+
+## Technical Details
+
+- **Streamer Crate (`gemacast-pc`)**: System tray application built in Rust using `tao` and `tokio` for background audio processing and device management.
+- **Player App (`gemacast-mobile`)**: Android client built with Tauri v2, React 19, and Kotlin JNI bindings interacting with the Oboe audio library for low-latency output.
+- **Core Library (`gemacast-core`)**: Shared Rust crate containing capture adapters, Opus/PCM codecs, UDP/TCP transport, TLS HTTP control server (`Axum`), and timescale pitch-stretching jitter buffer.
+
+## Useful Links
+
+- [Official Website](https://gemacast.apirjs.tech/)
+- [GitHub Repository](https://github.com/apirJS/gemacast)
+- [Issue Tracker](https://github.com/apirJS/gemacast/issues)
+- [Contact Author](mailto:echa.apriliyanto.dev@gmail.com)

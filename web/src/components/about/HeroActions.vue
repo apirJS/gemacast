@@ -17,8 +17,6 @@ import ActionButton from '@/components/shared/ActionButton.vue'
       </ActionButton>
     </div>
 
-    <p class="font-mono text-center text-xs text-muted-foreground">
-      Free and open source.
-    </p>
+    <p class="font-mono text-center text-xs text-muted-foreground">Free and open source.</p>
   </div>
 </template>
