@@ -2,8 +2,6 @@
 
 # <img src="assets/logo_transparent.svg" height="56" alt="Gemacast Logo" valign="middle" /> Gemacast
 
-**[gemacast.apirjs.tech](https://gemacast.apirjs.tech/)**
-
 [![Release](https://img.shields.io/github/v/release/apirJS/gemacast?label=release)](https://github.com/apirJS/gemacast/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-1.97.1-orange)](https://www.rust-lang.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-6-blue)](https://www.typescriptlang.org/)
