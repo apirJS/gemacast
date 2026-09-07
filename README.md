@@ -1,6 +1,6 @@
 <div align="center">
 
-# Gemacast <img src="assets/logo_transparent.svg" width="72" height="72" alt="Gemacast Logo" align="center" style="margin-right: 10px;"> 
+# <img src="assets/logo_transparent.svg" height="56" alt="Gemacast Logo" valign="middle" /> Gemacast
 
 **[gemacast.apirjs.tech](https://gemacast.apirjs.tech/)**
 
@@ -23,6 +23,7 @@ Captures full audio or per-application audio and plays it on one or more phones.
 <div align="center">
   <img src="assets/mobile-stream-adb-demo.gif" alt="Phone playing" height="480" />
   <img src="assets/stream-choose-process-audio-demo.jpeg" alt="Choose Process Audio" height="480" />
+  <br /><br />
   <img src="assets/setting-panel-1.jpeg" alt="Phone settings 1" height="480" />
   <img src="assets/setting-panel-2.jpeg" alt="Phone settings 2" height="480" />
   <br /><br />
