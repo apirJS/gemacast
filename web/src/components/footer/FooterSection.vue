@@ -1,25 +1,25 @@
 <script setup lang="ts">
-import { CodeIcon, DownloadIcon, ExternalLinkIcon, MailIcon } from '@lucide/vue'
-import { links } from '@/core/links'
+import { CodeIcon, DownloadIcon, ExternalLinkIcon, MailIcon, ScaleIcon } from "@lucide/vue";
+import { links } from "@/core/links";
 
 interface FooterLink {
-  label: string
-  href: string
-  external: boolean
+  label: string;
+  href: string;
+  external: boolean;
 }
 
 const projectLinks: FooterLink[] = [
-  { label: 'Source on GitHub', href: links.repo, external: true },
-  { label: 'Latest release', href: links.releases, external: true },
-  { label: 'Report an issue', href: links.issues, external: true },
-]
+  { label: "Source on GitHub", href: links.repo, external: true },
+  { label: "Latest release", href: links.releases, external: true },
+  { label: "Report an issue", href: links.issues, external: true },
+];
 
 const pageLinks: FooterLink[] = [
-  { label: 'Features', href: '#features', external: false },
-  { label: 'Demo', href: '#demo', external: false },
-  { label: 'Download', href: '#download', external: false },
-  { label: 'FAQ', href: '#faq', external: false },
-]
+  { label: "Features", href: "#features", external: false },
+  { label: "Demo", href: "#demo", external: false },
+  { label: "Download", href: "#download", external: false },
+  { label: "FAQ", href: "#faq", external: false },
+];
 </script>
 
 <template>
@@ -93,9 +93,13 @@ const pageLinks: FooterLink[] = [
       <div
         class="mx-auto flex max-w-6xl flex-col items-center gap-3 px-4 py-5 sm:flex-row sm:justify-between sm:px-6 lg:px-10"
       >
-        <span class="font-mono text-center text-xs text-accent">
-          Built by Echa Apriliyanto. GPL 3.0 Licensed.
-        </span>
+        <div class="flex flex-col text-xs gap-y-1">
+          <span class="font-mono text-center text-accent"> Built by Echa Apriliyanto. </span>
+          <div class="flex flex-row gap-x-1 items-center">
+            <ScaleIcon class="size-4"/>
+            <a href="https://github.com/apirJS/gemacast?tab=GPL-3.0-1-ov-file" target="_blank">GPL 3.0</a>
+          </div>
+        </div>
         <div class="flex items-center gap-x-2">
           <a
             :href="links.releases"
