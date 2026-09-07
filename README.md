@@ -12,7 +12,7 @@
 [![Website](https://img.shields.io/badge/website-gemacast.apirjs.tech-blue)](https://gemacast.apirjs.tech/)
 
 Stream desktop audio from PC to Android over Wi-Fi, USB tethering, or ADB.
-Captures full audio or per-application audio and plays it on one or more phones.<br>Turn your phone into a speaker!!
+Captures full audio or per-application audio and plays it on one or more phones. Turn your phone into a speaker!!
 
 </div>
 
