@@ -83,7 +83,12 @@ if git diff --cached --quiet; then
   echo "Version files already at $PREV_VERSION — nothing to commit."
 else
   git commit -m "chore: revert version ${CURRENT_VERSION} → ${PREV_VERSION} (release pipeline failed)"
-  git push origin main
+  git checkout -b rollback-${CURRENT_VERSION}
+  git push origin rollback-${CURRENT_VERSION}
+  gh pr create \
+    --title "chore: revert version ${CURRENT_VERSION} → ${PREV_VERSION}" \
+    --body "Automated rollback because the release pipeline failed." \
+    --base main
 fi
 
 echo ""
