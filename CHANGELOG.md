@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/apirJS/gemacast/compare/v0.5.0...v0.5.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **mobile:** Windows pause more 60s, android will alway no sound [#87](https://github.com/apirJS/gemacast/issues/87) ([#88](https://github.com/apirJS/gemacast/issues/88)) ([066fbfa](https://github.com/apirJS/gemacast/commit/066fbfad619cf8a32f5f42a42dff824f6ad5c493))
+
 ## [0.5.0](https://github.com/apirJS/gemacast/compare/v0.4.0...v0.5.0) (2026-09-06)
 
 
