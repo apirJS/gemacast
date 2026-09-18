@@ -134,9 +134,6 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "17"
-      - name: Setup Android SDK & NDK
-        if: matrix.target == 'android'
-        uses: android-actions/setup-android@v3
       - name: Install Pinned NDK & Build Tools
         if: matrix.target == 'android'
         run: |
