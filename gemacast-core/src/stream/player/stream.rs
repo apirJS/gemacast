@@ -49,14 +49,23 @@ struct OboeRenderer {
 
 #[cfg(target_os = "android")]
 impl OboeRenderer {
+    /// Fill `out` with near-inaudible non-zero samples instead of true silence.
+    /// Some Android OEMs (Samsung, Xiaomi) detect 60 s of continuous zero data
+    /// on an AudioTrack and permanently mute it, even after real audio resumes.
+    /// Alternating ±1e-4 (~−80 dBFS) is inaudible and has zero DC offset.
+    #[inline]
+    fn fill_anti_mute(out: &mut [f32]) {
+        for (i, sample) in out.iter_mut().enumerate() {
+            *sample = if i % 2 == 0 { 1e-4 } else { -1e-4 };
+        }
+    }
+
     fn render(&mut self, out: &mut [f32]) {
         let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
 
         if !self.is_playing.load(Ordering::Relaxed) {
             while self.packet_consumer.try_pop().is_some() {}
-            for sample in out.iter_mut() {
-                *sample = 0.0;
-            }
+            Self::fill_anti_mute(out);
             if self.was_playing {
                 self.jitter_manager.reset();
                 self.was_playing = false;
@@ -68,6 +77,12 @@ impl OboeRenderer {
         self.jitter_manager
             .ingest_packets(&mut self.packet_consumer);
         self.jitter_manager.fill_output(out, vol);
+
+        // Guard against buffer starvation producing all-zero output, which
+        // would also accumulate toward the OEM mute threshold.
+        if out.iter().take(64).all(|&s| s == 0.0) {
+            Self::fill_anti_mute(out);
+        }
     }
 }
 
@@ -128,8 +143,15 @@ impl AudioOutputCallback for OboeCallbackI16 {
         for chunk in out.chunks_mut(capacity) {
             let staging = &mut self.scratch[..chunk.len()];
             self.renderer.render(staging);
-            for (dst, src) in chunk.iter_mut().zip(staging.iter()) {
-                *dst = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            for (i, (dst, src)) in chunk.iter_mut().zip(staging.iter()).enumerate() {
+                let val = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                // The ±1e-4 anti-mute signal quantizes to 0 in i16. Replace
+                // with ±1 LSB to keep the AudioTrack alive in exclusive mode.
+                *dst = if val == 0 {
+                    if i % 2 == 0 { 1 } else { -1 }
+                } else {
+                    val
+                };
             }
         }
 
