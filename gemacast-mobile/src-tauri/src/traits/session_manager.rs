@@ -17,19 +17,18 @@ pub trait SessionManager: Send + Sync {
     /// Gracefully shut down the active session and WebSocket client.
     async fn stop_session(&self);
 
-    /// Set the is_playing flag on the active session.
+    /// Start or pause the active output stream.
     async fn set_playing(&self, playing: bool);
 
     /// Pause the audio output stream without tearing down the session.
     ///
-    /// Sets `is_playing` to `false` so the Oboe callback outputs silence,
-    /// but keeps the network receive thread, heartbeat, and WebSocket alive.
+    /// Pauses and flushes Oboe while keeping the network receive thread,
+    /// heartbeat, and WebSocket alive.
     async fn pause_playback(&self) -> Result<(), String>;
 
     /// Resume the audio output stream after a pause.
     ///
-    /// Sets `is_playing` to `true` so the Oboe callback resumes normal
-    /// playback from the jitter buffer.
+    /// Restarts Oboe and resumes playback from a freshly reset jitter buffer.
     async fn resume_playback(&self) -> Result<(), String>;
 
     /// Update the jitter configuration on the active session.

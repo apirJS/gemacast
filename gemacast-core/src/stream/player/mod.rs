@@ -4,4 +4,4 @@ pub mod packet;
 pub mod stream;
 pub mod transport;
 
-pub use listener::{AudioSessionCredentials, AudioStreamPlayer};
+pub use listener::{AudioSessionCredentials, AudioStreamPlayer, PlaybackControl};

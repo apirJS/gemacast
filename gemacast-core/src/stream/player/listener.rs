@@ -2,14 +2,12 @@
 use super::stream::build_cpal_fallback_stream;
 use crate::{
     audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE},
-    domain::error::{AudioError, GemaCastError, StreamDirection},
+    domain::error::{AudioError, GemaCastError},
     domain::types::{JitterConfig, NetworkLink},
     jitter::RawPacket,
     network::Ports,
 };
 use cpal::StreamError;
-#[cfg(not(target_os = "android"))]
-use cpal::traits::*;
 use ringbuf::{HeapProd, HeapRb, traits::*};
 use std::sync::{
     Arc,
@@ -19,9 +17,123 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::heartbeat::spawn_keepalive_heartbeat_thread;
 use super::packet::{compute_rms, parse_packet};
-use super::stream::{PlaybackStream, build_playback_stream};
+use super::stream::{
+    PlaybackStream, build_playback_stream, pause_playback_stream, start_playback_stream,
+};
 
 const PACKET_CHANNEL_CAPACITY: usize = 1024;
+// Xiaomi/HyperOS mutes an active AudioTrack after about 60 seconds of zero or
+// "small" samples. A short grace avoids lifecycle churn during ordinary gaps,
+// while still suspending the track well before the OEM detector can fire.
+const SOURCE_IDLE_SUSPEND_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
+enum PlaybackCommand {
+    SetUserPlaying {
+        playing: bool,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    SetSourceIdle(bool),
+    Shutdown,
+}
+
+/// Thread-safe handle for changing playback state without tearing down the
+/// network session. Stream lifecycle operations are serialized by the player.
+#[derive(Clone)]
+pub struct PlaybackControl {
+    command_tx: mpsc::UnboundedSender<PlaybackCommand>,
+    user_wants_playing: Arc<AtomicBool>,
+}
+
+impl PlaybackControl {
+    async fn set_user_playing(&self, playing: bool) -> Result<(), GemaCastError> {
+        let previous = self.user_wants_playing.swap(playing, Ordering::AcqRel);
+        let (response_tx, response_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(PlaybackCommand::SetUserPlaying {
+                playing,
+                response: response_tx,
+            })
+            .is_err()
+        {
+            self.user_wants_playing.store(previous, Ordering::Release);
+            return Err(AudioError::PlaybackControlUnavailable.into());
+        }
+
+        match response_rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => {
+                self.user_wants_playing.store(previous, Ordering::Release);
+                Err(AudioError::PlaybackControlFailed(message).into())
+            }
+            Err(_) => {
+                self.user_wants_playing.store(previous, Ordering::Release);
+                Err(AudioError::PlaybackControlUnavailable.into())
+            }
+        }
+    }
+
+    pub async fn pause(&self) -> Result<(), GemaCastError> {
+        self.set_user_playing(false).await
+    }
+
+    pub async fn resume(&self) -> Result<(), GemaCastError> {
+        self.set_user_playing(true).await
+    }
+
+    fn user_wants_playing(&self) -> bool {
+        self.user_wants_playing.load(Ordering::Acquire)
+    }
+
+    fn set_source_idle(&self, idle: bool) {
+        let _ = self.command_tx.send(PlaybackCommand::SetSourceIdle(idle));
+    }
+
+    fn shutdown(&self) {
+        let _ = self.command_tx.send(PlaybackCommand::Shutdown);
+    }
+}
+
+struct SourceIdleDetector {
+    idle_after: std::time::Duration,
+    silence_started_at: Option<std::time::Instant>,
+    suspended: bool,
+}
+
+impl SourceIdleDetector {
+    fn new(idle_after: std::time::Duration) -> Self {
+        Self {
+            idle_after,
+            silence_started_at: None,
+            suspended: false,
+        }
+    }
+
+    /// Returns an edge only: `true` when sustained silence first becomes idle,
+    /// and `false` on the first subsequent non-silence packet.
+    fn observe(&mut self, is_silence: bool, now: std::time::Instant) -> Option<bool> {
+        if !is_silence {
+            self.silence_started_at = None;
+            if self.suspended {
+                self.suspended = false;
+                return Some(false);
+            }
+            return None;
+        }
+
+        let started = *self.silence_started_at.get_or_insert(now);
+        if !self.suspended && now.saturating_duration_since(started) >= self.idle_after {
+            self.suspended = true;
+            return Some(true);
+        }
+
+        None
+    }
+
+    fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioSessionCredentials {
@@ -37,6 +149,10 @@ pub struct AudioStreamPlayer {
     playback_shutdown_rx: oneshot::Receiver<()>,
     latency_metric: Arc<AtomicU32>,
     jitter_metric: Arc<AtomicU32>,
+    playback_control: PlaybackControl,
+    playback_command_rx: mpsc::UnboundedReceiver<PlaybackCommand>,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
     pub exclusive_granted: bool,
 }
 
@@ -45,7 +161,6 @@ impl AudioStreamPlayer {
         config_ref: Arc<std::sync::RwLock<JitterConfig>>,
         is_tcp_mode: Arc<AtomicBool>,
         network_link: NetworkLink,
-        is_playing: Arc<AtomicBool>,
         volume: Arc<AtomicU32>,
         _exclusive_mode: bool,
         playback_shutdown_rx: oneshot::Receiver<()>,
@@ -55,6 +170,14 @@ impl AudioStreamPlayer {
         let (packet_producer, packet_consumer) = packet_rb.split();
         let latency_metric = Arc::new(AtomicU32::new(0));
         let jitter_metric = Arc::new(AtomicU32::new(0));
+        let render_enabled = Arc::new(AtomicBool::new(true));
+        let reset_requested = Arc::new(AtomicBool::new(false));
+        let user_wants_playing = Arc::new(AtomicBool::new(true));
+        let (command_tx, playback_command_rx) = mpsc::unbounded_channel();
+        let playback_control = PlaybackControl {
+            command_tx,
+            user_wants_playing,
+        };
 
         #[cfg(not(target_os = "android"))]
         let playback_stream = build_playback_stream(
@@ -62,7 +185,8 @@ impl AudioStreamPlayer {
             config_ref,
             is_tcp_mode,
             network_link,
-            is_playing,
+            render_enabled.clone(),
+            reset_requested.clone(),
             volume,
             latency_metric.clone(),
             jitter_metric.clone(),
@@ -81,7 +205,8 @@ impl AudioStreamPlayer {
                 config_ref.clone(),
                 is_tcp_mode.clone(),
                 network_link,
-                is_playing.clone(),
+                render_enabled.clone(),
+                reset_requested.clone(),
                 volume.clone(),
                 latency_metric.clone(),
                 jitter_metric.clone(),
@@ -97,7 +222,8 @@ impl AudioStreamPlayer {
                         config_ref,
                         is_tcp_mode,
                         network_link,
-                        is_playing,
+                        render_enabled.clone(),
+                        reset_requested.clone(),
                         volume,
                         latency_metric.clone(),
                         jitter_metric.clone(),
@@ -114,8 +240,16 @@ impl AudioStreamPlayer {
             playback_shutdown_rx,
             latency_metric,
             jitter_metric,
+            playback_control,
+            playback_command_rx,
+            render_enabled,
+            reset_requested,
             exclusive_granted,
         })
+    }
+
+    pub fn playback_control(&self) -> PlaybackControl {
+        self.playback_control.clone()
     }
 
     pub async fn run_audio_receive_loop(
@@ -147,7 +281,14 @@ impl AudioStreamPlayer {
             _ => None,
         };
 
-        let _playback_stream = self.playback_stream;
+        let (playback_control_error_tx, mut playback_control_error_rx) = mpsc::channel(1);
+        let playback_control_thread = spawn_playback_control_thread(
+            self.playback_stream,
+            self.playback_command_rx,
+            self.render_enabled,
+            self.reset_requested,
+            playback_control_error_tx,
+        );
         let player_active = Arc::new(AtomicBool::new(true));
         let (network_dropped_tx, mut network_dropped_rx) = mpsc::channel::<()>(1);
 
@@ -163,6 +304,8 @@ impl AudioStreamPlayer {
             streamer_port,
             network_dropped_tx,
             target_ip,
+            self.playback_control.clone(),
+            cfg!(target_os = "android").then_some(SOURCE_IDLE_SUSPEND_AFTER),
         );
 
         struct ScopeGuard {
@@ -170,12 +313,15 @@ impl AudioStreamPlayer {
             player_active: Arc<AtomicBool>,
             heartbeat_thread: Option<std::thread::JoinHandle<()>>,
             player_thread: Option<std::thread::JoinHandle<()>>,
+            playback_control: PlaybackControl,
+            playback_control_thread: Option<std::thread::JoinHandle<()>>,
         }
 
         impl Drop for ScopeGuard {
             fn drop(&mut self) {
                 self.heartbeat_active.store(false, Ordering::Relaxed);
                 self.player_active.store(false, Ordering::Relaxed);
+                self.playback_control.shutdown();
                 if let Some(t) = self.heartbeat_thread.take() {
                     // Detach thread instead of blocking the Tokio worker
                     drop(t);
@@ -183,6 +329,12 @@ impl AudioStreamPlayer {
                 if let Some(t) = self.player_thread.take() {
                     // Detach thread instead of blocking the Tokio worker
                     drop(t);
+                }
+                if let Some(t) = self.playback_control_thread.take() {
+                    // The control thread owns the stream so start/pause/drop are
+                    // serialized. Joining prevents a new exclusive stream from
+                    // racing the previous stream's close during reconnect.
+                    let _ = t.join();
                 }
             }
         }
@@ -192,6 +344,8 @@ impl AudioStreamPlayer {
             player_active,
             heartbeat_thread,
             player_thread: Some(player_thread),
+            playback_control: self.playback_control,
+            playback_control_thread: Some(playback_control_thread),
         };
 
         tokio::select! {
@@ -201,6 +355,9 @@ impl AudioStreamPlayer {
             _ = network_dropped_rx.recv() => {
                 return Err(crate::domain::error::NetworkError::ConnectionLost.into());
             }
+            Some(message) = playback_control_error_rx.recv() => {
+                return Err(AudioError::PlaybackControlFailed(message).into());
+            }
             _ = &mut self.playback_shutdown_rx => {}
         }
 
@@ -208,46 +365,74 @@ impl AudioStreamPlayer {
     }
 
     pub fn activate_playback_stream(&mut self) -> Result<(), GemaCastError> {
-        #[cfg(not(target_os = "android"))]
-        self.playback_stream
-            .play()
-            .map_err(|e| AudioError::PlayStreamFailed {
-                direction: StreamDirection::Output,
-                source: e,
-            })?;
+        start_playback_stream(&mut self.playback_stream)
+    }
+}
 
-        #[cfg(target_os = "android")]
-        {
-            use oboe::{AudioStream, AudioStreamSafe};
+fn spawn_playback_control_thread(
+    mut stream: PlaybackStream,
+    mut command_rx: mpsc::UnboundedReceiver<PlaybackCommand>,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
+    error_tx: mpsc::Sender<String>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut user_wants_playing = true;
+        let mut source_idle = false;
+        let mut stream_running = true;
 
-            macro_rules! start_oboe {
-                ($stream:expr) => {{
-                    let burst = $stream.get_frames_per_burst();
-                    let _ = $stream.set_buffer_size_in_frames(burst * 2);
+        while let Some(command) = command_rx.blocking_recv() {
+            let response = match command {
+                PlaybackCommand::SetUserPlaying { playing, response } => {
+                    user_wants_playing = playing;
+                    Some(response)
+                }
+                PlaybackCommand::SetSourceIdle(idle) => {
+                    source_idle = idle;
+                    None
+                }
+                PlaybackCommand::Shutdown => break,
+            };
 
-                    $stream
-                        .start()
-                        .map_err(|e| AudioError::OboeStreamStartFailed {
-                            direction: StreamDirection::Output,
-                            message: format!("{}", e),
-                        })?;
-                }};
-            }
+            let should_run = user_wants_playing && !source_idle;
+            let transition = if should_run && !stream_running {
+                reset_requested.store(true, Ordering::Release);
+                render_enabled.store(true, Ordering::Release);
+                tracing::info!("[Playback] Starting output stream");
+                start_playback_stream(&mut stream).inspect(|_| stream_running = true)
+            } else if !should_run && stream_running {
+                render_enabled.store(false, Ordering::Release);
+                reset_requested.store(true, Ordering::Release);
+                tracing::info!(
+                    source_idle,
+                    user_wants_playing,
+                    "[Playback] Pausing and flushing output stream"
+                );
+                pause_playback_stream(&mut stream).inspect(|_| stream_running = false)
+            } else {
+                Ok(())
+            };
 
-            match &mut self.playback_stream {
-                PlaybackStream::Oboe(stream) => start_oboe!(stream),
-                PlaybackStream::OboeI16(stream) => start_oboe!(stream),
-                PlaybackStream::Cpal(stream) => {
-                    use cpal::traits::StreamTrait;
-                    stream.play().map_err(|e| AudioError::PlayStreamFailed {
-                        direction: StreamDirection::Output,
-                        source: e,
-                    })?;
+            match transition {
+                Ok(()) => {
+                    if let Some(response) = response {
+                        let _ = response.send(Ok(()));
+                    }
+                }
+                Err(error) => {
+                    render_enabled.store(false, Ordering::Release);
+                    let message = error.to_string();
+                    if let Some(response) = response {
+                        let _ = response.send(Err(message.clone()));
+                    }
+                    let _ = error_tx.blocking_send(message);
+                    break;
                 }
             }
         }
-        Ok(())
-    }
+
+        render_enabled.store(false, Ordering::Release);
+    })
 }
 
 #[expect(
@@ -266,6 +451,8 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
     streamer_port: Arc<AtomicU16>,
     network_dropped_tx: mpsc::Sender<()>,
     allowed_streamer_ip: Option<std::net::IpAddr>,
+    playback_control: PlaybackControl,
+    source_idle_after: Option<std::time::Duration>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         #[cfg(target_os = "android")]
@@ -278,6 +465,7 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             vec![0u8; SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE];
         let mut last_packet_time = std::time::Instant::now();
         let mut first_packet_received = false;
+        let mut source_idle_detector = source_idle_after.map(SourceIdleDetector::new);
 
         while active.load(Ordering::Relaxed) {
             let result = transport.receive_audio_packet(&mut recv_buff);
@@ -346,11 +534,29 @@ fn spawn_packet_receive_thread<T: crate::ports::transport::AudioPacketTransport 
             let is_silence = packet.is_silence;
             let is_uncompressed = packet.is_uncompressed;
 
-            if packet_producer.try_push(packet).is_err() {
+            let source_idle_edge = source_idle_detector
+                .as_mut()
+                .and_then(|detector| detector.observe(is_silence, std::time::Instant::now()));
+            let source_is_suspended = source_idle_detector
+                .as_ref()
+                .is_some_and(SourceIdleDetector::is_suspended);
+
+            // Manual pause drops every packet. Automatic source-idle suspension
+            // drops only silence markers. The first real packet raises the wake
+            // edge; following packets populate the freshly reset jitter buffer.
+            let should_enqueue =
+                playback_control.user_wants_playing() && !(source_is_suspended && is_silence);
+
+            if should_enqueue && packet_producer.try_push(packet).is_err() {
                 tracing::warn!(
                     "[WARN] SPSC ring buffer full, dropped seq {}. Audio callback may be stalled.",
                     seq_num
                 );
+            }
+
+            if let Some(idle) = source_idle_edge {
+                tracing::info!(idle, "[Playback] Remote source idle state changed");
+                playback_control.set_source_idle(idle);
             }
 
             if let Some(ref tx) = latency_tx
@@ -375,6 +581,14 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32};
     use tokio::sync::mpsc;
+
+    fn test_playback_control() -> PlaybackControl {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        PlaybackControl {
+            command_tx,
+            user_wants_playing: Arc::new(AtomicBool::new(true)),
+        }
+    }
 
     struct MockTransport {
         packet_to_send: Option<Vec<u8>>,
@@ -436,6 +650,8 @@ mod tests {
             streamer_port,
             network_dropped_tx,
             Some("127.0.0.1".parse().unwrap()),
+            test_playback_control(),
+            None,
         );
 
         // Wait for thread to exit
@@ -479,6 +695,8 @@ mod tests {
             streamer_port.clone(),
             network_dropped_tx,
             Some("10.0.0.1".parse().unwrap()),
+            test_playback_control(),
+            None,
         );
 
         handle.join().unwrap();
@@ -513,6 +731,8 @@ mod tests {
             streamer_port.clone(),
             network_dropped_tx,
             Some("10.0.0.1".parse().unwrap()),
+            test_playback_control(),
+            None,
         );
 
         handle.join().unwrap();
@@ -526,5 +746,73 @@ mod tests {
             .try_recv()
             .expect("an RTT sample should have been sent");
         assert!(rtt >= 0.0, "rtt should be non-negative, got {rtt}");
+    }
+
+    mod source_idle_detector {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn silence_must_cross_the_full_grace_period_before_suspending() {
+            let base = Instant::now();
+            let mut detector = SourceIdleDetector::new(Duration::from_secs(5));
+
+            assert_eq!(detector.observe(true, base), None);
+            assert_eq!(
+                detector.observe(true, base + Duration::from_millis(4_999)),
+                None
+            );
+            assert!(!detector.is_suspended());
+            assert_eq!(
+                detector.observe(true, base + Duration::from_secs(5)),
+                Some(true)
+            );
+            assert!(detector.is_suspended());
+        }
+
+        #[test]
+        fn a_suspended_source_emits_only_one_idle_edge() {
+            let base = Instant::now();
+            let mut detector = SourceIdleDetector::new(Duration::from_secs(1));
+
+            assert_eq!(detector.observe(true, base), None);
+            assert_eq!(
+                detector.observe(true, base + Duration::from_secs(1)),
+                Some(true)
+            );
+            assert_eq!(detector.observe(true, base + Duration::from_secs(30)), None);
+        }
+
+        #[test]
+        fn the_first_real_packet_wakes_a_suspended_source_once() {
+            let base = Instant::now();
+            let mut detector = SourceIdleDetector::new(Duration::from_secs(1));
+
+            detector.observe(true, base);
+            detector.observe(true, base + Duration::from_secs(1));
+
+            assert_eq!(
+                detector.observe(false, base + Duration::from_secs(2)),
+                Some(false)
+            );
+            assert!(!detector.is_suspended());
+            assert_eq!(detector.observe(false, base + Duration::from_secs(3)), None);
+        }
+
+        #[test]
+        fn a_short_silence_after_waking_starts_a_fresh_grace_period() {
+            let base = Instant::now();
+            let mut detector = SourceIdleDetector::new(Duration::from_secs(5));
+
+            detector.observe(true, base);
+            detector.observe(false, base + Duration::from_secs(2));
+
+            assert_eq!(detector.observe(true, base + Duration::from_secs(3)), None);
+            assert_eq!(detector.observe(true, base + Duration::from_secs(7)), None);
+            assert_eq!(
+                detector.observe(true, base + Duration::from_secs(8)),
+                Some(true)
+            );
+        }
     }
 }

@@ -3,7 +3,8 @@ use crate::traits::{
 };
 use async_trait::async_trait;
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use gemacast_core::stream::player::PlaybackControl;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -14,7 +15,7 @@ struct ActiveSession {
     exclusive_granted: bool,
     mode: ConnectionMode,
     bitrate: Option<i32>,
-    is_playing: Arc<AtomicBool>,
+    playback_control: PlaybackControl,
     volume: Arc<AtomicU32>,
     jitter_config: Arc<RwLock<JitterConfig>>,
     shutdown_tx: oneshot::Sender<()>,
@@ -56,7 +57,7 @@ impl SessionManager for TokioSessionManager {
         self.stop_session().await;
 
         let (
-            is_playing,
+            playback_control,
             _is_tcp_mode,
             config_ref,
             volume,
@@ -90,7 +91,7 @@ impl SessionManager for TokioSessionManager {
             exclusive_granted,
             mode: params.mode,
             bitrate: params.bitrate,
-            is_playing,
+            playback_control,
             volume,
             jitter_config: config_ref,
             shutdown_tx,
@@ -129,23 +130,44 @@ impl SessionManager for TokioSessionManager {
     }
 
     async fn set_playing(&self, playing: bool) {
-        if let Some(session) = self.session.lock().await.as_ref() {
-            session.is_playing.store(playing, Ordering::Relaxed);
+        let control = self
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .map(|session| session.playback_control.clone());
+        if let Some(control) = control {
+            let result = if playing {
+                control.resume().await
+            } else {
+                control.pause().await
+            };
+            if let Err(error) = result {
+                tracing::warn!("[Playback] Failed to change playback state: {error}");
+            }
         }
     }
 
     async fn pause_playback(&self) -> Result<(), String> {
-        let guard = self.session.lock().await;
-        let session = guard.as_ref().ok_or("No active session")?;
-        session.is_playing.store(false, Ordering::Relaxed);
-        Ok(())
+        let control = self
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .map(|session| session.playback_control.clone())
+            .ok_or("No active session")?;
+        control.pause().await.map_err(|error| error.to_string())
     }
 
     async fn resume_playback(&self) -> Result<(), String> {
-        let guard = self.session.lock().await;
-        let session = guard.as_ref().ok_or("No active session")?;
-        session.is_playing.store(true, Ordering::Relaxed);
-        Ok(())
+        let control = self
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .map(|session| session.playback_control.clone())
+            .ok_or("No active session")?;
+        control.resume().await.map_err(|error| error.to_string())
     }
 
     async fn update_jitter_config(&self, config: JitterConfig) {

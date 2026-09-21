@@ -49,7 +49,7 @@ pub fn setup_event_forwarding(notifier: Arc<dyn FrontendNotifier>) -> EventForwa
 
 pub type SessionPlayerResult = Result<
     (
-        Arc<AtomicBool>,
+        gemacast_core::stream::player::PlaybackControl,
         Arc<AtomicBool>,
         Arc<RwLock<JitterConfig>>,
         Arc<AtomicU32>,
@@ -75,7 +75,6 @@ pub fn spawn_session_player(
 ) -> SessionPlayerResult {
     let config_ref = Arc::new(RwLock::new(jitter_config));
     let is_tcp_mode = Arc::new(AtomicBool::new(is_tcp));
-    let is_playing = Arc::new(AtomicBool::new(true));
     let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -83,7 +82,6 @@ pub fn spawn_session_player(
         config_ref.clone(),
         is_tcp_mode.clone(),
         network_link,
-        is_playing.clone(),
         volume.clone(),
         exclusive_mode,
         shutdown_rx,
@@ -91,6 +89,7 @@ pub fn spawn_session_player(
     .map_err(|e| e.to_string())?;
 
     let exclusive_granted = player.exclusive_granted;
+    let playback_control = player.playback_control();
 
     let mut player = player;
     let (streamer_ip_tx, latency_tx, rtt_tx) = setup_event_forwarding(notifier.clone());
@@ -133,7 +132,7 @@ pub fn spawn_session_player(
     });
 
     Ok((
-        is_playing,
+        playback_control,
         is_tcp_mode,
         config_ref,
         volume,
