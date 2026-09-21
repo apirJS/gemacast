@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/apirJS/gemacast/compare/v0.5.1...v0.5.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **android:** pause output after sustained source silence ([#92](https://github.com/apirJS/gemacast/issues/92)) ([6aac5cf](https://github.com/apirJS/gemacast/commit/6aac5cfbe09c80b1c58b998a0e3006b081dfe0b7))
+
 ## [0.5.1](https://github.com/apirJS/gemacast/compare/v0.5.0...v0.5.1) (2026-09-18)
 
 
