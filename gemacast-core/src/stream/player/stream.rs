@@ -12,8 +12,8 @@ use cpal::StreamError;
 use cpal::traits::*;
 #[cfg(target_os = "android")]
 use oboe::{
-    AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBase, AudioStreamBuilder,
-    DataCallbackResult, PerformanceMode, SharingMode,
+    AudioOutputCallback, AudioOutputStreamSafe, AudioStream, AudioStreamBase, AudioStreamBuilder,
+    AudioStreamSafe, DataCallbackResult, PerformanceMode, SharingMode,
 };
 use ringbuf::traits::*;
 use std::sync::{
@@ -43,46 +43,32 @@ struct OboeRenderer {
     jitter_manager: JitterBufferManager,
     packet_consumer: ringbuf::HeapCons<RawPacket>,
     volume: Arc<AtomicU32>,
-    is_playing: Arc<AtomicBool>,
-    was_playing: bool,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
 }
 
 #[cfg(target_os = "android")]
 impl OboeRenderer {
-    /// Fill `out` with near-inaudible non-zero samples instead of true silence.
-    /// Some Android OEMs (Samsung, Xiaomi) detect 60 s of continuous zero data
-    /// on an AudioTrack and permanently mute it, even after real audio resumes.
-    /// Alternating ±1e-4 (~−80 dBFS) is inaudible and has zero DC offset.
-    #[inline]
-    fn fill_anti_mute(out: &mut [f32]) {
-        for (i, sample) in out.iter_mut().enumerate() {
-            *sample = if i % 2 == 0 { 1e-4 } else { -1e-4 };
-        }
-    }
-
     fn render(&mut self, out: &mut [f32]) {
         let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
 
-        if !self.is_playing.load(Ordering::Relaxed) {
+        if self.reset_requested.swap(false, Ordering::AcqRel) {
+            self.jitter_manager.reset();
             while self.packet_consumer.try_pop().is_some() {}
-            Self::fill_anti_mute(out);
-            if self.was_playing {
-                self.jitter_manager.reset();
-                self.was_playing = false;
-            }
+        }
+
+        // This branch only covers callbacks already in flight while the control
+        // thread is pausing the stream. A paused Oboe stream stops callbacks, so
+        // it never feeds prolonged silence into OEM AudioTrack detectors.
+        if !self.render_enabled.load(Ordering::Acquire) {
+            while self.packet_consumer.try_pop().is_some() {}
+            out.fill(0.0);
             return;
         }
-        self.was_playing = true;
 
         self.jitter_manager
             .ingest_packets(&mut self.packet_consumer);
         self.jitter_manager.fill_output(out, vol);
-
-        // Guard against buffer starvation producing all-zero output, which
-        // would also accumulate toward the OEM mute threshold.
-        if out.iter().take(64).all(|&s| s == 0.0) {
-            Self::fill_anti_mute(out);
-        }
     }
 }
 
@@ -143,15 +129,8 @@ impl AudioOutputCallback for OboeCallbackI16 {
         for chunk in out.chunks_mut(capacity) {
             let staging = &mut self.scratch[..chunk.len()];
             self.renderer.render(staging);
-            for (i, (dst, src)) in chunk.iter_mut().zip(staging.iter()).enumerate() {
-                let val = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                // The ±1e-4 anti-mute signal quantizes to 0 in i16. Replace
-                // with ±1 LSB to keep the AudioTrack alive in exclusive mode.
-                *dst = if val == 0 {
-                    if i % 2 == 0 { 1 } else { -1 }
-                } else {
-                    val
-                };
+            for (dst, src) in chunk.iter_mut().zip(staging.iter()) {
+                *dst = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
             }
         }
 
@@ -185,7 +164,8 @@ pub fn build_playback_stream(
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
     network_link: NetworkLink,
-    is_playing: Arc<AtomicBool>,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
     jitter_metric: Arc<AtomicU32>,
@@ -246,26 +226,22 @@ pub fn build_playback_stream(
         is_tcp_mode,
         network_link,
     );
-    let mut was_playing = true;
-
     device
         .build_output_stream(
             &stream_config,
             move |data: &mut [f32], _: &_| {
                 let vol = f32::from_bits(volume.load(Ordering::Relaxed));
 
-                if !is_playing.load(Ordering::Relaxed) {
+                if reset_requested.swap(false, Ordering::AcqRel) {
+                    jitter_manager.reset();
                     while packet_consumer.try_pop().is_some() {}
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    if was_playing {
-                        jitter_manager.reset();
-                        was_playing = false;
-                    }
+                }
+
+                if !render_enabled.load(Ordering::Acquire) {
+                    while packet_consumer.try_pop().is_some() {}
+                    data.fill(0.0);
                     return;
                 }
-                was_playing = true;
 
                 jitter_manager.ingest_packets(&mut packet_consumer);
                 jitter_manager.fill_output(data, vol);
@@ -292,7 +268,8 @@ pub fn build_cpal_fallback_stream(
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
     network_link: NetworkLink,
-    is_playing: Arc<AtomicBool>,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
     jitter_metric: Arc<AtomicU32>,
@@ -323,26 +300,22 @@ pub fn build_cpal_fallback_stream(
         is_tcp_mode,
         network_link,
     );
-    let mut was_playing = true;
-
     let stream = device
         .build_output_stream(
             &stream_config,
             move |data: &mut [f32], _: &_| {
                 let vol = f32::from_bits(volume.load(Ordering::Relaxed));
 
-                if !is_playing.load(Ordering::Relaxed) {
+                if reset_requested.swap(false, Ordering::AcqRel) {
+                    jitter_manager.reset();
                     while packet_consumer.try_pop().is_some() {}
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    if was_playing {
-                        jitter_manager.reset();
-                        was_playing = false;
-                    }
+                }
+
+                if !render_enabled.load(Ordering::Acquire) {
+                    while packet_consumer.try_pop().is_some() {}
+                    data.fill(0.0);
                     return;
                 }
-                was_playing = true;
 
                 jitter_manager.ingest_packets(&mut packet_consumer);
                 jitter_manager.fill_output(data, vol);
@@ -369,7 +342,8 @@ pub fn build_playback_stream(
     config_ref: Arc<std::sync::RwLock<JitterConfig>>,
     is_tcp_mode: Arc<AtomicBool>,
     network_link: NetworkLink,
-    is_playing: Arc<AtomicBool>,
+    render_enabled: Arc<AtomicBool>,
+    reset_requested: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     latency_metric: Arc<AtomicU32>,
     jitter_metric: Arc<AtomicU32>,
@@ -391,8 +365,8 @@ pub fn build_playback_stream(
         ),
         packet_consumer,
         volume: volume.clone(),
-        is_playing: is_playing.clone(),
-        was_playing: true,
+        render_enabled: render_enabled.clone(),
+        reset_requested: reset_requested.clone(),
     };
 
     let base = AudioStreamBuilder::default()
@@ -449,6 +423,98 @@ pub fn build_playback_stream(
         }
         .into()
     })
+}
+
+pub fn start_playback_stream(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
+    #[cfg(not(target_os = "android"))]
+    stream
+        .play()
+        .map_err(|source| AudioError::PlayStreamFailed {
+            direction: StreamDirection::Output,
+            source,
+        })?;
+
+    #[cfg(target_os = "android")]
+    {
+        macro_rules! start_oboe {
+            ($stream:expr) => {{
+                let burst = $stream.get_frames_per_burst();
+                let _ = $stream.set_buffer_size_in_frames(burst * 2);
+                $stream
+                    .start()
+                    .map_err(|e| AudioError::OboeStreamStartFailed {
+                        direction: StreamDirection::Output,
+                        message: format!("{}", e),
+                    })?;
+            }};
+        }
+
+        match stream {
+            PlaybackStream::Oboe(stream) => start_oboe!(stream),
+            PlaybackStream::OboeI16(stream) => start_oboe!(stream),
+            PlaybackStream::Cpal(stream) => {
+                use cpal::traits::StreamTrait;
+                stream
+                    .play()
+                    .map_err(|source| AudioError::PlayStreamFailed {
+                        direction: StreamDirection::Output,
+                        source,
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn pause_playback_stream(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
+    #[cfg(not(target_os = "android"))]
+    stream
+        .pause()
+        .map_err(|source| AudioError::PauseStreamFailed {
+            direction: StreamDirection::Output,
+            source,
+        })?;
+
+    #[cfg(target_os = "android")]
+    {
+        use oboe::AudioOutputStream;
+
+        macro_rules! pause_and_flush_oboe {
+            ($stream:expr) => {{
+                $stream
+                    .pause()
+                    .map_err(|e| AudioError::OboeStreamControlFailed {
+                        action: "pause",
+                        direction: StreamDirection::Output,
+                        message: format!("{}", e),
+                    })?;
+                $stream
+                    .flush()
+                    .map_err(|e| AudioError::OboeStreamControlFailed {
+                        action: "flush",
+                        direction: StreamDirection::Output,
+                        message: format!("{}", e),
+                    })?;
+            }};
+        }
+
+        match stream {
+            PlaybackStream::Oboe(stream) => pause_and_flush_oboe!(stream),
+            PlaybackStream::OboeI16(stream) => pause_and_flush_oboe!(stream),
+            PlaybackStream::Cpal(stream) => {
+                use cpal::traits::StreamTrait;
+                stream
+                    .pause()
+                    .map_err(|source| AudioError::PauseStreamFailed {
+                        direction: StreamDirection::Output,
+                        source,
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Probe whether the device supports Oboe exclusive audio mode by opening a

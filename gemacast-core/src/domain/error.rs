@@ -76,6 +76,13 @@ pub enum AudioError {
         source: cpal::PlayStreamError,
     },
 
+    #[error("failed to pause {direction} stream")]
+    PauseStreamFailed {
+        direction: StreamDirection,
+        #[source]
+        source: cpal::PauseStreamError,
+    },
+
     #[error("cpal stream error")]
     StreamError(#[source] cpal::StreamError),
 
@@ -154,6 +161,20 @@ pub enum AudioError {
         direction: StreamDirection,
         message: String,
     },
+
+    #[cfg(target_os = "android")]
+    #[error("Oboe failed to {action} {direction} stream: {message}")]
+    OboeStreamControlFailed {
+        action: &'static str,
+        direction: StreamDirection,
+        message: String,
+    },
+
+    #[error("playback control channel is unavailable")]
+    PlaybackControlUnavailable,
+
+    #[error("playback control failed: {0}")]
+    PlaybackControlFailed(String),
 
     #[cfg(target_os = "linux")]
     #[error("PipeWire error: {0}")]

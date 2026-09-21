@@ -88,6 +88,8 @@ On macOS 12 or below, CPAL is used as a fallback and requires a virtual output d
 Minimum: Android 8.0 (Oreo, API 26) or later.
 
 Download the `.apk` from [Releases](https://github.com/apirJS/gemacast/releases/latest) and install it.
+Most phones should use the smaller ARM64 build, `gemacast-mobile.apk`; use
+`gemacast-mobile-universal.apk` only when you need the multi-architecture build.
 The phone and PC must be on the same network, connected via USB tethering, or linked by an ADB cable with `adb reverse` forwarding.
 
 ## Features
@@ -185,9 +187,13 @@ The binary is written to `target/release/gemacast-pc` (or `gemacast-pc.exe` on W
 cd gemacast/gemacast-mobile
 bun install --frozen-lockfile
 bunx tauri android build --apk
+# Smaller APK for modern ARM64 phones
+bunx tauri android build --apk --target aarch64 --split-per-abi
 ```
 
-The unsigned APK is written to `gemacast-mobile/src-tauri/gen/android/app/build/outputs/apk/universal/release/`.
+The unsigned APKs are written under
+`gemacast-mobile/src-tauri/gen/android/app/build/outputs/apk/`, in the
+`universal/release/` and `arm64/release/` directories respectively.
 
 ## FAQ
 

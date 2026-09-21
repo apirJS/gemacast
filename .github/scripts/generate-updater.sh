@@ -19,7 +19,9 @@ declare -A FILES=(
   ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg"
   ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage"
   ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage"
-  ["android"]="gemacast-mobile.apk"
+  # The updater has no Android architecture key, so it must remain compatible
+  # with every installed ABI even though the default manual download is ARM64.
+  ["android"]="gemacast-mobile-universal.apk"
 )
 
 declare -A SIGS=(
@@ -29,7 +31,7 @@ declare -A SIGS=(
   ["darwin-universal"]="gemacast-pc-universal-apple-darwin.dmg.sig"
   ["linux-x86_64"]="gemacast-pc-${VERSION}-x86_64.AppImage.sig"
   ["linux-aarch64"]="gemacast-pc-${VERSION}-aarch64.AppImage.sig"
-  ["android"]="gemacast-mobile.apk.sig"
+  ["android"]="gemacast-mobile-universal.apk.sig"
 )
 
 # Download each artifact, hash it, and add it to the platform map.
