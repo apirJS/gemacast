@@ -1,15 +1,20 @@
-use gemacast_core::updater::UpdateInfo;
+use gemacast_core::updater::{
+    AvailableUpdate, UpdateArtifact, UpdateCache, UpdateChecker, UpdateDownloader,
+};
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 
 /// Check whether an update is available.
 ///
-/// Returns `Some(UpdateInfo)` when a newer version exists, or `None` when
+/// Returns `Some(AvailableUpdate)` when a newer version exists, or `None` when
 /// the app is already up-to-date.
 #[tauri::command]
-pub async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+pub async fn check_for_update(app: tauri::AppHandle) -> Result<Option<AvailableUpdate>, String> {
     let current_version = app.config().version.clone().unwrap_or_default();
-    gemacast_core::updater::check_for_update(&current_version, "android").await
+    UpdateChecker::latest_release()
+        .find_available_update(&current_version, "android")
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Download the update APK to the app's cache directory.
@@ -44,7 +49,11 @@ pub async fn download_update(
         }
     });
 
-    gemacast_core::updater::download_update(&url, &file_path, Some(progress_tx), &sha256).await?;
+    let artifact = UpdateArtifact::new(url, sha256);
+    UpdateDownloader::default()
+        .download(&artifact, &file_path, Some(progress_tx))
+        .await
+        .map_err(|error| error.to_string())?;
 
     file_path
         .to_str()
@@ -63,7 +72,9 @@ pub async fn cleanup_stale_updates(app: tauri::AppHandle) -> Result<(), String> 
         .map_err(|e| format!("Failed to get cache dir: {e}"))?
         .join("updates");
 
-    gemacast_core::updater::cleanup_stale_updates(&cache_dir);
+    UpdateCache::at(&cache_dir)
+        .remove_stale_files()
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

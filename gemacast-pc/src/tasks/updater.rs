@@ -1,5 +1,6 @@
 use crate::traits::TrayNotifier;
 use crate::updater::platform_key;
+use gemacast_core::updater::{UpdateCache, UpdateChecker, UpdateDownloader};
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
@@ -16,7 +17,9 @@ pub fn spawn_update_checker(set: &mut JoinSet<()>, tray: Arc<dyn TrayNotifier>) 
     set.spawn(async move {
         // Clean up stale update files from previous sessions.
         let dir = std::env::temp_dir().join("gemacast-update");
-        gemacast_core::updater::cleanup_stale_updates(&dir);
+        if let Err(error) = UpdateCache::at(&dir).remove_stale_files() {
+            tracing::warn!("Update cache cleanup failed: {error}");
+        }
 
         // Small delay so the tray is fully initialised before we touch it.
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -49,12 +52,15 @@ async fn check_and_download(
     platform_key: &str,
     tray: &Arc<dyn TrayNotifier>,
 ) {
-    let info = match gemacast_core::updater::check_for_update(current_version, platform_key).await {
+    let info = match UpdateChecker::latest_release()
+        .find_available_update(current_version, platform_key)
+        .await
+    {
         Ok(Some(info)) => info,
         Ok(None) => return,
-        Err(e) => {
-            tracing::warn!("Update check failed: {}", e);
-            tray.notify_update_failed(e);
+        Err(error) => {
+            tracing::warn!("Update check failed: {}", error);
+            tray.notify_update_failed(error.to_string());
             return;
         }
     };
@@ -82,20 +88,17 @@ async fn check_and_download(
         return;
     }
 
-    match gemacast_core::updater::download_update(
-        &info.download_url,
-        &file_path,
-        None,
-        &info.sha256,
-    )
-    .await
+    let artifact = info.artifact();
+    match UpdateDownloader::default()
+        .download(&artifact, &file_path, None)
+        .await
     {
         Ok(()) => {
             tray.notify_update_ready(info.version, file_path);
         }
-        Err(e) => {
-            tracing::warn!("Update download failed: {}", e);
-            tray.notify_update_failed(e);
+        Err(error) => {
+            tracing::warn!("Update download failed: {}", error);
+            tray.notify_update_failed(error.to_string());
         }
     }
 }
