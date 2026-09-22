@@ -47,7 +47,7 @@ impl PresenceListener {
 
         let multicast_ip = Ipv4Addr::new(224, 0, 0, 124);
 
-        let local_bind_ip = match crate::network::get_local_ip() {
+        let local_bind_ip = match crate::network::NetworkInterfaces::primary_ip() {
             Ok(std::net::IpAddr::V4(v4)) => v4,
             _ => Ipv4Addr::UNSPECIFIED,
         };

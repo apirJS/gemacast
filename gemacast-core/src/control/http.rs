@@ -345,7 +345,7 @@ async fn handle_connect<P: ProcessLister + 'static>(
 ) -> axum::response::Response {
     tracing::info!("HTTP POST /connect from {:?}", req.device_id);
 
-    let pc_link = Some(crate::network::interface::detect_pc_link(
+    let pc_link = Some(crate::network::NetworkLinkDetector::detect(
         req.mode,
         addr.ip(),
     ));

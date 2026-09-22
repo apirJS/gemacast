@@ -198,6 +198,9 @@ pub enum AudioError {
 
 #[derive(ThisError, Debug)]
 pub enum NetworkError {
+    #[error("no non-loopback network address is available")]
+    LocalAddressUnavailable,
+
     #[error("failed to bind socket on {addr}")]
     SocketBindFailed {
         addr: String,
@@ -425,6 +428,13 @@ mod tests {
                 "Expected 'connection lost' in: {}",
                 err
             );
+        }
+
+        #[test]
+        fn local_address_unavailable_should_describe_the_missing_address() {
+            let err = NetworkError::LocalAddressUnavailable;
+
+            assert!(err.to_string().contains("network address"));
         }
 
         #[test]
