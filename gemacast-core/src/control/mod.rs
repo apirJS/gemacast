@@ -1,14 +1,25 @@
 pub mod auth;
+mod commands;
 pub mod device_auth;
+mod events;
+mod handlers;
 pub mod http;
 pub mod http_client;
+mod http_connect;
+mod http_requests;
+mod http_transport;
 pub mod messages;
+mod server;
+mod state;
 pub mod tls;
 pub mod types;
 pub mod ws;
 pub mod ws_client;
+mod ws_session;
 
 pub use auth::{AuthorizedSession, PendingApprovalStatus, SessionAuthorizer, SessionGeneration};
-pub use http::{ControlCommand, ControlServerState, start_control_server};
-pub use http_client::HttpControlClient;
+pub use commands::ControlCommand;
+pub use events::ControlEventBus;
+pub use http::{ControlServerState, start_control_server};
+pub use http_client::{ControlCredentials, DeviceAuthSigner, HttpControlClient};
 pub use ws_client::WsControlClient;

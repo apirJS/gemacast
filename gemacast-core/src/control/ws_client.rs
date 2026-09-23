@@ -1,21 +1,14 @@
-use futures::{SinkExt, StreamExt};
 use std::net::IpAddr;
-use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite};
+
 use tokio::sync::{Mutex, mpsc};
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Error as WebSocketError;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::{Connector, connect_async_tls_with_config};
-use url::Url;
 
 use crate::control::types::{WsCommand, WsEvent};
-use crate::{
-    domain::error::{ControlError, GemaCastError},
-    network::Ports,
-};
+use crate::control::ws_session::WebSocketSession;
+#[cfg(test)]
+use crate::control::ws_session::close_websocket;
+use crate::domain::error::{ControlError, GemaCastError};
 
+/// Receives control events and sends commands over one pinned WebSocket.
 pub struct WsControlClient {
     command_tx: mpsc::Sender<WsCommand>,
     event_rx: Mutex<mpsc::Receiver<Result<WsEvent, GemaCastError>>>,
@@ -40,133 +33,9 @@ impl WsControlClient {
         token: Option<&str>,
         pc_certificate_fingerprint: Option<&str>,
     ) -> Result<Self, GemaCastError> {
-        if token.is_some() && pc_certificate_fingerprint.is_none() {
-            return Err(ControlError::WebSocketFailed {
-                reason: "refusing to send a WebSocket token without a pinned PC certificate".into(),
-            }
-            .into());
-        }
-        let url = Url::parse(&format!(
-            "wss://{}:{}/ws?device_id={}",
-            target_ip,
-            Ports::CONTROL,
-            device_id
-        ))
-        .map_err(|e| ControlError::WebSocketFailed {
-            reason: format!("failed to parse WS URL: {e}"),
-        })?;
-
-        let mut request =
-            url.as_str()
-                .into_client_request()
-                .map_err(|e| ControlError::WebSocketFailed {
-                    reason: format!("failed to build WS request: {e}"),
-                })?;
-        if let Some(token) = token {
-            let value =
-                format!("Bearer {token}")
-                    .parse()
-                    .map_err(|e| ControlError::WebSocketFailed {
-                        reason: format!("failed to build WS authorization header: {e}"),
-                    })?;
-            request.headers_mut().insert("Authorization", value);
-        }
-
-        let tls_config =
-            crate::control::tls::client_config(pc_certificate_fingerprint).map_err(|reason| {
-                ControlError::WebSocketFailed {
-                    reason: format!("failed to configure WSS certificate pin: {reason}"),
-                }
-            })?;
-        let (ws_stream, _) = connect_async_tls_with_config(
-            request,
-            None,
-            false,
-            Some(Connector::Rustls(std::sync::Arc::new(tls_config))),
-        )
-        .await
-        .map_err(|e| ControlError::WebSocketFailed {
-            reason: format!("failed to initiate WSS connection: {e}"),
-        })?;
-
-        let mut ws_stream = ws_stream;
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<Result<WsEvent, GemaCastError>>(32);
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<WsCommand>(32);
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    msg = ws_stream.next() => {
-                        let Some(msg) = msg else {
-                            let err = Err(ControlError::Rejected {
-                                 reason: "WebSocket connection dropped".into()
-                            }.into());
-
-                            let _ = event_tx.send(err).await;
-                            break;
-                        };
-
-
-                        match msg {
-                            Ok(Message::Text(text)) => {
-                                match serde_json::from_str::<WsEvent>(&text) {
-                                    Ok(event) => {
-                                        if event_tx.send(Ok(event)).await.is_err() {
-                                            close_websocket(&mut ws_stream).await;
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let err = ControlError::Serialization(e).into();
-                                        if event_tx.send(Err(err)).await.is_err() {
-                                            close_websocket(&mut ws_stream).await;
-                                            break;
-                                        }
-                                    }
-                                }
-                            },
-                            Ok(Message::Close(_)) => {
-                                let _ = event_tx.send(Err(ControlError::Rejected {
-                                    reason: "WS Closed cleanly".into()
-                                }.into())).await;
-
-                                break;
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(Err(ControlError::WebSocketFailed {
-                                    reason: format!("WebSocket receive failed: {error}"),
-                                }.into())).await;
-                                break;
-                            }
-                            _ => continue,
-                        }
-                    },
-
-                    cmd = command_rx.recv() => {
-                        let Some(cmd) = cmd else {
-                            close_websocket(&mut ws_stream).await;
-                            break;
-                        };
-
-                        match serde_json::to_string(&cmd) {
-                            Ok(cmd_string) => {
-                                if let Err(error) = ws_stream.send(Message::text(cmd_string)).await {
-                                    let _ = event_tx.send(Err(ControlError::WebSocketFailed {
-                                        reason: format!("WebSocket send failed: {error}"),
-                                    }.into())).await;
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                let err = ControlError::Serialization(e).into();
-                                let _ = event_tx.send(Err(err)).await;
-                            }
-                        }
-                    }
-
-                }
-            }
-        });
+        let (command_tx, event_rx) =
+            WebSocketSession::connect(target_ip, device_id, token, pc_certificate_fingerprint)
+                .await?;
 
         Ok(Self {
             command_tx,
@@ -179,7 +48,7 @@ impl WsControlClient {
 
         match event_guard.recv().await {
             Some(Ok(event)) => Ok(event),
-            Some(Err(e)) => Err(e),
+            Some(Err(error)) => Err(error),
             None => Err(ControlError::Rejected {
                 reason: "Background WebSocket task terminated unexpectedly".into(),
             }
@@ -200,32 +69,12 @@ impl WsControlClient {
     }
 }
 
-async fn close_websocket<S>(ws_stream: &mut WebSocketStream<S>)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    const CLOSE_TIMEOUT: Duration = Duration::from_millis(750);
-
-    let _ = tokio::time::timeout(CLOSE_TIMEOUT, async {
-        if ws_stream.close(None).await.is_err() {
-            return;
-        }
-        while let Some(message) = ws_stream.next().await {
-            match message {
-                Ok(Message::Close(_))
-                | Err(WebSocketError::ConnectionClosed)
-                | Err(WebSocketError::AlreadyClosed) => break,
-                Err(_) => break,
-                Ok(_) => {}
-            }
-        }
-    })
-    .await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[tokio::test]
     async fn bearer_token_should_require_a_certificate_pin() {

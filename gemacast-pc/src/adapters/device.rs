@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
-use gemacast_core::control::http::send_ws_event;
+use gemacast_core::control::ControlEventBus;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::control::types::WsEvent;
 use gemacast_core::domain::types::DeviceId;
@@ -44,7 +44,7 @@ impl MultiTransportDeviceNotifier {
 impl DeviceNotifier for MultiTransportDeviceNotifier {
     async fn notify_disconnect(&self, device_id: &DeviceId, addr: Option<SocketAddr>) {
         // Try WSS first.
-        let ws_ok = send_ws_event(&self.ws_connections, device_id, WsEvent::Disconnect)
+        let ws_ok = ControlEventBus::send(&self.ws_connections, device_id, WsEvent::Disconnect)
             .await
             .is_ok();
 

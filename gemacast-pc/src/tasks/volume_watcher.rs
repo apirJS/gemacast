@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gemacast_core::control::types::WsEvent;
+use gemacast_core::control::{ControlEventBus, types::WsEvent};
 use gemacast_core::ports::output_volume::OutputVolumeReader;
 use tokio::task::JoinSet;
 
@@ -36,11 +36,7 @@ pub async fn poll_once(
     }
 
     *last_sent = Some(level);
-    gemacast_core::control::http::broadcast_ws_event(
-        ws_connections,
-        WsEvent::VolumeChanged { level },
-    )
-    .await;
+    ControlEventBus::broadcast(ws_connections, WsEvent::VolumeChanged { level }).await;
     Some(level)
 }
 

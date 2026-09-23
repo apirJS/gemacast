@@ -12,14 +12,14 @@ use crate::traits::{StreamerControlClient, StreamerControlClientFactory};
 /// Wraps `gemacast_core::control::HttpControlClient` behind the trait.
 pub struct HttpStreamerControlClient {
     client: gemacast_core::control::HttpControlClient,
-    signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
+    signer: Arc<dyn gemacast_core::control::DeviceAuthSigner>,
 }
 
 impl HttpStreamerControlClient {
     pub fn new(
         ip: IpAddr,
-        credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
-        signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
+        credentials: Arc<Mutex<Option<gemacast_core::control::ControlCredentials>>>,
+        signer: Arc<dyn gemacast_core::control::DeviceAuthSigner>,
     ) -> Self {
         Self {
             client: gemacast_core::control::HttpControlClient::with_shared_credentials(
@@ -34,8 +34,8 @@ impl HttpStreamerControlClient {
     pub fn with_timeout(
         ip: IpAddr,
         timeout: Duration,
-        credentials: Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
-        signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
+        credentials: Arc<Mutex<Option<gemacast_core::control::ControlCredentials>>>,
+        signer: Arc<dyn gemacast_core::control::DeviceAuthSigner>,
     ) -> Self {
         Self {
             client: gemacast_core::control::HttpControlClient::with_shared_credentials(
@@ -107,17 +107,13 @@ impl StreamerControlClient for HttpStreamerControlClient {
 
 /// Creates [`HttpStreamerControlClient`] instances on demand.
 pub struct HttpStreamerControlClientFactory {
-    credentials: Mutex<
-        HashMap<
-            IpAddr,
-            Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>>,
-        >,
-    >,
-    signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>,
+    credentials:
+        Mutex<HashMap<IpAddr, Arc<Mutex<Option<gemacast_core::control::ControlCredentials>>>>>,
+    signer: Arc<dyn gemacast_core::control::DeviceAuthSigner>,
 }
 
 impl HttpStreamerControlClientFactory {
-    pub fn new(signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner>) -> Self {
+    pub fn new(signer: Arc<dyn gemacast_core::control::DeviceAuthSigner>) -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
             signer,
@@ -127,7 +123,7 @@ impl HttpStreamerControlClientFactory {
     fn credentials(
         &self,
         ip: IpAddr,
-    ) -> Arc<Mutex<Option<gemacast_core::control::http_client::ControlCredentials>>> {
+    ) -> Arc<Mutex<Option<gemacast_core::control::ControlCredentials>>> {
         self.credentials
             .lock()
             .map(|mut credentials| {
@@ -177,7 +173,7 @@ impl StreamerControlClientFactory for HttpStreamerControlClientFactory {
         &self,
         ip: IpAddr,
         device_id: &DeviceId,
-    ) -> Option<gemacast_core::control::http_client::ControlCredentials> {
+    ) -> Option<gemacast_core::control::ControlCredentials> {
         self.credentials
             .lock()
             .ok()

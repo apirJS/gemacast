@@ -36,7 +36,7 @@ pub fn run() {
             let platform: Arc<dyn traits::PlatformService> =
                 Arc::new(adapters::NativePlatformService::new(handle.clone()));
 
-            let auth_signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner> =
+            let auth_signer: Arc<dyn gemacast_core::control::DeviceAuthSigner> =
                 Arc::new(adapters::PlatformDeviceAuthSigner::new(platform.clone()));
 
             let client_factory: Arc<dyn traits::StreamerControlClientFactory> =

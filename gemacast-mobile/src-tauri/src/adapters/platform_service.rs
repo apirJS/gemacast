@@ -188,7 +188,7 @@ impl PlatformDeviceAuthSigner {
     }
 }
 
-impl gemacast_core::control::http_client::DeviceAuthSigner for PlatformDeviceAuthSigner {
+impl gemacast_core::control::DeviceAuthSigner for PlatformDeviceAuthSigner {
     fn public_key(&self) -> Result<String, String> {
         self.platform.device_public_key()
     }
