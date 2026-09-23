@@ -17,8 +17,7 @@ use gemacast_core::network::adb::{
     PresenceProvider, adb_command, kill_adb_server, spawn_adb_audio_tcp_server,
     spawn_adb_discovery_tcp_server, spawn_adb_port_forwarding_watchdog,
 };
-use gemacast_core::stream::streamer::engine::AudioStreamEngine;
-use gemacast_core::stream::streamer::engine::StreamSessionFailure;
+use gemacast_core::stream::streamer::{AudioStreamEngine, StreamSessionFailure};
 
 use crate::adapters::device::WsConnectionMap;
 use crate::adapters::{

@@ -4861,7 +4861,7 @@ mod pitch_concealment {
     use super::*;
 
     /// A loud 200 Hz tone shipped as raw f32 PCM — the uncompressed wire
-    /// format, byte for byte as `parse_packet` produces it. Phase is anchored to
+    /// format, byte for byte as `AudioPacketDecoder` produces it. Phase is anchored to
     /// the absolute frame position so consecutive packets are seamless, which is
     /// what lets the history hold a real pitch period.
     fn make_uncompressed_packet(seq: u64, base_time: Instant) -> RawPacket {

@@ -271,7 +271,7 @@ pub async fn establish_websocket(
 
 #[tauri::command]
 pub fn check_exclusive_support() -> bool {
-    gemacast_core::stream::player::stream::probe_exclusive_support()
+    gemacast_core::stream::player::PlaybackOutput::supports_exclusive_mode()
 }
 
 #[tauri::command]

@@ -22,6 +22,25 @@ pub enum GemaCastError {
 pub enum ProtocolError {
     #[error("packet too short: expected at least {min} bytes, got {got}")]
     PacketTooShort { got: usize, min: usize },
+
+    #[error("declared packet length {declared} exceeds buffer length {available}")]
+    PacketLengthExceedsBuffer { declared: usize, available: usize },
+
+    #[error("packet payload is too large: maximum {max} bytes, got {got}")]
+    PacketPayloadTooLarge { got: usize, max: usize },
+
+    #[error("ADB audio handshake field '{field}' is empty")]
+    EmptyAdbHandshakeField { field: &'static str },
+
+    #[error("ADB audio handshake field '{field}' is too long: maximum {max} bytes, got {got}")]
+    AdbHandshakeFieldTooLong {
+        field: &'static str,
+        got: usize,
+        max: usize,
+    },
+
+    #[error("ADB audio session credentials are missing: {field}")]
+    MissingAdbSessionCredential { field: &'static str },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +137,9 @@ pub enum AudioError {
 
     #[error("failed to create capture instance for source: {0}")]
     CaptureInstanceFailed(String),
+
+    #[error("compressed stream has no Opus encoder")]
+    MissingOpusEncoder,
 
     #[error("capture pool is full (max {max} concurrent captures)")]
     CapturePoolExhausted { max: usize },
@@ -233,6 +255,14 @@ pub enum NetworkError {
     #[error("failed to connect TCP stream to {addr}")]
     TcpConnectFailed {
         addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to write {operation} to TCP stream at {addr}")]
+    TcpWriteFailed {
+        addr: String,
+        operation: &'static str,
         #[source]
         source: std::io::Error,
     },
@@ -493,6 +523,19 @@ mod tests {
                 matches!(outer, GemaCastError::Control(_)),
                 "Expected GemaCastError::Control, got: {outer:?}"
             );
+        }
+
+        #[test]
+        fn tcp_write_failure_should_identify_the_operation_and_address() {
+            let err = NetworkError::TcpWriteFailed {
+                addr: "127.0.0.1:23557".into(),
+                operation: "ADB audio handshake",
+                source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed"),
+            };
+            let message = err.to_string();
+
+            assert!(message.contains("ADB audio handshake"));
+            assert!(message.contains("127.0.0.1:23557"));
         }
     }
 

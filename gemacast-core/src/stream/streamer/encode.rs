@@ -1,4 +1,7 @@
-use crate::audio::{FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, OPUS_FRAME_SAMPLES};
+use crate::audio::{
+    FORMAT_OPUS, FORMAT_SILENCE, FORMAT_UNCOMPRESSED, OPUS_FRAME_SAMPLES,
+    create_opus_encoder_with_bitrate,
+};
 use crate::domain::error::{AudioError, CodecDirection, GemaCastError};
 use crate::domain::types::AudioBitrate;
 use opus::Encoder;
@@ -18,89 +21,114 @@ pub enum EncodeResult {
 /// drop it from the stream entirely.
 const SILENCE_RMS_THRESHOLD: f32 = 0.0001;
 
-/// Encode one 10 ms stereo frame into `packet_buf` as a wire packet.
-///
-/// `frame` must be exactly [`OPUS_FRAME_SAMPLES`] interleaved `f32` values — 480
-/// sample-pairs at 48 kHz. See the [capture format
-/// contract](crate::ports::capture#the-capture-format-contract); this function is the
-/// last place that invariant can still be checked before it reaches the wire.
-///
-/// # Errors
-///
-/// * [`AudioError::InvalidFrameLength`] if `frame` is not `OPUS_FRAME_SAMPLES` long.
-/// * [`AudioError::CaptureInstanceFailed`] if a compressed bitrate was requested with
-///   no encoder.
-/// * [`AudioError::OpusCodecFailed`] if Opus encoding fails.
-pub fn encode_frame(
-    frame: &[f32],
-    encoder: Option<&mut Encoder>,
-    bitrate: AudioBitrate,
-    seq_num: u64,
-    opus_output: &mut [u8],
-    packet_buf: &mut Vec<u8>,
-) -> Result<EncodeResult, GemaCastError> {
-    // Checked before anything reads `frame`, which is what makes the raw-pointer cast
-    // in the uncompressed branch sound unconditionally and keeps the RMS divisor
-    // non-zero.
-    if frame.len() != OPUS_FRAME_SAMPLES {
-        return Err(AudioError::InvalidFrameLength {
-            got: frame.len(),
-            expected: OPUS_FRAME_SAMPLES,
-        }
-        .into());
-    }
+/// Owns the conversion from one capture frame to one wire packet.
+pub struct AudioFrameEncoder;
 
-    let mut sum_sq = 0.0f32;
-    for sample in frame {
-        sum_sq += sample * sample;
-    }
-    let rms = (sum_sq / frame.len() as f32).sqrt();
-
-    let is_silence = rms < SILENCE_RMS_THRESHOLD;
-    let is_uncompressed = bitrate == AudioBitrate::Uncompressed;
-
-    let format_flag = if is_silence {
-        FORMAT_SILENCE
-    } else if is_uncompressed {
-        FORMAT_UNCOMPRESSED
-    } else {
-        FORMAT_OPUS
-    };
-
-    let payload_bytes: &[u8] = if is_silence {
-        &[]
-    } else if is_uncompressed {
-        // SAFETY: `frame` is a live `&[f32]` of `frame.len()` elements, so the byte
-        // range `[ptr, ptr + frame.len() * 4)` is entirely inside one allocation and
-        // initialised. The length is derived from `frame.len()` rather than from
-        // `OPUS_FRAME_SAMPLES`, so the read cannot outrun the slice even if the guard
-        // above is ever relaxed. `u8` has alignment 1, so no alignment requirement is
-        // introduced, and the borrow of `frame` outlives `payload_bytes`.
-        //
-        // The result is native-endian, which is the wire format both ends agree on —
-        // see `FORMAT_UNCOMPRESSED` in `audio/mod.rs`.
-        unsafe {
-            std::slice::from_raw_parts(frame.as_ptr() as *const u8, std::mem::size_of_val(frame))
-        }
-    } else {
-        let encoder = encoder.ok_or_else(|| {
-            AudioError::CaptureInstanceFailed("compressed stream has no Opus encoder".into())
-        })?;
-        let encoded_len = encoder.encode_float(frame, opus_output).map_err(|source| {
-            AudioError::OpusCodecFailed {
-                direction: CodecDirection::Encoder,
-                source,
+impl AudioFrameEncoder {
+    pub(crate) fn create_codec(
+        bitrate: AudioBitrate,
+    ) -> Result<Option<opus::Encoder>, GemaCastError> {
+        match bitrate {
+            AudioBitrate::Uncompressed => Ok(None),
+            AudioBitrate::Opus(bps) => {
+                create_opus_encoder_with_bitrate(bps)
+                    .map(Some)
+                    .map_err(|source| {
+                        AudioError::OpusInitFailed {
+                            direction: CodecDirection::Encoder,
+                            source,
+                        }
+                        .into()
+                    })
             }
-        })?;
-        &opus_output[..encoded_len]
-    };
+        }
+    }
 
-    packet_buf.clear();
-    packet_buf.extend_from_slice(&seq_num.to_be_bytes());
-    packet_buf.push(format_flag);
-    packet_buf.extend_from_slice(payload_bytes);
+    /// Encode one 10 ms stereo frame into `packet_buf` as a wire packet.
+    ///
+    /// `frame` must be exactly [`OPUS_FRAME_SAMPLES`] interleaved `f32` values — 480
+    /// sample-pairs at 48 kHz. See the [capture format
+    /// contract](crate::ports::capture#the-capture-format-contract); this function is the
+    /// last place that invariant can still be checked before it reaches the wire.
+    ///
+    /// # Errors
+    ///
+    /// * [`AudioError::InvalidFrameLength`] if `frame` is not `OPUS_FRAME_SAMPLES` long.
+    /// * [`AudioError::MissingOpusEncoder`] if a compressed bitrate was requested with
+    ///   no encoder.
+    /// * [`AudioError::OpusCodecFailed`] if Opus encoding fails.
+    pub fn encode(
+        frame: &[f32],
+        encoder: Option<&mut Encoder>,
+        bitrate: AudioBitrate,
+        seq_num: u64,
+        opus_output: &mut [u8],
+        packet_buf: &mut Vec<u8>,
+    ) -> Result<EncodeResult, GemaCastError> {
+        // Checked before anything reads `frame`, which is what makes the raw-pointer cast
+        // in the uncompressed branch sound unconditionally and keeps the RMS divisor
+        // non-zero.
+        if frame.len() != OPUS_FRAME_SAMPLES {
+            return Err(AudioError::InvalidFrameLength {
+                got: frame.len(),
+                expected: OPUS_FRAME_SAMPLES,
+            }
+            .into());
+        }
 
-    Ok(EncodeResult::Encoded)
+        let mut sum_sq = 0.0f32;
+        for sample in frame {
+            sum_sq += sample * sample;
+        }
+        let rms = (sum_sq / frame.len() as f32).sqrt();
+
+        let is_silence = rms < SILENCE_RMS_THRESHOLD;
+        let is_uncompressed = bitrate == AudioBitrate::Uncompressed;
+
+        let format_flag = if is_silence {
+            FORMAT_SILENCE
+        } else if is_uncompressed {
+            FORMAT_UNCOMPRESSED
+        } else {
+            FORMAT_OPUS
+        };
+
+        let payload_bytes: &[u8] = if is_silence {
+            &[]
+        } else if is_uncompressed {
+            // SAFETY: `frame` is a live `&[f32]` of `frame.len()` elements, so the byte
+            // range `[ptr, ptr + frame.len() * 4)` is entirely inside one allocation and
+            // initialised. The length is derived from `frame.len()` rather than from
+            // `OPUS_FRAME_SAMPLES`, so the read cannot outrun the slice even if the guard
+            // above is ever relaxed. `u8` has alignment 1, so no alignment requirement is
+            // introduced, and the borrow of `frame` outlives `payload_bytes`.
+            //
+            // The result is native-endian, which is the wire format both ends agree on —
+            // see `FORMAT_UNCOMPRESSED` in `audio/mod.rs`.
+            unsafe {
+                std::slice::from_raw_parts(
+                    frame.as_ptr() as *const u8,
+                    std::mem::size_of_val(frame),
+                )
+            }
+        } else {
+            let encoder = encoder.ok_or(AudioError::MissingOpusEncoder)?;
+            let encoded_len = encoder.encode_float(frame, opus_output).map_err(|source| {
+                AudioError::OpusCodecFailed {
+                    direction: CodecDirection::Encoder,
+                    source,
+                }
+            })?;
+            &opus_output[..encoded_len]
+        };
+
+        packet_buf.clear();
+        packet_buf.extend_from_slice(&seq_num.to_be_bytes());
+        packet_buf.push(format_flag);
+        packet_buf.extend_from_slice(payload_bytes);
+
+        Ok(EncodeResult::Encoded)
+    }
 }
 
 #[cfg(test)]
@@ -116,12 +144,12 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_should_produce_silence_flag_for_quiet_audio() {
+    fn should_produce_a_silence_flag_for_quiet_audio() {
         let frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(
+        let result = AudioFrameEncoder::encode(
             &frame,
             None,
             AudioBitrate::Opus(128_000),
@@ -136,14 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_should_produce_uncompressed_flag_when_no_bitrate() {
+    fn should_produce_an_uncompressed_flag_without_a_bitrate() {
         let mut frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         frame[0] = 0.5; // non-silent
         frame[1] = 0.5;
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(
+        let result = AudioFrameEncoder::encode(
             &frame,
             None,
             AudioBitrate::Uncompressed,
@@ -157,13 +185,13 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_should_produce_opus_flag_for_normal_audio() {
+    fn should_produce_an_opus_flag_for_normal_audio() {
         let mut encoder = make_encoder();
         let frame = vec![0.1f32; OPUS_FRAME_SAMPLES];
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        let result = encode_frame(
+        let result = AudioFrameEncoder::encode(
             &frame,
             Some(&mut encoder),
             AudioBitrate::Opus(128_000),
@@ -178,12 +206,31 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_should_prepend_sequence_number() {
+    fn should_classify_a_compressed_stream_without_an_encoder() {
+        let frame = vec![0.1f32; OPUS_FRAME_SAMPLES];
+        let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
+        let mut packet = Vec::new();
+
+        assert!(matches!(
+            AudioFrameEncoder::encode(
+                &frame,
+                None,
+                AudioBitrate::Opus(128_000),
+                7,
+                &mut opus_out,
+                &mut packet,
+            ),
+            Err(GemaCastError::Audio(AudioError::MissingOpusEncoder))
+        ));
+    }
+
+    #[test]
+    fn should_prepend_the_sequence_number() {
         let frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        encode_frame(
+        AudioFrameEncoder::encode(
             &frame,
             None,
             AudioBitrate::Uncompressed,
@@ -197,14 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_frame_should_include_correct_uncompressed_payload_length() {
+    fn should_include_one_frame_of_uncompressed_payload() {
         let mut frame = vec![0.0f32; OPUS_FRAME_SAMPLES];
         frame[0] = 0.5; // non-silent
         frame[1] = 0.5;
         let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
         let mut packet = Vec::new();
 
-        encode_frame(
+        AudioFrameEncoder::encode(
             &frame,
             None,
             AudioBitrate::Uncompressed,
@@ -236,7 +283,7 @@ mod tests {
             }
             let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
             let mut packet = Vec::new();
-            encode_frame(&frame, None, bitrate, 1, &mut opus_out, &mut packet)
+            AudioFrameEncoder::encode(&frame, None, bitrate, 1, &mut opus_out, &mut packet)
         }
 
         #[test]
@@ -301,7 +348,7 @@ mod tests {
             let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
             let mut packet = Vec::new();
 
-            encode_frame(
+            AudioFrameEncoder::encode(
                 &frame,
                 None,
                 AudioBitrate::Uncompressed,
@@ -324,7 +371,7 @@ mod tests {
             let mut opus_out = vec![0u8; MAX_OPUS_PACKET_SIZE];
             let mut packet = Vec::new();
 
-            encode_frame(
+            AudioFrameEncoder::encode(
                 &frame,
                 None,
                 AudioBitrate::Uncompressed,

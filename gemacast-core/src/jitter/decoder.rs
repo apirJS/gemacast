@@ -154,10 +154,10 @@ impl FrameDecoder {
             self.codec_state = CodecState::Cold;
         } else if pkt.is_uncompressed {
             // Clamp to the buffer's capacity BEFORE copying, not after. A
-            // conformant streamer emits exactly OPUS_FRAME_SAMPLES f32s, but
-            // `payload_len` arrives here unclamped from `parse_packet`, and the
-            // audio ports carry no authentication — so an oversized or malformed
-            // uncompressed packet must be truncated to one frame rather than
+            // conformant streamer emits exactly OPUS_FRAME_SAMPLES f32s. The
+            // network decoder rejects oversized packets, but `RawPacket` can
+            // also be constructed inside the core. Malformed input must still
+            // be truncated to one frame rather than
             // writing past `decode_buf`, which is fixed at OPUS_FRAME_SAMPLES and
             // never grows. Clamping `decode_len` alone (the old code) bounded the
             // reported length but left the write loop free to run off the end.
@@ -413,10 +413,9 @@ mod tests {
     }
 
     /// An oversized or malformed uncompressed payload must be truncated to one
-    /// frame, never written past `decode_buf`. `payload_len` reaches `capture`
-    /// unclamped from `parse_packet` (only the copy into `payload_data` is
-    /// bounded), and the audio UDP port carries no authentication — so any LAN
-    /// host can deliver a datagram whose payload exceeds one frame. The old code
+    /// frame, never written past `decode_buf`. The network decoder rejects this
+    /// shape, but `RawPacket` can also be constructed directly inside the core.
+    /// The old code
     /// applied its `.min()` to `decode_len` *after* the copy loop, so this input
     /// drove `decode_buf[i]` off the end and panicked on the audio callback
     /// thread (undefined behaviour across Oboe's C++ FFI on Android). Reverting
@@ -427,8 +426,8 @@ mod tests {
         let mut pkt = RawPacket::zeroed();
         pkt.seq_num = 1;
         pkt.is_uncompressed = true;
-        // The largest payload the receive path can deliver: a full payload_data
-        // buffer is 2000 f32s, more than double the 960-sample decode buffer.
+        // A full payload_data buffer is 2000 f32s, more than double the
+        // 960-sample decode buffer.
         pkt.payload_len = pkt.payload_data.len();
         // A recognizable non-zero pattern (0.25 is exact in f32) so the copy is
         // observably real, not a buffer left at its zeroed default.

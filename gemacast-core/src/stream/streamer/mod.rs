@@ -1,7 +1,13 @@
 //! Streamer-side audio capture, encoding, and streaming.
 
-pub mod capture_pool;
-pub mod encode;
-pub mod engine;
+mod capture_instance;
+mod capture_pool;
+mod command;
+mod encode;
+mod engine;
+mod failure;
+mod stream_session;
 
-pub use engine::{AudioStreamCommand, AudioStreamEngine};
+pub use command::{AudioStreamCommand, StreamSessionFailure, TcpBroadcastLease};
+pub use encode::{AudioFrameEncoder, EncodeResult};
+pub use engine::AudioStreamEngine;

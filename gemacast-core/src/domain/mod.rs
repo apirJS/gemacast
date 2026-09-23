@@ -7,7 +7,7 @@
 //!
 //! - **Value objects**: `DeviceId`, `AudioSource`, `JitterConfig`, `RawPacket`, etc.
 //! - **Domain errors**: `GemaCastError`, `AudioError`, `NetworkError`, etc.
-//! - **Domain services**: `encode_frame()`, `CaptureResampler`, `JitterBufferManager`
+//! - **Domain services**: `AudioFrameEncoder`, `CaptureResampler`, `JitterBufferManager`
 //! - **Audio constants**: `OPUS_SAMPLE_RATE`, codec factories
 
 /// Core domain types (value objects, enums, newtypes).
@@ -26,6 +26,7 @@ pub use crate::audio;
 /// Re-exports from `src/jitter/`.
 pub use crate::jitter;
 
-/// Audio frame encoding (pure function, no I/O).
-/// Re-exports from `src/stream/streamer/encode`.
-pub use crate::stream::streamer::encode as encoding;
+/// Audio frame encoding (pure logic, no I/O).
+pub mod encoding {
+    pub use crate::stream::streamer::{AudioFrameEncoder, EncodeResult};
+}
