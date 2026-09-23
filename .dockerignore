@@ -1,0 +1,12 @@
+.git
+.github
+.codex
+.agents
+target
+**/target
+**/node_modules
+**/.gradle
+**/build
+LOGS
+TEMP
+dist
