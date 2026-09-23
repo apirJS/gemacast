@@ -15,15 +15,54 @@ pub struct NetworkState {
     pub modes: ConnectionModes,
 }
 
+pub struct DiscoveryService<'a> {
+    network: &'a dyn NetworkInfoProvider,
+    platform: &'a dyn PlatformService,
+}
+
+impl<'a> DiscoveryService<'a> {
+    pub fn new(network: &'a dyn NetworkInfoProvider, platform: &'a dyn PlatformService) -> Self {
+        Self { network, platform }
+    }
+
+    pub fn local_ip(&self) -> Result<String, String> {
+        get_local_ip(self.network)
+    }
+
+    pub fn network_identifier(&self) -> Result<String, String> {
+        get_network_identifier(self.network)
+    }
+
+    pub fn connection_status(&self) -> Result<ConnectionModes, String> {
+        get_connection_status(self.network, self.platform)
+    }
+
+    pub fn network_state(&self) -> Result<NetworkState, String> {
+        get_network_state(self.network, self.platform)
+    }
+
+    pub fn forget_pc_identity(&self, pc_id: &DeviceId) -> Result<(), String> {
+        forget_pc_identity(self.platform, pc_id)
+    }
+
+    pub fn paired_pc_ids(&self) -> Result<Vec<DeviceId>, String> {
+        paired_pc_ids(self.platform)
+    }
+
+    pub fn phone_link(&self, mode: &str) -> NetworkLink {
+        detect_phone_link(self.network, self.platform, mode)
+    }
+}
+
 /// Get the local IP address as a string.
-pub fn get_local_ip(network: &dyn NetworkInfoProvider) -> Result<String, String> {
+fn get_local_ip(network: &dyn NetworkInfoProvider) -> Result<String, String> {
     network.get_local_ip().map(|ip| ip.to_string())
 }
 
 /// Build a network identifier string from the default interface.
 ///
 /// Format: `"{interface_name}_{mac}_{ip}"`.
-pub fn get_network_identifier(network: &dyn NetworkInfoProvider) -> Result<String, String> {
+fn get_network_identifier(network: &dyn NetworkInfoProvider) -> Result<String, String> {
     let iface = network.get_default_interface()?;
     let mac = iface
         .mac_addr
@@ -55,11 +94,13 @@ pub enum TetherState {
 
 /// Parse the tether field out of a transport string. Absent field → `None`, so
 /// an older Kotlin layer that does not send it still behaves as before.
-pub fn parse_tether_state(transport_str: &str) -> TetherState {
-    match transport_str.split('|').nth(2).unwrap_or("") {
-        "HOTSPOT" => TetherState::Hotspot,
-        "USB_TETHER" => TetherState::UsbTether,
-        _ => TetherState::None,
+impl TetherState {
+    pub fn from_transport(transport: &str) -> Self {
+        match transport.split('|').nth(2).unwrap_or("") {
+            "HOTSPOT" => Self::Hotspot,
+            "USB_TETHER" => Self::UsbTether,
+            _ => Self::None,
+        }
     }
 }
 
@@ -67,7 +108,7 @@ pub fn parse_tether_state(transport_str: &str) -> TetherState {
 ///
 /// Checks the platform transport type (Android JNI) and enriches
 /// with local network interface information.
-pub fn get_connection_status(
+fn get_connection_status(
     network: &dyn NetworkInfoProvider,
     platform: &dyn PlatformService,
 ) -> Result<ConnectionModes, String> {
@@ -97,7 +138,7 @@ pub fn get_connection_status(
         // A hotspot is an IP-routable radio link, i.e. Wi-Fi mode. Without this
         // the Wi-Fi button stayed disabled and USB was the only option, which
         // forced the cable jitter profile onto a radio link.
-        match parse_tether_state(&transport_str) {
+        match TetherState::from_transport(&transport_str) {
             TetherState::Hotspot => modes.wifi = true,
             TetherState::UsbTether => modes.usb = true,
             TetherState::None => {}
@@ -119,7 +160,7 @@ pub fn get_connection_status(
 }
 
 /// Get a combined network state snapshot.
-pub fn get_network_state(
+fn get_network_state(
     network: &dyn NetworkInfoProvider,
     platform: &dyn PlatformService,
 ) -> Result<NetworkState, String> {
@@ -144,12 +185,12 @@ pub fn get_network_state(
 }
 
 /// Remove one locally stored PC certificate pin.
-pub fn forget_pc_identity(platform: &dyn PlatformService, pc_id: &DeviceId) -> Result<(), String> {
+fn forget_pc_identity(platform: &dyn PlatformService, pc_id: &DeviceId) -> Result<(), String> {
     platform.forget_pc_identity(pc_id)
 }
 
 /// Return the locally stored PC identities used by the paired-PC settings UI.
-pub fn paired_pc_ids(platform: &dyn PlatformService) -> Result<Vec<DeviceId>, String> {
+fn paired_pc_ids(platform: &dyn PlatformService) -> Result<Vec<DeviceId>, String> {
     platform.paired_pc_ids()
 }
 
@@ -158,7 +199,7 @@ pub fn paired_pc_ids(platform: &dyn PlatformService) -> Result<Vec<DeviceId>, St
 /// Combines the user-selected connection mode with the Android JNI transport
 /// string (e.g., `"WIFI:5180|ADB_ON"`) to determine the best description
 /// of the phone's network link quality.
-pub fn detect_phone_link(
+fn detect_phone_link(
     network: &dyn NetworkInfoProvider,
     platform: &dyn PlatformService,
     mode: &str, // "wifi", "usb", "adb"
@@ -196,7 +237,7 @@ pub fn detect_phone_link(
         // its rule 3 returns `Wifi5Ghz` when the other side is `WifiUnknown`.
         // Asserting `Wifi2_4Ghz` here would instead hit rule 2 and let a guess
         // override that measurement, costing latency on a clean 5 GHz hotspot.
-        if parse_tether_state(&transport_str) == TetherState::Hotspot {
+        if TetherState::from_transport(&transport_str) == TetherState::Hotspot {
             tracing::info!(
                 link = ?NetworkLink::WifiUnknown,
                 "Phone link detected (Wi-Fi hotspot; band is measured by the PC side)"
@@ -395,15 +436,18 @@ mod tests {
     #[test]
     fn parse_tether_state_reads_the_third_field() {
         assert_eq!(
-            parse_tether_state("NONE|ADB_OFF|HOTSPOT"),
+            TetherState::from_transport("NONE|ADB_OFF|HOTSPOT"),
             TetherState::Hotspot
         );
         assert_eq!(
-            parse_tether_state("WIFI:5180|ADB_ON|USB_TETHER"),
+            TetherState::from_transport("WIFI:5180|ADB_ON|USB_TETHER"),
             TetherState::UsbTether
         );
-        assert_eq!(parse_tether_state("WIFI|ADB_ON"), TetherState::None);
-        assert_eq!(parse_tether_state(""), TetherState::None);
+        assert_eq!(
+            TetherState::from_transport("WIFI|ADB_ON"),
+            TetherState::None
+        );
+        assert_eq!(TetherState::from_transport(""), TetherState::None);
     }
 
     #[test]

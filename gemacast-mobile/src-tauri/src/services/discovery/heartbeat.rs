@@ -16,32 +16,36 @@ use crate::traits::FrontendNotifier;
 ///
 /// Notifies the frontend for each evicted streamer and removes them
 /// from the tracker. Returns the IDs of evicted streamers.
-pub fn evict_stale_streamers(
-    notifier: &dyn FrontendNotifier,
-    tracker: &Mutex<HashMap<DeviceId, Instant>>,
-    timeout: Duration,
-) -> Vec<DeviceId> {
-    let stale: Vec<DeviceId> = {
-        let map = tracker.lock().unwrap();
-        let now = Instant::now();
-        map.iter()
-            .filter(|(_, ts)| now.duration_since(**ts) >= timeout)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
+pub struct HeartbeatMonitor;
 
-    for streamer_id in &stale {
-        notifier.emit_streamer_timeout(streamer_id);
-    }
+impl HeartbeatMonitor {
+    pub fn evict_stale_streamers(
+        notifier: &dyn FrontendNotifier,
+        tracker: &Mutex<HashMap<DeviceId, Instant>>,
+        timeout: Duration,
+    ) -> Vec<DeviceId> {
+        let stale: Vec<DeviceId> = {
+            let map = tracker.lock().unwrap();
+            let now = Instant::now();
+            map.iter()
+                .filter(|(_, ts)| now.duration_since(**ts) >= timeout)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
 
-    if !stale.is_empty() {
-        let mut map = tracker.lock().unwrap();
-        for id in &stale {
-            map.remove(id);
+        for streamer_id in &stale {
+            notifier.emit_streamer_timeout(streamer_id);
         }
-    }
 
-    stale
+        if !stale.is_empty() {
+            let mut map = tracker.lock().unwrap();
+            for id in &stale {
+                map.remove(id);
+            }
+        }
+
+        stale
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +66,8 @@ mod tests {
             .unwrap()
             .insert(DeviceId("fresh".into()), Instant::now());
 
-        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
+        let evicted =
+            HeartbeatMonitor::evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert_eq!(evicted.len(), 1);
         assert_eq!(evicted[0].0, "stale");
@@ -98,7 +103,8 @@ mod tests {
             .unwrap()
             .insert(DeviceId("fresh".into()), Instant::now());
 
-        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
+        let evicted =
+            HeartbeatMonitor::evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert!(evicted.is_empty());
         assert!(notifier.take_events().is_empty());
@@ -117,7 +123,8 @@ mod tests {
             Instant::now() - Duration::from_secs(45),
         );
 
-        let evicted = evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
+        let evicted =
+            HeartbeatMonitor::evict_stale_streamers(&notifier, &tracker, Duration::from_secs(30));
 
         assert_eq!(evicted.len(), 2);
         assert_eq!(notifier.take_events().len(), 2);

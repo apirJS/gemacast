@@ -8,16 +8,16 @@ use tauri::State;
 
 use crate::state::AppState;
 
-use super::listener::spawn_discovery_listener;
+use super::{DiscoveryListener, DiscoveryService};
 
 #[tauri::command]
 pub fn get_local_ip(state: State<'_, AppState>) -> Result<String, String> {
-    super::service::get_local_ip(state.network.as_ref())
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref()).local_ip()
 }
 
 #[tauri::command]
 pub fn get_network_identifier(state: State<'_, AppState>) -> Result<String, String> {
-    super::service::get_network_identifier(state.network.as_ref())
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref()).network_identifier()
 }
 
 #[tauri::command]
@@ -56,7 +56,7 @@ pub async fn start_listening_for_streamers(
             }
         })?;
 
-    let handle = spawn_discovery_listener(
+    let handle = DiscoveryListener::spawn(
         listener,
         presence_message_rx,
         state.notifier.clone(),
@@ -80,22 +80,21 @@ pub async fn stop_listening_for_streamers(state: State<'_, AppState>) -> Result<
 pub fn get_connection_status(
     state: State<'_, AppState>,
 ) -> Result<gemacast_core::domain::types::ConnectionModes, String> {
-    super::service::get_connection_status(state.network.as_ref(), state.platform.as_ref())
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref()).connection_status()
 }
 
 #[tauri::command]
-pub fn get_network_state(
-    state: State<'_, AppState>,
-) -> Result<super::service::NetworkState, String> {
-    super::service::get_network_state(state.network.as_ref(), state.platform.as_ref())
+pub fn get_network_state(state: State<'_, AppState>) -> Result<super::NetworkState, String> {
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref()).network_state()
 }
 
 #[tauri::command]
 pub fn forget_pc_identity(pc_id: DeviceId, state: State<'_, AppState>) -> Result<(), String> {
-    super::service::forget_pc_identity(state.platform.as_ref(), &pc_id)
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref())
+        .forget_pc_identity(&pc_id)
 }
 
 #[tauri::command]
 pub fn get_paired_pc_ids(state: State<'_, AppState>) -> Result<Vec<DeviceId>, String> {
-    super::service::paired_pc_ids(state.platform.as_ref())
+    DiscoveryService::new(state.network.as_ref(), state.platform.as_ref()).paired_pc_ids()
 }

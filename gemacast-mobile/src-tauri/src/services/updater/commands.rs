@@ -83,14 +83,7 @@ pub async fn cleanup_stale_updates(app: tauri::AppHandle) -> Result<(), String> 
 /// On non-Android platforms this is a no-op that returns an error.
 #[tauri::command]
 pub async fn install_apk(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    #[cfg(target_os = "android")]
-    {
-        crate::services::updater::install::install_apk_android(&app, &path)
-    }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = (app, path);
-        Err("APK installation is only supported on Android".to_string())
-    }
+    crate::services::platform::PlatformFacade::new(app)
+        .install_apk(&path)
+        .map_err(|error| error.to_string())
 }

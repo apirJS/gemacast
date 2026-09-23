@@ -56,25 +56,18 @@ impl SessionManager for TokioSessionManager {
         // Tear down any existing session first
         self.stop_session().await;
 
-        let (
-            playback_control,
-            _is_tcp_mode,
-            config_ref,
-            volume,
-            shutdown_tx,
-            playback_task,
-            exclusive_granted,
-        ) = crate::services::audio::playback::spawn_session_player(
-            params.jitter_config.clone(),
-            params.is_tcp,
-            params.exclusive_mode,
-            self.notifier.clone(),
-            params.target_ip,
-            params.mode,
-            params.device_id.clone(),
-            params.network_link,
-            params.session_token.clone(),
-            params.session_generation,
+        let player = crate::services::audio::SessionPlayer::new(self.notifier.clone()).spawn(
+            crate::services::audio::SessionPlayerRequest {
+                jitter_config: params.jitter_config.clone(),
+                is_tcp: params.is_tcp,
+                exclusive_mode: params.exclusive_mode,
+                target_ip: params.target_ip,
+                mode: params.mode,
+                device_id: params.device_id.clone(),
+                network_link: params.network_link,
+                session_token: params.session_token.clone(),
+                session_generation: params.session_generation,
+            },
         )?;
 
         let probe_task = match params.target_ip {
@@ -88,14 +81,14 @@ impl SessionManager for TokioSessionManager {
 
         *self.session.lock().await = Some(ActiveSession {
             exclusive_mode: params.exclusive_mode,
-            exclusive_granted,
+            exclusive_granted: player.exclusive_granted,
             mode: params.mode,
             bitrate: params.bitrate,
-            playback_control,
-            volume,
-            jitter_config: config_ref,
-            shutdown_tx,
-            playback_task,
+            playback_control: player.playback_control,
+            volume: player.volume,
+            jitter_config: player.jitter_config,
+            shutdown_tx: player.shutdown,
+            playback_task: player.task,
             probe_task,
             target_ip: params.target_ip,
             device_id: params.device_id,

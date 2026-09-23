@@ -2063,6 +2063,7 @@ dependencies = [
  "tauri-plugin-device-info",
  "tauri-plugin-log",
  "tauri-plugin-opener",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]

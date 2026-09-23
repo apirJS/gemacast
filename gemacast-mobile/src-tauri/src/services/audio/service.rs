@@ -6,40 +6,21 @@ use std::time::Duration;
 use gemacast_core::control::types::ConnectReq;
 use gemacast_core::domain::types::{AudioSource, ConnectionMode, DeviceId, JitterConfig, LinkPair};
 
-use crate::services::audio::volume::VolumeMix;
+use crate::services::audio::volume::{VolumeController, VolumeMix};
 use crate::traits::{
     ConnectParams, FrontendNotifier, PlatformService, PlaybackState, ResumeParams, SessionManager,
     SessionParams, StreamerControlClientFactory,
 };
 
-async fn push_pc_level(
-    volume_mix: &std::sync::Mutex<VolumeMix>,
-    session: &dyn SessionManager,
-    level: f32,
-) {
-    let effective = {
-        let mut mix = volume_mix.lock().unwrap();
-        mix.pc_level = Some(level);
-        if mix.match_pc {
-            Some(mix.effective())
-        } else {
-            None
-        }
-    };
-    if let Some(effective) = effective {
-        session.set_volume(effective).await;
-    }
-}
-
 pub struct AudioService {
-    pub session: Arc<dyn SessionManager>,
-    pub client_factory: Arc<dyn StreamerControlClientFactory>,
-    pub notifier: Arc<dyn FrontendNotifier>,
-    pub platform: Arc<dyn PlatformService>,
-    pub is_streaming: Arc<AtomicBool>,
-    pub cached_link_pair: std::sync::Mutex<Option<LinkPair>>,
-    pub recovery_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub volume_mix: Arc<std::sync::Mutex<VolumeMix>>,
+    session: Arc<dyn SessionManager>,
+    client_factory: Arc<dyn StreamerControlClientFactory>,
+    notifier: Arc<dyn FrontendNotifier>,
+    platform: Arc<dyn PlatformService>,
+    is_streaming: Arc<AtomicBool>,
+    cached_link_pair: std::sync::Mutex<Option<LinkPair>>,
+    recovery_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    volume_mix: Arc<std::sync::Mutex<VolumeMix>>,
 }
 
 const RECOVERY_PROBE_INTERVAL: Duration = Duration::from_secs(2);
@@ -97,6 +78,29 @@ async fn run_link_recovery(
 }
 
 impl AudioService {
+    pub fn new(
+        session: Arc<dyn SessionManager>,
+        client_factory: Arc<dyn StreamerControlClientFactory>,
+        notifier: Arc<dyn FrontendNotifier>,
+        platform: Arc<dyn PlatformService>,
+        is_streaming: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            session,
+            client_factory,
+            notifier,
+            platform,
+            is_streaming,
+            cached_link_pair: std::sync::Mutex::new(None),
+            recovery_task: std::sync::Mutex::new(None),
+            volume_mix: Arc::new(std::sync::Mutex::new(VolumeMix::default())),
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        self.session.stop_session().await;
+    }
+
     pub async fn connect_to_streamer(&self, params: ConnectParams) -> Result<(), String> {
         tracing::info!(
             "[AudioService] Connect: ip={}, device={:?}, mode={:?}, jitter_preset=min_{}ms/cap_{}ms",
@@ -391,7 +395,7 @@ impl AudioService {
     }
 
     pub async fn apply_pc_output_volume(&self, level: f32) -> Result<(), String> {
-        push_pc_level(&self.volume_mix, self.session.as_ref(), level).await;
+        VolumeController::apply_pc_level(&self.volume_mix, self.session.as_ref(), level).await;
         Ok(())
     }
 
@@ -518,7 +522,8 @@ impl AudioService {
                             return;
                         }
                         Ok(gemacast_core::control::types::WsEvent::VolumeChanged { level }) => {
-                            push_pc_level(&volume_mix, session.as_ref(), level).await;
+                            VolumeController::apply_pc_level(&volume_mix, session.as_ref(), level)
+                                .await;
                             notifier.emit_pc_volume_changed(level);
                         }
                         Err(error) => {
@@ -565,16 +570,13 @@ mod tests {
         notifier: Arc<MockFrontendNotifier>,
     ) -> AudioService {
         let factory = Arc::new(MockStreamerControlClientFactory::new(client));
-        AudioService {
+        AudioService::new(
             session,
-            client_factory: factory,
+            factory,
             notifier,
             platform,
-            is_streaming: Arc::new(AtomicBool::new(false)),
-            cached_link_pair: std::sync::Mutex::new(None),
-            recovery_task: std::sync::Mutex::new(None),
-            volume_mix: Arc::new(std::sync::Mutex::new(VolumeMix::default())),
-        }
+            Arc::new(AtomicBool::new(false)),
+        )
     }
 
     #[tokio::test]

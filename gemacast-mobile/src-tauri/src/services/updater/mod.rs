@@ -4,4 +4,5 @@
 //! the latest APK, and triggering the Android system installer via JNI.
 
 pub mod commands;
-pub mod install;
+#[cfg(target_os = "android")]
+pub(crate) mod install;
