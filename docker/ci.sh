@@ -55,6 +55,7 @@ report() {
     done
 }
 
+# Reads the repository's .cargo/audit.toml, shared with the CI ignore policy.
 run audit "audit: cargo audit" cargo audit
 
 if [ -d "$MOBILE_DIR" ]; then

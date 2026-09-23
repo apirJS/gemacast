@@ -24,6 +24,13 @@ cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
 
 echo "=== Android: Gradle JVM tests ==="
 cd /work/gemacast-mobile/src-tauri/gen/android
-bash ./gradlew :app:testUniversalDebugUnitTest --no-daemon
+gradle_wrapper=./gradlew
+if grep -q "$(printf '\r')" "$gradle_wrapper"; then
+  gradle_wrapper=./.gradlew.docker
+  tr -d '\r' < ./gradlew > "$gradle_wrapper"
+  chmod +x "$gradle_wrapper"
+  trap 'rm -f "$gradle_wrapper"' EXIT
+fi
+bash "$gradle_wrapper" :app:testUniversalDebugUnitTest --no-daemon
 
 echo "Android checks passed."
