@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSettings } from '../../hooks/use-settings';
+import { settingsController, useSettingsController } from '../../controllers';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import type { BitratePreset } from '../../core/types';
 
@@ -22,18 +22,15 @@ const BITRATE_OPTIONS: SelectOption<BitratePreset>[] = [
 ];
 
 export function BitrateSelect() {
-  const { settings, update } = useSettings();
+  const { settings } = useSettingsController();
   const [customKbps, setCustomKbps] = useState(String(settings.customBitrateKbps));
 
   const handleSelect = (value: BitratePreset) => {
-    update({ bitratePreset: value });
+    void settingsController.selectBitrate(value);
   };
 
   const applyCustom = () => {
-    const val = Number(customKbps);
-    if (Number.isInteger(val) && val >= 6 && val <= 512) {
-      update({ customBitrateKbps: val, bitratePreset: 'custom' });
-    }
+    void settingsController.applyCustomBitrate(customKbps);
   };
 
   const options = BITRATE_OPTIONS.map((opt) => {

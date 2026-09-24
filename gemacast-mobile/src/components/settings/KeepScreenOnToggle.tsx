@@ -1,8 +1,8 @@
-import { useSettings } from '../../hooks/use-settings';
+import { useSettingsController } from '../../controllers';
 import { Toggle } from '../shared/Toggle';
 
 export function KeepScreenOnToggle() {
-  const { settings, update } = useSettings();
+  const { settings, update } = useSettingsController();
 
   return (
     <Toggle

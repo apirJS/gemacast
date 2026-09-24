@@ -10,13 +10,7 @@ beforeEach(() => {
 describe('ProcessSelect', () => {
   const mockFetchProcessList = mock(() => Promise.resolve());
 
-  beforeEach(() => {
-    // Mock the useConnection hook
-    mock.module('../../hooks/use-connection', () => ({
-      useConnection: () => ({ fetchProcessList: mockFetchProcessList }),
-    }));
-    mockFetchProcessList.mockClear();
-  });
+  beforeEach(() => mockFetchProcessList.mockClear());
 
   const defaultProps = {
     audioSources: [{ type: 'desktop' as const }],
@@ -28,6 +22,7 @@ describe('ProcessSelect', () => {
     onSourceChange: mock(),
     streamer: { deviceId: '123', deviceName: 'PC', addr: '10.0.0.1:9000', isOffline: false },
     supportsProcessCapture: true,
+    onRefreshProcesses: mockFetchProcessList,
   };
 
   it('renders current source label', () => {
@@ -92,7 +87,7 @@ describe('ProcessSelect', () => {
     const refreshBtn = screen.getByLabelText('Refresh process list');
     fireEvent.click(refreshBtn);
 
-    expect(mockFetchProcessList).toHaveBeenCalledWith(defaultProps.streamer);
+    expect(mockFetchProcessList).toHaveBeenCalledTimes(1);
   });
 
   it('marks the dropdown so the streamer list pull-to-refresh ignores it', () => {

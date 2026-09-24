@@ -1,6 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { useSettings } from '../../hooks/use-settings';
-import { tauriBridge } from '../../core/tauri-bridge';
+import { useState, useRef } from 'react';
+import { useSettingsController } from '../../controllers';
 
 const MIN_DB = -24;
 const MAX_DB = 12;
@@ -14,15 +13,9 @@ function formatDb(db: number): string {
 }
 
 export function GainSlider() {
-  const { settings, update } = useSettings();
+  const { settings, update } = useSettingsController();
   const [localDb, setLocalDb] = useState(settings.gainDb);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Sync local state if external settings change
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLocalDb(settings.gainDb);
-  }, [settings.gainDb]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(e.target.value);
@@ -30,19 +23,13 @@ export function GainSlider() {
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      update({ gainDb: value });
-      tauriBridge.setAudioGain({ gainDb: value }).catch((err) => {
-        console.warn('Failed to set audio gain:', err);
-      });
+      void update({ gainDb: value });
     }, DEBOUNCE_MS);
   };
 
   const handleReset = () => {
     setLocalDb(0);
-    update({ gainDb: 0 });
-    tauriBridge.setAudioGain({ gainDb: 0 }).catch((err) => {
-      console.warn('Failed to reset audio gain:', err);
-    });
+    void update({ gainDb: 0 });
   };
 
   // Calculate offset ratios (0 to 1)

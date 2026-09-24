@@ -1,9 +1,13 @@
-import { useUpdater } from '../../hooks/use-updater';
+import { useUpdateController } from '../../controllers';
 import { Download, RefreshCw, AlertTriangle, RotateCcw } from 'lucide-react';
 
-export function UpdateBanner() {
-  const { state, checkForUpdates, startDownload, installUpdate, retry } = useUpdater();
-
+export function UpdateBannerView({
+  state,
+  checkForUpdates,
+  startDownload,
+  installUpdate,
+  retry,
+}: ReturnType<typeof useUpdateController>) {
   if (state.status === 'up-to-date' || state.status === 'idle') {
     return (
       <div className="mb-4 flex items-center justify-between rounded-xl border border-border bg-accent/10 p-4">
@@ -104,4 +108,8 @@ export function UpdateBanner() {
       )}
     </div>
   );
+}
+
+export function UpdateBanner() {
+  return <UpdateBannerView {...useUpdateController()} />;
 }

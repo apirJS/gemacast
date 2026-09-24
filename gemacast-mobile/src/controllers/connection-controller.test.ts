@@ -8,19 +8,21 @@ import {
 import { useAppStore } from '../stores/app-store';
 import { ConnectionMode, Status } from '../core/types';
 import {
-  connectToStreamer,
-  disconnect,
+  connectionController,
   getPairingDecisionWarning,
-  handleStreamerTimeout,
-  handleForceDisconnect,
-  handleLinkLost,
-  handleLinkRecovered,
-  changeAudioSource,
   isTerminalConnectError,
-  reconnectOnAppOpen,
-} from './use-connection';
+} from './connection-controller';
 import { ErrorCode } from '../core/error';
 import { useToastStore } from '../stores/toast-store';
+
+const connectToStreamer = connectionController.connect.bind(connectionController);
+const disconnect = connectionController.disconnect.bind(connectionController);
+const handleStreamerTimeout = connectionController.streamerTimedOut.bind(connectionController);
+const handleForceDisconnect = connectionController.forceDisconnect.bind(connectionController);
+const handleLinkLost = connectionController.linkLost.bind(connectionController);
+const handleLinkRecovered = connectionController.linkRecovered.bind(connectionController);
+const changeAudioSource = connectionController.changeAudioSource.bind(connectionController);
+const reconnectOnAppOpen = connectionController.reconnectOnAppOpen.bind(connectionController);
 
 beforeEach(() => {
   localStorage.clear();

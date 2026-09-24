@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Monitor, Volume2, Settings, ChevronDown } from 'lucide-react';
-import type { AudioSource, ProcessInfo, DiscoveredStreamer } from '../../core/types';
-import { useConnection } from '../../hooks/use-connection';
+import type { AudioSource, ProcessInfo } from '../../core/types';
 import { PULL_REFRESH_IGNORE_ATTR } from '../../hooks/use-pull-to-refresh';
 
 type ProcessSelectProps = {
@@ -9,8 +8,8 @@ type ProcessSelectProps = {
   processList: ProcessInfo[];
   currentSource: AudioSource;
   onSourceChange: (source: AudioSource) => void;
-  streamer: DiscoveredStreamer;
   supportsProcessCapture: boolean;
+  onRefreshProcesses?: () => Promise<void>;
 };
 
 export function ProcessSelect({
@@ -18,14 +17,13 @@ export function ProcessSelect({
   processList,
   currentSource,
   onSourceChange,
-  streamer,
   supportsProcessCapture,
+  onRefreshProcesses = async () => undefined,
 }: ProcessSelectProps) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [search, setSearch] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { fetchProcessList } = useConnection();
 
   const startClosing = () => {
     if (closing) return;
@@ -132,10 +130,7 @@ export function ProcessSelect({
                 if (isRefreshing) return;
                 setIsRefreshing(true);
                 try {
-                  await Promise.all([
-                    fetchProcessList(streamer),
-                    new Promise((r) => setTimeout(r, 600)),
-                  ]);
+                  await Promise.all([onRefreshProcesses(), new Promise((r) => setTimeout(r, 600))]);
                 } finally {
                   setIsRefreshing(false);
                 }

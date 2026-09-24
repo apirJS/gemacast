@@ -1,5 +1,6 @@
 import { useAppStore } from '../../stores/app-store';
 import { Status } from '../../core/types';
+import { StatusChipView } from './StatusChipView';
 
 /**
  * Status label presentation.
@@ -36,13 +37,5 @@ export function StatusChip() {
   const configEntry = STATUS_CONFIG[status];
   const config = typeof configEntry === 'function' ? configEntry(attempts) : configEntry;
 
-  return (
-    <span
-      role="status"
-      aria-live="polite"
-      className={`text-xs font-medium tracking-wide whitespace-nowrap transition-colors duration-300 ${config.tone}`}
-    >
-      {config.label}
-    </span>
-  );
+  return <StatusChipView label={config.label} tone={config.tone} />;
 }

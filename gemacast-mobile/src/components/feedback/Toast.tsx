@@ -10,8 +10,12 @@ const ICON_MAP: Record<ToastType['type'], React.ReactNode> = {
   info: <Info className="h-5 w-5 text-primary" />,
 };
 
-export function Toast({ toast }: { toast: ToastType }) {
-  const dismiss = useToastStore((s) => s.dismiss);
+type ToastViewProps = {
+  toast: ToastType;
+  onDismiss: (id: string) => void;
+};
+
+export function ToastView({ toast, onDismiss }: ToastViewProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const isError = toast.type === 'error';
@@ -54,7 +58,7 @@ export function Toast({ toast }: { toast: ToastType }) {
       <button
         type="button"
         className="shrink-0 -mr-2 flex items-center justify-center rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        onClick={() => dismiss(toast.id)}
+        onClick={() => onDismiss(toast.id)}
         aria-label="Close toast"
       >
         <X className="h-4 w-4" />
@@ -83,4 +87,9 @@ export function Toast({ toast }: { toast: ToastType }) {
       )}
     </div>
   );
+}
+
+export function Toast({ toast }: { toast: ToastType }) {
+  const dismiss = useToastStore((state) => state.dismiss);
+  return <ToastView toast={toast} onDismiss={dismiss} />;
 }

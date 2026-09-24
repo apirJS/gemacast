@@ -1,15 +1,13 @@
-import { useSettings } from '../../hooks/use-settings';
+import { settingsController, useSettingsController } from '../../controllers';
 import { Sun, Moon } from 'lucide-react';
 
 export function ThemeToggle() {
-  const { settings, update } = useSettings();
+  const { settings } = useSettingsController();
   const isDark = settings.theme === 'dark';
 
   const toggle = () => {
     const next = isDark ? 'light' : 'dark';
-    update({ theme: next });
-    document.documentElement.classList.toggle('dark', next === 'dark');
-    document.documentElement.classList.toggle('light', next === 'light');
+    settingsController.setTheme(next);
   };
 
   return (

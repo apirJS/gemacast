@@ -21,6 +21,7 @@ type StreamerCardProps = {
   onToggle: () => void;
   onPlayPause: () => void;
   onSourceChange: (source: AudioSource) => void;
+  onRefreshProcesses?: () => Promise<void>;
 };
 
 /**
@@ -42,6 +43,7 @@ export function StreamerCard({
   onToggle,
   onPlayPause,
   onSourceChange,
+  onRefreshProcesses,
 }: StreamerCardProps) {
   const isAdb = streamer.addr.startsWith('127.0.0.1');
   const showLoading = isLoading && (isConnected || isConnecting);
@@ -119,8 +121,8 @@ export function StreamerCard({
           processList={processList}
           currentSource={currentSource}
           onSourceChange={onSourceChange}
-          streamer={streamer}
           supportsProcessCapture={streamerCapabilities?.supportsProcessCapture ?? true}
+          onRefreshProcesses={onRefreshProcesses}
         />
       )}
     </li>

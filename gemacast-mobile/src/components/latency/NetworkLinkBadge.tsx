@@ -1,8 +1,6 @@
+import { Cable, Globe, HelpCircle, Usb, Wifi, type LucideIcon } from 'lucide-react';
+import { Status, type NetworkLink, type NetworkLinkPairInfo } from '../../core/types';
 import { useAppStore } from '../../stores/app-store';
-import { Status } from '../../core/types';
-import type { NetworkLink } from '../../core/types';
-import { Usb, Wifi, Globe, Cable, HelpCircle } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 
 type LinkMeta = {
   icon: LucideIcon;
@@ -29,43 +27,30 @@ function getLinkMeta(link: NetworkLink): LinkMeta {
   }
 }
 
-type NetworkLinkBadgeProps = {
-  /**
-   * Render a leading `|` rule. Opt-in because the badge is self-hiding — the
-   * caller cannot know whether it will render, so it has to own the separator or
-   * a stray divider is left behind when there is no link to show.
-   */
+type NetworkLinkBadgeViewProps = {
+  linkPair: NetworkLinkPairInfo | null;
   withLeadingSeparator?: boolean;
 };
 
-export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBadgeProps = {}) {
-  const linkPair = useAppStore((s) => s.networkLinkPair);
-  const status = useAppStore((s) => s.status);
-
-  const visible =
-    linkPair &&
-    (status === Status.Connected || status === Status.Playing || status === Status.Paused);
-
-  if (!visible) return null;
-
+export function NetworkLinkBadgeView({
+  linkPair,
+  withLeadingSeparator = false,
+}: NetworkLinkBadgeViewProps) {
+  if (!linkPair) return null;
   const effective = getLinkMeta(linkPair.effective);
-  const EffectiveIcon = effective.icon;
-
-  // Named per side rather than as "effective vs the other one", so the tooltip
-  // stays correct when `effective` is neither side (rule 4, above).
-  const isSymmetric = linkPair.phone === linkPair.pc;
   const phone = getLinkMeta(linkPair.phone);
   const pc = getLinkMeta(linkPair.pc);
+  const EffectiveIcon = effective.icon;
+  const title =
+    linkPair.phone === linkPair.pc
+      ? `Link: ${effective.label}`
+      : `Phone ${phone.label}, PC ${pc.label} — buffer tuned for ${effective.label}`;
 
   return (
     <div
       id="network-link-badge"
       className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-medium"
-      title={
-        isSymmetric
-          ? `Link: ${effective.label}`
-          : `Phone ${phone.label}, PC ${pc.label} — buffer tuned for ${effective.label}`
-      }
+      title={title}
     >
       {withLeadingSeparator && (
         <span aria-hidden="true" className="text-muted-foreground/40">
@@ -75,5 +60,21 @@ export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBa
       <EffectiveIcon size={12} className={`shrink-0 ${effective.color}`} aria-hidden="true" />
       <span className={`truncate ${effective.color}`}>{effective.label}</span>
     </div>
+  );
+}
+
+type NetworkLinkBadgeProps = {
+  withLeadingSeparator?: boolean;
+};
+
+export function NetworkLinkBadge({ withLeadingSeparator = false }: NetworkLinkBadgeProps = {}) {
+  const linkPair = useAppStore((state) => state.networkLinkPair);
+  const status = useAppStore((state) => state.status);
+  const visible = [Status.Connected, Status.Playing, Status.Paused].includes(status);
+  return (
+    <NetworkLinkBadgeView
+      linkPair={visible ? linkPair : null}
+      withLeadingSeparator={withLeadingSeparator}
+    />
   );
 }

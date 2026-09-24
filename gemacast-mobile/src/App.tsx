@@ -1,120 +1,31 @@
 import { useEffect, useState } from 'react';
-import { getDeviceInfo, type DeviceInfoResponse } from 'tauri-plugin-device-info-api';
-import { useAppStore } from './stores/app-store';
-import { useToastStore } from './stores/toast-store';
-import { tauriBridge } from './core/tauri-bridge';
-import { getOrCreateDeviceId } from './core/persistence';
-import { useTauriEvents } from './hooks/use-tauri-events';
-import { useNetworkMonitor } from './hooks/use-network-monitor';
-import { reconnectOnAppOpen } from './hooks/use-connection';
-import { startListening } from './hooks/use-discovery';
 import { AppShell } from './components/layout/AppShell';
+import { applicationController } from './controllers';
 
-function AppInner() {
-  useTauriEvents();
-  useNetworkMonitor();
-
-  useEffect(() => {
-    const mode = useAppStore.getState().settings.mode;
-    startListening(mode);
-
-    // Hardware back button double-press to exit logic
-    window.history.pushState(null, '', '#root');
-    let lastBackPressed = 0;
-
-    const handlePopState = () => {
-      if (window.location.hash === '') {
-        const now = Date.now();
-        if (now - lastBackPressed < 2000) {
-          import('@tauri-apps/api/window')
-            .then((m) => m.getCurrentWindow().close())
-            .catch(console.warn);
-        } else {
-          lastBackPressed = now;
-          useToastStore.getState().show('info', 'Press back again to exit');
-          window.history.pushState(null, '', '#root');
-        }
-      }
-    };
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') reconnectOnAppOpen().catch(console.warn);
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, []);
-
-  return <AppShell />;
+function LoadingScreen() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    </div>
+  );
 }
 
 export function App() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      let bestName = 'Unknown Android Device';
-      let finalUuid = getOrCreateDeviceId();
-      let localIp = '127.0.0.1';
-
-      try {
-        const rawInfo: DeviceInfoResponse = await getDeviceInfo();
-        if (rawInfo.device_name) bestName = rawInfo.device_name;
-        else if (rawInfo.manufacturer && rawInfo.model) {
-          bestName = `${rawInfo.manufacturer} ${rawInfo.model}`;
-        }
-        finalUuid = rawInfo.uuid || rawInfo.android_id || finalUuid;
-      } catch (e) {
-        console.warn('Failed to fetch device info:', e);
-      }
-
-      try {
-        localIp = await tauriBridge.getLocalIp();
-      } catch (e) {
-        console.warn('Failed to fetch local IP:', e);
-      }
-
-      useAppStore.getState().init({
-        deviceId: finalUuid,
-        deviceName: bestName,
-        ip: localIp,
-      });
-
-      try {
-        const modes = await tauriBridge.getConnectionStatus();
-        useAppStore.getState().setAvailableModes(modes);
-      } catch (e) {
-        console.warn('Failed to fetch initial connection status:', e);
-      }
-
-      try {
-        const supported = await tauriBridge.checkExclusiveSupport();
-        useAppStore.getState().setExclusiveSupported(supported);
-      } catch (e) {
-        console.warn('Failed to probe exclusive mode support:', e);
-      }
-
-      const theme = useAppStore.getState().settings.theme;
-      document.documentElement.classList.toggle('dark', theme === 'dark');
-      document.documentElement.classList.toggle('light', theme === 'light');
-
-      await reconnectOnAppOpen().catch(console.warn);
-
+    let stop: () => void = () => undefined;
+    let active = true;
+    void applicationController.initialize().then(() => {
+      if (!active) return;
+      stop = applicationController.start();
       setReady(true);
-    })();
+    });
+    return () => {
+      active = false;
+      stop();
+    };
   }, []);
 
-  if (!ready) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
-  }
-
-  return <AppInner />;
+  return ready ? <AppShell /> : <LoadingScreen />;
 }

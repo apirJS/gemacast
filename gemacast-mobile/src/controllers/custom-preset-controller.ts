@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useSettings } from './use-settings';
+import { useState } from 'react';
+import { useSettingsController } from './settings-controller';
 import type { JitterConfig } from '../core/types';
 import { validateJitterConfig, isJitterConfigEqual } from '../core/validation';
 
@@ -47,44 +47,26 @@ function getDefaultCustomConfig(): JitterConfig {
   };
 }
 
-export function useCustomPresetEditor(): CustomPresetEditorState & CustomPresetEditorActions {
-  const { settings, update } = useSettings();
-  const [config, setConfig] = useState(settings.customJitterConfig);
-  const isCustom = settings.bufferPreset === 'custom' || settings.bufferPreset.startsWith('saved-');
-
-  const [presetName, setPresetName] = useState('');
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-
+export function useCustomPresetController(): CustomPresetEditorState & CustomPresetEditorActions {
+  const { settings, update } = useSettingsController();
   const savedMatchIndex = settings.bufferPreset.startsWith('saved-')
     ? parseInt(settings.bufferPreset.replace('saved-', ''), 10)
     : -1;
 
   const isEditingSaved = savedMatchIndex >= 0;
-
-  // When editing a saved preset, ensure the name field is initialized to the saved preset's name.
-  // When creating a new custom preset (not saved), ensure the name field starts empty.
-  useEffect(() => {
-    if (isEditingSaved) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPresetName(settings.savedPresets[savedMatchIndex]?.name ?? '');
-    } else {
-      setPresetName('');
-    }
-    const selectedConfig = settings.bufferPreset.startsWith('saved-')
-      ? settings.savedPresets[savedMatchIndex]?.config
-      : settings.customJitterConfig;
-    setConfig(
-      selectedConfig?.staticTargetMs == null
-        ? { ...(selectedConfig ?? getDefaultCustomConfig()), staticTargetMs: 0 }
-        : selectedConfig,
-    );
-  }, [
-    settings.bufferPreset,
-    isEditingSaved,
-    savedMatchIndex,
-    settings.savedPresets,
-    settings.customJitterConfig,
-  ]);
+  const selectedConfig = isEditingSaved
+    ? settings.savedPresets[savedMatchIndex]?.config
+    : settings.customJitterConfig;
+  const initialConfig =
+    selectedConfig?.staticTargetMs == null
+      ? { ...(selectedConfig ?? getDefaultCustomConfig()), staticTargetMs: 0 }
+      : selectedConfig;
+  const [config, setConfig] = useState(initialConfig);
+  const isCustom = settings.bufferPreset === 'custom' || isEditingSaved;
+  const [presetName, setPresetName] = useState(
+    isEditingSaved ? (settings.savedPresets[savedMatchIndex]?.name ?? '') : '',
+  );
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
   const validation = validateJitterConfig(config);
   const isValid = validation.valid;

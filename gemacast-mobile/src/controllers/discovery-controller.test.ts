@@ -7,7 +7,11 @@ import {
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status, ConnectionMode } from '../core/types';
-import { startListening, stopListening, refreshStreamers } from './use-discovery';
+import { discoveryController } from './discovery-controller';
+
+const startListening = discoveryController.start.bind(discoveryController);
+const stopListening = discoveryController.stop.bind(discoveryController);
+const refreshStreamers = discoveryController.refresh.bind(discoveryController);
 
 beforeEach(() => {
   setupInvokeMock({
