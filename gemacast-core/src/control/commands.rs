@@ -39,6 +39,10 @@ pub enum ControlCommand {
         bitrate: Option<i32>,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
+    SessionHeartbeat {
+        device_id: DeviceId,
+        generation: SessionGeneration,
+    },
     Probe {
         device_id: Option<DeviceId>,
         response_tx: oneshot::Sender<PresenceResponse>,

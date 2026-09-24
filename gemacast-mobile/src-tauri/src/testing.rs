@@ -179,6 +179,7 @@ pub mod mocks {
             linear: f32,
         },
         StartWsClient,
+        RecordControlHeartbeat,
         StopWsClient,
     }
 
@@ -267,6 +268,13 @@ pub mod mocks {
         async fn start_ws_client(&self, task: tokio::task::JoinHandle<()>) {
             task.abort();
             self.calls.lock().unwrap().push(SessionCall::StartWsClient);
+        }
+
+        async fn record_control_heartbeat(&self) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SessionCall::RecordControlHeartbeat);
         }
 
         async fn stop_ws_client(&self) {

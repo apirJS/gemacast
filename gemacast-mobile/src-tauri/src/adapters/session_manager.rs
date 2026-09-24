@@ -4,7 +4,7 @@ use crate::traits::{
 use async_trait::async_trait;
 use gemacast_core::domain::types::{ConnectionMode, DeviceId, JitterConfig};
 use gemacast_core::stream::player::PlaybackControl;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -21,6 +21,7 @@ struct ActiveSession {
     shutdown_tx: oneshot::Sender<()>,
     playback_task: JoinHandle<()>,
     probe_task: Option<JoinHandle<()>>,
+    control_heartbeat_epoch: Arc<AtomicU64>,
     target_ip: Option<std::net::IpAddr>,
     device_id: String,
     network_link: gemacast_core::domain::types::NetworkLink,
@@ -70,11 +71,16 @@ impl SessionManager for TokioSessionManager {
             },
         )?;
 
+        let control_heartbeat_epoch = Arc::new(AtomicU64::new(0));
         let probe_task = match params.target_ip {
             Some(ip) if !ip.is_loopback() => {
                 let client = self.client_factory.create(ip);
                 let device_id = DeviceId(params.device_id.clone());
-                Some(tokio::spawn(run_probe_loop(client, device_id)))
+                Some(tokio::spawn(run_probe_loop(
+                    client,
+                    device_id,
+                    control_heartbeat_epoch.clone(),
+                )))
             }
             _ => None,
         };
@@ -90,6 +96,7 @@ impl SessionManager for TokioSessionManager {
             shutdown_tx: player.shutdown,
             playback_task: player.task,
             probe_task,
+            control_heartbeat_epoch,
             target_ip: params.target_ip,
             device_id: params.device_id,
             network_link: params.network_link,
@@ -214,6 +221,14 @@ impl SessionManager for TokioSessionManager {
         *guard = Some(task);
     }
 
+    async fn record_control_heartbeat(&self) {
+        if let Some(session) = self.session.lock().await.as_ref() {
+            session
+                .control_heartbeat_epoch
+                .fetch_add(1, Ordering::Release);
+        }
+    }
+
     async fn stop_ws_client(&self) {
         if let Some(task) = self.ws_client_task.lock().await.take() {
             task.abort();
@@ -221,23 +236,62 @@ impl SessionManager for TokioSessionManager {
     }
 }
 
-/// Run the HTTPS probe heartbeat loop until cancelled.
-///
-/// Sends an HTTPS probe to the PC streamer every 5 seconds so the PC's
-/// device watchdog keeps the connection alive. This replaces the old
-/// WebView `setInterval` timer which Android would throttle when the
-/// app was backgrounded or the screen was off.
-///
+/// Keep the PC session alive with HTTPS when WebSocket acknowledgements stop.
 /// Errors are logged but never terminate the loop — probes are best-effort.
 async fn run_probe_loop(
     client: Arc<dyn crate::traits::StreamerControlClient>,
     device_id: DeviceId,
+    control_heartbeat_epoch: Arc<AtomicU64>,
 ) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let period = std::time::Duration::from_secs(5);
+    let start = tokio::time::Instant::now() + period;
+    let mut interval = tokio::time::interval_at(start, period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut observed_heartbeat = control_heartbeat_epoch.load(Ordering::Acquire);
+
     loop {
         interval.tick().await;
-        if let Err(e) = client.probe(Some(device_id.clone())).await {
-            tracing::warn!("[Probe] Failed to probe streamer: {}", e);
+        let current_heartbeat = control_heartbeat_epoch.load(Ordering::Acquire);
+        if current_heartbeat != observed_heartbeat {
+            observed_heartbeat = current_heartbeat;
+            continue;
         }
+        if let Err(e) = client.probe(Some(device_id.clone())).await {
+            tracing::warn!("[Probe] WebSocket unavailable; HTTPS fallback failed: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::mocks::{ControlClientCall, MockStreamerControlClient};
+
+    #[tokio::test(start_paused = true)]
+    async fn https_probe_should_resume_when_websocket_acknowledgements_stop() {
+        let client = Arc::new(MockStreamerControlClient::new());
+        let heartbeat_epoch = Arc::new(AtomicU64::new(0));
+        let task = tokio::spawn(run_probe_loop(
+            client.clone(),
+            DeviceId("phone-1".into()),
+            heartbeat_epoch.clone(),
+        ));
+        tokio::task::yield_now().await;
+
+        heartbeat_epoch.fetch_add(1, Ordering::Release);
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        assert!(client.take_calls().is_empty());
+
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+
+        assert!(matches!(
+            client.take_calls().as_slice(),
+            [ControlClientCall::Probe {
+                device_id: Some(DeviceId(device_id)),
+            }] if device_id == "phone-1"
+        ));
+        task.abort();
     }
 }

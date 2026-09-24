@@ -32,7 +32,6 @@ pub async fn handle_ws<P: ProcessLister + 'static>(
                 };
                 match msg_result {
                     Ok(Message::Text(text)) => {
-                        tracing::info!("WS Message received from {}: {}", device_id, text);
                         if let Err(e) = handle_ws_command(&text, &device_id, generation, &state).await {
                             tracing::error!("WebSocket command error for device {}: {}", device_id, e);
                         }
@@ -87,10 +86,8 @@ pub async fn handle_ws<P: ProcessLister + 'static>(
         is_match
     };
 
-    // The WebSocket is optional control-plane state, not the stream's liveness
-    // authority. HTTPS probes and the audio transport own teardown, so an
-    // incidental WS drop must not interrupt a healthy stream. The generation
-    // check above still prevents an old socket from removing a newer map entry.
+    // HTTPS fallback owns liveness while this optional control channel reconnects.
+    // The generation check prevents an old socket from removing a newer map entry.
     let _ = (is_current, generation);
 
     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), ws_sender.close()).await;
@@ -144,7 +141,25 @@ async fn handle_ws_command<P: ProcessLister + 'static>(
         serde_json::from_str(text).map_err(|e| format!("Failed to parse WsCommand: {}", e))?;
 
     match command {
+        WsCommand::Heartbeat => {
+            state
+                .command_tx
+                .send(crate::control::ControlCommand::SessionHeartbeat {
+                    device_id: device_id.clone(),
+                    generation,
+                })
+                .await
+                .map_err(|_| "control dispatcher is unavailable".to_string())?;
+            crate::control::ControlEventBus::send(
+                &state.ws_connections,
+                device_id,
+                WsEvent::HeartbeatAcknowledged,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
         WsCommand::Disconnect => {
+            tracing::info!("WebSocket disconnect requested by {device_id}");
             // Check if this command came from the current active WebSocket.
             // We can do this by checking if it's still in the map?
             // Actually, for explicit Disconnect from the client, we should probably
@@ -169,6 +184,54 @@ async fn handle_ws_command<P: ProcessLister + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct EmptyProcessLister;
+
+    impl ProcessLister for EmptyProcessLister {
+        fn list_processes(&self) -> Vec<crate::domain::types::ProcessInfo> {
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_should_carry_the_authenticated_session_generation() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        let device_id = DeviceId("phone-1".into());
+        let ws_connections = Arc::new(Mutex::new(HashMap::from([(device_id.clone(), event_tx)])));
+        let state = ControlServerState {
+            command_tx,
+            is_broadcasting: Arc::new(AtomicBool::new(true)),
+            streamer_id: DeviceId("pc-1".into()),
+            streamer_name: "PC".into(),
+            ws_connections,
+            process_lister: EmptyProcessLister,
+            authorizer: crate::control::SessionAuthorizer::default(),
+            pc_certificate_fingerprint: "certificate".into(),
+        };
+        let generation = SessionGeneration(7);
+        let heartbeat = serde_json::to_string(&WsCommand::Heartbeat).unwrap();
+
+        handle_ws_command(&heartbeat, &device_id, generation, &state)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(crate::control::ControlCommand::SessionHeartbeat {
+                device_id: observed_device,
+                generation: observed_generation,
+            }) if observed_device == device_id && observed_generation == generation
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(WsEvent::HeartbeatAcknowledged)
+        ));
+    }
 
     #[test]
     fn abrupt_peer_eof_is_an_expected_control_channel_disconnect() {

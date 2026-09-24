@@ -31,7 +31,7 @@ pub struct ControlDispatcher {
 }
 
 impl ControlDispatcher {
-    pub async fn handle_http_command(&self, cmd: ControlCommand) {
+    pub async fn handle_command(&self, cmd: ControlCommand) {
         match cmd {
             ControlCommand::Connect {
                 device_id,
@@ -378,6 +378,14 @@ impl ControlDispatcher {
                 );
                 let _ = response_tx.send(self.audio.change_bitrate(device_id, bitrate).await);
             }
+            ControlCommand::SessionHeartbeat {
+                device_id,
+                generation,
+            } => {
+                if self.authorizer.is_current(&device_id, generation) {
+                    let _ = self.registry.update_last_seen(&device_id);
+                }
+            }
             ControlCommand::Probe {
                 device_id,
                 response_tx,
@@ -405,7 +413,7 @@ impl ControlDispatcher {
 pub fn spawn_control_dispatcher(
     set: &mut JoinSet<()>,
     mut inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
-    mut http_command_rx: mpsc::Receiver<ControlCommand>,
+    mut control_command_rx: mpsc::Receiver<ControlCommand>,
     dispatcher: Arc<ControlDispatcher>,
     registry_for_probes: Arc<dyn DeviceRegistry>,
 ) {
@@ -421,8 +429,8 @@ pub fn spawn_control_dispatcher(
     });
 
     set.spawn(async move {
-        while let Some(cmd) = http_command_rx.recv().await {
-            dispatcher.handle_http_command(cmd).await;
+        while let Some(cmd) = control_command_rx.recv().await {
+            dispatcher.handle_command(cmd).await;
         }
     });
 }
@@ -791,7 +799,7 @@ mod tests {
 
         let (approved_tx, approved_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -873,7 +881,7 @@ mod tests {
 
         let (challenge_tx, challenge_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -911,7 +919,7 @@ mod tests {
 
         let (connect_tx, connect_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -968,7 +976,7 @@ mod tests {
         let repair_nonce = base64::engine::general_purpose::STANDARD.encode([8_u8; 32]);
         let (repair_challenge_tx, repair_challenge_rx) = tokio::sync::oneshot::channel();
         repair_dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -1005,7 +1013,7 @@ mod tests {
         let repair_signature = key_pair.sign(&random, &repair_transcript).unwrap();
         let (repair_tx, repair_rx) = tokio::sync::oneshot::channel();
         repair_dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -1101,7 +1109,7 @@ mod tests {
 
         let (challenge_tx, challenge_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -1147,7 +1155,7 @@ mod tests {
 
         let (pair_tx, pair_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -1181,7 +1189,7 @@ mod tests {
 
         let (approved_tx, approved_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "My Phone".into(),
                 source: None,
@@ -1248,7 +1256,7 @@ mod tests {
 
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id,
                 device_name: "My Phone".into(),
                 source: None,
@@ -1298,7 +1306,7 @@ mod tests {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
         dispatcher
-            .handle_http_command(ControlCommand::Connect {
+            .handle_command(ControlCommand::Connect {
                 device_id: device_id.clone(),
                 device_name: "ADB Phone".into(),
                 source: None,
@@ -1352,7 +1360,7 @@ mod tests {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
         dispatcher
-            .handle_http_command(ControlCommand::Disconnect {
+            .handle_command(ControlCommand::Disconnect {
                 device_id: device_id.clone(),
                 remote_addr: make_addr("192.168.1.5:23559"),
                 generation: Some(generation),
@@ -1362,6 +1370,77 @@ mod tests {
 
         response_rx.await.unwrap().unwrap();
         assert!(trusted_devices.is_trusted(&device_id, "public-key"));
+    }
+
+    mod session_heartbeat {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        fn make_dispatcher(
+            registry: Arc<dyn DeviceRegistry>,
+            authorizer: SessionAuthorizer,
+        ) -> ControlDispatcher {
+            ControlDispatcher {
+                registry,
+                tray: Arc::new(MockTrayNotifier::new()),
+                audio: Arc::new(MockAudioController::new()),
+                notifier: Arc::new(MockDeviceNotifier::new()),
+                streamer_id: DeviceId("pc-1".into()),
+                streamer_name: "Test PC".into(),
+                pc_certificate_fingerprint: "pc-certificate".into(),
+                is_broadcasting: Arc::new(AtomicBool::new(true)),
+                authorizer,
+                device_auth: DeviceAuthManager::default(),
+                trusted_devices: TrustedDeviceStore::in_memory(),
+            }
+        }
+
+        #[tokio::test]
+        async fn current_session_heartbeat_should_refresh_device_liveness() {
+            let registry = Arc::new(MockDeviceRegistry::new());
+            registry.add_device_with_last_seen(
+                "phone-1",
+                "192.168.1.5:9000",
+                Instant::now() - Duration::from_secs(60),
+            );
+            let device_id = DeviceId("phone-1".into());
+            let authorizer = SessionAuthorizer::default();
+            let (_, generation) = authorizer.issue(device_id.clone()).unwrap();
+            let dispatcher = make_dispatcher(registry.clone(), authorizer);
+
+            dispatcher
+                .handle_command(ControlCommand::SessionHeartbeat {
+                    device_id,
+                    generation,
+                })
+                .await;
+
+            assert!(registry.evict_stale(Duration::from_secs(30)).is_empty());
+        }
+
+        #[tokio::test]
+        async fn stale_session_heartbeat_should_not_refresh_device_liveness() {
+            let registry = Arc::new(MockDeviceRegistry::new());
+            registry.add_device_with_last_seen(
+                "phone-1",
+                "192.168.1.5:9000",
+                Instant::now() - Duration::from_secs(60),
+            );
+            let device_id = DeviceId("phone-1".into());
+            let authorizer = SessionAuthorizer::default();
+            let (_, stale_generation) = authorizer.issue(device_id.clone()).unwrap();
+            let _ = authorizer.issue(device_id.clone()).unwrap();
+            let dispatcher = make_dispatcher(registry.clone(), authorizer);
+
+            dispatcher
+                .handle_command(ControlCommand::SessionHeartbeat {
+                    device_id,
+                    generation: stale_generation,
+                })
+                .await;
+
+            assert_eq!(registry.evict_stale(Duration::from_secs(30)).len(), 1);
+        }
     }
 
     mod probe_registration_status {
@@ -1390,7 +1469,7 @@ mod tests {
         ) -> PresenceResponse {
             let (response_tx, response_rx) = oneshot::channel();
             dispatcher
-                .handle_http_command(ControlCommand::Probe {
+                .handle_command(ControlCommand::Probe {
                     device_id,
                     response_tx,
                 })

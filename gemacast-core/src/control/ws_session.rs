@@ -85,6 +85,9 @@ impl WebSocketSession {
         let mut ws_stream = ws_stream;
 
         tokio::spawn(async move {
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
                 tokio::select! {
                     msg = ws_stream.next() => {
@@ -146,6 +149,16 @@ impl WebSocketSession {
                                 let err = ControlError::Serialization(error).into();
                                 let _ = event_tx.send(Err(err)).await;
                             }
+                        }
+                    }
+                    _ = heartbeat.tick() => {
+                        let command = serde_json::to_string(&WsCommand::Heartbeat)
+                            .expect("heartbeat command must serialize");
+                        if let Err(error) = ws_stream.send(Message::text(command)).await {
+                            let _ = event_tx.send(Err(ControlError::WebSocketFailed {
+                                reason: format!("WebSocket heartbeat failed: {error}"),
+                            }.into())).await;
+                            break;
                         }
                     }
                 }

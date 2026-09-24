@@ -512,6 +512,9 @@ impl AudioService {
 
                 loop {
                     match ws_client.recv_event().await {
+                        Ok(gemacast_core::control::types::WsEvent::HeartbeatAcknowledged) => {
+                            session.record_control_heartbeat().await;
+                        }
                         Ok(gemacast_core::control::types::WsEvent::Disconnect) => {
                             notifier.emit_ws_disconnect();
                             return;
