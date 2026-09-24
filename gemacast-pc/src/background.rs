@@ -10,16 +10,14 @@ use gemacast_core::adapters::capture::DefaultCaptureFactory;
 use gemacast_core::adapters::error_notifier::WsErrorNotifier;
 use gemacast_core::adapters::output_volume::PlatformOutputVolumeReader;
 use gemacast_core::adapters::process_lister::DefaultProcessLister;
-use gemacast_core::control::SessionAuthorizer;
-use gemacast_core::control::http::{ControlCommand, ControlServerState};
 use gemacast_core::control::messages::ControlMessage;
+use gemacast_core::control::{ControlCommand, ControlServerState, SessionAuthorizer};
 use gemacast_core::domain::types::DeviceId;
 use gemacast_core::network::adb::{
     PresenceProvider, adb_command, kill_adb_server, spawn_adb_audio_tcp_server,
     spawn_adb_discovery_tcp_server, spawn_adb_port_forwarding_watchdog,
 };
-use gemacast_core::stream::streamer::engine::AudioStreamEngine;
-use gemacast_core::stream::streamer::engine::StreamSessionFailure;
+use gemacast_core::stream::streamer::{AudioStreamEngine, StreamSessionFailure};
 
 use crate::adapters::device::WsConnectionMap;
 use crate::adapters::{
@@ -133,7 +131,7 @@ impl BackgroundEngine {
     fn create_channels(self, command_rx: mpsc::Receiver<AppCommand>) -> EngineWithChannels {
         let (presence_tx, presence_rx) = mpsc::channel(8);
         let (inbound_control_tx, inbound_control_rx) = mpsc::channel(32);
-        let (http_command_tx, http_command_rx) = mpsc::channel::<ControlCommand>(32);
+        let (control_command_tx, control_command_rx) = mpsc::channel::<ControlCommand>(32);
         let (audio_command_tx, audio_command_rx) =
             mpsc::channel::<gemacast_core::stream::streamer::AudioStreamCommand>(32);
         let (adb_shutdown_tx, _) = broadcast::channel::<()>(16);
@@ -152,8 +150,8 @@ impl BackgroundEngine {
             presence_rx,
             inbound_control_tx,
             inbound_control_rx,
-            http_command_tx,
-            http_command_rx,
+            control_command_tx,
+            control_command_rx,
             audio_command_tx,
             audio_command_rx,
             adb_shutdown_tx,
@@ -177,8 +175,8 @@ struct EngineWithChannels {
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
-    http_command_tx: mpsc::Sender<ControlCommand>,
-    http_command_rx: mpsc::Receiver<ControlCommand>,
+    control_command_tx: mpsc::Sender<ControlCommand>,
+    control_command_rx: mpsc::Receiver<ControlCommand>,
     audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
     audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
@@ -212,8 +210,8 @@ impl EngineWithChannels {
             presence_rx: self.presence_rx,
             inbound_control_tx: self.inbound_control_tx,
             inbound_control_rx: self.inbound_control_rx,
-            http_command_tx: self.http_command_tx,
-            http_command_rx: self.http_command_rx,
+            control_command_tx: self.control_command_tx,
+            control_command_rx: self.control_command_rx,
             audio_command_tx: self.audio_command_tx,
             audio_command_rx: self.audio_command_rx,
             adb_shutdown_tx: self.adb_shutdown_tx,
@@ -240,8 +238,8 @@ struct EngineWithAdapters {
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
-    http_command_tx: mpsc::Sender<ControlCommand>,
-    http_command_rx: mpsc::Receiver<ControlCommand>,
+    control_command_tx: mpsc::Sender<ControlCommand>,
+    control_command_rx: mpsc::Receiver<ControlCommand>,
     audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
     audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
@@ -311,7 +309,7 @@ impl EngineWithAdapters {
         }
 
         let control_state = ControlServerState {
-            command_tx: self.http_command_tx,
+            command_tx: self.control_command_tx,
             is_broadcasting: self.is_broadcasting.clone(),
             streamer_id: streamer_id.clone(),
             streamer_name: device_name.clone(),
@@ -353,7 +351,7 @@ impl EngineWithAdapters {
             presence_rx: self.presence_rx,
             inbound_control_tx: self.inbound_control_tx,
             inbound_control_rx: self.inbound_control_rx,
-            http_command_rx: self.http_command_rx,
+            control_command_rx: self.control_command_rx,
             audio_command_tx: self.audio_command_tx,
             audio_command_rx: self.audio_command_rx,
             adb_shutdown_tx: self.adb_shutdown_tx,
@@ -388,7 +386,7 @@ struct EngineReady {
     presence_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
     inbound_control_tx: mpsc::Sender<(ControlMessage, SocketAddr)>,
     inbound_control_rx: mpsc::Receiver<(ControlMessage, SocketAddr)>,
-    http_command_rx: mpsc::Receiver<ControlCommand>,
+    control_command_rx: mpsc::Receiver<ControlCommand>,
     audio_command_tx: mpsc::Sender<gemacast_core::stream::streamer::AudioStreamCommand>,
     audio_command_rx: mpsc::Receiver<gemacast_core::stream::streamer::AudioStreamCommand>,
     adb_shutdown_tx: broadcast::Sender<()>,
@@ -541,7 +539,7 @@ impl EngineReady {
         control_dispatcher::spawn_control_dispatcher(
             &mut set,
             self.inbound_control_rx,
-            self.http_command_rx,
+            self.control_command_rx,
             dispatcher,
             self.registry.clone(),
         );
@@ -619,7 +617,7 @@ fn friendly_bind_error(e: impl std::fmt::Display, port_name: &str) -> String {
         || e_str.contains("WSAEADDRINUSE")
     {
         format!(
-            "{port_name} is already in use. Is GemaCast already running in the background? \
+            "{port_name} is already in use. Is Gemacast already running in the background? \
              Please check your system tray or Task Manager."
         )
     } else {

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { useCustomPresetEditor } from '../../hooks/use-custom-preset-editor';
+import React from 'react';
+import { useCustomPresetController } from '../../controllers';
+import { useAppStore } from '../../stores/app-store';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 function NumberInput({
@@ -11,30 +12,12 @@ function NumberInput({
   value: number | null | undefined;
   onChange: (val: number | null) => void;
 }) {
-  const [local, setLocal] = useState(value == null ? '' : value.toString());
-
-  // Sync local state when external value changes
-  useEffect(() => {
-    if (value == null) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLocal('');
-    } else {
-      // Don't overwrite if the local text evaluates to the same number (e.g. '' == 0 or '02' == 2)
-      // This prevents the annoying '0' from popping back in when the user deletes the text.
-      const parsedLocal = local === '' ? 0 : Number(local);
-      if (parsedLocal !== value) {
-        setLocal(value.toString());
-      }
-    }
-  }, [value, local]);
-
   return (
     <input
       type="number"
-      value={local}
+      value={value ?? ''}
       onChange={(e) => {
         const val = e.target.value;
-        setLocal(val);
         if (val === '') {
           onChange(null);
         } else {
@@ -54,8 +37,8 @@ type CustomJitterConfigProps = {
   renderHelpButton: (key: string) => React.ReactNode;
 };
 
-export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps) {
-  const editor = useCustomPresetEditor();
+function CustomJitterConfigEditor({ renderHelpButton }: CustomJitterConfigProps) {
+  const editor = useCustomPresetController();
 
   if (!editor.isCustom) return null;
 
@@ -143,4 +126,9 @@ export function CustomJitterConfig({ renderHelpButton }: CustomJitterConfigProps
       />
     </div>
   );
+}
+
+export function CustomJitterConfig(props: CustomJitterConfigProps) {
+  const selectedPreset = useAppStore((state) => state.settings.bufferPreset);
+  return <CustomJitterConfigEditor key={selectedPreset} {...props} />;
 }

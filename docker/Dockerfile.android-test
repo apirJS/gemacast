@@ -1,0 +1,72 @@
+# Android CI image matching .github/workflows/ci.yml.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64 \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    CARGO_TARGET_DIR=/target \
+    PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/usr/local/cargo/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash \
+      build-essential \
+      ca-certificates \
+      clang \
+      cmake \
+      curl \
+      git \
+      libssl-dev \
+      lib32stdc++6 \
+      lib32z1 \
+      ninja-build \
+      openjdk-17-jdk \
+      pkg-config \
+      unzip \
+      wget \
+      zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s "$(dirname "$(readlink -f "$(command -v java)")")/.." /usr/lib/jvm/temurin-17-jdk-amd64
+
+ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
+RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" \
+    && curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+      -o /tmp/android-cmdline-tools.zip \
+    && unzip -q /tmp/android-cmdline-tools.zip -d "${ANDROID_HOME}/cmdline-tools" \
+    && mv "${ANDROID_HOME}/cmdline-tools/cmdline-tools" "${ANDROID_HOME}/cmdline-tools/latest" \
+    && rm /tmp/android-cmdline-tools.zip \
+    && yes | sdkmanager --licenses >/dev/null \
+    && sdkmanager \
+      "platform-tools" \
+      "ndk;25.2.9519653" \
+      "cmake;3.22.1" \
+      "build-tools;34.0.0" \
+      "platforms;android-36" \
+    && printf '%s\n' \
+      "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/25.2.9519653" \
+      "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/25.2.9519653" \
+      "NDK_HOME=${ANDROID_HOME}/ndk/25.2.9519653" \
+      "BUILD_TOOLS_VERSION=34.0.0" \
+      > /etc/gemacast-android-env
+
+ARG RUST_VERSION=1.97.1
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+      sh -s -- -y --no-modify-path \
+        --default-toolchain "${RUST_VERSION}" \
+        --profile minimal \
+        --component clippy,rustfmt \
+    && rustup target add \
+      aarch64-linux-android \
+      armv7-linux-androideabi \
+      i686-linux-android \
+      x86_64-linux-android \
+    && cargo install cargo-ndk --force
+
+WORKDIR /work
+COPY docker/android-ci.sh /usr/local/bin/android-ci.sh
+RUN chmod 755 /usr/local/bin/android-ci.sh
+
+ENTRYPOINT ["/usr/local/bin/android-ci.sh"]

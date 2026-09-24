@@ -1,3 +1,5 @@
+use crate::traits::SessionManager;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VolumeMix {
     pub user_gain: f32,
@@ -23,6 +25,26 @@ impl VolumeMix {
         match self.pc_level {
             Some(level) => self.user_gain * level.clamp(0.0, 1.0),
             None => self.user_gain,
+        }
+    }
+}
+
+pub struct VolumeController;
+
+impl VolumeController {
+    pub async fn apply_pc_level(
+        volume_mix: &std::sync::Mutex<VolumeMix>,
+        session: &dyn SessionManager,
+        level: f32,
+    ) {
+        let effective = {
+            let mut mix = volume_mix.lock().unwrap();
+            mix.pc_level = Some(level);
+            mix.match_pc.then(|| mix.effective())
+        };
+
+        if let Some(effective) = effective {
+            session.set_volume(effective).await;
         }
     }
 }

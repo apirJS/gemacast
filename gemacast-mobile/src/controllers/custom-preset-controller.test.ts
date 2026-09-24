@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { renderHook, act, cleanup } from '@testing-library/react';
 import { useAppStore } from '../stores/app-store';
-import { useCustomPresetEditor } from './use-custom-preset-editor';
+import { useCustomPresetController } from './custom-preset-controller';
+
+const useCustomPresetEditor = useCustomPresetController;
 import type { JitterConfig } from '../core/types';
 
 const staticConfig: JitterConfig = {

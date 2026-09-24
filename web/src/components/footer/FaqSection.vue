@@ -14,37 +14,37 @@ const questions: Question[] = [
     id: 'discovery',
     question: 'The phone cannot find my PC',
     answer:
-      'Both devices have to be on the same network, so a guest Wi-Fi or a VPN will hide your PC even at full signal. The firewall has to let Gemacast through, which is ports UDP 23555 (for presence), UDP 23556 (for audio stream) and TCP 23559 (for controls). Windows asks you about this once on the first launch, so it stays blocked if you closed that popup.',
+      'Both devices must be on the same reachable network. Guest Wi-Fi, VPNs, and router client isolation can hide the PC. Confirm that Gemacast is running and that UDP 23555-23556 and TCP 23559 are allowed through the PC firewall. ADB mode does not use LAN discovery or firewall rules.',
   },
   {
     id: 'latency',
     question: 'What is the real end-to-end latency?',
     answer:
-      'Add up three things: 10 ms to record the audio on PC, half the round trip (RTT) to send it, and whatever the buffer is holding. The buffer is usually the biggest part. The phone shows you the buffer and the round trip while it plays, so you can add up your own number.',
+      "End-to-end latency includes PC capture and packetization, one-way transport, the phone's jitter buffer, decoding, and the phone's audio-output buffer. The phone reports round-trip time and jitter-buffer depth. RTT does not determine one-way delay unless the path is symmetric, and the app does not measure capture or hardware-output latency, so those metrics are not a complete end-to-end value.",
   },
   {
     id: 'dtim',
     question: 'The buffer grows past 200 ms when the screen turns off',
     answer:
-      'Android is saving battery. With the screen off it puts the Wi-Fi chip to sleep and only wakes it up on a set schedule, called DTIM. Audio stops arriving in a steady trickle and starts landing in batch, 100 to 200 ms apart. The buffer grows to cover the longest gap it sees, and that is the expected behavior, because a smaller buffer would just stutter the stream. To keep it low, turn on Keep Screen On in settings, or use USB tether or ADB, where the chip never sleeps.',
+      'Some Android devices change Wi-Fi scheduling when the screen turns off. If packets begin arriving in larger batches, the adaptive buffer grows in response. Keep Screen On avoids the screen-off state; USB tethering and ADB avoid the Wi-Fi path.',
   },
   {
     id: 'pairing',
     question: 'Why is there a pairing step?',
     answer:
-      'Without it, anything on your network could start a stream, see a list of your running apps, and change what your PC is recording. With pairing, you can allow which phone to connect. You allow it once, the first time you connect, and after that your phone remembers the PC and connects flawlessly.',
+      "Pairing decides which phones may control the PC, request its process list, and select what it captures. After approval, the phone stores the PC identity. Automatic reconnection depends on the app's Auto Reconnect setting.",
   },
   {
     id: 'code',
-    question: 'What is the 6-digit code for?',
+    question: 'What is the six-digit code for?',
     answer:
-      'It shows that your phone is talking straight to your PC, with nothing in between (no man-in-middle). Each device works out the code by itself, using details only those two share. If some other machine were sitting in the middle, the two codes would come out different and you would see it right away. So just check that both screens show the same six digits, then approve. It is not a password, so it does not matter if someone else sees it.',
+      'Both devices independently derive the code from the authenticated pairing exchange. Matching codes provide a human check against a man-in-the-middle connection. Compare both screens before approving; the code is a verification value, not a password.',
   },
   {
     id: 'encryption',
     question: 'Is the audio encrypted?',
     answer:
-      'No, and that is on purpose. Pairing is protected, but the audio itself is sent plain. The whole point of this app is low delay, and the audio goes out in tiny pieces, 100 of them every second. Locking and unlocking every one of those adds work at both ends and makes each piece bigger, which is exactly the kind of cost that shows up as delay. So anyone on the same network could listen in if they wanted to. Stick to a network you trust, or use USB.',
+      'The control channel is encrypted and authenticated. UDP audio sent over Wi-Fi or USB tethering is not encrypted or authenticated; the protocol provides no confidentiality or integrity for those packets. ADB carries the stream through its loopback TCP forwarding path.',
   },
 ]
 

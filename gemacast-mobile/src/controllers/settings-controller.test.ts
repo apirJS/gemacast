@@ -8,7 +8,9 @@ import {
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
-import { useSettings } from './use-settings';
+import { useSettingsController } from './settings-controller';
+
+const useSettings = useSettingsController;
 
 beforeEach(() => {
   cleanup();

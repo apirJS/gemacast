@@ -7,96 +7,101 @@ use crate::traits::FrontendNotifier;
 
 use super::dispatch::DispatchContext;
 
-pub async fn run_adb_session(
-    ctx: DispatchContext,
-    device_id: DeviceId,
-    mode: ConnectionMode,
-    notifier: Arc<dyn FrontendNotifier>,
-) {
-    if mode != ConnectionMode::Adb {
-        return;
-    }
+pub struct AdbSession;
 
-    let mut was_connected = false;
-    let mut retry_delay = 500u64;
-    let adb_addr = format!("127.0.0.1:{}", Ports::ADB_DISCOVERY_TCP);
+impl AdbSession {
+    pub async fn run(
+        ctx: DispatchContext,
+        device_id: DeviceId,
+        mode: ConnectionMode,
+        notifier: Arc<dyn FrontendNotifier>,
+    ) {
+        if mode != ConnectionMode::Adb {
+            return;
+        }
 
-    loop {
-        match tokio::net::TcpStream::connect(&adb_addr).await {
-            Ok(mut stream) => {
-                was_connected = true;
-                retry_delay = 500;
+        let mut was_connected = false;
+        let mut retry_delay = 500u64;
+        let adb_addr = format!("127.0.0.1:{}", Ports::ADB_DISCOVERY_TCP);
 
-                if let Ok(ident_bytes) =
-                    serde_json::to_vec(&gemacast_core::control::messages::ControlMessage::Probe {
-                        device_id: Some(device_id.clone()),
-                    })
-                {
-                    use tokio::io::AsyncWriteExt;
-                    let mut packet = ident_bytes;
-                    packet.push(b'\n');
-                    let _ = stream.write_all(&packet).await;
-                }
+        loop {
+            match tokio::net::TcpStream::connect(&adb_addr).await {
+                Ok(mut stream) => {
+                    was_connected = true;
+                    retry_delay = 500;
 
-                use tokio::io::AsyncBufReadExt;
-                let mut reader = tokio::io::BufReader::new(stream);
-                let mut line_buf = String::new();
-                let mut last_presence = None;
+                    if let Ok(ident_bytes) = serde_json::to_vec(
+                        &gemacast_core::control::messages::ControlMessage::Probe {
+                            device_id: Some(device_id.clone()),
+                        },
+                    ) {
+                        use tokio::io::AsyncWriteExt;
+                        let mut packet = ident_bytes;
+                        packet.push(b'\n');
+                        let _ = stream.write_all(&packet).await;
+                    }
 
-                loop {
-                    line_buf.clear();
-                    match tokio::time::timeout(
-                        tokio::time::Duration::from_millis(3500),
-                        reader.read_line(&mut line_buf),
-                    )
-                    .await
-                    {
-                        Ok(Ok(n)) if n > 0 => {
-                            if let Ok(msg) = serde_json::from_str::<
-                                gemacast_core::control::messages::ControlMessage,
-                            >(line_buf.trim_end())
-                            {
-                                if let gemacast_core::control::messages::ControlMessage::Presence { .. } = &msg
+                    use tokio::io::AsyncBufReadExt;
+                    let mut reader = tokio::io::BufReader::new(stream);
+                    let mut line_buf = String::new();
+                    let mut last_presence = None;
+
+                    loop {
+                        line_buf.clear();
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_millis(3500),
+                            reader.read_line(&mut line_buf),
+                        )
+                        .await
+                        {
+                            Ok(Ok(n)) if n > 0 => {
+                                if let Ok(msg) =
+                                    serde_json::from_str::<
+                                        gemacast_core::control::messages::ControlMessage,
+                                    >(line_buf.trim_end())
+                                {
+                                    if let gemacast_core::control::messages::ControlMessage::Presence { .. } = &msg
                                 {
                                     last_presence = Some(msg.clone());
                                 }
-                                let loopback = std::net::SocketAddr::new(
-                                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                                    Ports::ADB_DISCOVERY_TCP,
-                                );
-                                ctx.dispatch(msg, loopback, mode);
+                                    let loopback = std::net::SocketAddr::new(
+                                        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                                        Ports::ADB_DISCOVERY_TCP,
+                                    );
+                                    ctx.dispatch(msg, loopback, mode);
+                                }
                             }
+                            Ok(_) => break,
+                            Err(_) => break,
                         }
-                        Ok(_) => break,
-                        Err(_) => break,
                     }
-                }
 
-                if let Some(mut last_msg) = last_presence.take() {
-                    if let gemacast_core::control::messages::ControlMessage::Presence {
-                        ref mut is_offline,
-                        ..
-                    } = last_msg
-                    {
-                        *is_offline = true;
+                    if let Some(mut last_msg) = last_presence.take() {
+                        if let gemacast_core::control::messages::ControlMessage::Presence {
+                            ref mut is_offline,
+                            ..
+                        } = last_msg
+                        {
+                            *is_offline = true;
+                        }
+                        let loopback = std::net::SocketAddr::new(
+                            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                            Ports::ADB_DISCOVERY_TCP,
+                        );
+                        ctx.dispatch(last_msg, loopback, mode);
                     }
-                    let loopback = std::net::SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                        Ports::ADB_DISCOVERY_TCP,
-                    );
-                    ctx.dispatch(last_msg, loopback, mode);
-                }
 
-                notifier.emit_force_disconnect();
-            }
-            Err(_) => {
-                if was_connected {
                     notifier.emit_force_disconnect();
-                    was_connected = false;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
-                if retry_delay < 5000 {
-                    retry_delay += 500;
+                Err(_) => {
+                    if was_connected {
+                        notifier.emit_force_disconnect();
+                        was_connected = false;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    if retry_delay < 5000 {
+                        retry_delay += 500;
+                    }
                 }
             }
         }

@@ -135,6 +135,7 @@ pub struct ControlErrorResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "type", content = "payload")]
 pub enum WsEvent {
+    HeartbeatAcknowledged,
     Disconnect,
     Error { message: String },
     VolumeChanged { level: f32 },
@@ -143,6 +144,7 @@ pub enum WsEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "type", content = "payload")]
 pub enum WsCommand {
+    Heartbeat,
     Disconnect,
 }
 
@@ -291,6 +293,15 @@ mod tests {
         use super::*;
 
         #[test]
+        fn heartbeat_acknowledgement_should_round_trip() {
+            let event = WsEvent::HeartbeatAcknowledged;
+            let json = serde_json::to_string(&event).unwrap();
+            let parsed: WsEvent = serde_json::from_str(&json).unwrap();
+
+            assert!(matches!(parsed, WsEvent::HeartbeatAcknowledged));
+        }
+
+        #[test]
         fn error_variant_should_serialize_with_screaming_snake_case_tag() {
             let event = WsEvent::Error {
                 message: "something broke".to_string(),
@@ -336,6 +347,15 @@ mod tests {
 
     mod ws_command {
         use super::*;
+
+        #[test]
+        fn heartbeat_should_round_trip() {
+            let command = WsCommand::Heartbeat;
+            let json = serde_json::to_string(&command).unwrap();
+            let parsed: WsCommand = serde_json::from_str(&json).unwrap();
+
+            assert!(matches!(parsed, WsCommand::Heartbeat));
+        }
 
         #[test]
         fn disconnect_should_round_trip() {

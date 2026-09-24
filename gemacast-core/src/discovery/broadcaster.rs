@@ -63,10 +63,11 @@ impl PresenceBroadcaster {
     {
         tracing::info!("Starting UDP presence broadcast loop");
         loop {
-            let broadcast_addrs: Vec<SocketAddrV4> = crate::network::get_broadcast_addrs()
-                .into_iter()
-                .map(|ip| SocketAddrV4::new(ip, Ports::DISCOVERY))
-                .collect();
+            let broadcast_addrs: Vec<SocketAddrV4> =
+                crate::network::NetworkInterfaces::broadcast_addresses()
+                    .into_iter()
+                    .map(|ip| SocketAddrV4::new(ip, Ports::DISCOVERY))
+                    .collect();
             let unicast_addrs = known_player_addresses();
             let broadcast_addr_global =
                 SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), Ports::DISCOVERY);

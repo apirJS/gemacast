@@ -1,10 +1,10 @@
-import { useSettings } from '../../hooks/use-settings';
+import { useSettingsController } from '../../controllers';
 import { useAppStore } from '../../stores/app-store';
 import { SegmentedControl } from '../shared/SegmentedControl';
 import { ConnectionMode } from '../../core/types';
 
 export function ModeSelector() {
-  const { settings, update } = useSettings();
+  const { settings, update } = useSettingsController();
   const modes = useAppStore((s) => s.availableModes);
 
   return (

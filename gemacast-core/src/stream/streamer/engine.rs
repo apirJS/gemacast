@@ -1,76 +1,22 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use crate::domain::error::GemaCastError;
-use crate::domain::types::{AudioSource, DeviceId, TargetId};
+use crate::domain::types::{DeviceId, TargetId};
 use crate::ports::capture::CaptureFactory;
 use crate::ports::error_notifier::ErrorNotifier;
 
-use super::capture_pool::{CapturePool, StreamFailure};
+use super::capture_pool::CapturePool;
+use super::command::{AudioStreamCommand, StreamSessionFailure, TcpBroadcastLease};
+use super::failure::StreamTaskFailure;
+use super::stream_session::StreamSession;
 
 pub struct AudioStreamEngine<F: CaptureFactory, N: ErrorNotifier> {
-    pub pool: CapturePool<F>,
-    pub active_player_sessions: HashMap<DeviceId, (Option<SocketAddr>, AudioSource, Option<i32>)>,
+    pool: CapturePool<F>,
+    active_player_sessions: HashMap<DeviceId, StreamSession>,
     session_generations: HashMap<DeviceId, u64>,
     error_notifier: N,
     session_failure_tx: Option<mpsc::UnboundedSender<StreamSessionFailure>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamSessionFailure {
-    pub device_id: DeviceId,
-    pub generation: u64,
-}
-
-#[cfg(test)]
-type SessionInspection = (Option<SocketAddr>, AudioSource, Option<i32>);
-
-#[derive(Clone)]
-pub struct TcpBroadcastLease {
-    pub broadcaster: broadcast::Sender<std::sync::Arc<Vec<u8>>>,
-    pub session_generation: u64,
-}
-
-pub enum AudioStreamCommand {
-    Subscribe {
-        device_id: DeviceId,
-        generation: u64,
-        target_addr: Option<SocketAddr>,
-        source: Option<AudioSource>,
-        bitrate: Option<i32>,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    Unsubscribe {
-        device_id: DeviceId,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    ChangeSource {
-        device_id: DeviceId,
-        source: AudioSource,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    ChangeBitrate {
-        device_id: DeviceId,
-        bitrate: Option<i32>,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    GetTcpBroadcaster {
-        device_id: DeviceId,
-        reply: tokio::sync::oneshot::Sender<Option<TcpBroadcastLease>>,
-    },
-    TransportClosed {
-        device_id: DeviceId,
-        generation: u64,
-    },
-    #[cfg(test)]
-    InspectSession {
-        device_id: DeviceId,
-        reply: tokio::sync::oneshot::Sender<Option<SessionInspection>>,
-    },
-    Shutdown {
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
 }
 
 impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
@@ -115,10 +61,8 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     reply,
                 } => {
                     let mut final_source = source.unwrap_or_default();
-                    if let Some((_, existing_source, _)) =
-                        self.active_player_sessions.get(&device_id)
-                    {
-                        final_source = existing_source.clone();
+                    if let Some(session) = self.active_player_sessions.get(&device_id) {
+                        final_source = session.source.clone();
                     }
 
                     tracing::info!(
@@ -142,17 +86,18 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         .await
                     {
                         Ok(_) => {
-                            if let Some((old_target_addr, old_source, _)) = old_session {
-                                let old_target = old_target_addr
-                                    .map(TargetId::Udp)
-                                    .unwrap_or_else(|| TargetId::Tcp(device_id.clone()));
-                                if old_source != final_source || old_target != target {
-                                    let _ = self.pool.unsubscribe(&old_source, old_target).await;
+                            if let Some(old_session) = old_session {
+                                let old_target = old_session.target(&device_id);
+                                if old_session.source != final_source || old_target != target {
+                                    let _ = self
+                                        .pool
+                                        .unsubscribe(&old_session.source, old_target)
+                                        .await;
                                 }
                             }
                             self.active_player_sessions.insert(
                                 device_id.clone(),
-                                (target_addr, final_source, bitrate),
+                                StreamSession::new(target_addr, final_source, bitrate),
                             );
                             self.session_generations.insert(device_id, generation);
                             Ok(())
@@ -168,18 +113,12 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 }
                 AudioStreamCommand::Unsubscribe { device_id, reply } => {
                     tracing::info!("[Engine] Unsubscribe device={:?}", device_id);
-                    if let Some((target_addr, source, _bitrate)) =
-                        self.active_player_sessions.remove(&device_id)
-                    {
+                    if let Some(session) = self.active_player_sessions.remove(&device_id) {
                         self.session_generations.remove(&device_id);
-                        let target = if let Some(addr) = target_addr {
-                            TargetId::Udp(addr)
-                        } else {
-                            TargetId::Tcp(device_id)
-                        };
+                        let target = session.target(&device_id);
                         let result = self
                             .pool
-                            .unsubscribe(&source, target)
+                            .unsubscribe(&session.source, target)
                             .await
                             .map_err(|error| error.to_string());
                         let _ = reply.send(result);
@@ -203,23 +142,17 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         self.active_player_sessions.keys().collect::<Vec<_>>()
                     );
 
-                    if let Some((target_addr, old_source, bitrate)) =
-                        self.active_player_sessions.get(&device_id)
-                    {
-                        let old_source = old_source.clone();
-                        let target_addr = *target_addr;
-                        let bitrate = *bitrate;
+                    if let Some(session) = self.active_player_sessions.get(&device_id) {
+                        let old_source = session.source.clone();
+                        let target_addr = session.target_addr;
+                        let bitrate = session.bitrate;
                         tracing::info!(
                             "[Engine] Found session: old_source={:?} target_addr={:?}",
                             old_source,
                             target_addr
                         );
 
-                        let target = if let Some(addr) = target_addr {
-                            TargetId::Udp(addr)
-                        } else {
-                            TargetId::Tcp(device_id.clone())
-                        };
+                        let target = session.target(&device_id);
 
                         match self
                             .pool
@@ -229,7 +162,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                             Ok(_broadcast_tx) => {
                                 tracing::info!("[Engine] Source changed successfully");
                                 self.active_player_sessions
-                                    .insert(device_id, (target_addr, source, bitrate));
+                                    .insert(device_id, StreamSession::new(target_addr, source, bitrate));
                                 let _ = reply.send(Ok(()));
                             }
                             Err(e) => {
@@ -264,17 +197,15 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                         bitrate
                     );
 
-                    if let Some((target_addr, source, old_bitrate)) =
-                        self.active_player_sessions.get(&device_id)
-                    {
-                        if *old_bitrate == bitrate {
+                    if let Some(session) = self.active_player_sessions.get(&device_id) {
+                        if session.bitrate == bitrate {
                             tracing::info!("[Engine] Bitrate unchanged, skipping.");
                             let _ = reply.send(Ok(()));
                             continue;
                         }
 
-                        let source_clone = source.clone();
-                        let target_addr_clone = *target_addr;
+                        let source_clone = session.source.clone();
+                        let target_addr_clone = session.target_addr;
 
                         tracing::info!(
                             "[Engine] Found session to update bitrate: source={:?} target_addr={:?}",
@@ -282,11 +213,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                             target_addr_clone
                         );
 
-                        let target = if let Some(addr) = target_addr_clone {
-                            TargetId::Udp(addr)
-                        } else {
-                            TargetId::Tcp(device_id.clone())
-                        };
+                        let target = session.target(&device_id);
 
                         match self
                             .pool
@@ -296,7 +223,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                             Ok(_broadcast_tx) => {
                                 tracing::info!("[Engine] Bitrate changed successfully");
                                 self.active_player_sessions
-                                    .insert(device_id, (target_addr_clone, source_clone, bitrate));
+                                    .insert(device_id, StreamSession::new(target_addr_clone, source_clone, bitrate));
                                 let _ = reply.send(Ok(()));
                             }
                             Err(e) => {
@@ -313,17 +240,15 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 }
                 AudioStreamCommand::GetTcpBroadcaster { device_id, reply } => {
                     tracing::info!("[Engine] GetTcpBroadcaster for device={:?}", device_id);
-                    if let Some((target_addr, source, _bitrate)) =
-                        self.active_player_sessions.get(&device_id)
-                    {
-                        if target_addr.is_some() {
+                    if let Some(session) = self.active_player_sessions.get(&device_id) {
+                        if session.target_addr.is_some() {
                             tracing::warn!(
                                 "[Engine] GetTcpBroadcaster requested for UDP device={:?}",
                                 device_id
                             );
                             let _ = reply.send(None);
                         } else {
-                            match self.pool.tcp_broadcaster(source, &device_id) {
+                            match self.pool.tcp_broadcaster(&session.source, &device_id) {
                                 Some(broadcast_tx) => {
                                     let session_generation = self
                                         .session_generations
@@ -356,20 +281,20 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     if self.session_generations.get(&device_id).copied() != Some(generation) {
                         continue;
                     }
-                    if let Some((target_addr, source, _)) =
-                        self.active_player_sessions.remove(&device_id)
-                    {
+                    if let Some(session) = self.active_player_sessions.remove(&device_id) {
                         self.session_generations.remove(&device_id);
-                        let target = target_addr
-                            .map(TargetId::Udp)
-                            .unwrap_or_else(|| TargetId::Tcp(device_id.clone()));
-                        let _ = self.pool.unsubscribe(&source, target).await;
+                        let target = session.target(&device_id);
+                        let _ = self.pool.unsubscribe(&session.source, target).await;
                         self.report_session_failure(device_id, generation);
                     }
                 }
                 #[cfg(test)]
                 AudioStreamCommand::InspectSession { device_id, reply } => {
-                    let _ = reply.send(self.active_player_sessions.get(&device_id).cloned());
+                    let _ = reply.send(
+                        self.active_player_sessions
+                            .get(&device_id)
+                            .map(StreamSession::inspection),
+                    );
                 }
                 AudioStreamCommand::Shutdown { reply } => {
                     tracing::info!("[Engine] Shutdown");
@@ -392,9 +317,9 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
         Ok(())
     }
 
-    async fn handle_stream_failure(&mut self, failure: StreamFailure) {
+    async fn handle_stream_failure(&mut self, failure: StreamTaskFailure) {
         match failure {
-            StreamFailure::Capture {
+            StreamTaskFailure::Capture {
                 source,
                 generation,
                 message,
@@ -405,7 +330,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 let affected: Vec<_> = self
                     .active_player_sessions
                     .iter()
-                    .filter(|(_, (_, active_source, _))| active_source == &source)
+                    .filter(|(_, session)| session.source == source)
                     .map(|(device_id, _)| device_id.clone())
                     .collect();
                 for device_id in affected {
@@ -418,7 +343,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     }
                 }
             }
-            StreamFailure::UdpEncoder {
+            StreamTaskFailure::UdpEncoder {
                 target,
                 ref message,
                 ..
@@ -429,7 +354,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                 let device_id = self
                     .active_player_sessions
                     .iter()
-                    .find(|(_, (addr, _, _))| *addr == Some(target))
+                    .find(|(_, session)| session.target_addr == Some(target))
                     .map(|(device_id, _)| device_id.clone());
                 if let Some(device_id) = device_id {
                     let generation = self.session_generations.remove(&device_id);
@@ -441,7 +366,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
                     }
                 }
             }
-            StreamFailure::TcpEncoder {
+            StreamTaskFailure::TcpEncoder {
                 ref device_id,
                 ref message,
                 ..
@@ -473,6 +398,7 @@ impl<F: CaptureFactory, N: ErrorNotifier> AudioStreamEngine<F, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::types::AudioSource;
     use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureFactory, CaptureHandle};
     use ringbuf::HeapRb;
     use ringbuf::traits::*;

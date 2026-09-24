@@ -1,4 +1,7 @@
 pub mod commands;
-pub mod playback;
-pub mod service;
-pub mod volume;
+mod playback;
+mod service;
+mod volume;
+
+pub use playback::{SessionPlayer, SessionPlayerRequest};
+pub use service::AudioService;

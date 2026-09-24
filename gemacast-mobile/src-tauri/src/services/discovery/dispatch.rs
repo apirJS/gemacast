@@ -78,7 +78,7 @@ impl DispatchContext {
 
         let mut is_usb = transport == Some(TransportType::Usb);
         if !is_usb {
-            is_usb = gemacast_core::network::is_usb_tether_ip(&addr.ip());
+            is_usb = gemacast_core::network::NetworkInterfaces::is_usb_tether_ip(&addr.ip());
         }
 
         match mode {

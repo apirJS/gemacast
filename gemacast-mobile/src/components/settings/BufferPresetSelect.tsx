@@ -1,30 +1,11 @@
 import { useRef, useState } from 'react';
-import { useSettings } from '../../hooks/use-settings';
+import { settingsController, useSettingsController } from '../../controllers';
 import { CustomSelect, type SelectOption } from '../shared/CustomSelect';
 import { JITTER_PRESETS } from '../../core/presets';
-import type { PresetId } from '../../core/types';
 import { NoBufferWarningDialog } from './NoBufferWarning';
 
-const LS_KEY = 'gemacast_nobuffer_warning_dismissed';
-
-function isWarningDismissed(): boolean {
-  try {
-    return localStorage.getItem(LS_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-function dismissWarning() {
-  try {
-    localStorage.setItem(LS_KEY, 'true');
-  } catch {
-    // Ignore storage errors
-  }
-}
-
 export function BufferPresetSelect() {
-  const { settings, update } = useSettings();
+  const { settings } = useSettingsController();
   const warningDialogRef = useRef<HTMLDialogElement>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
 
@@ -48,12 +29,12 @@ export function BufferPresetSelect() {
   })();
 
   const applyNoBuffer = () => {
-    update({ bufferPreset: 'nobuffer' as PresetId });
+    void settingsController.selectBufferPreset('nobuffer');
   };
 
   const handleWarningOk = () => {
     if (dontShowAgain) {
-      dismissWarning();
+      settingsController.dismissNoBufferWarning();
     }
     warningDialogRef.current?.close();
     applyNoBuffer();
@@ -61,7 +42,7 @@ export function BufferPresetSelect() {
 
   const handleChange = (value: string) => {
     if (value === 'nobuffer') {
-      if (isWarningDismissed()) {
+      if (!settingsController.requiresNoBufferWarning()) {
         applyNoBuffer();
       } else {
         warningDialogRef.current?.showModal();
@@ -69,35 +50,7 @@ export function BufferPresetSelect() {
       return;
     }
 
-    if (value.startsWith('saved-')) {
-      const idx = parseInt(value.replace('saved-', ''), 10);
-      const savedPreset = settings.savedPresets[idx];
-      if (savedPreset) {
-        // Migrate legacy adaptive presets: ensure staticTargetMs is set
-        const migratedConfig =
-          savedPreset.config.staticTargetMs == null
-            ? { ...savedPreset.config, staticTargetMs: 0 }
-            : savedPreset.config;
-        update({
-          bufferPreset: value,
-          customJitterConfig: migratedConfig,
-        });
-      }
-    } else if (value === 'custom') {
-      // Selecting generic "Custom" = start fresh with static 0ms
-      update({
-        bufferPreset: 'custom',
-        customJitterConfig: {
-          minDepthMs: 25,
-          comfortCapMs: 1000,
-          peakDecayHalflifeMs: 0,
-          resumeThresholdPct: 0.25,
-          staticTargetMs: 0,
-        },
-      });
-    } else {
-      update({ bufferPreset: value as PresetId });
-    }
+    void settingsController.selectBufferPreset(value);
   };
 
   // Determine the selected value for the UI dropdown

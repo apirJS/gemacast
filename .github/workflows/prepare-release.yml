@@ -1,14 +1,11 @@
 name: Release Please (Semantic Versioning)
 
 on:
-  workflow_run:
-    workflows: ["CI Validation"]
-    types: [completed]
+  push:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: release-please
@@ -17,14 +14,19 @@ concurrency:
 jobs:
   release-please:
     name: Create Release PR / Tag
-    if: >-
-      ${{ github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' }}
     runs-on: ubuntu-latest
     environment: Production
     steps:
+      - name: Generate release bot token
+        id: release-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ steps.release-token.outputs.token }}

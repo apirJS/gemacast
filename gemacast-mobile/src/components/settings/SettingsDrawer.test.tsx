@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/app-store';
 import { SettingsDrawer } from './SettingsDrawer';
 
 const panel = () => document.querySelector('[role="dialog"][aria-label="Settings"]')!;
+const scroller = () => panel().querySelector(':scope > .overflow-y-auto')!;
 
 beforeEach(() => {
   cleanup();
@@ -53,6 +54,16 @@ describe('SettingsDrawer', () => {
     });
     render(<SettingsDrawer />);
     expect(screen.queryByText('Not reported by this PC')).toBeNull();
+  });
+
+  it('anchors to every viewport edge and keeps all settings in one bounded scroller', () => {
+    render(<SettingsDrawer />);
+
+    expect(panel().className).toContain('inset-0');
+    expect(panel().className).not.toContain('h-dvh');
+    expect(scroller().className).toContain('min-h-0');
+    expect(scroller().className).toContain('overflow-y-auto');
+    expect(scroller().className).toContain('overscroll-contain');
   });
 
   describe('sliding', () => {

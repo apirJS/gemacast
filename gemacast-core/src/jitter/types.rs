@@ -34,7 +34,7 @@ pub struct RawPacket {
 
 impl RawPacket {
     /// Create a zero-initialized packet. Used as a placeholder during
-    /// buffer/test setup — real packets are populated by `parse_packet`.
+    /// buffer/test setup; real packets are populated by `AudioPacketDecoder`.
     pub fn zeroed() -> Self {
         Self {
             seq_num: 0,

@@ -6,7 +6,7 @@ pub struct NativeNetworkInfoProvider;
 
 impl NetworkInfoProvider for NativeNetworkInfoProvider {
     fn get_local_ip(&self) -> Result<IpAddr, String> {
-        gemacast_core::network::get_local_ip().map_err(|e| e.to_string())
+        gemacast_core::network::NetworkInterfaces::primary_ip().map_err(|e| e.to_string())
     }
 
     fn get_default_interface(&self) -> Result<InterfaceInfo, String> {
@@ -23,13 +23,13 @@ impl NetworkInfoProvider for NativeNetworkInfoProvider {
 }
 
 fn to_interface_info(iface: &netdev::Interface) -> InterfaceInfo {
-    let (is_wifi, is_usb) = gemacast_core::network::classify_interface(iface);
+    let capabilities = gemacast_core::network::InterfaceClassifier::classify(iface);
     InterfaceInfo {
         name: iface.name.clone(),
         mac_addr: iface.mac_addr.map(|m| m.to_string()),
         ipv4: iface.ipv4.iter().map(|net| net.addr()).collect(),
         ipv6: iface.ipv6.iter().map(|net| net.addr()).collect(),
-        is_wifi,
-        is_usb,
+        is_wifi: capabilities.supports_wifi(),
+        is_usb: capabilities.supports_usb_tethering(),
     }
 }

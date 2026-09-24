@@ -1,179 +1,87 @@
-use crate::traits::{PlatformService, PlaybackState};
 use std::sync::Arc;
 
-#[cfg(target_os = "android")]
-use base64::Engine;
+use gemacast_core::domain::types::DeviceId;
 
-/// Platform-specific operations backed by the real OS and Tauri APIs.
+use crate::services::platform::PlatformFacade;
+use crate::traits::{PlatformService, PlaybackState};
+
 pub struct NativePlatformService {
-    app_handle: tauri::AppHandle,
+    platform: PlatformFacade,
 }
 
 impl NativePlatformService {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
-        Self { app_handle }
+        Self {
+            platform: PlatformFacade::new(app_handle),
+        }
     }
 }
 
 impl PlatformService for NativePlatformService {
     fn get_transport_type(&self) -> Result<String, String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_transport_check(&self.app_handle)
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            Err("Not supported on this platform".to_string())
-        }
+        self.platform
+            .transport_type()
+            .map_err(|error| error.to_string())
     }
 
     fn device_public_key(&self) -> Result<String, String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_device_public_key(&self.app_handle)
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            Err("Device identity requires Android Keystore".to_string())
-        }
+        self.platform
+            .device_public_key()
+            .map_err(|error| error.to_string())
     }
 
     fn sign_device_auth(&self, transcript: &[u8]) -> Result<String, String> {
-        #[cfg(target_os = "android")]
-        {
-            let transcript = base64::engine::general_purpose::STANDARD.encode(transcript);
-            crate::services::discovery::native::call_native_sign_device_auth(
-                &self.app_handle,
-                &transcript,
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let _ = transcript;
-            Err("Device identity requires Android Keystore".to_string())
-        }
+        self.platform
+            .sign_device_auth(transcript)
+            .map_err(|error| error.to_string())
     }
 
-    fn trusted_pc_fingerprint(
-        &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
-    ) -> Result<Option<String>, String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_trusted_pc_fingerprint(
-                &self.app_handle,
-                pc_id.as_ref(),
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let _ = pc_id;
-            Ok(None)
-        }
+    fn trusted_pc_fingerprint(&self, pc_id: &DeviceId) -> Result<Option<String>, String> {
+        self.platform
+            .trusted_pc_fingerprint(pc_id)
+            .map_err(|error| error.to_string())
     }
 
-    fn paired_pc_ids(&self) -> Result<Vec<gemacast_core::domain::types::DeviceId>, String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_paired_pc_ids(&self.app_handle)
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            Ok(Vec::new())
-        }
+    fn paired_pc_ids(&self) -> Result<Vec<DeviceId>, String> {
+        self.platform
+            .paired_pc_ids()
+            .map_err(|error| error.to_string())
     }
 
     fn confirm_pc_identity(
         &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
+        pc_id: &DeviceId,
         pc_name: &str,
         fingerprint: &str,
         pairing_code: &str,
         requires_approval: bool,
     ) -> Result<bool, String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_confirm_pc_identity(
-                &self.app_handle,
-                pc_id.as_ref(),
-                pc_name,
-                fingerprint,
-                pairing_code,
-                requires_approval,
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let _ = (pc_id, pc_name, fingerprint, pairing_code, requires_approval);
-            Ok(true)
-        }
+        self.platform
+            .confirm_pc_identity(pc_id, pc_name, fingerprint, pairing_code, requires_approval)
+            .map_err(|error| error.to_string())
     }
 
-    fn remember_pc_identity(
-        &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
-        fingerprint: &str,
-    ) -> Result<(), String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_remember_pc_identity(
-                &self.app_handle,
-                pc_id.as_ref(),
-                fingerprint,
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let _ = (pc_id, fingerprint);
-            Ok(())
-        }
+    fn remember_pc_identity(&self, pc_id: &DeviceId, fingerprint: &str) -> Result<(), String> {
+        self.platform
+            .remember_pc_identity(pc_id, fingerprint)
+            .map_err(|error| error.to_string())
     }
 
-    fn forget_pc_identity(
-        &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
-    ) -> Result<(), String> {
-        #[cfg(target_os = "android")]
-        {
-            crate::services::discovery::native::call_native_forget_pc_identity(
-                &self.app_handle,
-                pc_id.as_ref(),
-            )
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let _ = pc_id;
-            Ok(())
-        }
+    fn forget_pc_identity(&self, pc_id: &DeviceId) -> Result<(), String> {
+        self.platform
+            .forget_pc_identity(pc_id)
+            .map_err(|error| error.to_string())
     }
 
-    #[allow(unused_variables)]
     fn sync_service(&self, state: PlaybackState, is_exclusive: bool) {
-        #[cfg(target_os = "android")]
-        {
-            let action = match state {
-                PlaybackState::Playing => "SYNC_PLAYING",
-                PlaybackState::Paused => "SYNC_PAUSED",
-                PlaybackState::Stopped => "SYNC_STOPPED",
-            };
-            let _ = crate::services::discovery::native::call_native_sync_service(
-                &self.app_handle,
-                action,
-                is_exclusive,
-            );
+        if let Err(error) = self.platform.sync_service(state, is_exclusive) {
+            tracing::warn!("could not synchronize the platform service: {error}");
         }
     }
 
     fn set_streaming_flag(&self, active: bool) {
-        use tauri::Manager;
-        if let Ok(cache_dir) = self.app_handle.path().app_cache_dir() {
-            let flag_path = cache_dir.join(".streaming_active");
-            if active {
-                let _ = std::fs::create_dir_all(&cache_dir);
-                let _ = std::fs::write(&flag_path, "1");
-            } else {
-                let _ = std::fs::remove_file(&flag_path);
-            }
+        if let Err(error) = self.platform.set_streaming_flag(active) {
+            tracing::warn!("could not update the streaming state: {error}");
         }
     }
 }
@@ -188,7 +96,7 @@ impl PlatformDeviceAuthSigner {
     }
 }
 
-impl gemacast_core::control::http_client::DeviceAuthSigner for PlatformDeviceAuthSigner {
+impl gemacast_core::control::DeviceAuthSigner for PlatformDeviceAuthSigner {
     fn public_key(&self) -> Result<String, String> {
         self.platform.device_public_key()
     }
@@ -197,16 +105,13 @@ impl gemacast_core::control::http_client::DeviceAuthSigner for PlatformDeviceAut
         self.platform.sign_device_auth(transcript)
     }
 
-    fn trusted_pc_fingerprint(
-        &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
-    ) -> Result<Option<String>, String> {
+    fn trusted_pc_fingerprint(&self, pc_id: &DeviceId) -> Result<Option<String>, String> {
         self.platform.trusted_pc_fingerprint(pc_id)
     }
 
     fn confirm_pc_identity(
         &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
+        pc_id: &DeviceId,
         pc_name: &str,
         fingerprint: &str,
         pairing_code: &str,
@@ -221,11 +126,7 @@ impl gemacast_core::control::http_client::DeviceAuthSigner for PlatformDeviceAut
         )
     }
 
-    fn remember_pc_identity(
-        &self,
-        pc_id: &gemacast_core::domain::types::DeviceId,
-        fingerprint: &str,
-    ) -> Result<(), String> {
+    fn remember_pc_identity(&self, pc_id: &DeviceId, fingerprint: &str) -> Result<(), String> {
         self.platform.remember_pc_identity(pc_id, fingerprint)
     }
 }

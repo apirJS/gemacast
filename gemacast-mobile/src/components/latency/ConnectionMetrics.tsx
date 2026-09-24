@@ -1,5 +1,6 @@
-import { useAppStore } from '../../stores/app-store';
+import type { Metrics } from '../../core/types';
 import { Status } from '../../core/types';
+import { useAppStore } from '../../stores/app-store';
 
 function bandColor(ms: number | null, warn: number, lost: number): string {
   if (ms === null) return 'text-muted-foreground/50';
@@ -17,7 +18,6 @@ type MetricProps = {
 
 function Metric({ label, ms, tone, placeholder }: MetricProps) {
   const unavailable = ms === null && placeholder !== undefined;
-
   return (
     <div className="flex min-w-0 flex-col items-center gap-1 py-0.5">
       <span
@@ -39,23 +39,20 @@ function Metric({ label, ms, tone, placeholder }: MetricProps) {
   );
 }
 
-type ConnectionMetricsProps = {
+type ConnectionMetricsViewProps = {
+  metrics: Metrics;
+  visible: boolean;
+  loopback: boolean;
   renderHelpButton?: (key: string) => React.ReactNode;
 };
 
-export function ConnectionMetrics({ renderHelpButton }: ConnectionMetricsProps = {}) {
-  const metrics = useAppStore((s) => s.metrics);
-  const status = useAppStore((s) => s.status);
-  const linkPair = useAppStore((s) => s.networkLinkPair);
-
-  const visible =
-    status === Status.Connected || status === Status.Playing || status === Status.Paused;
+export function ConnectionMetricsView({
+  metrics,
+  visible,
+  loopback,
+  renderHelpButton,
+}: ConnectionMetricsViewProps) {
   if (!visible) return null;
-
-  // RTT is measured by the control-channel probe loop, which does not run over
-  // ADB/loopback — so a null there means "not applicable", not "not yet known".
-  const isLoopback = linkPair?.effective === 'adb';
-
   return (
     <div
       className="mt-2.5 grid w-full grid-cols-[auto_1fr_auto_1fr_auto_1fr_auto] items-stretch animate-[fade-in_200ms_ease-out]"
@@ -69,11 +66,29 @@ export function ConnectionMetrics({ renderHelpButton }: ConnectionMetricsProps =
         label="RTT"
         ms={metrics.networkRttMs}
         tone={bandColor(metrics.networkRttMs, 30, 80)}
-        placeholder={isLoopback ? 'n/a' : undefined}
+        placeholder={loopback ? 'n/a' : undefined}
       />
       <span aria-hidden="true" className="readout-divider w-px self-stretch" />
       <Metric label="Jitter" ms={metrics.jitterMs} tone={bandColor(metrics.jitterMs, 10, 25)} />
       <span className="self-center">{renderHelpButton?.('connection-metrics')}</span>
     </div>
+  );
+}
+
+type ConnectionMetricsProps = {
+  renderHelpButton?: (key: string) => React.ReactNode;
+};
+
+export function ConnectionMetrics({ renderHelpButton }: ConnectionMetricsProps = {}) {
+  const metrics = useAppStore((state) => state.metrics);
+  const status = useAppStore((state) => state.status);
+  const loopback = useAppStore((state) => state.networkLinkPair?.effective === 'adb');
+  return (
+    <ConnectionMetricsView
+      metrics={metrics}
+      visible={[Status.Connected, Status.Playing, Status.Paused].includes(status)}
+      loopback={loopback}
+      renderHelpButton={renderHelpButton}
+    />
   );
 }

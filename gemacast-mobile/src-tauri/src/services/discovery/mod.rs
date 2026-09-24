@@ -2,7 +2,11 @@ mod adb_session;
 pub mod commands;
 mod dispatch;
 mod heartbeat;
-pub mod listener;
-pub mod native;
+mod listener;
+#[cfg(target_os = "android")]
+pub(crate) mod native;
 mod probe;
-pub mod service;
+mod service;
+
+pub use listener::DiscoveryListener;
+pub use service::{DiscoveryService, NetworkState};

@@ -36,7 +36,7 @@ pub fn run() {
             let platform: Arc<dyn traits::PlatformService> =
                 Arc::new(adapters::NativePlatformService::new(handle.clone()));
 
-            let auth_signer: Arc<dyn gemacast_core::control::http_client::DeviceAuthSigner> =
+            let auth_signer: Arc<dyn gemacast_core::control::DeviceAuthSigner> =
                 Arc::new(adapters::PlatformDeviceAuthSigner::new(platform.clone()));
 
             let client_factory: Arc<dyn traits::StreamerControlClientFactory> =
@@ -49,18 +49,13 @@ pub fn run() {
             let network: Arc<dyn traits::NetworkInfoProvider> =
                 Arc::new(adapters::NativeNetworkInfoProvider);
 
-            let audio_service = Arc::new(services::audio::service::AudioService {
-                session: session_mgr,
+            let audio_service = Arc::new(services::audio::AudioService::new(
+                session_mgr,
                 client_factory,
-                notifier: notifier.clone(),
-                platform: platform.clone(),
-                is_streaming: is_streaming.clone(),
-                cached_link_pair: std::sync::Mutex::new(None),
-                recovery_task: std::sync::Mutex::new(None),
-                volume_mix: Arc::new(std::sync::Mutex::new(
-                    services::audio::volume::VolumeMix::default(),
-                )),
-            });
+                notifier.clone(),
+                platform.clone(),
+                is_streaming.clone(),
+            ));
 
             app.manage(state::AppState {
                 audio: audio_service,
@@ -72,9 +67,9 @@ pub fn run() {
             });
 
             let cache_dir = handle.path().app_cache_dir().ok();
-            tauri::async_runtime::spawn(services::ipc::server::run_service_command_listener(
-                notifier, cache_dir,
-            ));
+            tauri::async_runtime::spawn(
+                services::ipc::ServiceCommandListener::new(notifier, cache_dir).run(),
+            );
 
             Ok(())
         })
@@ -129,11 +124,10 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     use tauri::Manager;
                     if let Some(state) = handle.try_state::<state::AppState>() {
-                        state.audio.session.stop_session().await;
+                        state.audio.shutdown().await;
                     }
-                    #[cfg(target_os = "android")]
-                    if let Err(error) =
-                        services::discovery::native::call_native_finish_and_remove_task(&handle)
+                    if let Err(error) = services::platform::PlatformFacade::new(handle.clone())
+                        .finish_and_remove_task()
                     {
                         tracing::warn!("could not remove the app task on exit: {error}");
                     }

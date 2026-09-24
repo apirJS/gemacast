@@ -34,11 +34,11 @@ pub async fn connect_to_streamer(
         gemacast_core::domain::types::ConnectionMode::Usb => "usb",
         gemacast_core::domain::types::ConnectionMode::Wifi => "wifi",
     };
-    let phone_link = crate::services::discovery::service::detect_phone_link(
+    let phone_link = crate::services::discovery::DiscoveryService::new(
         state.network.as_ref(),
         state.platform.as_ref(),
-        mode_str,
-    );
+    )
+    .phone_link(mode_str);
 
     state
         .audio
@@ -271,7 +271,7 @@ pub async fn establish_websocket(
 
 #[tauri::command]
 pub fn check_exclusive_support() -> bool {
-    gemacast_core::stream::player::stream::probe_exclusive_support()
+    gemacast_core::stream::player::PlaybackOutput::supports_exclusive_mode()
 }
 
 #[tauri::command]

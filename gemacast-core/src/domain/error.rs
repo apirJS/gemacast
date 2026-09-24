@@ -13,12 +13,34 @@ pub enum GemaCastError {
 
     #[error(transparent)]
     Control(#[from] ControlError),
+
+    #[error(transparent)]
+    Updater(#[from] UpdaterError),
 }
 
 #[derive(ThisError, Debug)]
 pub enum ProtocolError {
     #[error("packet too short: expected at least {min} bytes, got {got}")]
     PacketTooShort { got: usize, min: usize },
+
+    #[error("declared packet length {declared} exceeds buffer length {available}")]
+    PacketLengthExceedsBuffer { declared: usize, available: usize },
+
+    #[error("packet payload is too large: maximum {max} bytes, got {got}")]
+    PacketPayloadTooLarge { got: usize, max: usize },
+
+    #[error("ADB audio handshake field '{field}' is empty")]
+    EmptyAdbHandshakeField { field: &'static str },
+
+    #[error("ADB audio handshake field '{field}' is too long: maximum {max} bytes, got {got}")]
+    AdbHandshakeFieldTooLong {
+        field: &'static str,
+        got: usize,
+        max: usize,
+    },
+
+    #[error("ADB audio session credentials are missing: {field}")]
+    MissingAdbSessionCredential { field: &'static str },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +138,9 @@ pub enum AudioError {
     #[error("failed to create capture instance for source: {0}")]
     CaptureInstanceFailed(String),
 
+    #[error("compressed stream has no Opus encoder")]
+    MissingOpusEncoder,
+
     #[error("capture pool is full (max {max} concurrent captures)")]
     CapturePoolExhausted { max: usize },
 
@@ -195,6 +220,9 @@ pub enum AudioError {
 
 #[derive(ThisError, Debug)]
 pub enum NetworkError {
+    #[error("no non-loopback network address is available")]
+    LocalAddressUnavailable,
+
     #[error("failed to bind socket on {addr}")]
     SocketBindFailed {
         addr: String,
@@ -227,6 +255,14 @@ pub enum NetworkError {
     #[error("failed to connect TCP stream to {addr}")]
     TcpConnectFailed {
         addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to write {operation} to TCP stream at {addr}")]
+    TcpWriteFailed {
+        addr: String,
+        operation: &'static str,
         #[source]
         source: std::io::Error,
     },
@@ -272,6 +308,117 @@ pub enum ControlError {
     WebSocketFailed { reason: String },
 }
 
+#[derive(ThisError, Debug)]
+pub enum UpdaterError {
+    #[error("invalid current version '{version}'")]
+    InvalidCurrentVersion {
+        version: String,
+        #[source]
+        source: semver::Error,
+    },
+
+    #[error("invalid version '{version}' in updater manifest")]
+    InvalidManifestVersion {
+        version: String,
+        #[source]
+        source: semver::Error,
+    },
+
+    #[error("failed to fetch updater manifest")]
+    ManifestRequestFailed(#[source] reqwest::Error),
+
+    #[error("updater manifest request failed with HTTP status {status}")]
+    ManifestHttpStatus {
+        status: reqwest::StatusCode,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("failed to read updater manifest body")]
+    ManifestBodyReadFailed(#[source] reqwest::Error),
+
+    #[error("failed to parse updater manifest")]
+    ManifestParseFailed(#[source] serde_json::Error),
+
+    #[error("no update is published for platform '{platform_key}'")]
+    PlatformNotPublished { platform_key: String },
+
+    #[error("updater manifest entry for '{platform_key}' carries no sha256 digest")]
+    MissingChecksum { platform_key: String },
+
+    #[error(
+        "updater manifest entry for '{platform_key}' has a malformed sha256 digest \
+         ({length} chars, expected {expected_length} hex digits)"
+    )]
+    MalformedChecksum {
+        platform_key: String,
+        length: usize,
+        expected_length: usize,
+    },
+
+    #[error("failed to request update artifact")]
+    ArtifactRequestFailed(#[source] reqwest::Error),
+
+    #[error("update artifact request failed with HTTP status {status}")]
+    ArtifactHttpStatus {
+        status: reqwest::StatusCode,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("failed to read update artifact stream")]
+    ArtifactStreamFailed(#[source] reqwest::Error),
+
+    #[error("failed to create update file at {path}")]
+    CreateUpdateFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to write update file at {path}")]
+    WriteUpdateFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to sync update file at {path}")]
+    SyncUpdateFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("sha256 mismatch for {path}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("failed to read update cache directory at {path}")]
+    ReadCacheDirectory {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to read an entry in update cache directory at {path}")]
+    ReadCacheEntry {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to remove stale update file at {path}")]
+    RemoveStaleUpdate {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +458,13 @@ mod tests {
                 "Expected 'connection lost' in: {}",
                 err
             );
+        }
+
+        #[test]
+        fn local_address_unavailable_should_describe_the_missing_address() {
+            let err = NetworkError::LocalAddressUnavailable;
+
+            assert!(err.to_string().contains("network address"));
         }
 
         #[test]
@@ -369,6 +523,45 @@ mod tests {
                 matches!(outer, GemaCastError::Control(_)),
                 "Expected GemaCastError::Control, got: {outer:?}"
             );
+        }
+
+        #[test]
+        fn tcp_write_failure_should_identify_the_operation_and_address() {
+            let err = NetworkError::TcpWriteFailed {
+                addr: "127.0.0.1:23557".into(),
+                operation: "ADB audio handshake",
+                source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed"),
+            };
+            let message = err.to_string();
+
+            assert!(message.contains("ADB audio handshake"));
+            assert!(message.contains("127.0.0.1:23557"));
+        }
+    }
+
+    mod updater_error {
+        use super::*;
+
+        #[test]
+        fn checksum_mismatch_should_include_expected_and_actual_digests() {
+            let error = UpdaterError::ChecksumMismatch {
+                path: "update.apk".to_string(),
+                expected: "expected".to_string(),
+                actual: "actual".to_string(),
+            };
+
+            assert!(error.to_string().contains("expected"));
+            assert!(error.to_string().contains("actual"));
+        }
+
+        #[test]
+        fn updater_errors_should_convert_into_gemacast_errors() {
+            let error = UpdaterError::PlatformNotPublished {
+                platform_key: "android".to_string(),
+            };
+            let outer: GemaCastError = error.into();
+
+            assert!(matches!(outer, GemaCastError::Updater(_)));
         }
     }
 

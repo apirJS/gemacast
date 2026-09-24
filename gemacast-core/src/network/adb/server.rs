@@ -17,7 +17,7 @@ struct AdbAudioHandshake {
 }
 
 fn parse_adb_audio_handshake(bytes: &[u8]) -> Result<AdbAudioHandshake, &'static str> {
-    use crate::stream::player::transport::{
+    use crate::stream::player::handshake::{
         ADB_HANDSHAKE_VERSION, MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH,
     };
 
@@ -72,7 +72,7 @@ fn parse_adb_audio_handshake(bytes: &[u8]) -> Result<AdbAudioHandshake, &'static
 async fn read_adb_audio_handshake(
     socket: &mut tokio::net::TcpStream,
 ) -> Result<AdbAudioHandshake, &'static str> {
-    use crate::stream::player::transport::{MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH};
+    use crate::stream::player::handshake::{MAX_DEVICE_ID_LENGTH, MAX_SESSION_TOKEN_LENGTH};
     use tokio::io::AsyncReadExt;
 
     let mut prefix = [0u8; 2];
@@ -124,9 +124,7 @@ pub trait PresenceProvider: Send + Sync + 'static {
 
 pub fn spawn_adb_audio_tcp_server(
     set: &mut JoinSet<()>,
-    engine_command_tx: tokio::sync::mpsc::Sender<
-        crate::stream::streamer::engine::AudioStreamCommand,
-    >,
+    engine_command_tx: tokio::sync::mpsc::Sender<crate::stream::streamer::AudioStreamCommand>,
     tcp_drop_tx_for_audio: tokio::sync::broadcast::Sender<()>,
     error_tx: tokio::sync::mpsc::Sender<String>,
     authorizer: SessionAuthorizer,
@@ -230,7 +228,7 @@ pub fn spawn_adb_audio_tcp_server(
 
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 if engine_command_tx
-                    .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                    .send(crate::stream::streamer::AudioStreamCommand::GetTcpBroadcaster {
                         device_id: typed_device_id.clone(),
                         reply: reply_tx,
                     })
@@ -249,7 +247,7 @@ pub fn spawn_adb_audio_tcp_server(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                         if engine_command_tx
-                            .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                            .send(crate::stream::streamer::AudioStreamCommand::GetTcpBroadcaster {
                                 device_id: typed_device_id.clone(),
                                 reply: reply_tx,
                             })
@@ -306,7 +304,7 @@ pub fn spawn_adb_audio_tcp_server(
                                     // Try to fetch the new broadcaster from the engine.
                                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                                     if engine_command_tx
-                                        .send(crate::stream::streamer::engine::AudioStreamCommand::GetTcpBroadcaster {
+                                        .send(crate::stream::streamer::AudioStreamCommand::GetTcpBroadcaster {
                                             device_id: typed_device_id.clone(),
                                             reply: reply_tx,
                                         })
@@ -347,7 +345,7 @@ pub fn spawn_adb_audio_tcp_server(
                 if is_current {
                     let _ = engine_command_tx
                         .send(
-                            crate::stream::streamer::engine::AudioStreamCommand::TransportClosed {
+                            crate::stream::streamer::AudioStreamCommand::TransportClosed {
                                 device_id: typed_device_id,
                                 generation: session_generation,
                             },
@@ -527,14 +525,14 @@ pub fn spawn_adb_discovery_tcp_server<P: PresenceProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::player::transport::encode_adb_audio_handshake;
+    use crate::stream::player::AdbAudioHandshake as AdbAudioHandshakeEncoder;
 
     #[test]
     fn authenticated_handshake_round_trips_and_requires_current_credentials() {
         let authorizer = SessionAuthorizer::default();
         let device_id = DeviceId("phone-1".into());
         let (token, generation) = authorizer.issue(device_id.clone()).unwrap();
-        let encoded = encode_adb_audio_handshake(&device_id, &token, generation).unwrap();
+        let encoded = AdbAudioHandshakeEncoder::encode(&device_id, &token, generation).unwrap();
         let handshake = parse_adb_audio_handshake(&encoded).unwrap();
 
         assert_eq!(handshake.device_id, device_id);

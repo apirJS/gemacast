@@ -12,6 +12,7 @@ use gemacast_core::control::SessionAuthorizer;
 use gemacast_core::control::messages::ControlMessage;
 use gemacast_core::discovery::PresenceBroadcaster;
 use gemacast_core::domain::types::DeviceId;
+use gemacast_core::updater::{UpdateChecker, UpdateDownloader};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -201,16 +202,19 @@ impl CommandHandler {
                 }
             };
 
-            let info = match gemacast_core::updater::check_for_update(current_version, key).await {
+            let info = match UpdateChecker::latest_release()
+                .find_available_update(current_version, key)
+                .await
+            {
                 Ok(Some(info)) => info,
                 Ok(None) => {
                     tracing::info!("Manual update check: already up to date.");
                     tray.notify_update_up_to_date();
                     return;
                 }
-                Err(e) => {
-                    tracing::warn!("Manual update check failed: {}", e);
-                    tray.notify_update_failed(e);
+                Err(error) => {
+                    tracing::warn!("Manual update check failed: {}", error);
+                    tray.notify_update_failed(error.to_string());
                     return;
                 }
             };
@@ -233,20 +237,17 @@ impl CommandHandler {
                 return;
             }
 
-            match gemacast_core::updater::download_update(
-                &info.download_url,
-                &file_path,
-                None,
-                &info.sha256,
-            )
-            .await
+            let artifact = info.artifact();
+            match UpdateDownloader::default()
+                .download(&artifact, &file_path, None)
+                .await
             {
                 Ok(()) => {
                     tray.notify_update_ready(info.version, file_path);
                 }
-                Err(e) => {
-                    tracing::warn!("Manual update download failed: {}", e);
-                    tray.notify_update_failed(e);
+                Err(error) => {
+                    tracing::warn!("Manual update download failed: {}", error);
+                    tray.notify_update_failed(error.to_string());
                 }
             }
         });

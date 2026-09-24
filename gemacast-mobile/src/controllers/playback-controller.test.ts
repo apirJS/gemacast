@@ -7,7 +7,11 @@ import {
 } from '../__tests__/setup';
 import { useAppStore } from '../stores/app-store';
 import { Status } from '../core/types';
-import { startPlayback, stopPlayback, updateAudioActive } from './use-audio';
+import { playbackController } from './playback-controller';
+
+const startPlayback = () => playbackController.start();
+const stopPlayback = () => playbackController.stop();
+const updateAudioActive = (isActive: boolean) => playbackController.reportActivity(isActive);
 
 beforeEach(() => {
   setupInvokeMock({

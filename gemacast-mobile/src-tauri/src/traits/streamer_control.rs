@@ -65,7 +65,7 @@ pub trait StreamerControlClientFactory: Send + Sync {
         &self,
         _ip: IpAddr,
         _device_id: &DeviceId,
-    ) -> Option<gemacast_core::control::http_client::ControlCredentials> {
+    ) -> Option<gemacast_core::control::ControlCredentials> {
         None
     }
 }

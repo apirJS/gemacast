@@ -1,22 +1,13 @@
-import { useEffect } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/app-store';
 import { useToastStore } from '../stores/toast-store';
-import {
-  connectToStreamer,
-  handleStreamerTimeout,
-  handleForceDisconnect,
-  handleLinkLost,
-  handleLinkRecovered,
-  handleLinkRecoveryGaveUp,
-  disconnect,
-} from './use-connection';
-import { updateAudioActive, startPlayback, stopPlayback } from './use-audio';
+import { connectionController } from './connection-controller';
+import { playbackController } from './playback-controller';
 import { GemaCastError } from '../core/error';
 import type { DiscoveredStreamer } from '../core/types';
 
-export function useTauriEvents() {
-  useEffect(() => {
+export class AppEventsController {
+  start(): () => void {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
     unlisteners.push(
@@ -25,7 +16,7 @@ export function useTauriEvents() {
           bufferMs: Math.round(event.payload.latency),
           jitterMs: Math.round(event.payload.jitter),
         });
-        updateAudioActive(event.payload.isActive);
+        playbackController.reportActivity(event.payload.isActive);
       }),
     );
 
@@ -57,46 +48,46 @@ export function useTauriEvents() {
       listen<DiscoveredStreamer>('streamer-discovered', (event) => {
         const autoReconnectTarget = useAppStore.getState().updateDiscoveredStreamer(event.payload);
         if (autoReconnectTarget) {
-          connectToStreamer(autoReconnectTarget);
+          void connectionController.connect(autoReconnectTarget);
         }
       }),
     );
 
     unlisteners.push(
       listen<string>('streamer-timeout', (event) => {
-        handleStreamerTimeout(event.payload);
+        connectionController.streamerTimedOut(event.payload);
       }),
     );
 
     unlisteners.push(
       listen('force-disconnect', () => {
         const isSuspended = useAppStore.getState().isSuspended;
-        handleForceDisconnect(!isSuspended);
+        connectionController.forceDisconnect(!isSuspended);
       }),
     );
 
     unlisteners.push(
       listen('link-lost', () => {
-        handleLinkLost();
+        void connectionController.linkLost();
       }),
     );
 
     unlisteners.push(
       listen<{ deviceRegistered: boolean | null }>('link-recovered', (event) => {
-        handleLinkRecovered(event.payload.deviceRegistered);
+        void connectionController.linkRecovered(event.payload.deviceRegistered);
       }),
     );
 
     unlisteners.push(
       listen('link-recovery-gave-up', () => {
-        handleLinkRecoveryGaveUp();
+        connectionController.linkRecoveryGaveUp();
       }),
     );
 
     unlisteners.push(
       listen('ws-disconnect', () => {
         const isSuspended = useAppStore.getState().isSuspended;
-        handleForceDisconnect(!isSuspended);
+        connectionController.forceDisconnect(!isSuspended);
       }),
     );
 
@@ -110,11 +101,11 @@ export function useTauriEvents() {
       listen<string>('service-command', async (event) => {
         const cmd = event.payload;
         if (cmd === 'DISCONNECT') {
-          await disconnect(true);
+          await connectionController.disconnect(true);
         } else if (cmd === 'STOP_STREAM') {
-          await stopPlayback();
+          await playbackController.stop();
         } else if (cmd === 'RESUME') {
-          await startPlayback();
+          await playbackController.start();
         }
       }),
     );
@@ -122,5 +113,7 @@ export function useTauriEvents() {
     return () => {
       unlisteners.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, []);
+  }
 }
+
+export const appEventsController = new AppEventsController();

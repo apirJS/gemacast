@@ -46,6 +46,9 @@ pub trait SessionManager: Send + Sync {
     /// Track a WebSocket client task. Aborts any previous WS task.
     async fn start_ws_client(&self, task: tokio::task::JoinHandle<()>);
 
+    /// Record an acknowledged heartbeat from the authenticated control channel.
+    async fn record_control_heartbeat(&self);
+
     /// Abort the tracked WebSocket client task.
     async fn stop_ws_client(&self);
 }

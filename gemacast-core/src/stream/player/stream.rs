@@ -157,420 +157,425 @@ fn log_opened_stream<S: AudioStreamBase>(stream: &S) {
     );
 }
 
-#[cfg(not(target_os = "android"))]
-#[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
-pub fn build_playback_stream(
-    mut packet_consumer: ringbuf::HeapCons<RawPacket>,
-    config_ref: Arc<std::sync::RwLock<JitterConfig>>,
-    is_tcp_mode: Arc<AtomicBool>,
-    network_link: NetworkLink,
-    render_enabled: Arc<AtomicBool>,
-    reset_requested: Arc<AtomicBool>,
-    volume: Arc<AtomicU32>,
-    latency_metric: Arc<AtomicU32>,
-    jitter_metric: Arc<AtomicU32>,
-    stream_error_tx: mpsc::Sender<StreamError>,
-) -> Result<PlaybackStream, GemaCastError> {
-    let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
-        direction: CodecDirection::Decoder,
-        source: e,
-    })?;
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or(AudioError::NoOutputDevice)?;
+/// Owns output-stream construction, lifecycle, and capability probing.
+pub struct PlaybackOutput;
 
-    if let Ok(desc) = device.description() {
-        tracing::info!("[Playback] Output device: {}", desc.name());
-    }
+impl PlaybackOutput {
+    #[cfg(not(target_os = "android"))]
+    #[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
+    pub fn build(
+        mut packet_consumer: ringbuf::HeapCons<RawPacket>,
+        config_ref: Arc<std::sync::RwLock<JitterConfig>>,
+        is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
+        render_enabled: Arc<AtomicBool>,
+        reset_requested: Arc<AtomicBool>,
+        volume: Arc<AtomicU32>,
+        latency_metric: Arc<AtomicU32>,
+        jitter_metric: Arc<AtomicU32>,
+        stream_error_tx: mpsc::Sender<StreamError>,
+    ) -> Result<PlaybackStream, GemaCastError> {
+        let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
+            direction: CodecDirection::Decoder,
+            source: e,
+        })?;
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or(AudioError::NoOutputDevice)?;
 
-    let mut buffer_size = cpal::BufferSize::Default;
+        if let Ok(desc) = device.description() {
+            tracing::info!("[Playback] Output device: {}", desc.name());
+        }
 
-    if let Ok(mut supported_configs) = device.supported_output_configs()
-        && let Some(config) = supported_configs.find(|c| {
-            c.channels() == OPUS_CHANNELS
-                && c.min_sample_rate() <= OPUS_SAMPLE_RATE
-                && c.max_sample_rate() >= OPUS_SAMPLE_RATE
-        })
-    {
-        match config.buffer_size() {
-            cpal::SupportedBufferSize::Range { min, max } => {
-                let desired = OPUS_FRAME_SAMPLES as u32;
-                let clamped = desired.clamp(*min, *max);
-                tracing::info!(
-                    "[Playback] Buffer size: requested={}, negotiated={} (range={}..{})",
-                    desired,
-                    clamped,
-                    min,
-                    max,
-                );
-                buffer_size = cpal::BufferSize::Fixed(clamped);
-            }
-            cpal::SupportedBufferSize::Unknown => {
-                tracing::info!("[Playback] Buffer size: using driver default (unknown range)");
+        let mut buffer_size = cpal::BufferSize::Default;
+
+        if let Ok(mut supported_configs) = device.supported_output_configs()
+            && let Some(config) = supported_configs.find(|c| {
+                c.channels() == OPUS_CHANNELS
+                    && c.min_sample_rate() <= OPUS_SAMPLE_RATE
+                    && c.max_sample_rate() >= OPUS_SAMPLE_RATE
+            })
+        {
+            match config.buffer_size() {
+                cpal::SupportedBufferSize::Range { min, max } => {
+                    let desired = OPUS_FRAME_SAMPLES as u32;
+                    let clamped = desired.clamp(*min, *max);
+                    tracing::info!(
+                        "[Playback] Buffer size: requested={}, negotiated={} (range={}..{})",
+                        desired,
+                        clamped,
+                        min,
+                        max,
+                    );
+                    buffer_size = cpal::BufferSize::Fixed(clamped);
+                }
+                cpal::SupportedBufferSize::Unknown => {
+                    tracing::info!("[Playback] Buffer size: using driver default (unknown range)");
+                }
             }
         }
+
+        let stream_config = cpal::StreamConfig {
+            channels: OPUS_CHANNELS,
+            sample_rate: OPUS_SAMPLE_RATE,
+            buffer_size,
+        };
+
+        let mut jitter_manager = JitterBufferManager::new(
+            decoder,
+            latency_metric,
+            jitter_metric,
+            config_ref,
+            is_tcp_mode,
+            network_link,
+        );
+        device
+            .build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _: &_| {
+                    let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+
+                    if reset_requested.swap(false, Ordering::AcqRel) {
+                        jitter_manager.reset();
+                        while packet_consumer.try_pop().is_some() {}
+                    }
+
+                    if !render_enabled.load(Ordering::Acquire) {
+                        while packet_consumer.try_pop().is_some() {}
+                        data.fill(0.0);
+                        return;
+                    }
+
+                    jitter_manager.ingest_packets(&mut packet_consumer);
+                    jitter_manager.fill_output(data, vol);
+                },
+                move |e| {
+                    let _ = stream_error_tx.blocking_send(e);
+                },
+                None,
+            )
+            .map_err(|e| {
+                AudioError::BuildStreamFailed {
+                    direction: StreamDirection::Output,
+                    source: e,
+                }
+                .into()
+            })
     }
 
-    let stream_config = cpal::StreamConfig {
-        channels: OPUS_CHANNELS,
-        sample_rate: OPUS_SAMPLE_RATE,
-        buffer_size,
-    };
+    /// Build a cpal-based playback stream on Android as a fallback when Oboe fails.
+    #[cfg(target_os = "android")]
+    #[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
+    pub fn build_cpal_fallback(
+        mut packet_consumer: ringbuf::HeapCons<RawPacket>,
+        config_ref: Arc<std::sync::RwLock<JitterConfig>>,
+        is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
+        render_enabled: Arc<AtomicBool>,
+        reset_requested: Arc<AtomicBool>,
+        volume: Arc<AtomicU32>,
+        latency_metric: Arc<AtomicU32>,
+        jitter_metric: Arc<AtomicU32>,
+    ) -> Result<PlaybackStream, GemaCastError> {
+        use cpal::traits::*;
 
-    let mut jitter_manager = JitterBufferManager::new(
-        decoder,
-        latency_metric,
-        jitter_metric,
-        config_ref,
-        is_tcp_mode,
-        network_link,
-    );
-    device
-        .build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _: &_| {
-                let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-
-                if reset_requested.swap(false, Ordering::AcqRel) {
-                    jitter_manager.reset();
-                    while packet_consumer.try_pop().is_some() {}
-                }
-
-                if !render_enabled.load(Ordering::Acquire) {
-                    while packet_consumer.try_pop().is_some() {}
-                    data.fill(0.0);
-                    return;
-                }
-
-                jitter_manager.ingest_packets(&mut packet_consumer);
-                jitter_manager.fill_output(data, vol);
-            },
-            move |e| {
-                let _ = stream_error_tx.blocking_send(e);
-            },
-            None,
-        )
-        .map_err(|e| {
-            AudioError::BuildStreamFailed {
-                direction: StreamDirection::Output,
-                source: e,
-            }
-            .into()
-        })
-}
-
-/// Build a cpal-based playback stream on Android as a fallback when Oboe fails.
-#[cfg(target_os = "android")]
-#[allow(clippy::too_many_arguments)] // session-scoped wiring: shared handles + network_link
-pub fn build_cpal_fallback_stream(
-    mut packet_consumer: ringbuf::HeapCons<RawPacket>,
-    config_ref: Arc<std::sync::RwLock<JitterConfig>>,
-    is_tcp_mode: Arc<AtomicBool>,
-    network_link: NetworkLink,
-    render_enabled: Arc<AtomicBool>,
-    reset_requested: Arc<AtomicBool>,
-    volume: Arc<AtomicU32>,
-    latency_metric: Arc<AtomicU32>,
-    jitter_metric: Arc<AtomicU32>,
-) -> Result<PlaybackStream, GemaCastError> {
-    use cpal::traits::*;
-
-    let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
-        direction: CodecDirection::Decoder,
-        source: e,
-    })?;
-
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or(AudioError::NoOutputDevice)?;
-
-    let stream_config = cpal::StreamConfig {
-        channels: 2,
-        sample_rate: OPUS_SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Default,
-    };
-
-    let mut jitter_manager = JitterBufferManager::new(
-        decoder,
-        latency_metric,
-        jitter_metric,
-        config_ref,
-        is_tcp_mode,
-        network_link,
-    );
-    let stream = device
-        .build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _: &_| {
-                let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-
-                if reset_requested.swap(false, Ordering::AcqRel) {
-                    jitter_manager.reset();
-                    while packet_consumer.try_pop().is_some() {}
-                }
-
-                if !render_enabled.load(Ordering::Acquire) {
-                    while packet_consumer.try_pop().is_some() {}
-                    data.fill(0.0);
-                    return;
-                }
-
-                jitter_manager.ingest_packets(&mut packet_consumer);
-                jitter_manager.fill_output(data, vol);
-            },
-            move |e| {
-                tracing::error!("cpal fallback stream error: {}", e);
-            },
-            None,
-        )
-        .map_err(|e| AudioError::BuildStreamFailed {
-            direction: StreamDirection::Output,
+        let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
+            direction: CodecDirection::Decoder,
             source: e,
         })?;
 
-    Ok(PlaybackStream::Cpal(stream))
-}
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or(AudioError::NoOutputDevice)?;
 
-/// Build a playback stream on Android. Tries Oboe first for lowest latency;
-/// if Oboe fails to open the stream, automatically falls back to cpal.
-#[cfg(target_os = "android")]
-#[allow(clippy::too_many_arguments)]
-pub fn build_playback_stream(
-    packet_consumer: ringbuf::HeapCons<RawPacket>,
-    config_ref: Arc<std::sync::RwLock<JitterConfig>>,
-    is_tcp_mode: Arc<AtomicBool>,
-    network_link: NetworkLink,
-    render_enabled: Arc<AtomicBool>,
-    reset_requested: Arc<AtomicBool>,
-    volume: Arc<AtomicU32>,
-    latency_metric: Arc<AtomicU32>,
-    jitter_metric: Arc<AtomicU32>,
-    exclusive_mode: bool,
-) -> Result<(PlaybackStream, bool), GemaCastError> {
-    let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
-        direction: CodecDirection::Decoder,
-        source: e,
-    })?;
+        let stream_config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: OPUS_SAMPLE_RATE,
+            buffer_size: cpal::BufferSize::Default,
+        };
 
-    let renderer = OboeRenderer {
-        jitter_manager: JitterBufferManager::new(
+        let mut jitter_manager = JitterBufferManager::new(
             decoder,
-            latency_metric.clone(),
+            latency_metric,
             jitter_metric,
-            config_ref.clone(),
-            is_tcp_mode.clone(),
+            config_ref,
+            is_tcp_mode,
             network_link,
-        ),
-        packet_consumer,
-        volume: volume.clone(),
-        render_enabled: render_enabled.clone(),
-        reset_requested: reset_requested.clone(),
-    };
+        );
+        let stream = device
+            .build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _: &_| {
+                    let vol = f32::from_bits(volume.load(Ordering::Relaxed));
 
-    let base = AudioStreamBuilder::default()
-        .set_direction::<oboe::Output>()
-        .set_performance_mode(PerformanceMode::LowLatency);
+                    if reset_requested.swap(false, Ordering::AcqRel) {
+                        jitter_manager.reset();
+                        while packet_consumer.try_pop().is_some() {}
+                    }
 
-    // Exclusive asks for an exact MMAP match: i16, stereo, 48 kHz, no conversion.
-    // Any conversion request makes Oboe open a child stream and wrap it in a
-    // FilterAudioStream, whose sharing mode reports what we asked for rather than
-    // what the child was granted.
-    let result = if exclusive_mode {
-        base.set_sharing_mode(SharingMode::Exclusive)
+                    if !render_enabled.load(Ordering::Acquire) {
+                        while packet_consumer.try_pop().is_some() {}
+                        data.fill(0.0);
+                        return;
+                    }
+
+                    jitter_manager.ingest_packets(&mut packet_consumer);
+                    jitter_manager.fill_output(data, vol);
+                },
+                move |e| {
+                    tracing::error!("cpal fallback stream error: {}", e);
+                },
+                None,
+            )
+            .map_err(|e| AudioError::BuildStreamFailed {
+                direction: StreamDirection::Output,
+                source: e,
+            })?;
+
+        Ok(PlaybackStream::Cpal(stream))
+    }
+
+    /// Build a playback stream on Android. Tries Oboe first for lowest latency;
+    /// if Oboe fails to open the stream, automatically falls back to cpal.
+    #[cfg(target_os = "android")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
+        packet_consumer: ringbuf::HeapCons<RawPacket>,
+        config_ref: Arc<std::sync::RwLock<JitterConfig>>,
+        is_tcp_mode: Arc<AtomicBool>,
+        network_link: NetworkLink,
+        render_enabled: Arc<AtomicBool>,
+        reset_requested: Arc<AtomicBool>,
+        volume: Arc<AtomicU32>,
+        latency_metric: Arc<AtomicU32>,
+        jitter_metric: Arc<AtomicU32>,
+        exclusive_mode: bool,
+    ) -> Result<(PlaybackStream, bool), GemaCastError> {
+        let decoder = create_opus_decoder().map_err(|e| AudioError::OpusInitFailed {
+            direction: CodecDirection::Decoder,
+            source: e,
+        })?;
+
+        let renderer = OboeRenderer {
+            jitter_manager: JitterBufferManager::new(
+                decoder,
+                latency_metric.clone(),
+                jitter_metric,
+                config_ref.clone(),
+                is_tcp_mode.clone(),
+                network_link,
+            ),
+            packet_consumer,
+            volume: volume.clone(),
+            render_enabled: render_enabled.clone(),
+            reset_requested: reset_requested.clone(),
+        };
+
+        let base = AudioStreamBuilder::default()
+            .set_direction::<oboe::Output>()
+            .set_performance_mode(PerformanceMode::LowLatency);
+
+        // Exclusive asks for an exact MMAP match: i16, stereo, 48 kHz, no conversion.
+        // Any conversion request makes Oboe open a child stream and wrap it in a
+        // FilterAudioStream, whose sharing mode reports what we asked for rather than
+        // what the child was granted.
+        let result = if exclusive_mode {
+            base.set_sharing_mode(SharingMode::Exclusive)
+                .set_format::<i16>()
+                .set_channel_count::<oboe::Stereo>()
+                .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+                .set_callback(OboeCallbackI16 {
+                    renderer,
+                    scratch: vec![0.0; OBOE_SCRATCH_SAMPLES],
+                })
+                .open_stream()
+                .map(|stream| {
+                    log_opened_stream(&stream);
+                    let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+                    (PlaybackStream::OboeI16(stream), granted)
+                })
+        } else {
+            base.set_sharing_mode(SharingMode::Shared)
+                .set_format::<f32>()
+                .set_channel_count::<oboe::Stereo>()
+                .set_channel_conversion_allowed(true)
+                .set_format_conversion_allowed(true)
+                .set_sample_rate(OPUS_SAMPLE_RATE as i32)
+                .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
+                .set_callback(OboeCallback { renderer })
+                .open_stream()
+                .map(|stream| {
+                    log_opened_stream(&stream);
+                    let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
+                    (PlaybackStream::Oboe(stream), granted)
+                })
+        };
+
+        result.map_err(|oboe_err| {
+            tracing::warn!(
+                "Oboe failed to open stream ({}), falling back to cpal",
+                oboe_err
+            );
+
+            // The packet_consumer was moved into the callback (now dropped), so the
+            // caller has to retry with a fresh ring buffer.
+            AudioError::OboeStreamBuildFailed {
+                direction: StreamDirection::Output,
+                message: format!("{}", oboe_err),
+            }
+            .into()
+        })
+    }
+
+    pub fn start(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
+        #[cfg(not(target_os = "android"))]
+        stream
+            .play()
+            .map_err(|source| AudioError::PlayStreamFailed {
+                direction: StreamDirection::Output,
+                source,
+            })?;
+
+        #[cfg(target_os = "android")]
+        {
+            macro_rules! start_oboe {
+                ($stream:expr) => {{
+                    let burst = $stream.get_frames_per_burst();
+                    let _ = $stream.set_buffer_size_in_frames(burst * 2);
+                    $stream
+                        .start()
+                        .map_err(|e| AudioError::OboeStreamStartFailed {
+                            direction: StreamDirection::Output,
+                            message: format!("{}", e),
+                        })?;
+                }};
+            }
+
+            match stream {
+                PlaybackStream::Oboe(stream) => start_oboe!(stream),
+                PlaybackStream::OboeI16(stream) => start_oboe!(stream),
+                PlaybackStream::Cpal(stream) => {
+                    use cpal::traits::StreamTrait;
+                    stream
+                        .play()
+                        .map_err(|source| AudioError::PlayStreamFailed {
+                            direction: StreamDirection::Output,
+                            source,
+                        })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn pause(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
+        #[cfg(not(target_os = "android"))]
+        stream
+            .pause()
+            .map_err(|source| AudioError::PauseStreamFailed {
+                direction: StreamDirection::Output,
+                source,
+            })?;
+
+        #[cfg(target_os = "android")]
+        {
+            use oboe::AudioOutputStream;
+
+            macro_rules! pause_and_flush_oboe {
+                ($stream:expr) => {{
+                    $stream
+                        .pause()
+                        .map_err(|e| AudioError::OboeStreamControlFailed {
+                            action: "pause",
+                            direction: StreamDirection::Output,
+                            message: format!("{}", e),
+                        })?;
+                    $stream
+                        .flush()
+                        .map_err(|e| AudioError::OboeStreamControlFailed {
+                            action: "flush",
+                            direction: StreamDirection::Output,
+                            message: format!("{}", e),
+                        })?;
+                }};
+            }
+
+            match stream {
+                PlaybackStream::Oboe(stream) => pause_and_flush_oboe!(stream),
+                PlaybackStream::OboeI16(stream) => pause_and_flush_oboe!(stream),
+                PlaybackStream::Cpal(stream) => {
+                    use cpal::traits::StreamTrait;
+                    stream
+                        .pause()
+                        .map_err(|source| AudioError::PauseStreamFailed {
+                            direction: StreamDirection::Output,
+                            source,
+                        })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Probe whether the device supports Oboe exclusive audio mode by opening a
+    /// throwaway stream. Returns `true` if the granted sharing mode is Exclusive.
+    #[cfg(target_os = "android")]
+    pub fn supports_exclusive_mode() -> bool {
+        use oboe::{
+            AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBase, AudioStreamBuilder,
+            DataCallbackResult, PerformanceMode, SharingMode,
+        };
+
+        struct SilentProbe;
+        impl AudioOutputCallback for SilentProbe {
+            type FrameType = (i16, oboe::Stereo);
+            fn on_audio_ready(
+                &mut self,
+                _stream: &mut dyn AudioOutputStreamSafe,
+                data: &mut [(i16, i16)],
+            ) -> DataCallbackResult {
+                data.fill((0, 0));
+                DataCallbackResult::Stop
+            }
+        }
+
+        // Must request exactly what the exclusive path in `PlaybackOutput::build`
+        // requests. A failed exclusive open is silently retried as shared, so any
+        // mismatch here reads back as "the device does not support it".
+        let builder = AudioStreamBuilder::default()
+            .set_direction::<oboe::Output>()
+            .set_performance_mode(PerformanceMode::LowLatency)
+            .set_sharing_mode(SharingMode::Exclusive)
             .set_format::<i16>()
             .set_channel_count::<oboe::Stereo>()
             .set_sample_rate(OPUS_SAMPLE_RATE as i32)
-            .set_callback(OboeCallbackI16 {
-                renderer,
-                scratch: vec![0.0; OBOE_SCRATCH_SAMPLES],
-            })
-            .open_stream()
-            .map(|stream| {
-                log_opened_stream(&stream);
+            .set_callback(SilentProbe);
+
+        match builder.open_stream() {
+            Ok(stream) => {
                 let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
-                (PlaybackStream::OboeI16(stream), granted)
-            })
-    } else {
-        base.set_sharing_mode(SharingMode::Shared)
-            .set_format::<f32>()
-            .set_channel_count::<oboe::Stereo>()
-            .set_channel_conversion_allowed(true)
-            .set_format_conversion_allowed(true)
-            .set_sample_rate(OPUS_SAMPLE_RATE as i32)
-            .set_sample_rate_conversion_quality(oboe::SampleRateConversionQuality::Fastest)
-            .set_callback(OboeCallback { renderer })
-            .open_stream()
-            .map(|stream| {
-                log_opened_stream(&stream);
-                let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
-                (PlaybackStream::Oboe(stream), granted)
-            })
-    };
-
-    result.map_err(|oboe_err| {
-        tracing::warn!(
-            "Oboe failed to open stream ({}), falling back to cpal",
-            oboe_err
-        );
-
-        // The packet_consumer was moved into the callback (now dropped), so the
-        // caller has to retry with a fresh ring buffer.
-        AudioError::OboeStreamBuildFailed {
-            direction: StreamDirection::Output,
-            message: format!("{}", oboe_err),
-        }
-        .into()
-    })
-}
-
-pub fn start_playback_stream(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
-    #[cfg(not(target_os = "android"))]
-    stream
-        .play()
-        .map_err(|source| AudioError::PlayStreamFailed {
-            direction: StreamDirection::Output,
-            source,
-        })?;
-
-    #[cfg(target_os = "android")]
-    {
-        macro_rules! start_oboe {
-            ($stream:expr) => {{
-                let burst = $stream.get_frames_per_burst();
-                let _ = $stream.set_buffer_size_in_frames(burst * 2);
-                $stream
-                    .start()
-                    .map_err(|e| AudioError::OboeStreamStartFailed {
-                        direction: StreamDirection::Output,
-                        message: format!("{}", e),
-                    })?;
-            }};
-        }
-
-        match stream {
-            PlaybackStream::Oboe(stream) => start_oboe!(stream),
-            PlaybackStream::OboeI16(stream) => start_oboe!(stream),
-            PlaybackStream::Cpal(stream) => {
-                use cpal::traits::StreamTrait;
-                stream
-                    .play()
-                    .map_err(|source| AudioError::PlayStreamFailed {
-                        direction: StreamDirection::Output,
-                        source,
-                    })?;
+                tracing::info!(
+                    "[Oboe] exclusive probe: granted={}, sharing={:?}, format={:?}, rate={}Hz",
+                    granted,
+                    stream.get_sharing_mode(),
+                    stream.get_format(),
+                    stream.get_sample_rate(),
+                );
+                granted
+            }
+            Err(e) => {
+                tracing::warn!("[Oboe] exclusive probe failed: {}", e);
+                false
             }
         }
     }
 
-    Ok(())
-}
-
-pub fn pause_playback_stream(stream: &mut PlaybackStream) -> Result<(), GemaCastError> {
     #[cfg(not(target_os = "android"))]
-    stream
-        .pause()
-        .map_err(|source| AudioError::PauseStreamFailed {
-            direction: StreamDirection::Output,
-            source,
-        })?;
-
-    #[cfg(target_os = "android")]
-    {
-        use oboe::AudioOutputStream;
-
-        macro_rules! pause_and_flush_oboe {
-            ($stream:expr) => {{
-                $stream
-                    .pause()
-                    .map_err(|e| AudioError::OboeStreamControlFailed {
-                        action: "pause",
-                        direction: StreamDirection::Output,
-                        message: format!("{}", e),
-                    })?;
-                $stream
-                    .flush()
-                    .map_err(|e| AudioError::OboeStreamControlFailed {
-                        action: "flush",
-                        direction: StreamDirection::Output,
-                        message: format!("{}", e),
-                    })?;
-            }};
-        }
-
-        match stream {
-            PlaybackStream::Oboe(stream) => pause_and_flush_oboe!(stream),
-            PlaybackStream::OboeI16(stream) => pause_and_flush_oboe!(stream),
-            PlaybackStream::Cpal(stream) => {
-                use cpal::traits::StreamTrait;
-                stream
-                    .pause()
-                    .map_err(|source| AudioError::PauseStreamFailed {
-                        direction: StreamDirection::Output,
-                        source,
-                    })?;
-            }
-        }
+    pub fn supports_exclusive_mode() -> bool {
+        false
     }
-
-    Ok(())
-}
-
-/// Probe whether the device supports Oboe exclusive audio mode by opening a
-/// throwaway stream. Returns `true` if the granted sharing mode is Exclusive.
-#[cfg(target_os = "android")]
-pub fn probe_exclusive_support() -> bool {
-    use oboe::{
-        AudioOutputCallback, AudioOutputStreamSafe, AudioStreamBase, AudioStreamBuilder,
-        DataCallbackResult, PerformanceMode, SharingMode,
-    };
-
-    struct SilentProbe;
-    impl AudioOutputCallback for SilentProbe {
-        type FrameType = (i16, oboe::Stereo);
-        fn on_audio_ready(
-            &mut self,
-            _stream: &mut dyn AudioOutputStreamSafe,
-            data: &mut [(i16, i16)],
-        ) -> DataCallbackResult {
-            data.fill((0, 0));
-            DataCallbackResult::Stop
-        }
-    }
-
-    // Must request exactly what the exclusive path in build_playback_stream
-    // requests. A failed exclusive open is silently retried as shared, so any
-    // mismatch here reads back as "the device does not support it".
-    let builder = AudioStreamBuilder::default()
-        .set_direction::<oboe::Output>()
-        .set_performance_mode(PerformanceMode::LowLatency)
-        .set_sharing_mode(SharingMode::Exclusive)
-        .set_format::<i16>()
-        .set_channel_count::<oboe::Stereo>()
-        .set_sample_rate(OPUS_SAMPLE_RATE as i32)
-        .set_callback(SilentProbe);
-
-    match builder.open_stream() {
-        Ok(stream) => {
-            let granted = stream.get_sharing_mode() == SharingMode::Exclusive;
-            tracing::info!(
-                "[Oboe] exclusive probe: granted={}, sharing={:?}, format={:?}, rate={}Hz",
-                granted,
-                stream.get_sharing_mode(),
-                stream.get_format(),
-                stream.get_sample_rate(),
-            );
-            granted
-        }
-        Err(e) => {
-            tracing::warn!("[Oboe] exclusive probe failed: {}", e);
-            false
-        }
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-pub fn probe_exclusive_support() -> bool {
-    false
 }

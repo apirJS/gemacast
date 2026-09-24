@@ -4,58 +4,58 @@
   --font-sans: 'Inter', 'Avenir', 'Helvetica', 'Arial', sans-serif;
 
   /* Gruvbox Light (default) */
-  --color-background: #fbf1c7;
-  --color-foreground: #3c3836;
+  --color-background: #f3f5f5;
+  --color-foreground: #303b43;
 
-  --color-card: #fbf1c7;
-  --color-card-foreground: #3c3836;
+  --color-card: #f3f5f5;
+  --color-card-foreground: #303b43;
 
-  --color-popover: #ebdbb2;
-  --color-popover-foreground: #3c3836;
+  --color-popover: #e6ebed;
+  --color-popover-foreground: #303b43;
 
-  --color-primary: #3c3836;
-  --color-primary-foreground: #fbf1c7;
+  --color-primary: #303b43;
+  --color-primary-foreground: #f3f5f5;
 
-  --color-secondary: #ebdbb2;
-  --color-secondary-foreground: #504945;
+  --color-secondary: #e6ebed;
+  --color-secondary-foreground: #46545f;
 
-  --color-muted: #ebdbb2;
-  --color-muted-foreground: #7c6f64;
+  --color-muted: #e6ebed;
+  --color-muted-foreground: #606e78;
 
-  --color-accent: #d5c4a1;
-  --color-accent-foreground: #3c3836;
+  --color-accent: #d6dfe3;
+  --color-accent-foreground: #303b43;
 
-  --color-destructive: #9d0006;
-  --color-destructive-foreground: #fbf1c7;
-  --color-destructive-muted: #9d000618;
+  --color-destructive: #b13e49;
+  --color-destructive-foreground: #ffffff;
+  --color-destructive-muted: #b13e4918;
 
-  --color-border: #d5c4a1;
-  --color-input: #d5c4a1;
-  --color-ring: #3c3836;
+  --color-border: #c9d3d9;
+  --color-input: #c9d3d9;
+  --color-ring: #476e89;
 
-  --color-status-ok: #79740e;
-  --color-status-ok-bg: #ebdbb2;
-  --color-status-ok-border: #bdae93;
+  --color-status-ok: #386f60;
+  --color-status-ok-bg: #e1ece7;
+  --color-status-ok-border: #a8c7ba;
 
-  --color-status-warn: #b57614;
-  --color-status-warn-bg: #ebdbb2;
-  --color-status-warn-border: #bdae93;
+  --color-status-warn: #8a641f;
+  --color-status-warn-bg: #eee7d9;
+  --color-status-warn-border: #d0bf99;
 
-  --color-status-lost: #9d0006;
-  --color-status-lost-bg: #ebdbb2;
-  --color-status-lost-border: #bdae93;
+  --color-status-lost: #b13e49;
+  --color-status-lost-bg: #f1e3e5;
+  --color-status-lost-border: #d6afb5;
 
-  --color-status-connecting: #076678;
-  --color-status-connecting-bg: #ebdbb2;
-  --color-status-connecting-border: #bdae93;
+  --color-status-connecting: #416987;
+  --color-status-connecting-bg: #e1eaf0;
+  --color-status-connecting-border: #adc4d4;
 
   /* Gruvbox accent colors (faded for light mode) */
-  --color-accent-red: #9d0006;
-  --color-accent-green: #79740e;
-  --color-accent-yellow: #b57614;
-  --color-accent-blue: #076678;
-  --color-accent-aqua: #427b58;
-  --color-accent-orange: #af3a03;
+  --color-accent-red: #b13e49;
+  --color-accent-green: #386f60;
+  --color-accent-yellow: #8a641f;
+  --color-accent-blue: #416987;
+  --color-accent-aqua: #317674;
+  --color-accent-orange: #a65c34;
 
   --radius-default: 0.5rem;
   --radius-lg: 0.75rem;
@@ -77,113 +77,113 @@
 
   .dark {
     /* Gruvbox Dark */
-    --color-background: #282828;
-    --color-foreground: #ebdbb2;
+    --color-background: #22282e;
+    --color-foreground: #dce4e9;
 
-    --color-card: #282828;
-    --color-card-foreground: #ebdbb2;
+    --color-card: #22282e;
+    --color-card-foreground: #dce4e9;
 
-    --color-popover: #3c3836;
-    --color-popover-foreground: #ebdbb2;
+    --color-popover: #2c343c;
+    --color-popover-foreground: #dce4e9;
 
-    --color-primary: #ebdbb2;
-    --color-primary-foreground: #282828;
+    --color-primary: #dce4e9;
+    --color-primary-foreground: #22282e;
 
-    --color-secondary: #3c3836;
-    --color-secondary-foreground: #d5c4a1;
+    --color-secondary: #2c343c;
+    --color-secondary-foreground: #c4d0d8;
 
-    --color-muted: #3c3836;
-    --color-muted-foreground: #a89984;
+    --color-muted: #2c343c;
+    --color-muted-foreground: #a0afb9;
 
-    --color-accent: #504945;
-    --color-accent-foreground: #ebdbb2;
+    --color-accent: #3c4852;
+    --color-accent-foreground: #dce4e9;
 
-    --color-destructive: #fb4934;
-    --color-destructive-foreground: #ebdbb2;
-    --color-destructive-muted: #fb493426;
+    --color-destructive: #ef858c;
+    --color-destructive-foreground: #22282e;
+    --color-destructive-muted: #ef858c26;
 
-    --color-border: #504945;
-    --color-input: #504945;
-    --color-ring: #fe8019;
+    --color-border: #414d57;
+    --color-input: #414d57;
+    --color-ring: #91b8cc;
 
-    --color-status-ok: #b8bb26;
-    --color-status-ok-bg: #3c3836;
-    --color-status-ok-border: #504945;
+    --color-status-ok: #8ac2ad;
+    --color-status-ok-bg: #293d38;
+    --color-status-ok-border: #46675c;
 
-    --color-status-warn: #fabd2f;
-    --color-status-warn-bg: #3c3836;
-    --color-status-warn-border: #504945;
+    --color-status-warn: #d6b578;
+    --color-status-warn-bg: #3e382c;
+    --color-status-warn-border: #6b5c3f;
 
-    --color-status-lost: #fb4934;
-    --color-status-lost-bg: #3c3836;
-    --color-status-lost-border: #504945;
+    --color-status-lost: #ef858c;
+    --color-status-lost-bg: #422f35;
+    --color-status-lost-border: #754750;
 
-    --color-status-connecting: #83a598;
-    --color-status-connecting-bg: #3c3836;
-    --color-status-connecting-border: #504945;
+    --color-status-connecting: #91b8cc;
+    --color-status-connecting-bg: #2a3946;
+    --color-status-connecting-border: #48657b;
 
     /* Gruvbox accent colors (bright for dark mode) */
-    --color-accent-red: #fb4934;
-    --color-accent-green: #b8bb26;
-    --color-accent-yellow: #fabd2f;
-    --color-accent-blue: #83a598;
-    --color-accent-aqua: #8ec07c;
-    --color-accent-orange: #fe8019;
+    --color-accent-red: #ef858c;
+    --color-accent-green: #8ac2ad;
+    --color-accent-yellow: #d6b578;
+    --color-accent-blue: #91b8cc;
+    --color-accent-aqua: #83c2be;
+    --color-accent-orange: #d79d7d;
   }
 
   @media (prefers-color-scheme: dark) {
     :root:not(.light) {
-      --color-background: #282828;
-      --color-foreground: #ebdbb2;
+      --color-background: #22282e;
+      --color-foreground: #dce4e9;
 
-      --color-card: #282828;
-      --color-card-foreground: #ebdbb2;
+      --color-card: #22282e;
+      --color-card-foreground: #dce4e9;
 
-      --color-popover: #3c3836;
-      --color-popover-foreground: #ebdbb2;
+      --color-popover: #2c343c;
+      --color-popover-foreground: #dce4e9;
 
-      --color-primary: #ebdbb2;
-      --color-primary-foreground: #282828;
+      --color-primary: #dce4e9;
+      --color-primary-foreground: #22282e;
 
-      --color-secondary: #3c3836;
-      --color-secondary-foreground: #d5c4a1;
+      --color-secondary: #2c343c;
+      --color-secondary-foreground: #c4d0d8;
 
-      --color-muted: #3c3836;
-      --color-muted-foreground: #a89984;
+      --color-muted: #2c343c;
+      --color-muted-foreground: #a0afb9;
 
-      --color-accent: #504945;
-      --color-accent-foreground: #ebdbb2;
+      --color-accent: #3c4852;
+      --color-accent-foreground: #dce4e9;
 
-      --color-destructive: #fb4934;
-      --color-destructive-foreground: #ebdbb2;
-      --color-destructive-muted: #fb493426;
+      --color-destructive: #ef858c;
+      --color-destructive-foreground: #22282e;
+      --color-destructive-muted: #ef858c26;
 
-      --color-border: #504945;
-      --color-input: #504945;
-      --color-ring: #fe8019;
+      --color-border: #414d57;
+      --color-input: #414d57;
+      --color-ring: #91b8cc;
 
-      --color-status-ok: #b8bb26;
-      --color-status-ok-bg: #3c3836;
-      --color-status-ok-border: #504945;
+      --color-status-ok: #8ac2ad;
+      --color-status-ok-bg: #293d38;
+      --color-status-ok-border: #46675c;
 
-      --color-status-warn: #fabd2f;
-      --color-status-warn-bg: #3c3836;
-      --color-status-warn-border: #504945;
+      --color-status-warn: #d6b578;
+      --color-status-warn-bg: #3e382c;
+      --color-status-warn-border: #6b5c3f;
 
-      --color-status-lost: #fb4934;
-      --color-status-lost-bg: #3c3836;
-      --color-status-lost-border: #504945;
+      --color-status-lost: #ef858c;
+      --color-status-lost-bg: #422f35;
+      --color-status-lost-border: #754750;
 
-      --color-status-connecting: #83a598;
-      --color-status-connecting-bg: #3c3836;
-      --color-status-connecting-border: #504945;
+      --color-status-connecting: #91b8cc;
+      --color-status-connecting-bg: #2a3946;
+      --color-status-connecting-border: #48657b;
 
-      --color-accent-red: #fb4934;
-      --color-accent-green: #b8bb26;
-      --color-accent-yellow: #fabd2f;
-      --color-accent-blue: #83a598;
-      --color-accent-aqua: #8ec07c;
-      --color-accent-orange: #fe8019;
+      --color-accent-red: #ef858c;
+      --color-accent-green: #8ac2ad;
+      --color-accent-yellow: #d6b578;
+      --color-accent-blue: #91b8cc;
+      --color-accent-aqua: #83c2be;
+      --color-accent-orange: #d79d7d;
     }
   }
 

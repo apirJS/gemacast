@@ -1,8 +1,6 @@
 name: CI Validation
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -230,3 +228,22 @@ jobs:
             cargo test -p gemacast-core output_volume -- --nocapture
             cargo test -p gemacast-pc volume_watcher -- --nocapture
           '
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - audit
+      - frontend
+      - backend
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require all CI jobs to pass
+        env:
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+        run: |
+          test "$AUDIT_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$BACKEND_RESULT" = success
