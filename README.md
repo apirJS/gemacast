@@ -2,11 +2,11 @@
 
 # <img src="assets/logo_transparent.svg" height="56" alt="Gemacast logo" valign="middle" /> Gemacast
 
-[![CI](https://github.com/apirJS/gemacast/actions/workflows/ci.yml/badge.svg)](https://github.com/apirJS/gemacast/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/apirJS/gemacast?label=release)](https://github.com/apirJS/gemacast/releases/latest)
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Downloads](https://img.shields.io/github/downloads/apirJS/gemacast/total)](https://github.com/apirJS/gemacast/releases)
 [![License](https://img.shields.io/github/license/apirJS/gemacast)](LICENSE)
-[![Website](https://img.shields.io/badge/website-gemacast.apirjs.tech-blue)](https://gemacast.apirjs.tech/)
 
 Stream desktop or per-application audio from your PC to one or more Android
 phones over Wi-Fi, USB tethering, or ADB. Every phone can use its own audio
