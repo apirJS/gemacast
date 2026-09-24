@@ -97,10 +97,11 @@ The phone and PC must be on the same network, connected via USB tethering, or li
 | Feature | Details |
 |---|---|
 | Audio capture | Full desktop audio or per-application audio |
-| Codecs | Opus LowDelay/CELT at 10-512 kbps, or uncompressed PCM at 48 kHz stereo |
+| Customizable bitrate | Opus LowDelay/CELT at 10-512 kbps, or uncompressed PCM at 48 kHz stereo |
 | Multi-device | Stream to multiple Android devices simultaneously with independent settings |
 | Secure pairing | TLS control channel with ECDSA P-256 device auth and 6-digit pairing code |
 | Adaptive jitter buffer | Per-client buffer depth adjusted to link quality on the audio thread |
+| Customizable buffer size |Adjust buffer size based on your network quality |
 
 ## Firewalls
 
