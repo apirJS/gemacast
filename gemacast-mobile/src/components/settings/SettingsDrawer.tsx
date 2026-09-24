@@ -71,15 +71,12 @@ export function SettingsDrawer() {
         aria-label="Settings"
         inert={!open}
         className={`
-          fixed top-0 left-0 z-50 flex h-dvh w-screen flex-col overflow-hidden
+          fixed inset-0 z-50 flex min-h-0 w-full flex-col overflow-hidden
           border-r border-border bg-background text-foreground
           shadow-[4px_0_24px_rgba(0,0,0,0.2)]
           transition-transform duration-300 ease-out
           ${open ? 'translate-x-0' : '-translate-x-full'}
         `}
-        style={{
-          paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))',
-        }}
       >
         <div
           className="flex items-center justify-between border-b border-border px-5 py-3"
@@ -96,7 +93,10 @@ export function SettingsDrawer() {
           <ThemeToggle />
         </div>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <div
+          className="min-h-0 flex-1 touch-pan-y space-y-5 overflow-y-auto overscroll-contain px-5 pt-5"
+          style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
+        >
           <UpdateBanner />
 
           <div>
