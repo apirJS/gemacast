@@ -617,7 +617,7 @@ fn friendly_bind_error(e: impl std::fmt::Display, port_name: &str) -> String {
         || e_str.contains("WSAEADDRINUSE")
     {
         format!(
-            "{port_name} is already in use. Is GemaCast already running in the background? \
+            "{port_name} is already in use. Is Gemacast already running in the background? \
              Please check your system tray or Task Manager."
         )
     } else {

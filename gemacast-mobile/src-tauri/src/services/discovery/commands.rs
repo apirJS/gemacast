@@ -49,7 +49,7 @@ pub async fn start_listening_for_streamers(
                 || e_str.contains("98")
                 || e_str.contains("WSAEADDRINUSE")
             {
-                "Discovery port is already in use. Is GemaCast already running in the background?"
+                "Discovery port is already in use. Is Gemacast already running in the background?"
                     .to_string()
             } else {
                 e_str

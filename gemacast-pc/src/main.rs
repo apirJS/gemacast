@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-//! GemaCast PC Streamer — streams desktop audio to mobile devices.
+//! Gemacast PC Streamer — streams desktop audio to mobile devices.
 //!
 //! This binary runs as a system tray application. The main thread owns the
 //! tray event loop ([`app`]), while a background thread runs all async tasks
@@ -64,8 +64,8 @@ fn main() {
     use fs2::FileExt;
     if lock_file.try_lock_exclusive().is_err() {
         rfd::MessageDialog::new()
-            .set_title("GemaCast")
-            .set_description("GemaCast is already running! Check your system tray.")
+            .set_title("Gemacast")
+            .set_description("Gemacast is already running! Check your system tray.")
             .set_level(rfd::MessageLevel::Info)
             .show();
         return;
