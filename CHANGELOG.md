@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/apirJS/gemacast/compare/v0.5.2...v0.5.3) (2026-09-24)
+
+
+### Refactoring
+
+* big rewrite ([#94](https://github.com/apirJS/gemacast/issues/94)) ([d4f1360](https://github.com/apirJS/gemacast/commit/d4f13600d33364eccf46d368a5d85956ca36f04a))
+
 ## [0.5.2](https://github.com/apirJS/gemacast/compare/v0.5.1...v0.5.2) (2026-09-21)
 
 
