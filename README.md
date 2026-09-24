@@ -1,296 +1,262 @@
 <div align="center">
 
-# <img src="assets/logo_transparent.svg" height="56" alt="Gemacast Logo" valign="middle" /> Gemacast
+# <img src="assets/logo_transparent.svg" height="56" alt="Gemacast logo" valign="middle" /> Gemacast
 
+[![CI](https://github.com/apirJS/gemacast/actions/workflows/ci.yml/badge.svg)](https://github.com/apirJS/gemacast/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/apirJS/gemacast?label=release)](https://github.com/apirJS/gemacast/releases/latest)
-[![Rust](https://img.shields.io/badge/rust-1.97.1-orange)](https://www.rust-lang.org/)
-[![TypeScript](https://img.shields.io/badge/typescript-6-blue)](https://www.typescriptlang.org/)
-[![Release Date](https://img.shields.io/github/release-date/apirJS/gemacast)](https://github.com/apirJS/gemacast/releases/latest)
-[![Last Commit](https://img.shields.io/github/last-commit/apirJS/gemacast)](https://github.com/apirJS/gemacast/commits/main)
 [![Downloads](https://img.shields.io/github/downloads/apirJS/gemacast/total)](https://github.com/apirJS/gemacast/releases)
 [![License](https://img.shields.io/github/license/apirJS/gemacast)](LICENSE)
 [![Website](https://img.shields.io/badge/website-gemacast.apirjs.tech-blue)](https://gemacast.apirjs.tech/)
 
-Stream desktop audio from PC to Android over Wi-Fi, USB tethering, or ADB.
-Captures full audio or per-application audio and plays it on one or more phones. Turn your phone into a speaker!!
+Stream desktop or per-application audio from your PC to one or more Android
+phones over Wi-Fi, USB tethering, or ADB. Every phone can use its own audio
+source, bitrate, and buffer settings.
+
+[Download the latest release](https://github.com/apirJS/gemacast/releases/latest)
 
 </div>
 
-## Table of Contents
+## Quick start
 
-- [Screenshots](#screenshots)
-- [Requirements and Setup](#requirements-and-setup)
-- [Features](#features)
-- [Firewalls](#firewalls)
-- [Audio Formats](#audio-formats)
-- [Compile from Source](#compile-from-source)
-- [FAQ](#faq)
-- [License](#license)
-- [Third-Party Library Acknowledgement](#third-party-library-acknowledgement)
+1. Install the Gemacast PC app for Windows, Linux, or macOS from
+   [Releases](https://github.com/apirJS/gemacast/releases/latest).
+2. Install `gemacast-mobile.apk` on an ARM64 phone. Install
+   `gemacast-mobile-universal.apk` when you need the multi-architecture build.
+3. Start Gemacast on the PC, then open it on the phone.
+4. Select a connection mode on the phone and choose the discovered PC.
+5. For a first-time LAN connection, confirm that both devices show the same
+   six-digit pairing code and approve the connection.
+
+The PC app runs in the system tray. If the phone cannot discover it over Wi-Fi
+or USB tethering, check the [firewall ports](#firewalls).
+
+## Connection modes
+
+| Mode | Setup | Notes |
+| --- | --- | --- |
+| Wi-Fi | Put both devices on the same non-guest network and select **Wi-Fi**. | Uses the local wireless network; latency depends on that network. |
+| USB tethering | Connect the cable, enable **USB tethering** in Android settings, then select **USB**. | Creates a network interface over USB and uses the LAN protocol. |
+| ADB | Enable Android developer options and USB debugging, connect the cable, approve the computer, then select **ADB**. | The PC process configures `adb reverse`; no LAN firewall rule is used. |
+
+VPNs, guest Wi-Fi, and router client isolation can prevent LAN discovery even
+when both devices have a strong signal.
 
 ## Screenshots
 
 <div align="center">
-  <img src="assets/mobile-stream-adb-demo.gif" alt="Phone playing" height="480" />
-  <img src="assets/stream-choose-process-audio-demo.jpeg" alt="Choose Process Audio" height="480" />
-  <br /><br />
-  <img src="assets/setting-panel-1.jpeg" alt="Phone settings 1" height="480" />
-  <img src="assets/setting-panel-2.jpeg" alt="Phone settings 2" height="480" />
-  <br /><br />
-  <img src="assets/pc-system-tray.png" alt="PC system tray" width="720" />
+  <img src="assets/mobile-stream-adb-demo.gif" alt="Gemacast streaming PC audio to an Android phone" height="480" />
 </div>
 
-## Requirements and Setup
+<details>
+<summary>More screenshots</summary>
+<br />
+<div align="center">
+  <img src="assets/stream-choose-process-audio-demo.jpeg" alt="Selecting a per-application audio source" height="460" />
+  <img src="assets/setting-panel-1.jpeg" alt="Gemacast mobile settings" height="460" />
+  <br /><br />
+  <img src="assets/setting-panel-2.jpeg" alt="Additional Gemacast mobile settings" height="460" />
+  <br /><br />
+  <img src="assets/pc-system-tray.png" alt="Gemacast PC system tray" width="720" />
+</div>
+</details>
+
+## Features
+
+- Full desktop or per-application audio capture.
+- Multiple phones with independent source, bitrate, and buffer settings.
+- Opus LowDelay/CELT from 6 to 512 Kbps, or uncompressed stereo PCM.
+- Adaptive and fixed jitter-buffer presets.
+- Wi-Fi, USB tethering, and automatic ADB forwarding.
+- LAN control channel with TLS, P-256 device authentication, and a six-digit
+  comparison code.
+- Optional PC-volume synchronization and automatic reconnection.
+
+## Implemented platforms
+
+| PC platform | Capture implementation | Automated CI coverage |
+| --- | --- | --- |
+| Windows | WASAPI desktop and per-process loopback | `windows-latest` |
+| Linux | PipeWire desktop and per-process capture; cpal desktop fallback | Ubuntu 22.04 with PipeWire 1.2.7 and WirePlumber 0.5.15 |
+| macOS 13+ | ScreenCaptureKit desktop and per-process capture; cpal desktop fallback | macOS 15 |
+| macOS 11-12 | Code selects the cpal desktop fallback; per-process capture is unavailable | Not covered by CI |
+
+The player requires Android 8.0 (API 26) or later. iOS is not currently
+supported.
+
+## Installation
 
 ### Windows
 
-Minimum: Windows 10 version 2004 or later.
-
-1. Download the `.msi` installer or `.zip` archive from [Releases](https://github.com/apirJS/gemacast/releases/latest).
-2. Run the installer. It creates a Windows Firewall rule for ports UDP 23555-23556 and TCP 23559.
-3. Launch Gemacast from the Start menu or system tray.
+Download the `.msi` installer or `.zip` archive from
+[Releases](https://github.com/apirJS/gemacast/releases/latest). The MSI installs
+TCP and UDP firewall exceptions for `gemacast-pc.exe`. Portable installations
+do not create those exceptions.
 
 ### Linux
 
-Requires a PipeWire 0.3+ session with WirePlumber for audio capture.
-
-Download `.deb`, `.rpm`, `.AppImage`, or `.tar.xz` from [Releases](https://github.com/apirJS/gemacast/releases/latest).
+PipeWire is used for desktop and per-process capture. Without PipeWire, the code
+can fall back to cpal for desktop capture, but per-process capture is
+unavailable. Download the `.deb`, `.rpm`, `.AppImage`, or `.tar.xz` package from
+[Releases](https://github.com/apirJS/gemacast/releases/latest).
 
 ```bash
-# Debian / Ubuntu (.deb)
-sudo dpkg -i gemacast-pc_*.deb
+# Debian / Ubuntu, with dependency resolution
+sudo apt install ./gemacast-pc_*.deb
 
-# Fedora / RHEL (.rpm)
-sudo rpm -i gemacast-pc-*.rpm
+# Fedora / RHEL, with dependency resolution
+sudo dnf install ./gemacast-pc-*.rpm
 ```
 
-The `.deb` and `.rpm` packages automatically install required UI libraries (GTK3, AppIndicator) and configure firewall rules and port reservations.
-
-For `.AppImage` or `.tar.xz`, you must open ports manually (see [Firewalls](#firewalls)). Additionally, the `.tar.xz` binary requires GTK3 and AppIndicator (e.g., `libayatana-appindicator3-1`) installed on your system to display the system tray icon.
+The packages declare their UI dependencies. Their maintainer scripts make a
+best-effort attempt to configure supported firewalls. AppImage and archive
+installations do not configure the firewall. The archive requires GTK3 and
+AppIndicator, such as `libayatana-appindicator3-1`, for the tray icon.
 
 ### macOS
 
-Requires macOS >= 13
-
-Download the `.dmg` from [Releases](https://github.com/apirJS/gemacast/releases/latest).
-
-The binary is unsigned and un-notarized. On first launch, right-click the app and select Open, or run:
+Download the `.dmg` from
+[Releases](https://github.com/apirJS/gemacast/releases/latest). The app is
+currently unsigned and unnotarized. On first launch, right-click the app and
+select **Open**, or remove its quarantine attribute:
 
 ```bash
 xattr -d com.apple.quarantine /Applications/Gemacast.app
 ```
 
-Audio capture uses ScreenCaptureKit on macOS 13 and later (requires Screen Recording permission).
-On macOS 12 or below, CPAL is used as a fallback and requires a virtual output device (BlackHole or Soundflower).
+On macOS 13 and later, ScreenCaptureKit capture requires Screen Recording
+permission. The code selects the cpal fallback on macOS 11-12 or after a
+ScreenCaptureKit failure. Capturing system output through that fallback requires
+routing the output to a capture device, such as BlackHole or Soundflower. The
+macOS 11-12 path is not covered by CI.
 
 ### Android
 
-Minimum: Android 8.0 (Oreo, API 26) or later.
+Download and install the APK from
+[Releases](https://github.com/apirJS/gemacast/releases/latest). Use
+`gemacast-mobile.apk` for the ARM64 build or
+`gemacast-mobile-universal.apk` for the multi-architecture build.
 
-Download the `.apk` from [Releases](https://github.com/apirJS/gemacast/releases/latest) and install it.
-Most phones should use the smaller ARM64 build, `gemacast-mobile.apk`; use
-`gemacast-mobile-universal.apk` only when you need the multi-architecture build.
-The phone and PC must be on the same network, connected via USB tethering, or linked by an ADB cable with `adb reverse` forwarding.
+## Security and privacy
 
-## Features
-
-| Feature | Details |
-|---|---|
-| Audio capture | Full desktop audio or per-application audio |
-| Customizable bitrate | Opus LowDelay/CELT at 10-512 kbps, or uncompressed PCM at 48 kHz stereo |
-| Multi-device | Stream to multiple Android devices simultaneously with independent settings |
-| Secure pairing | TLS control channel with ECDSA P-256 device auth and 6-digit pairing code |
-| Adaptive jitter buffer | Per-client buffer depth adjusted to link quality on the audio thread |
-| Customizable buffer size |Adjust buffer size based on your network quality |
+- LAN control traffic uses TLS, device authentication, and per-device session
+  tokens that rotate when a device reconnects.
+- The six-digit code lets you confirm that the phone is pairing with the PC you
+  expect.
+- UDP audio on Wi-Fi and USB tethering is not encrypted or authenticated. Those
+  transports provide no audio-packet confidentiality or integrity.
+- Use Wi-Fi and USB tethering only on a trusted network. ADB carries the stream
+  through its USB-debugging connection instead of the LAN.
+- Per-application capture reveals the PC's process list to an authenticated
+  phone so that the user can select a source.
 
 ## Firewalls
 
-Gemacast uses three inbound ports on the PC. All three must be reachable from the phone's network for Wi-Fi and USB tethering connections.
+Wi-Fi and USB tethering require these inbound PC ports:
 
-| Port  | Protocol | Purpose            |
-|-------|----------|--------------------|
-| 23555 | UDP      | Discovery          |
-| 23556 | UDP      | Audio stream       |
-| 23559 | TCP      | TLS control (HTTPS)|
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 23555 | UDP | Discovery |
+| 23556 | UDP | Audio stream |
+| 23559 | TCP | TLS control |
 
-ADB connections (TCP 23557, 23558) run over loopback via `adb reverse` and require no firewall rule.
+ADB uses loopback TCP ports 23557 and 23558 through `adb reverse` and requires
+no firewall rule.
 
-**Windows**: The MSI installer creates rules automatically. For portable installs, allow the ports through Windows Firewall.
+Windows MSI installations configure the firewall automatically. For Linux:
 
-**Linux (ufw)**:
 ```bash
+# ufw
 sudo ufw allow 23555,23556/udp
 sudo ufw allow 23559/tcp
-```
 
-**Linux (firewalld)**:
-```bash
+# firewalld
 sudo cp linux/gemacast.firewalld.xml /usr/lib/firewalld/services/gemacast.xml
 sudo firewall-cmd --reload
 sudo firewall-cmd --permanent --add-service=gemacast
 sudo firewall-cmd --reload
 ```
 
-**macOS**: Allow incoming connections when the system dialog appears on first launch.
+On macOS, allow incoming connections when prompted.
 
-## Audio Formats
+## Audio formats
 
-| Format       | Codec               | Bitrate          | Frame Size | Latency per Frame |
-|--------------|---------------------|------------------|------------|--------------------|
-| Opus         | Opus LowDelay/CELT  | 10-512 kbps      | 480 samples | 10 ms             |
-| Uncompressed | Raw PCM (f32 stereo)| ~3072 kbps       | 480 samples | 10 ms             |
+| Format | Codec | Bitrate | Packet duration | Frame contents |
+| --- | --- | --- | --- | --- |
+| Opus | Opus LowDelay/CELT | 6-512 Kbps | 10 ms | 480 stereo frames / 960 interleaved samples |
+| Uncompressed | Raw `f32` stereo PCM | About 3.072 Mbps | 10 ms | 480 stereo frames / 960 interleaved samples |
 
-All formats run at 48 kHz stereo. The capture pipeline resamples any source rate to 48 kHz before encoding.
-
-## Compile from Source
-
-### Prerequisites
-
-| Tool | Version | Notes |
-|---|---|---|
-| Rust | 1.97.1 | Pinned in `rust-toolchain.toml` |
-| Clang | any | Required by `audiopus_sys` (Opus C build) |
-| CMake | 3.x | Required by `audiopus_sys` (Opus C build) |
-| Bun | 1.x | Frontend build for the mobile app |
-| Java | 17 (Temurin) | Android target only |
-| Android SDK + NDK | NDK 25.2.9519653 | Android target only |
-| cargo-ndk | latest | Android target only (`cargo install cargo-ndk`) |
-
-Linux requires PipeWire, ALSA, GTK3, WebKit2GTK, and related development headers:
-
-```bash
-# Debian / Ubuntu
-sudo apt-get install -y clang cmake pkg-config ninja-build meson \
-  libasound2-dev libpipewire-0.3-dev libgtk-3-dev \
-  libayatana-appindicator3-dev libwebkit2gtk-4.1-dev \
-  librsvg2-dev patchelf libxdo-dev libudev-dev libdbus-1-dev
-
-# Fedora
-sudo dnf install clang cmake pkg-config ninja-build meson \
-  alsa-lib-devel pipewire-devel gtk3-devel \
-  libayatana-appindicator-gtk3-devel webkit2gtk4.1-devel \
-  librsvg2-devel patchelf libxdo-devel systemd-devel dbus-devel
-```
-
-### Build PC (Windows / Linux / macOS)
-
-```bash
-git clone https://github.com/apirJS/gemacast.git
-cd gemacast
-cargo build --release -p gemacast-pc
-```
-
-The binary is written to `target/release/gemacast-pc` (or `gemacast-pc.exe` on Windows).
-
-### Build Android
-
-```bash
-cd gemacast/gemacast-mobile
-bun install --frozen-lockfile
-bunx tauri android build --apk
-# Smaller APK for modern ARM64 phones
-bunx tauri android build --apk --target aarch64 --split-per-abi
-```
-
-The unsigned APKs are written under
-`gemacast-mobile/src-tauri/gen/android/app/build/outputs/apk/`, in the
-`universal/release/` and `arm64/release/` directories respectively.
+All formats use 48 kHz stereo. Sources with another sample rate are resampled
+before transmission.
 
 ## FAQ
 
 <details>
-<summary><b>The phone cannot find my PC</b></summary>
-<br/>
+<summary><strong>The phone cannot find my PC</strong></summary>
 
-Both devices have to be on the same network, so a guest Wi-Fi or a VPN will hide your PC even at full signal. The firewall has to let Gemacast through, which is ports UDP 23555 (for presence), UDP 23556 (for audio stream) and TCP 23559 (for controls). Windows asks you about this once on the first launch, so it stays blocked if you closed that popup.
-
-</details>
-
-<details>
-<summary><b>What is the real end-to-end latency?</b></summary>
-<br/>
-
-Add up three things: 10 ms to record the audio on PC, half the round trip (RTT) to send it, and whatever the buffer is holding. The buffer is usually the biggest part. The phone shows you the buffer and the round trip while it plays, so you can add up your own number.
+Both devices must be on the same reachable network. Guest Wi-Fi, VPNs, and
+router client isolation can hide the PC. Confirm that Gemacast is running and
+that UDP 23555-23556 and TCP 23559 are allowed through the PC firewall. ADB
+mode does not use LAN discovery or firewall rules.
 
 </details>
 
 <details>
-<summary><b>The buffer grows past 200 ms when the screen turns off</b></summary>
-<br/>
+<summary><strong>What is the real end-to-end latency?</strong></summary>
 
-Android is saving battery. With the screen off it puts the Wi-Fi chip to sleep and only wakes it up on a set schedule, called DTIM. Audio stops arriving in a steady trickle and starts landing in batch, 100 to 200 ms apart. The buffer grows to cover the longest gap it sees, and that is the expected behavior, because a smaller buffer would just stutter the stream. To keep it low, turn on Keep Screen On in settings, or use USB tether or ADB, where the chip never sleeps.
-
-</details>
-
-<details>
-<summary><b>Why is there a pairing step?</b></summary>
-<br/>
-
-Without it, anything on your network could start a stream, see a list of your running apps, and change what your PC is recording. With pairing, you can allow which phone to connect. You allow it once, the first time you connect, and after that your phone remembers the PC and connects flawlessly.
+End-to-end latency includes PC capture and packetization, one-way transport, the
+phone's jitter buffer, decoding, and the phone's audio-output buffer. The phone
+reports round-trip time and jitter-buffer depth. RTT does not determine one-way
+delay unless the path is symmetric, and the app does not measure capture or
+hardware-output latency, so those metrics are not a complete end-to-end value.
 
 </details>
 
 <details>
-<summary><b>What is the 6-digit code for?</b></summary>
-<br/>
+<summary><strong>The buffer grows past 200 ms when the screen turns off</strong></summary>
 
-It shows that your phone is talking straight to your PC, with nothing in between (no man-in-middle). Each device works out the code by itself, using details only those two share. If some other machine were sitting in the middle, the two codes would come out different and you would see it right away. So just check that both screens show the same six digits, then approve. It is not a password, so it does not matter if someone else sees it.
+Some Android devices change Wi-Fi scheduling when the screen turns off. If
+packets begin arriving in larger batches, the adaptive buffer grows in response.
+**Keep Screen On** avoids the screen-off state; USB tethering and ADB avoid the
+Wi-Fi path.
 
 </details>
 
 <details>
-<summary><b>Is the audio encrypted?</b></summary>
-<br/>
+<summary><strong>Why is there a pairing step?</strong></summary>
 
-No, and that is on purpose. Pairing is protected, but the audio itself is sent plain. The whole point of this app is low delay, and the audio goes out in tiny pieces, 100 of them every second. Locking and unlocking every one of those adds work at both ends and makes each piece bigger, which is exactly the kind of cost that shows up as delay. So anyone on the same network could listen in if they wanted to. Stick to a network you trust, or use USB.
+Pairing decides which phones may control the PC, request its process list, and
+select what it captures. After approval, the phone stores the PC identity.
+Automatic reconnection depends on the app's **Auto Reconnect** setting.
 
 </details>
 
-## License
+<details>
+<summary><strong>What is the six-digit code for?</strong></summary>
 
-[GPL-3.0-or-later](LICENSE)
+Both devices independently derive the code from the authenticated pairing
+exchange. Matching codes provide a human check against a man-in-the-middle
+connection. Compare both screens before approving; the code is a verification
+value, not a password.
 
-## Third-Party Library Acknowledgement
+</details>
 
-### Rust
+<details>
+<summary><strong>Is the audio encrypted?</strong></summary>
 
-| Crate | License | Purpose |
-|---|---|---|
-| [tokio](https://crates.io/crates/tokio) | MIT | Async runtime |
-| [axum](https://crates.io/crates/axum) | MIT | HTTP/WebSocket control server |
-| [tao](https://crates.io/crates/tao) | Apache-2.0 / MIT | Window and system tray event loop (PC) |
-| [tray-icon](https://crates.io/crates/tray-icon) | Apache-2.0 / MIT | System tray icon (PC) |
-| [tauri](https://crates.io/crates/tauri) | Apache-2.0 / MIT | Mobile app framework |
-| [opus](https://crates.io/crates/opus) ([audiopus_sys](https://crates.io/crates/audiopus_sys)) | MIT / BSD-3 / ISC | Opus audio codec bindings |
-| [oboe](https://crates.io/crates/oboe) | Apache-2.0 | Low-latency audio output (Android) |
-| [cpal](https://crates.io/crates/cpal) | Apache-2.0 | Cross-platform audio I/O fallback |
-| [pipewire](https://crates.io/crates/pipewire) | MIT | PipeWire audio capture (Linux) |
-| [screencapturekit](https://crates.io/crates/screencapturekit) | Apache-2.0 / MIT | Screen/audio capture (macOS) |
-| [rubato](https://crates.io/crates/rubato) | MIT / Apache-2.0 | Async sample rate converter |
-| [ringbuf](https://crates.io/crates/ringbuf) | MIT / Apache-2.0 | Lock-free ring buffer |
-| [mdns-sd](https://crates.io/crates/mdns-sd) | Apache-2.0 / MIT | mDNS service discovery |
-| [reqwest](https://crates.io/crates/reqwest) | MIT / Apache-2.0 | HTTP client |
-| [rustls](https://crates.io/crates/rustls) | Apache-2.0 / MIT / ISC | TLS implementation |
-| [ring](https://crates.io/crates/ring) | Apache-2.0 / ISC / OpenSSL | Cryptographic primitives (ECDSA, SHA-256) |
-| [rcgen](https://crates.io/crates/rcgen) | Apache-2.0 / MIT | X.509 certificate generation |
-| [serde](https://crates.io/crates/serde) / [serde_json](https://crates.io/crates/serde_json) | MIT / Apache-2.0 | Serialization |
-| [rfd](https://crates.io/crates/rfd) | MIT | Native file/message dialogs (PC) |
-| [image](https://crates.io/crates/image) | MIT / Apache-2.0 | Image processing for tray icons |
-| [semver](https://crates.io/crates/semver) | MIT / Apache-2.0 | Semantic versioning for update checks |
+The control channel is encrypted and authenticated. UDP audio sent over Wi-Fi
+or USB tethering is not encrypted or authenticated; the protocol provides no
+confidentiality or integrity for those packets. ADB carries the stream through
+its loopback TCP forwarding path.
 
-### Frontend (TypeScript)
+</details>
 
-| Package | License | Purpose |
-|---|---|---|
-| [react](https://www.npmjs.com/package/react) / [react-dom](https://www.npmjs.com/package/react-dom) | MIT | UI framework |
-| [zustand](https://www.npmjs.com/package/zustand) | MIT | State management |
-| [tailwindcss](https://www.npmjs.com/package/tailwindcss) | MIT | Utility-first CSS |
-| [lucide-react](https://www.npmjs.com/package/lucide-react) | ISC | Icon library |
-| [vite](https://www.npmjs.com/package/vite) | MIT | Build tool and dev server |
-| [@tauri-apps/api](https://www.npmjs.com/package/@tauri-apps/api) | Apache-2.0 / MIT | Tauri IPC bridge |
+## Development
 
-### Android (Kotlin)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for toolchain setup, build commands,
+tests, architecture rules, and pull-request guidance.
 
-| Library | License | Purpose |
-|---|---|---|
-| [Android Keystore API](https://developer.android.com/training/articles/keystore) | Apache-2.0 | Hardware-backed ECDSA key storage |
+## License and acknowledgements
+
+Gemacast is licensed under [GPL-3.0-or-later](LICENSE). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for major third-party libraries
+and their licenses.

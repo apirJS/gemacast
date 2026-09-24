@@ -1,6 +1,6 @@
-# GemaCast Development Guide
+# Gemacast Development Guide
 
-GemaCast streams PC audio to Android over LAN, USB tethering, or ADB. The
+Gemacast streams PC audio to Android over LAN, USB tethering, or ADB. The
 workspace uses Rust 2024 and a pinned toolchain from `rust-toolchain.toml`. The
 mobile app is Tauri v2 with React 19 and Bun.
 
