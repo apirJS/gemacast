@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/apirJS/gemacast/compare/v0.5.3...v0.6.0) (2026-09-25)
+
+
+### Features
+
+* **core:** split audio packet on uncompressed mode to avoid MTU limit ([#96](https://github.com/apirJS/gemacast/issues/96)) ([e1f1992](https://github.com/apirJS/gemacast/commit/e1f19928228a597072c1284c0389c86010abc39e))
+
 ## [0.5.3](https://github.com/apirJS/gemacast/compare/v0.5.2...v0.5.3) (2026-09-24)
 
 
