@@ -41,6 +41,7 @@ class MainActivity : TauriActivity() {
         private const val BATTERY_PROMPT_SUPPRESSED_KEY = "battery_prompt_suppressed"
     }
     private var gemaCastService: GemaCastService? = null
+    private var webViewSystemBars: WebViewSystemBars? = null
     private var serviceBound = false
     @Volatile private var pendingPcId: String? = null
     @Volatile private var pendingPcFingerprint: String? = null
@@ -598,8 +599,14 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        webViewSystemBars = WebViewSystemBars(findViewById(android.R.id.content)).also { it.install() }
 
         promptBatteryOptimization()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) webViewSystemBars?.refresh()
     }
 
     override fun onStart() {
@@ -625,6 +632,7 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
+        webViewSystemBars?.refresh()
         acquireMulticastLock()
     }
 
