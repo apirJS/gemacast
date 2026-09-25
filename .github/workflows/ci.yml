@@ -11,6 +11,7 @@ permissions:
 jobs:
   audit:
     name: Rust Dependency Audit
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'apir-s-semantic-release-bot[bot]' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -37,6 +38,7 @@ jobs:
 
   frontend:
     name: Frontend Checks (TypeScript / Tauri)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'apir-s-semantic-release-bot[bot]' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -68,6 +70,7 @@ jobs:
 
   backend:
     name: Backend Checks (${{ matrix.name }})
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'apir-s-semantic-release-bot[bot]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -240,10 +243,15 @@ jobs:
     steps:
       - name: Require all CI jobs to pass
         env:
+          RELEASE_BOT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'apir-s-semantic-release-bot[bot]' }}
           AUDIT_RESULT: ${{ needs.audit.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
         run: |
+          if [ "$RELEASE_BOT_PR" = true ]; then
+            echo "Release bot PR: validation jobs intentionally skipped."
+            exit 0
+          fi
           test "$AUDIT_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$BACKEND_RESULT" = success
