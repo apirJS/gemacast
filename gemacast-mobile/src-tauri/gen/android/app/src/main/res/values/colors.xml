@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Gruvbox Light -->
-    <color name="gruvbox_bg">#FFFBF1C7</color>
+    <!-- Match the WebView background in both system themes. -->
+    <color name="gruvbox_bg">#FFF3F5F5</color>
     <color name="gruvbox_fg">#FF3C3836</color>
-    <color name="gruvbox_bg_dark">#FF282828</color>
+    <color name="gruvbox_bg_dark">#FF22282E</color>
     <color name="gruvbox_fg_dark">#FFEBDBB2</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>

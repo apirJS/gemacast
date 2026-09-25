@@ -29,6 +29,12 @@ impl AudioPacketDecoder {
         let seq_num = u64::from_be_bytes(seq_bytes);
 
         let format_flag = buffer[SEQ_NUM_SIZE];
+        if !matches!(
+            format_flag,
+            crate::audio::FORMAT_OPUS | FORMAT_UNCOMPRESSED | FORMAT_SILENCE
+        ) {
+            return Err(ProtocolError::UnsupportedAudioFormat(format_flag));
+        }
         let is_uncompressed = format_flag == FORMAT_UNCOMPRESSED;
         let is_silence = format_flag == FORMAT_SILENCE;
 

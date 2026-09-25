@@ -1,14 +1,14 @@
-use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use super::captured_frame::CapturedFrame;
 use super::encode::AudioFrameEncoder;
 use super::failure::StreamTaskFailure;
+use super::udp_audio_sender::UdpAudioSender;
 use crate::audio::{MAX_OPUS_PACKET_SIZE, OPUS_FRAME_SAMPLES, SEQ_NUM_SIZE};
-use crate::domain::error::{AudioError, GemaCastError, NetworkError};
+use crate::domain::error::{AudioError, GemaCastError};
 use crate::domain::types::{AudioBitrate, AudioSource};
 use crate::ports::capture::{CaptureBackend, CaptureCounters, CaptureHandle};
 
@@ -41,7 +41,7 @@ pub(crate) struct AudioCaptureInstance {
     /// TCP/ADB encoders keyed by DeviceId.
     pub(crate) tcp_encoders: HashMap<crate::domain::types::DeviceId, TcpEncoder>,
     /// Broadcast channel for raw PCM frames from the capture thread.
-    pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
+    pcm_broadcast_tx: broadcast::Sender<Arc<CapturedFrame>>,
     pub capture_shutdown_tx: Option<oneshot::Sender<()>>,
     pub capture_join_handle: tokio::task::JoinHandle<()>,
 }
@@ -53,7 +53,8 @@ impl AudioCaptureInstance {
         generation: u64,
         failure_tx: mpsc::UnboundedSender<StreamTaskFailure>,
     ) -> Result<Self, GemaCastError> {
-        let (pcm_broadcast_tx, _) = broadcast::channel(4000);
+        // Capture fan-out is bounded independently from each phone's send deadline.
+        let (pcm_broadcast_tx, _) = broadcast::channel(16);
         let (capture_shutdown_tx, capture_shutdown_rx) = oneshot::channel();
         let pcm_tx_clone = pcm_broadcast_tx.clone();
 
@@ -115,7 +116,7 @@ impl AudioCaptureInstance {
 
         let join_handle = tokio::spawn(async move {
             if let Err(error) =
-                PerTargetEncoder::run(pcm_rx, target_addr, encoder, bitrate, shutdown_rx).await
+                UdpAudioSender::run(pcm_rx, target_addr, encoder, bitrate, shutdown_rx).await
             {
                 tracing::error!("[PerTargetEncoder] {:?} failed: {}", target_addr, error);
                 let _ = failure_tx.send(StreamTaskFailure::UdpEncoder {
@@ -232,11 +233,12 @@ impl AudioCaptureInstance {
     async fn run_capture_loop<B: CaptureBackend>(
         mut capture: CaptureHandle<B>,
         mut capture_shutdown_rx: oneshot::Receiver<()>,
-        pcm_broadcast_tx: broadcast::Sender<Arc<Vec<f32>>>,
+        pcm_broadcast_tx: broadcast::Sender<Arc<CapturedFrame>>,
         source: AudioSource,
     ) -> Result<(), GemaCastError> {
         use ringbuf::traits::*;
         let mut sample_buf = Vec::<f32>::with_capacity(OPUS_FRAME_SAMPLES * 2);
+        let mut frame_position = 0u64;
 
         // Watchdog interval to inject silence if WASAPI loopback goes idle (e.g. no apps playing audio)
         // 22ms is slightly longer than the standard 20ms Opus frame duration.
@@ -283,8 +285,18 @@ impl AudioCaptureInstance {
 
                     CaptureDiagnostics::note_ring_read_parity(actually_read, &source, &capture.counters);
 
+                    let read_at = tokio::time::Instant::now();
                     while sample_buf.len() >= OPUS_FRAME_SAMPLES {
-                        let frame = Arc::new(sample_buf[..OPUS_FRAME_SAMPLES].to_vec());
+                        let remaining = sample_buf.len() - OPUS_FRAME_SAMPLES;
+                        let buffered_time = std::time::Duration::from_secs_f64(
+                            remaining as f64 / (crate::audio::OPUS_SAMPLE_RATE as f64 * crate::audio::OPUS_CHANNELS as f64),
+                        );
+                        let frame = Arc::new(CapturedFrame {
+                            samples: sample_buf[..OPUS_FRAME_SAMPLES].to_vec(),
+                            position: frame_position,
+                            ready_at: read_at - buffered_time,
+                        });
+                        frame_position = frame_position.wrapping_add(1);
                         sample_buf.drain(..OPUS_FRAME_SAMPLES);
 
                         // Broadcast raw PCM frame to all encoder tasks
@@ -296,7 +308,12 @@ impl AudioCaptureInstance {
                     // to prevent the mobile client from timing out and disconnecting.
                     let has_pcm_listeners = pcm_broadcast_tx.receiver_count() > 0;
                     if has_pcm_listeners {
-                        let silent_frame = Arc::new(vec![0.0f32; OPUS_FRAME_SAMPLES]);
+                        let silent_frame = Arc::new(CapturedFrame {
+                            samples: vec![0.0f32; OPUS_FRAME_SAMPLES],
+                            position: frame_position,
+                            ready_at: tokio::time::Instant::now(),
+                        });
+                        frame_position = frame_position.wrapping_add(1);
                         let _ = pcm_broadcast_tx.send(silent_frame);
                     }
                 },
@@ -408,121 +425,17 @@ impl CaptureDiagnostics {
     }
 }
 
-impl PerTargetEncoder {
-    /// Per-target UDP encoder loop: receives raw PCM frames, encodes at the
-    /// configured bitrate, and sends UDP packets to the target address.
-    async fn run(
-        mut pcm_rx: broadcast::Receiver<Arc<Vec<f32>>>,
-        target_addr: SocketAddr,
-        mut encoder: Option<opus::Encoder>,
-        bitrate: AudioBitrate,
-        mut shutdown_rx: oneshot::Receiver<()>,
-    ) -> Result<(), GemaCastError> {
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| {
-            NetworkError::SocketBindFailed {
-                addr: addr.to_string(),
-                source: e,
-            }
-        })?;
-
-        let _ = socket.set_tos_v4(0xB8);
-
-        socket
-            .bind(&addr.into())
-            .map_err(|e| NetworkError::SocketBindFailed {
-                addr: addr.to_string(),
-                source: e,
-            })?;
-
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| NetworkError::SocketBindFailed {
-                addr: addr.to_string(),
-                source: e,
-            })?;
-
-        let audio_socket =
-            UdpSocket::from_std(socket.into()).map_err(|e| NetworkError::SocketBindFailed {
-                addr: addr.to_string(),
-                source: e,
-            })?;
-
-        let mut seq_num: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let mut opus_output = vec![0u8; MAX_OPUS_PACKET_SIZE];
-        let mut packet_buf: Vec<u8> = Vec::with_capacity(
-            SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE + MAX_OPUS_PACKET_SIZE,
-        );
-        // Inbound datagrams on this socket are the phone's keepalive pings. 64 bytes
-        // comfortably holds a 10-byte echo ping; anything else the phone might send
-        // is consumed and ignored.
-        let mut ping_buf = [0u8; 64];
-
-        loop {
-            tokio::select! {
-                result = pcm_rx.recv() => {
-                    let frame = match result {
-                        Ok(f) => f,
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("[PerTargetEncoder] Lagged by {} frames for {:?}", n, target_addr);
-                            continue;
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    };
-
-                    AudioFrameEncoder::encode(
-                        &frame,
-                        encoder.as_mut(),
-                        bitrate,
-                        seq_num,
-                        &mut opus_output,
-                        &mut packet_buf,
-                    )?;
-
-                    // Send UDP to target
-                    match audio_socket.try_send_to(&packet_buf, target_addr) {
-                        Ok(_) => {}
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => {}
-                    }
-
-                    seq_num = seq_num.wrapping_add(1);
-                }
-                // Reflect the phone's echo pings so it can measure raw wire RTT.
-                // This also serves the buffer hygiene the old blind drain provided:
-                // inbound keepalives are consumed here promptly instead of piling up.
-                // Non-ping datagrams (e.g. an old phone's 1-byte heartbeat) are read
-                // and dropped.
-                result = audio_socket.recv_from(&mut ping_buf) => {
-                    if let Ok((n, src)) = result
-                        && crate::stream::echo::EchoPacket::matches(&ping_buf, n)
-                    {
-                        let _ = audio_socket.try_send_to(&ping_buf[..n], src);
-                    }
-                }
-                _ = &mut shutdown_rx => break,
-            }
-        }
-
-        Ok(())
-    }
-}
-
 impl TcpEncoder {
     /// TCP encoder loop: receives raw PCM frames, encodes at the configured
     /// bitrate, and publishes to the broadcast channel for TCP/ADB consumers.
     async fn run(
-        mut pcm_rx: broadcast::Receiver<Arc<Vec<f32>>>,
+        mut pcm_rx: broadcast::Receiver<Arc<CapturedFrame>>,
         mut encoder: Option<opus::Encoder>,
         bitrate: AudioBitrate,
         tcp_broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<(), GemaCastError> {
-        let mut seq_num: u64 = std::time::SystemTime::now()
+        let sequence_base: u64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
@@ -544,10 +457,10 @@ impl TcpEncoder {
                     };
 
                     AudioFrameEncoder::encode(
-                        &frame,
+                        &frame.samples,
                         encoder.as_mut(),
                         bitrate,
-                        seq_num,
+                        sequence_base.wrapping_add(frame.position),
                         &mut opus_output,
                         &mut packet_buf,
                     )?;
@@ -555,7 +468,6 @@ impl TcpEncoder {
                     let shared = Arc::new(packet_buf.clone());
                     let _ = tcp_broadcast_tx.send(shared);
 
-                    seq_num = seq_num.wrapping_add(1);
                 }
                 _ = &mut shutdown_rx => break,
             }
@@ -626,12 +538,12 @@ mod tests {
                 tracing::error!("Fatal error: Failed to receive PCM");
                 panic!("Failed to receive PCM");
             });
-            if received_pcm[0] != 0.0 {
+            if received_pcm.samples[0] != 0.0 {
                 break;
             }
         }
-        assert_eq!(received_pcm.len(), frame_size);
-        assert_eq!(received_pcm[0], 0.5f32);
+        assert_eq!(received_pcm.samples.len(), frame_size);
+        assert_eq!(received_pcm.samples[0], 0.5f32);
 
         // 5. Test Encoder spawning
         let device_id = DeviceId("test_dev".into());
