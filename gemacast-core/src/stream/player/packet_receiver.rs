@@ -1,6 +1,9 @@
 use super::packet::AudioPacketDecoder;
+use super::pcm_assembly::PcmAssembly;
 use super::playback_control::PlaybackControl;
+use super::receive_diagnostics::ReceiveDiagnostics;
 use super::source_idle::SourceIdleDetector;
+use crate::audio::pcm_datagram::PcmDatagram;
 use crate::audio::{MAX_OPUS_PACKET_SIZE, SEQ_NUM_SIZE};
 use crate::jitter::RawPacket;
 use crate::ports::transport::AudioPacketTransport;
@@ -43,8 +46,17 @@ impl PacketReceiver {
             let mut last_packet_time = std::time::Instant::now();
             let mut first_packet_received = false;
             let mut source_idle_detector = source_idle_after.map(SourceIdleDetector::new);
+            let mut pcm_assembly = PcmAssembly::new();
+            let mut diagnostics = ReceiveDiagnostics::new(std::time::Instant::now());
 
             while active.load(Ordering::Relaxed) {
+                let now = std::time::Instant::now();
+                pcm_assembly.expire(now);
+                diagnostics.report(
+                    now,
+                    pcm_assembly.completed_frames,
+                    pcm_assembly.expired_frames,
+                );
                 let result = transport.receive_audio_packet(&mut recv_buff);
                 let (len, streamer_addr) = match result {
                     Ok(r) => {
@@ -69,6 +81,7 @@ impl PacketReceiver {
                             }
                             continue;
                         }
+                        diagnostics.received(r.0, std::time::Instant::now());
                         if !first_packet_received {
                             tracing::info!("[Player] First audio packet received from {}", r.1,);
                         }
@@ -77,6 +90,12 @@ impl PacketReceiver {
                         r
                     }
                     Err(e) => {
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) {
+                            diagnostics.timeout();
+                        }
                         if e.kind() == std::io::ErrorKind::UnexpectedEof
                             || e.kind() == std::io::ErrorKind::ConnectionReset
                         {
@@ -94,7 +113,18 @@ impl PacketReceiver {
                             let _ = network_dropped_tx.try_send(());
                             break;
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        // The transport already waits on the socket. Sleeping after a
+                        // timeout would delay recovery and manufacture arrival bursts.
+                        if !matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::Interrupted
+                        ) {
+                            tracing::warn!(error = %e, "[Player] Audio receive failed");
+                            let _ = network_dropped_tx.try_send(());
+                            break;
+                        }
                         continue;
                     }
                 };
@@ -105,13 +135,35 @@ impl PacketReceiver {
                     let _ = tx.send(streamer_addr.ip().to_string());
                 }
 
-                let Ok(packet) = AudioPacketDecoder::decode(&recv_buff, len) else {
-                    continue;
+                let packet = if len > SEQ_NUM_SIZE && recv_buff[SEQ_NUM_SIZE] == PcmDatagram::FORMAT
+                {
+                    let Ok(chunk) = PcmDatagram::decode(&recv_buff[..len]) else {
+                        continue;
+                    };
+                    let Some(packet) = pcm_assembly.push(chunk, std::time::Instant::now()) else {
+                        continue;
+                    };
+                    packet
+                } else {
+                    let Ok(packet) = AudioPacketDecoder::decode(&recv_buff, len) else {
+                        continue;
+                    };
+                    packet
                 };
 
                 let seq_num = packet.seq_num;
                 let is_silence = packet.is_silence;
                 let is_uncompressed = packet.is_uncompressed;
+                let report_rms = latency_tx
+                    .as_ref()
+                    .filter(|_| seq_num.is_multiple_of(100))
+                    .map(|_| {
+                        AudioPacketDecoder::estimate_rms(
+                            &packet.payload_data[..packet.payload_len],
+                            is_silence,
+                            is_uncompressed,
+                        )
+                    });
 
                 let source_idle_edge = source_idle_detector
                     .as_mut()
@@ -139,16 +191,18 @@ impl PacketReceiver {
                 }
 
                 if let Some(ref tx) = latency_tx
-                    && seq_num.is_multiple_of(100)
+                    && let Some(rms) = report_rms
                 {
-                    let rms_data = &recv_buff[SEQ_NUM_SIZE + crate::audio::FORMAT_FLAG_SIZE..len];
-                    let rms =
-                        AudioPacketDecoder::estimate_rms(rms_data, is_silence, is_uncompressed);
                     let buffer_delay_ms = latency_metric.load(Ordering::Relaxed) as f32;
                     let jitter_ms = jitter_metric.load(Ordering::Relaxed) as f32;
                     let _ = tx.try_send((buffer_delay_ms, rms, jitter_ms));
                 }
             }
+            tracing::info!(
+                completed_pcm_frames = pcm_assembly.completed_frames,
+                expired_pcm_frames = pcm_assembly.expired_frames,
+                "[Player] PCM assembly totals"
+            );
         })
     }
 }
@@ -165,6 +219,66 @@ mod tests {
 
     fn test_playback_control() -> PlaybackControl {
         PlaybackControl::channel().0
+    }
+
+    fn receive_sequence(results: Vec<Result<Vec<u8>, std::io::ErrorKind>>) -> Vec<RawPacket> {
+        let (producer, mut consumer) = HeapRb::<RawPacket>::new(8).split();
+        let (drop_tx, _) = mpsc::channel(1);
+        PacketReceiver::spawn(
+            crate::testing::mocks::PacketSequence::new(results),
+            producer,
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+            None,
+            None,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicU16::new(0)),
+            drop_tx,
+            Some("127.0.0.1".parse().unwrap()),
+            test_playback_control(),
+            None,
+        )
+        .join()
+        .unwrap();
+        let mut packets = Vec::new();
+        while let Some(packet) = consumer.try_pop() {
+            packets.push(packet);
+        }
+        packets
+    }
+
+    #[test]
+    fn the_receive_loop_should_reassemble_pcm_after_transient_errors() {
+        let mut frame = vec![0; 3849];
+        frame[..8].copy_from_slice(&100u64.to_be_bytes());
+        frame[8] = crate::audio::FORMAT_UNCOMPRESSED;
+        for sample in frame[9..].chunks_exact_mut(4) {
+            sample.copy_from_slice(&0.5f32.to_ne_bytes());
+        }
+        let mut results = vec![
+            Err(std::io::ErrorKind::TimedOut),
+            Err(std::io::ErrorKind::WouldBlock),
+            Err(std::io::ErrorKind::Interrupted),
+        ];
+        for index in [2, 0, 3, 1] {
+            let mut chunk = [0; PcmDatagram::SIZE];
+            PcmDatagram::encode(&frame, 123, index, &mut chunk);
+            results.push(Ok(chunk.to_vec()));
+        }
+        let packets = receive_sequence(results);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].seq_num, 100);
+        assert_eq!(&packets[0].payload_data[..3840], &frame[9..]);
+    }
+
+    #[test]
+    fn a_permanent_receive_failure_should_stop_before_processing_more_audio() {
+        let mut frame = vec![0; 9];
+        frame[8] = crate::audio::FORMAT_SILENCE;
+        assert!(
+            receive_sequence(vec![Err(std::io::ErrorKind::PermissionDenied), Ok(frame)]).is_empty()
+        );
     }
 
     struct MockTransport {

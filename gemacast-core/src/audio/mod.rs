@@ -1,6 +1,7 @@
 use opus::{Decoder, Encoder};
 
 pub mod mixdown;
+pub(crate) mod pcm_datagram;
 pub mod resampler;
 pub use resampler::CaptureResampler;
 pub const OPUS_CHANNELS: u16 = 2;

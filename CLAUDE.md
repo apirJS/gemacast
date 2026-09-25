@@ -16,7 +16,7 @@ mobile app is Tauri v2 with React 19 and Bun.
 Runtime path:
 
 ```text
-PC capture -> stereo 48 kHz frames -> Opus/raw/silence packets
+PC capture -> stereo 48 kHz frames -> Opus/PCM/silence packets
   -> UDP 23556 or ADB TCP 23557
   -> phone receiver -> jitter manager -> Oboe/cpal output
 ```
@@ -233,6 +233,14 @@ for version tags.
   or add burst logging.
 - Preserve stereo frame alignment, 48 kHz assumptions, packet sequence behavior,
   and capture/encoder ownership.
+- Wi-Fi PCM sends each 10 ms float32 stereo frame as four 978-byte UDP datagrams
+  in one batch on the 10 ms frame clock. Reassemble all four before jitter
+  playback; preserve sequence and sender generation. A 2.5 ms timer between
+  chunks caused constant stutter on a real Windows-to-Android run.
+- Keep PCM send age bounded at 40 ms and incomplete receive frames bounded at
+  100 ms, including across silence and receive timeouts. A failed chunk makes
+  the entire frame incomplete. See `gemacast-core/PCM-TRANSPORT.md` for the wire
+  layout and diagnostics.
 - Multiple phones are isolated by `DeviceId`; shared sources may share capture,
   but each target owns its encoder and bitrate.
 - Treat jitter target calculation and timescale actuation as separate systems.

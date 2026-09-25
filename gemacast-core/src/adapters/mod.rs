@@ -1,3 +1,4 @@
+pub(crate) mod audio_priority;
 pub mod capture;
 pub mod error_notifier;
 pub mod output_volume;

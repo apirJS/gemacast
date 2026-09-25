@@ -215,6 +215,33 @@ pub mod mocks {
     // MockTransport
     // -----------------------------------------------------------------------
 
+    pub(crate) struct PacketSequence {
+        results: std::collections::VecDeque<Result<Vec<u8>, std::io::ErrorKind>>,
+    }
+
+    impl PacketSequence {
+        pub fn new(results: Vec<Result<Vec<u8>, std::io::ErrorKind>>) -> Self {
+            Self {
+                results: results.into(),
+            }
+        }
+    }
+
+    impl AudioPacketTransport for PacketSequence {
+        fn receive_audio_packet(
+            &mut self,
+            buffer: &mut [u8],
+        ) -> std::io::Result<(usize, std::net::SocketAddr)> {
+            let packet = self
+                .results
+                .pop_front()
+                .unwrap_or(Err(std::io::ErrorKind::UnexpectedEof))
+                .map_err(std::io::Error::from)?;
+            buffer[..packet.len()].copy_from_slice(&packet);
+            Ok((packet.len(), "127.0.0.1:50000".parse().unwrap()))
+        }
+    }
+
     pub struct MockTransport {
         pub calls: CallLog,
         /// Packets to return, one per call. When empty, returns EOF.

@@ -20,6 +20,12 @@ pub enum GemaCastError {
 
 #[derive(ThisError, Debug)]
 pub enum ProtocolError {
+    #[error("unsupported audio format: {0}")]
+    UnsupportedAudioFormat(u8),
+
+    #[error("invalid PCM datagram: {reason}")]
+    InvalidPcmDatagram { reason: &'static str },
+
     #[error("packet too short: expected at least {min} bytes, got {got}")]
     PacketTooShort { got: usize, min: usize },
 
@@ -220,6 +226,13 @@ pub enum AudioError {
 
 #[derive(ThisError, Debug)]
 pub enum NetworkError {
+    #[error("failed to configure audio priority: {operation}")]
+    AudioPriorityFailed {
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("no non-loopback network address is available")]
     LocalAddressUnavailable,
 
