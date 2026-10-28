@@ -1,29 +1,41 @@
-# Container tests
+# Container checks
 
-These images mirror the Linux desktop and Android jobs in
-`.github/workflows/ci.yml`. Windows and macOS tests remain on native runners.
+[compose.yaml](compose.yaml) defines two Linux containers:
 
-Run Linux and Android concurrently:
+| Service | Checks | Entry point |
+| --- | --- | --- |
+| `test` | Cargo audit, mobile frontend checks, Rust formatting, Clippy, workspace tests | [ci.sh](ci.sh) |
+| `android` | Rust formatting, ARM64 Android Clippy, Kotlin JVM tests | [android-ci.sh](android-ci.sh) |
+
+The `test` container starts PipeWire and WirePlumber in a D-Bus session.
+The `android` container configures the SDK/NDK and generates Tauri/Wry support
+files before Gradle tests. Windows and macOS checks use native CI runners.
+
+## Commands
+
+Run from the repository root with Docker configured for Linux containers.
+
+Build both images:
 
 ```sh
-docker compose -f docker/compose.yaml --profile android up --build --abort-on-container-exit
+docker compose -f docker/compose.yaml --profile android build test android
 ```
 
-Run one service:
+Run each suite:
 
 ```sh
 docker compose -f docker/compose.yaml run --rm test
 docker compose -f docker/compose.yaml --profile android run --rm android
 ```
 
-Build without running tests:
+The PowerShell runner executes both suites concurrently and waits for both:
 
-```sh
-docker compose -f docker/compose.yaml --profile android build test android
+```powershell
+./docker/test-parallel.ps1
 ```
 
-Source is mounted at `/work`; Cargo, Gradle, and frontend dependencies use
-named volumes to avoid conflicts with host artifacts.
+## Storage
 
-Windows containers require a separate Windows Docker engine and cannot run
-beside these Linux containers. macOS applications cannot run in Docker.
+The repository is mounted at `/work`. Cargo targets and registries, Android
+Gradle caches, and mobile `node_modules` use named volumes. Generated files
+outside those volumes are written to the host checkout.
