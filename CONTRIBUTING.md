@@ -1,117 +1,97 @@
 # Contributing to Gemacast
 
-Thank you for improving Gemacast. Keep changes focused, preserve protocol and
-platform behavior unless the change explicitly targets them, and include tests
-for observable behavior.
-
-Read [CLAUDE.md](CLAUDE.md) for the repository's architecture and coding rules.
+[Architecture](ARCHITECTURE.md) · [Repository rules](CLAUDE.md) ·
+[Website](web/README.md) · [Container checks](docker/README.md)
 
 ## Toolchain
 
-| Tool | Version |
+| Component | Version or requirement |
 | --- | --- |
-| Rust | Pinned by `rust-toolchain.toml` |
-| Bun | 1.x; CI currently uses 1.3.14 |
-| Clang and CMake | Required to build the vendored Opus library |
-| Java | 17 for Android |
+| Rust, rustfmt, Clippy | [rust-toolchain.toml](rust-toolchain.toml) |
+| Bun | CI uses 1.3.14 |
+| Native builds | Clang and CMake; Android also uses Ninja |
+| Android Java | JDK 17 |
 | Android NDK | 25.2.9519653 |
 | Android CMake | 3.22.1 |
 | Android build-tools | 34.0.0 |
-| Android platform | 36 |
+| Android SDK platform | 36 |
+| Website Node.js | `^22.18.0` or `>=24.12.0` |
 
-Install `cargo-ndk` before running Android Rust checks:
+Android versions and target checks are defined in [CI](.github/workflows/ci.yml).
+Frontend commands are defined in each application's `package.json`.
 
-```bash
-cargo install cargo-ndk
-```
-
-## Clone and install
+## Setup
 
 ```bash
 git clone https://github.com/apirJS/gemacast.git
 cd gemacast
-
-cd gemacast-mobile
-bun install --frozen-lockfile
-
-cd ../web
-bun install --frozen-lockfile
 ```
 
-### Linux dependencies
+Install dependencies for the frontend being developed:
 
-Linux development requires PipeWire, WirePlumber, ALSA, GTK3, WebKit2GTK, and
-AppIndicator development packages. The CI workflow is the authoritative setup
-for its Ubuntu runners because Ubuntu 22.04's packaged PipeWire headers are too
-old for the current Rust bindings.
+| Working directory | Command |
+| --- | --- |
+| `gemacast-mobile/` | `bun install --frozen-lockfile` |
+| `web/` | `bun install --frozen-lockfile` |
 
-Common Debian/Ubuntu packages:
+### Desktop dependencies
+
+| Host | Requirements |
+| --- | --- |
+| Windows | MSVC C++ build tools, Windows SDK, Clang, CMake; WebView2 for the Tauri desktop UI |
+| macOS | Xcode command-line tools and CMake; ScreenCaptureKit uses a Swift bridge |
+| Linux | PipeWire, WirePlumber, ALSA, GTK3, AppIndicator, WebKit2GTK, and their development packages |
+
+Ubuntu 22.04's PipeWire headers are too old for the current Rust bindings.
+CI builds PipeWire 1.2.7 and WirePlumber 0.5.15 from source. Use the
+[CI setup](.github/workflows/ci.yml) or [Linux container](docker/README.md).
+Linux workspace checks also require the Tauri libraries listed in that workflow.
+
+The [PC build script](gemacast-pc/build.rs) downloads ADB using `curl` and
+extracts it with `tar` on Windows or `unzip` for the usual Linux/macOS archives.
+The Linux ARM64 archive uses `tar`. Uncached builds require network access.
+
+### Android SDK
+
+Install the Android packages listed above and `platform-tools`. Configure:
+
+| Variable | Value |
+| --- | --- |
+| `JAVA_HOME` | JDK 17 directory |
+| `ANDROID_HOME` | Android SDK directory |
+| `NDK_HOME`, `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT` | SDK directory followed by `ndk/25.2.9519653` |
+
+Add SDK `platform-tools` to `PATH` and accept the SDK licenses. From the
+repository root:
 
 ```bash
-sudo apt-get install -y clang cmake pkg-config ninja-build meson \
-  libasound2-dev libpipewire-0.3-dev libgtk-3-dev \
-  libayatana-appindicator3-dev libwebkit2gtk-4.1-dev \
-  librsvg2-dev patchelf libxdo-dev libudev-dev libdbus-1-dev
+cargo install cargo-ndk
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 ```
 
-Common Fedora packages:
-
-```bash
-sudo dnf install clang cmake pkg-config ninja-build meson \
-  alsa-lib-devel pipewire-devel gtk3-devel \
-  libayatana-appindicator-gtk3-devel webkit2gtk4.1-devel \
-  librsvg2-devel patchelf libxdo-devel systemd-devel dbus-devel
-```
+ARM64-only builds require only `aarch64-linux-android`. A connected phone must
+have USB debugging enabled and appear as `device` in `adb devices`.
 
 ## Build
 
-### PC application
+| Target | Working directory | Command |
+| --- | --- | --- |
+| PC development run | Repository root | `cargo run -p gemacast-pc` |
+| PC release binary | Repository root | `cargo build --release -p gemacast-pc` |
+| Android development run | `gemacast-mobile/` | `bunx tauri android dev` |
+| Android debug APK, ARM64 | `gemacast-mobile/` | `bunx tauri android build --debug --apk --target aarch64` |
+| Android universal APK | `gemacast-mobile/` | `bunx tauri android build --apk` |
+| Android ARM64 APK | `gemacast-mobile/` | `bunx tauri android build --apk --target aarch64 --split-per-abi` |
+| Mobile frontend only | `gemacast-mobile/` | `bun run dev` |
+| Website development | `web/` | `bun run dev` |
+| Website production build | `web/` | `bun run build` |
 
-From the repository root:
-
-```bash
-cargo build --release -p gemacast-pc
-```
-
-The executable is written to `target/release/gemacast-pc`, with `.exe` added on
-Windows.
-
-### Android application
-
-From `gemacast-mobile/`:
-
-```bash
-# Universal APK
-bunx tauri android build --apk
-
-# Smaller ARM64 APK
-bunx tauri android build --apk --target aarch64 --split-per-abi
-```
-
-Android output is written below
-`gemacast-mobile/src-tauri/gen/android/app/build/outputs/apk/`.
-
-The tracked files under `gemacast-mobile/src-tauri/gen/android/` include
-hand-written Kotlin. Do not delete or wholesale-regenerate that directory.
-
-### Frontend development
-
-From `gemacast-mobile/`:
-
-```bash
-bun run dev
-```
-
-From `web/`:
-
-```bash
-bun dev
-bun run build
-```
+PC release output is `target/release/gemacast-pc` (`.exe` on Windows).
+APK output is under `gemacast-mobile/src-tauri/gen/android/app/build/outputs/apk/`.
+The mobile Vite server alone provides no native audio or Tauri services.
+The tracked Android project contains hand-written Kotlin; retain it when building.
 
 ## Validate
-
-Start with the narrowest relevant test, then run the owning suite.
 
 ### Rust
 
@@ -123,8 +103,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Linux workspace tests require live PipeWire and WirePlumber services. See
-`.github/workflows/ci.yml` for the headless CI setup.
+Use `cargo test -p gemacast-core <test-filter>` for a filtered core test run.
+Linux workspace tests require running PipeWire and WirePlumber services.
+Host workspace checks compile the mobile crate's non-Android target.
 
 ### Mobile frontend
 
@@ -137,40 +118,97 @@ bun run typecheck
 bun test
 ```
 
-### Website
-
-From `web/`:
-
-```bash
-bun run type-check
-bun run lint
-bun test:unit --run
-bun run build
-```
-
 ### Android
 
-From the repository root:
+Direct Cargo checks require the following variables to generate ignored
+Gradle and Kotlin support files. Run from the repository root after SDK setup.
+
+Bash:
 
 ```bash
+export TAURI_ANDROID_PROJECT_PATH="$PWD/gemacast-mobile/src-tauri/gen/android"
+export WRY_ANDROID_PACKAGE="com.apir.gemacast"
+export WRY_ANDROID_LIBRARY="gemacast_mobile_lib"
+export WRY_ANDROID_KOTLIN_FILES_OUT_DIR="$TAURI_ANDROID_PROJECT_PATH/app/src/main/java/com/apir/gemacast/generated"
+mkdir -p "$WRY_ANDROID_KOTLIN_FILES_OUT_DIR"
 cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
 ```
 
-Then, from `gemacast-mobile/src-tauri/gen/android/`:
+PowerShell:
 
-```bash
-bash ./gradlew :app:testUniversalDebugUnitTest --no-daemon
+```powershell
+$env:TAURI_ANDROID_PROJECT_PATH = (Resolve-Path 'gemacast-mobile/src-tauri/gen/android').Path
+$env:WRY_ANDROID_PACKAGE = 'com.apir.gemacast'
+$env:WRY_ANDROID_LIBRARY = 'gemacast_mobile_lib'
+$env:WRY_ANDROID_KOTLIN_FILES_OUT_DIR = Join-Path $env:TAURI_ANDROID_PROJECT_PATH 'app/src/main/java/com/apir/gemacast/generated'
+New-Item -ItemType Directory -Force -Path $env:WRY_ANDROID_KOTLIN_FILES_OUT_DIR | Out-Null
+cargo ndk -t arm64-v8a clippy --workspace --exclude gemacast-pc -- -D warnings
 ```
 
-Shell scripts and `gradlew` must retain LF line endings.
+Then run JVM tests from `gemacast-mobile/src-tauri/gen/android/`:
 
-### Containers
+| Shell | Command |
+| --- | --- |
+| Bash | `bash ./gradlew :app:testUniversalDebugUnitTest --no-daemon` |
+| PowerShell | `./gradlew.bat :app:testUniversalDebugUnitTest --no-daemon` |
 
-Linux desktop and Android checks can run together:
+JVM tests cover Kotlin logic. They do not exercise device audio or release R8
+minification. JNI changes require a release APK check. Shell scripts and
+`gradlew` use LF line endings.
+
+### Website and containers
+
+Website checks are listed in [web/README.md](web/README.md). The main CI
+frontend job checks the mobile frontend only.
+
+Linux and Android container commands are in [docker/README.md](docker/README.md).
+Windows and macOS checks run on native CI hosts.
+
+## Diagnostics
+
+PC debug builds write tracing to stderr. From the repository root:
 
 ```bash
-docker compose -f docker/compose.yaml --profile android up --build --abort-on-container-exit
+RUST_LOG=gemacast_core=debug,gemacast_pc=debug cargo run -p gemacast-pc
 ```
 
-Windows and macOS validation use native CI runners and cannot be reproduced by
-the Linux containers.
+PowerShell:
+
+```powershell
+$env:RUST_LOG = 'gemacast_core=debug,gemacast_pc=debug'
+cargo run -p gemacast-pc
+```
+
+PC and Android release builds compile out Rust tracing. Android diagnostics
+require a debug APK and `adb logcat`.
+
+PC panic reports overwrite `crash.log` in the configuration directory:
+
+| OS | Directory |
+| --- | --- |
+| Windows | `%APPDATA%/gemacast/` |
+| Linux | `$XDG_CONFIG_HOME/gemacast/`, defaulting to `~/.config/gemacast/` |
+| macOS | `~/Library/Application Support/gemacast/` |
+
+## Reporting bugs
+
+Include these fields in an [issue](https://github.com/apirJS/gemacast/issues):
+
+- PC and Android app versions or source commit.
+- PC OS and audio device; phone model and Android version.
+- Connection mode, capture source, codec/bitrate, buffer preset, and screen state.
+- Reproduction steps, expected result, actual result, and relevant logs.
+
+Audio measurements also need the measurement method and affected transport.
+RTT and buffer depth do not measure total capture-to-output latency. Remove
+credentials and private identity material from diagnostic attachments.
+
+## Pull requests
+
+Target `main`. Include the change, test commands and results, and affected
+platforms. Protocol changes require matching PC and phone changes. Repository
+constraints are in [CLAUDE.md](CLAUDE.md).
+
+Release-please manages versions from the root `Cargo.toml`. CI runs on pull
+requests to `main` and manual dispatch; release preparation runs on pushes to
+`main`, and packaging runs for version tags.
